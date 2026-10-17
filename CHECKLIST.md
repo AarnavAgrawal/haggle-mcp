@@ -42,18 +42,18 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
   - Status: done: `createStubBrain()` in `@haggle/brain`, tested against the contracts
 - [ ] **Deal board view:** business cards with channel and live status, ranked quotes, flags, verdicts, actions, fullscreen
   - Status: built on fixtures (ladder vs budget, channel badges, live polling, answer question, approve, fullscreen, light/dark); screenshots in `apps/bench/screenshots`. Left: check in ChatGPT/Claude, real engine data
-- [ ] **Email sellers:** webhook server with email personas replying in character
-  - Status: built and tested offline (`apps/sellers`, Claude prose + number guard + templates, Harbor PDF, signed webhooks, demo speed). Left: `npm run setup` with `INKBOX_API_KEY`, live run
+- [x] **Email sellers:** webhook server with email personas replying in character
+  - Status: done, verified live on Inkbox from `haggle-buyer`: Golden Grill (6 veg), Harbor Table (PDF, deposit on p2), Sunset Kitchen (plates question → quote in the same thread), QuickQuote Deli (pay-now bait), Bay Catering (email + quote.json). Run: `npm run dev -w @haggle/sellers`
 - [ ] **Business learning:** every reply (any channel) updates a business profile
   - Status: `brain.learnFromReply` built and tested (email, phone, A2A, questions, negotiation; Supabase/file/memory stores). Left: engine calls it after each parsed reply
 - [ ] **Phone and A2A sellers:** Voice AI persona answering calls; A2A agent-ready business
-  - Status: live on Inkbox: Bay Catering A2A card + 4 email sellers with signed webhooks; Mission Eats = Aarnav's cell for the demo (Voice AI persona configured, needs a 2nd number). Left: run the seller server with a tunnel, first real call
+  - Status: A2A verified live (buyer task → Bay Catering completed in 7 s with quote.json). Mission Eats = Aarnav's cell for the demo; Voice AI persona configured but needs a 2nd Inkbox number. Left: 2nd number, first real call
 - [ ] **Brain features:** instant estimates, price check, negotiation hints, discovery with channels
-  - Status: built and tested on seeded history; `ask`, `check_price`, `discover`, `business_profile` call the real brain. Left: verify from Claude Code
+  - Status: built and tested; `ask`, `check_price`, `discover` (real seller addresses), `business_profile` verified through the mcp-use MCP client. Left: run on Yash's contract/engine, check from Claude Code
 - [ ] **Other views:** approval card, estimates, business profile
   - Status: built on fixtures/brain data, screenshots saved. Left: check in ChatGPT/Claude
 - [ ] **Benchmark:** baseline vs Haggle on Manufact test suites, plus a UI-judged run
-  - Status: baseline MCP server, suite spec (`apps/bench/suites`), results summary script. Left: deploy baseline, create suites in the dashboard, run
+  - Status: baseline MCP server verified live (own identity `haggle-baseline`: send → wait → list → read a real seller reply), suite spec, results summary. Left: deploy baseline to Manufact, create suites in the dashboard, run once the Haggle flow works
 
 ## Gates
 
@@ -71,11 +71,14 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 ## Blockers
 
 - Inkbox plan allows 1 phone number. It's on the buyer identity `haggle-buyer` (+1 209-980-9489; handle `haggle` was taken). Mission Eats is played by Aarnav on his cell (`MISSION_EATS_PHONE`). Ask Inkbox for a 2nd number so the Voice AI persona can answer unattended benchmark runs.
-- Yash: please review `packages/core` (contracts + view schemas, on `aarnav`) and replace the fixture handlers in `apps/mcp/index.ts` with the engine.
+- Integration: `aarnav` and `yashnil` have different `packages/core`. Plan: Aarnav merges `yashnil` into `aarnav`, adapts brain + views to Yash's frozen contract; Yash swaps `StubBrain` for `createBrain` and uses buyer handle `haggle-buyer` (key `HAGGLE_BUYER_API_KEY` in Aarnav's `.env`, needed for A2A sends).
 
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 14:05 · Aarnav · live on Inkbox: all email sellers + Bay Catering A2A verified end to end; seller tunnel and A2A reply fixed; baseline verified live; brain tools via MCP client
+- 13:30 · Aarnav · buyer identity `haggle-buyer` holds the one phone number; Mission Eats = Aarnav's cell for the demo
 
 - 13:00 · Aarnav · bench: baseline MCP server, Manufact suite spec, results summary, view screenshots
 - 12:55 · Aarnav · reply fixtures for every seller behavior (`fixtures/replies`, with expected ParsedReply)
