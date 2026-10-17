@@ -94,6 +94,6 @@ export function toParsedReply(x: QuoteExtraction, quote: Quote | null, questionI
   return { items, injection_detected: x.instructions_to_agent };
 }
 
-export function requestHeadcount(r: Request): number {
+export function requestHeadcount(r: Request): number | undefined {
   return r.quantity;
 }

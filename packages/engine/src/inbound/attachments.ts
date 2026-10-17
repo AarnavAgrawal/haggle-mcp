@@ -8,8 +8,22 @@ import { Parser, type ReadEntry } from "tar";
 
 export const MAX_PDF_BYTES = 5 * 1024 * 1024; // total across PDFs in one email
 export const MAX_JSON_BYTES = 64 * 1024; // per JSON part (Primitive caps interaction.json at 64 KiB)
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // total across images in one email (photo of a price sheet)
 
-export type AttachmentKind = "pdf" | "json";
+/** Images the parser can read (Claude vision); image/jpg is normalised to image/jpeg. */
+export const IMAGE_CONTENT_TYPES: Record<string, string> = { "image/png": "image/png", "image/jpeg": "image/jpeg", "image/jpg": "image/jpeg", "image/gif": "image/gif", "image/webp": "image/webp" };
+const IMAGE_EXT: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
+
+export type AttachmentKind = "pdf" | "json" | "image";
+
+/** The image media type for an attachment (by content type, else extension), or null. */
+export function imageContentType(contentType: string, filename: string | null): string | null {
+  const ct = contentType.toLowerCase().split(";")[0]!.trim();
+  if (IMAGE_CONTENT_TYPES[ct]) return IMAGE_CONTENT_TYPES[ct]!;
+  const name = (filename ?? "").toLowerCase();
+  const ext = Object.keys(IMAGE_EXT).find((e) => name.endsWith(e));
+  return ext ? IMAGE_EXT[ext]! : null;
+}
 
 export interface WantedAttachment {
   tarPath: string;
@@ -21,15 +35,19 @@ export interface ExtractedFile {
   kind: AttachmentKind;
   filename: string;
   data: Buffer;
+  /** Images only: the normalised media type (image/png, image/jpeg, image/gif, image/webp). */
+  contentType?: string;
 }
 
 export type PdfFile = ExtractedFile & { kind: "pdf" };
+export type ImageFile = ExtractedFile & { kind: "image"; contentType: string };
 
 export function attachmentKind(a: WantedAttachment): AttachmentKind | null {
   const ct = a.contentType.toLowerCase().split(";")[0]!.trim();
   const name = (a.filename ?? a.tarPath).toLowerCase();
   if (ct === "application/pdf" || name.endsWith(".pdf")) return "pdf";
   if (ct === "application/json" || name.endsWith(".json")) return "json";
+  if (imageContentType(ct, name)) return "image";
   return null;
 }
 
@@ -48,7 +66,8 @@ export async function extractAttachments(
   const byPath = new Map<string, { kind: AttachmentKind; name: string }>();
   for (const w of wanted) {
     const kind = attachmentKind(w);
-    if (kind) byPath.set(normalize(w.tarPath), { kind, name: w.filename ?? w.tarPath });
+    // Legacy Primitive archives: PDFs and JSON parts only (images are read on the Inkbox path).
+    if (kind && kind !== "image") byPath.set(normalize(w.tarPath), { kind, name: w.filename ?? w.tarPath });
   }
   if (byPath.size === 0) return [];
 

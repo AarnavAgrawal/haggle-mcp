@@ -174,9 +174,10 @@ describe("iMessage approval (real engine, fake iMessage port)", () => {
     expect((await engine.ingestIMessage(msg(`YES ${a.code}`, { from: "+14155559999" }))).outcome).toBe("not_approver");
     expect((await engine.ingestIMessage(msg(`YES ${a.code}`, { isGroup: true }))).outcome).toBe("group_ignored");
     expect((await engine.ingestIMessage(msg("YES"))).outcome).toBe("code_required");
-    expect((await engine.ingestIMessage(msg("YES 0000"))).outcome).toBe(a.code === "0000" ? "approved" : "no_matching_approval");
+    // A wrong code against the approver's only pending approval counts toward the lockout.
+    expect((await engine.ingestIMessage(msg("YES 0000"))).outcome).toBe(a.code === "0000" ? "approved" : "wrong_code");
     expect((await engine.ingestIMessage(msg("sure, sounds good!"))).outcome).toBe("not_a_decision");
-    expect((await repo.getApproval(a.id))!.status).toBe("pending");
+    expect((await repo.getApproval(a.id))!).toMatchObject({ status: "pending", attempts: a.code === "0000" ? 0 : 1 });
     expect((await engine.ingestIMessage(msg(`yes ${a.code}`, { messageId: "in_ok" }))).outcome).toBe("approved");
     expect((await engine.ingestIMessage(msg(`yes ${a.code}`, { messageId: "in_ok" }))).outcome).toBe("duplicate");
     expect(await repo.getApproval(a.id)).toMatchObject({ status: "approved", channel: "imessage", approver: APPROVER });

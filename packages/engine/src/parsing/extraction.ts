@@ -40,9 +40,16 @@ export const QuoteExtraction = z.object({
     .array(z.string())
     .describe("Fields the business did not state. Never guess a number to fill a field."),
   confidence: z.number().describe("0 to 1: how sure you are the extraction is right"),
+  answers: z
+    .array(z.object({ key: z.string(), value: z.string().nullable(), source: z.string(), excerpt: z.string() }))
+    .describe("One entry per requested custom field (by key): the business's answer as text, or null if it didn't say. source is 'email body', 'pdf p.N', 'image' or 'call transcript'"),
 });
 
-export type QuoteExtraction = z.infer<typeof QuoteExtraction>;
+/** `answers` is only produced for requests with custom ask fields; older extractions omit it. */
+export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers"> & { answers?: z.infer<typeof QuoteExtraction>["answers"] };
+
+/** A validated custom answer: money in cents, dates YYYY-MM-DD, times HH:MM. */
+export type FieldValue = number | string | boolean | null;
 
 /** The cents-based record the engine stores. `null` = not stated (never 0). */
 export interface QuoteRecord {
@@ -64,4 +71,8 @@ export interface QuoteRecord {
   sources: Partial<Record<MoneyField, { source: string; excerpt: string }>>;
   missing_fields: string[];
   confidence: number;
+  /** Custom ask answers by key (requests with `ask`); absent on catering-default quotes. */
+  fields?: Record<string, FieldValue>;
+  /** Ask keys the business didn't answer (or answered with an invalid value). */
+  fields_missing?: string[];
 }

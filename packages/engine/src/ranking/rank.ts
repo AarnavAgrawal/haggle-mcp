@@ -16,9 +16,17 @@ export interface RankableQuote {
   status: "current" | "superseded" | "expired" | "withdrawn";
   confidence: number;
   flags: string[];
+  // Custom requests (ask + compare_by), all optional; absent = rank by total, lowest first.
+  /** The compare_by value when it isn't money (number, or a YYYY-MM-DD / HH:MM string). */
+  sortValue?: number | string | null;
+  direction?: "min" | "max";
+  /** False when the request compares a non-money field: a quote can win without a total. */
+  needsTotal?: boolean;
+  /** A required ask answer is missing (a follow-up asks for it). */
+  missingRequired?: boolean;
 }
 
-export type RejectReason = "not_current" | "unavailable" | "unverified_sender" | "external_payment_link" | "prompt_injection" | "requirement_unmet" | "no_total" | "over_budget";
+export type RejectReason = "not_current" | "unavailable" | "unverified_sender" | "external_payment_link" | "prompt_injection" | "requirement_unmet" | "missing_info" | "no_total" | "over_budget";
 
 export interface Ranking {
   ranked: RankableQuote[]; // best first
@@ -34,9 +42,20 @@ export function rejectReason(q: RankableQuote, budgetCents: number | null): Reje
   if (q.flags.includes("external_payment_link")) return "external_payment_link";
   if (q.flags.includes("prompt_injection")) return "prompt_injection";
   if (!q.compliant) return "requirement_unmet";
-  if (q.totalCents === null) return "no_total";
-  if (budgetCents !== null && q.totalCents > budgetCents) return "over_budget";
+  if (q.missingRequired) return "missing_info";
+  if (q.needsTotal === false) {
+    if (q.sortValue === null || q.sortValue === undefined) return "missing_info";
+  } else if (q.totalCents === null) return "no_total";
+  if (budgetCents !== null && q.totalCents !== null && q.totalCents > budgetCents) return "over_budget";
   return null;
+}
+
+/** Ascending order of the comparable value (total cents, or the custom compare value). */
+function compareKey(a: RankableQuote, b: RankableQuote): number {
+  const va = a.needsTotal === false ? a.sortValue : a.totalCents;
+  const vb = b.needsTotal === false ? b.sortValue : b.totalCents;
+  if (typeof va === "number" && typeof vb === "number") return va - vb;
+  return String(va).localeCompare(String(vb));
 }
 
 export function rankQuotes(quotes: RankableQuote[], budgetCents: number | null): Ranking {
@@ -48,6 +67,6 @@ export function rankQuotes(quotes: RankableQuote[], budgetCents: number | null):
       if (reason !== "not_current") rejected.push({ quoteId: q.quoteId, businessId: q.businessId, reason });
     } else ranked.push(q);
   }
-  ranked.sort((a, b) => a.totalCents! - b.totalCents! || b.confidence - a.confidence || a.quoteId.localeCompare(b.quoteId));
+  ranked.sort((a, b) => (a.direction === "max" ? -compareKey(a, b) : compareKey(a, b)) || b.confidence - a.confidence || a.quoteId.localeCompare(b.quoteId));
   return { ranked, recommendedQuoteId: ranked[0]?.quoteId ?? null, rejected };
 }

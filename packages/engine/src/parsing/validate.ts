@@ -10,14 +10,84 @@
 //   - a money figure without a source is not accepted;
 //   - dietary counts, delivery/tax inclusion, seller questions, and flags for external payment
 //     requests and instructions aimed at the agent.
+import type { AskField } from "../contract.ts";
 import { MoneyError, usdToCents } from "../money.ts";
-import { MONEY_FIELDS, type MoneyField, type QuoteExtraction, type QuoteRecord } from "./extraction.ts";
+import { MONEY_FIELDS, type FieldValue, type MoneyField, type QuoteExtraction, type QuoteRecord } from "./extraction.ts";
 
 const MAX_MONEY_USD = 50_000;
 const SUBTOTAL_TOLERANCE = 0.02;
 const CONFIDENCE_PENALTY = 0.25;
+const TEXT_MAX = 300;
 
-export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): QuoteRecord {
+/**
+ * One custom answer, coerced to its ask type; null when it isn't a valid value of that type
+ * (never guessed). Money -> cents (≤ 2 decimals, ≤ $50k), date -> YYYY-MM-DD (a real day),
+ * time -> HH:MM, boolean -> yes/no words, number -> finite, text -> clipped.
+ * Ported from haggle-testing src/comms/parser/validate.ts (coerceField).
+ */
+export function coerceField(f: AskField, raw: string | null | undefined): FieldValue {
+  if (raw === null || raw === undefined) return null;
+  const v = String(raw).trim();
+  if (!v) return null;
+  switch (f.type) {
+    case "money": {
+      const m = v.replace(/usd|dollars?/gi, "").match(/-?\$?\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)/);
+      if (!m) return null;
+      try {
+        const c = usdToCents(m[1]!.replace(/,/g, ""));
+        return c >= 0 && c <= MAX_MONEY_USD * 100 ? c : null;
+      } catch {
+        return null;
+      }
+    }
+    case "number": {
+      const m = v.match(/-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?/);
+      const n = m ? Number(m[0].replace(/,/g, "")) : NaN;
+      return Number.isFinite(n) ? n : null;
+    }
+    case "date": {
+      const m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!m) return null;
+      const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+      return d.toISOString().slice(0, 10) === v ? v : null;
+    }
+    case "time": {
+      const m = v.match(/^(\d{1,2}):(\d{2})$/);
+      if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
+      return `${m[1]!.padStart(2, "0")}:${m[2]}`;
+    }
+    case "boolean":
+      if (/^(yes|y|true|yep|sure|we do|included)\b/i.test(v)) return true;
+      if (/^(no|n|false|nope)\b/i.test(v)) return false;
+      return null;
+    case "text":
+      return v.slice(0, TEXT_MAX);
+  }
+}
+
+/** Custom answers -> validated fields + the keys still missing; money answers need a source. */
+export function validateFields(answers: QuoteExtraction["answers"], ask: AskField[]): { fields: Record<string, FieldValue>; missing: string[]; failures: number; unsourced: boolean } {
+  const byKey = new Map((answers ?? []).map((a) => [a.key, a]));
+  const fields: Record<string, FieldValue> = {};
+  const missing: string[] = [];
+  let failures = 0;
+  let unsourced = false;
+  for (const f of ask) {
+    const a = byKey.get(f.key);
+    let value = coerceField(f, a?.value);
+    if (a?.value != null && String(a.value).trim() && value === null) failures++;
+    if (value !== null && f.type === "money" && !a?.source?.trim()) {
+      value = null;
+      unsourced = true;
+      failures++;
+    }
+    fields[f.key] = value;
+    if (value === null) missing.push(f.key);
+  }
+  return { fields, missing, failures, unsourced };
+}
+
+export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | undefined, ask: AskField[] = []): QuoteRecord {
   const missing = new Set(x.missing_fields);
   const flags = new Set<string>();
   let failures = 0;
@@ -72,7 +142,14 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
   }
 
   // 4. Headcount different from what we asked for is flagged, not corrected.
-  if (quotedHeadcount !== null && quotedHeadcount !== requestedHeadcount) missing.add("headcount_mismatch");
+  if (quotedHeadcount !== null && requestedHeadcount !== undefined && quotedHeadcount !== requestedHeadcount) missing.add("headcount_mismatch");
+
+  // 4b. Custom ask answers (any kind of request): typed, sourced, never guessed.
+  const custom = ask.length ? validateFields(x.answers, ask) : null;
+  if (custom) {
+    failures += custom.failures;
+    if (custom.unsourced) flags.add("unsourced_figure");
+  }
 
   // 5. valid_until must look like a date or it is dropped.
   let validUntil = x.valid_until;
@@ -83,7 +160,8 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
 
   // 6. Facts the ranking needs but the business didn't state.
   if (cents.total === null) missing.add("total");
-  if (x.delivery_included === null && cents.delivery_fee === null) {
+  // Delivery is a catering-default fact; a custom request asks for what it needs instead.
+  if (!custom && x.delivery_included === null && cents.delivery_fee === null) {
     missing.add("delivery");
     flags.add("delivery_unclear");
   }
@@ -95,7 +173,7 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
   // 7. Untrusted-content signals. These never change a number; they only flag.
   if (x.payment_request !== "none") flags.add("external_payment_link");
   if (x.instructions_to_agent) flags.add("prompt_injection");
-  if (x.questions.length > 0 && cents.total === null) flags.add("question_pending");
+  if (x.questions.length > 0 && cents.total === null && (!custom || custom.missing.length > 0)) flags.add("question_pending");
 
   const confidence = Math.max(0, Math.min(1, x.confidence - failures * CONFIDENCE_PENALTY));
   if (confidence < 0.6) flags.add("low_confidence");
@@ -122,5 +200,6 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
     sources,
     missing_fields: [...missing],
     confidence,
+    ...(custom ? { fields: custom.fields, fields_missing: custom.missing } : {}),
   };
 }
