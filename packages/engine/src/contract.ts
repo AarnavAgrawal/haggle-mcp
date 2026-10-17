@@ -137,8 +137,11 @@ export interface ReplyMeta {
   thread_id: string;
   received_at: IsoDateTime;
   rfq_sent_at: IsoDateTime;        // lets the brain learn reply speed
-  channel: "quote.json" | "pdf" | "html" | "text";
-  sender_trusted: boolean;         // engine's verdict from Primitive auth signals (see design B)
+  /** Format the reply arrived in (v5 ReplyMeta.format). */
+  channel: "quote.json" | "pdf" | "html" | "text" | "transcript" | "a2a";
+  /** v5 channel the reply travelled on (ReplyMeta.channel in packages/core). */
+  reply_channel?: "email" | "phone" | "a2a" | "imessage";
+  sender_trusted: boolean;         // engine's verdict (Inkbox identity, our call to the pinned number, or our task to the pinned card)
   sender_trust_reason: string;     // e.g. "trusted" | "dmarc-domain-mismatch"
   request: Request;                // what was asked, so the brain can normalise per-unit prices
   simulated: boolean;

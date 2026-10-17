@@ -92,7 +92,7 @@ export class BrainAdapter implements Brain {
       const request = toCoreRequest(meta.request);
       for (const reply of toCoreReplies(parsed, meta)) {
         last = await this.core.learnFromReply(brainId, reply, {
-          job_id: meta.job_id, business_name: name, channel: phone ? "phone" : "email", received_at: meta.received_at,
+          job_id: meta.job_id, business_name: name, channel: meta.reply_channel ?? (phone ? "phone" : "email"), received_at: meta.received_at,
           contacted_at: meta.rfq_sent_at, round: reply.kind === "quote" ? roundOf(parsed) : 1, request,
           business_id: brainId, message_id: meta.message_id, format: meta.channel, sender_trusted: true, simulated: meta.simulated,
         });
@@ -143,13 +143,14 @@ export class BrainAdapter implements Brain {
     return d ? this.engineIdFor(d) : brainId;
   }
 
-  private toEngineBusiness(b: CoreBusiness): Business & { phone?: string } {
+  private toEngineBusiness(b: CoreBusiness): Business & { phone?: string; a2a_card_url?: string } {
     const id = this.engineIdFor(b);
     const simulated = b.simulated ?? b.source === "haggle-directory";
     this.engine.set(id, { business_id: id, name: b.name, ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), simulated });
     return {
       business_id: id, slug: slugify(b.name), name: b.name, email: b.email ?? "", source: "agent", simulated,
       ...(b.found_at ? { found_at: b.found_at } : { found_at: b.source }), ...(b.phone ? { phone: b.phone } : {}),
+      ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}),
     };
   }
 }
