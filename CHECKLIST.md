@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: live Inkbox round trip + Manufact deploy (needs credentials) · Aarnav: —
+**Now working on:** Yash: live Inkbox round trip (blocked on credentials), then Stripe test mode · Aarnav: —
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -20,13 +20,13 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 - [ ] **Inkbox migration:** replace the v3/v4 Primitive email and x402 payment code with the Inkbox adapter and Stripe; remove `PRIMITIVE_*` / x402 env vars from `.env.example`
   - Done when: no engine path imports `primitive*` or `x402*`; existing parsing and safety tests still pass against `fixtures/`
-  - Status: in progress (Inkbox buyer adapter on `yashnil`: send, webhook verify, sender trust, attachments, `call.ended`)
+  - Status: in progress. The live MCP server no longer needs Primitive/x402 (payments disabled and refused, never faked; no x402 accept email). Legacy x402 code is still in the engine for mock mode until Stripe lands.
 - [ ] **MCP server on Manufact:** all tools exposed (returning fixtures at first), deployed, callable from Claude Code
   - Done when: every tool in `CLAUDE.md` section 6 is listed and callable via `npx mcp-use client`; the Manufact URL is copied from the dashboard into the log
-  - Status: all 11 tools + settings + mentions registered on the real engine (mock mode); production build and HTTP transport tested. Not deployed yet (needs `mcp-use login`); not yet tried from Claude Code.
+  - Status: deployed on Manufact (mock mode): https://calm-spark-ck3qm.run.mcp-use.com/mcp. All 11 tools verified through `mcp-use client`, locally and hosted (29/29 checks: deal → wait_for_update → get_quotes → answer_business, errors, retry idempotency, structuredContent). Not yet added to Claude Code itself.
 - [ ] **Email deal loop:** outreach, inbound webhook, parsing (text, PDF, JSON), replies feed the brain
   - Done when: `deal` emails the sellers from `haggle`; a signed `message.received` webhook becomes a `Quote`; `brain.learnFromReply` is called
-  - Status: Inkbox adapter + `/webhooks/inkbox` built and tested with fakes (signature, threading, sender trust, PDF via signed URL, dedupe); brain.learnFromReply called after every parse. No live Inkbox round trip yet (no credentials).
+  - Status: Inkbox adapter + `/webhooks/inkbox` built; route tests with fakes (401 bad signature, signed reply → quote, dedupe, 503 retry, call.ended). Hosted route reachable. No live Inkbox round trip yet (no credentials).
 - [ ] **Results:** `wait_for_update` and `get_quotes` return real deal board data
   - Done when: output validates against `DealBoard` and stays around 1,500 tokens for six quotes, with a `next` hint
   - Status: deal board read model returned by get_quotes/open_haggle (channels, statuses, eligibility, negotiation, questions); renders in the existing deal-board view (screenshot). Real engine data in mock mode; live data pending Inkbox.
@@ -41,7 +41,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
   - Status: email follow-up, answer_business and one honest negotiation round work (mock). Email→call escalation not built.
 - [ ] **Approval and payment:** iMessage or in-view approval, then capped Stripe payment
   - Done when: `pay` refuses without a stored approval for that exact quote, over the cap, or to a non-quoting payee; a test-mode charge returns a `receipt_url`
-  - Status: in-view approval (app-only tool + view-only code), form and email approval done; payment is still the v3 x402 path (simulated in mock). iMessage and Stripe not built.
+  - Status: approval by client form or approval card (email approval removed: Inkbox can't verify outside senders). Live payments disabled until Stripe; mock still simulates x402. iMessage and Stripe not built; x402-sized caps in 100_engine_core.sql need a Stripe migration.
 - [ ] **ChatGPT app features:** launcher entrypoint, settings (cap, approver, area), mentions
   - Status: open_haggle({}), native settings and mentions registered; launcher entrypoints bind when `views/haggle-home` exists. Not tested in ChatGPT.
 - [ ] **Agent polish:** helpful errors, Skill, `llms.txt`, publishing checks, works across clients
@@ -86,13 +86,17 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 ## Blockers
 
 - Yash: Inkbox API key + `haggle` identity signing key, Supabase DB URL, Anthropic key → live email loop (from Yash/team).
-- Yash: `npx mcp-use login` → Manufact deploy (from Yash).
+- Yash: hosted is mock-only until live env vars are set on the Manufact server (`mcp-use servers env set`).
+- Yash: ChatGPT test needs a human: add https://calm-spark-ck3qm.run.mcp-use.com/mcp as a developer-mode app in ChatGPT.
 - Shared: `packages/core/views.ts` + contracts.ts v5 fields; proposal in `apps/mcp/src/schemas/views.ts` and `apps/mcp/README.md` (needs Aarnav's OK).
-- Aarnav: seller Inkbox identities (email addresses for HAGGLE_DEMO_FLEET); views/approval, estimates, business-profile, haggle-home; deal-board → answer_business.
+- Aarnav: seller Inkbox identities (email addresses for HAGGLE_DEMO_FLEET) → needed for the live email round trip.
+- Aarnav, `views/deal-board/view.tsx`: (1) pipeline columns for v5 statuses (`contacted · ringing · on_call · quoted · negotiating · won · declined · no_reply · unavailable`); today the winner (`won`) and phone states don't appear; (2) channel badge per business (`businesses[].channel`); (3) call `answer_business` instead of `answer_seller`; (4) drop the "x402 · base-sepolia" strip and invoice steps (show `approval.status` + `payment.status`/`reason`); (5) poll `wait_for_update` with the cursor instead of `get_quotes` every 4 s.
+- Aarnav: add `views/haggle-home/view.tsx` (`export { default } from "../deal-board/view";`). mcp-use 2.10 allows one tool per view, so `open_haggle` and the ChatGPT launcher bind only once this exists. Also `views/approval` (reads `_meta["haggle/approval"]`, calls `approve_in_view`), `views/estimates`, `views/business-profile`; each binds automatically.
 
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 12:55 PM · Yash · Synced main; MCP on Manufact (mock) with 11 tools verified via mcp-use client locally + hosted; live payer disabled (no Primitive/x402); email approval removed; webhook route tests; demo fixed
 - 12:20 PM · Yash · v5 MCP tools on the real engine, Inkbox adapter + webhook, deal board data, channel routing (mock phone), settings/launcher/mentions; 186 unit + 6 transport tests, migrations verified (branch yashnil)
 - 2026-10-17 · Yash · Docs aligned to v5: `CONTRACTS.md` rewritten for Inkbox + Stripe (Primitive/x402 removed), `PLAN.md` added, `CLAUDE.md` start-here guide, "Done when" criteria in this checklist
