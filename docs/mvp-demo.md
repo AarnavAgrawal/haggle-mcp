@@ -70,12 +70,16 @@ quote by a human in Claude; one Stripe test-mode charge equal to the deposit wit
 
 | Time | Beat | On screen |
 |---|---|---|
-| 0:00–0:20 | Problem: buying from small businesses means emails, calls and texts. Haggle lets any agent do it. | Claude |
-| 0:20–0:45 | One prompt → `deal` to three vendors on three channels | Deal board, 3 cards "contacted" |
-| 0:45–1:30 | Quotes land: email (PDF), iMessage reply, live Voice AI call (Yash answers on speaker) | Cards turn to quotes with source |
-| 1:30–2:00 | Ranking and the honest counter: only eligible quotes, real totals | Board ranking, verdicts |
-| 2:00–2:30 | Aarnav approves in Claude; Stripe test deposit; receipt | Approval card → paid, receipt link |
-| 2:30–3:00 | Warm ask: the next agent gets an instant estimate | Estimates view |
+| 0:00–0:20 | Problem: small businesses sell by email, phone and text, not APIs. Haggle is an MCP server + app that turns those conversations into an API any agent can use. | Claude, `LIVE` badge on the board |
+| 0:20–0:45 | One prompt → one `deal` call → three vendors on three channels | Progress line "0 of 3 businesses quoted · contacted by email, iMessage, phone" |
+| 0:45–1:30 | Quotes land while you talk: email reply, iMessage text, then the Voice AI calls Yash on speaker (it says it's an AI) | Each card shows what the vendor said: "WROTE", "TEXTED", "ON THE CALL" |
+| 1:30–2:00 | Why the winner wins: the green line ("Meets all 2 requirements · lowest total of 3 eligible quotes · $X under budget"); counteroffers cite only real quotes | Recommended row, counteroffer lines, can't-win reasons |
+| 2:00–2:30 | Aarnav taps Approve; Claude shows the approval form only a human can answer; Pay; receipt | "Approved" → "$X deposit paid · Stripe test mode" → View receipt |
+| 2:30–3:00 | The next agent asks again and gets an instant estimate learned from these conversations | Estimates view (`ask`) |
+
+The vendors are teammates playing businesses; say so. The winner is whoever quotes the lowest total that meets every
+requirement: ranking is computed, not scripted. If Yash wants the phone vendor to win, he quotes a lower eligible total
+on the call than the others did; if he doesn't, the board will (correctly) pick someone else.
 
 Pre-run the deal 10 minutes before going on stage, as a backup job, and keep its job id open in a tab.
 
@@ -91,7 +95,7 @@ Pre-run the deal 10 minutes before going on stage, as a backup job, and keep its
 
 | Capability | Live proof | Mock/tests |
 |---|---|---|
-| MCP server on Manufact, 15 tools, Claude Code | PASS (21/21 live read-only, 0.5.0+9bb217b) | PASS |
+| MCP server on Manufact, 15 tools, Claude Code | PASS (21/21 live read-only, 0.5.0+54b2d47) | PASS |
 | Email RFQ → signed reply → quote | PASS (job_512a5d0265b144ed9337, $1,080) | PASS |
 | Text/PDF extraction through Claude | not yet | PASS (fixtures) |
 | iMessage vendor RFQ + reply | BLOCKED (setup 1–6) | PASS |
@@ -104,4 +108,29 @@ Pre-run the deal 10 minutes before going on stage, as a backup job, and keep its
 | Stripe test-mode deposit + receipt | BLOCKED (authorization) | PASS |
 | Brain persistence across restarts | PASS (Supabase, 6 profiles identical across redeploy) | PASS |
 | Warm ask from live-learned data | not yet (needs a live deal) | PASS |
-| Deal board in ChatGPT | not yet (needs a human to add the app) | renders in Inspector |
+| Deal board in ChatGPT / Claude.ai | not yet (needs a human to add the connector) | PASS in the mcp-use Inspector (clicks driven by Playwright) |
+| Deal board on the live server | PASS (renders job_512a5d0265b144ed9337, LIVE badge) | PASS |
+
+## UI verification (mcp-use Inspector, mock server, real engine)
+
+Driven with Playwright against `mcp-use start --with-inspector` (scripts in the session scratchpad; screenshots in
+`docs/screenshots/mvp-*`; mock screenshots carry the DEMO badge):
+
+| Check | Result |
+|---|---|
+| Launcher (`open_haggle`) with no deals | PASS: welcome + "Start a catering deal" / "Instant estimate" (was a crash: `Cannot read properties of null`) |
+| Board with 1, 5 (one question open) and 6 quotes; light, dark, 380 px, fullscreen | PASS |
+| Answer a business question in the board | PASS: sent in thread; the board updated by itself to the new quote and the next counteroffer round |
+| Approve → human approval form (elicitation) → Pay → paid | PASS: server shows approval `used`, payment `settled`; label "Won", state "Paid" |
+| Decline in the approval form | PASS: approval `declined`, quote stays approvable, "declined by the human" shown |
+| Headless client approval | Live: NO_HUMAN_CHANNEL. Mock: labelled "Simulated (demo client, no human channel)" |
+| Flagged business text (prompt injection) | Not echoed to the board or the model (e2e test) |
+| Seed brain data | Says "sample quotes (seed data, not live)" (live screenshot) |
+
+## Remaining defects, prioritized
+
+1. **Not yet seen in Claude.ai or ChatGPT** (P1, human step): add the connector and run `open_haggle`; MCP Apps hosts can differ from the Inspector (fullscreen, follow-up messages, `openExternal` for receipts).
+2. **Receipt link only in Stripe test mode with a real PaymentIntent** (P2): mock payments say "simulated, no money moved" and show no receipt, by design.
+3. **Business profile history repeats near-identical rows** after many runs of the same deal (P3, Aarnav's brain): collapse to 5 rows hides most of it.
+4. **Brain wording** (P3, Aarnav): `packages/brain` still writes "real quotes" for seed data and suggests `deal(businesses=['biz_…'])`; the MCP layer corrects both today.
+5. **Benchmark not run** (P2, needs dashboard suites + $1/run + live sellers): `apps/bench/results/runs.csv` has no rows; no performance claims until it does.
