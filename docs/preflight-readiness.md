@@ -81,10 +81,11 @@ corepack pnpm --filter @haggle/spikes preflight            # expect 18 PASS, onl
 corepack pnpm typecheck && corepack pnpm test && corepack pnpm build   # 40 tests
 scripts/verify-migrations.sh                               # local DB invariants
 
-# 2. Branch for Pass 2 milestone 3 (Primitive email transport + deal→quote slice).
-git switch -c yash/pass2-email-transport
+# 2. 10:30–11:30 contracts hour with Partner, then branch.
+git switch -c yash/engine   # after contracts.ts is frozen with Partner (see docs/v3-kickoff-prep.md)
 
-# 3. Hosted DB: apply the buyer migration once the repository layer needs it (allowed after kickoff).
+# 3. Hosted DB: the v2 migration below is superseded by v3 `100_engine_*.sql` (re-cut at kickoff);
+#    apply whichever is current once the repository layer needs it.
 #    The URL is read from .env by node, never typed or echoed.
 PGURL="$(node --env-file=.env -p process.env.SUPABASE_DB_URL)" \
   docker run --rm -i -e PGURL postgres:17-alpine sh -c 'psql "$PGURL" -v ON_ERROR_STOP=1 -q' \
@@ -99,7 +100,7 @@ SPIKE_TO=<your own inbox> SPIKE_CONFIRM_RECIPIENT_IS_MINE=yes \
 # 5. After the first Manufact preview deploy exposes POST /inbound: create the Primitive webhook
 #    endpoint pointing at it, put its id in PRIMITIVE_WEBHOOK_ENDPOINT_ID, and push env vars:
 cd apps/mcp
-./node_modules/.bin/mcp-use deploy --root-dir apps/mcp --branch yash/pass2-email-transport
+./node_modules/.bin/mcp-use deploy --root-dir apps/mcp --branch yash/engine
 ./node_modules/.bin/mcp-use servers env set <server> KEY=VALUE   # one per variable; never commit
 ```
 
