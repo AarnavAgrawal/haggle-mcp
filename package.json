@@ -3,11 +3,15 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.34.7",
-  "engines": { "node": ">=22.22.2" },
+  "engines": {
+    "node": ">=22.22.2"
+  },
   "scripts": {
     "typecheck": "corepack pnpm -r --if-present typecheck",
     "test": "corepack pnpm -r --if-present test",
     "build": "corepack pnpm -r --if-present build",
-    "lint": "corepack pnpm -r --if-present lint"
+    "lint": "corepack pnpm -r --if-present lint",
+    "test:pg": "scripts/test-postgres.sh",
+    "verify:db": "scripts/verify-migrations.sh"
   }
 }

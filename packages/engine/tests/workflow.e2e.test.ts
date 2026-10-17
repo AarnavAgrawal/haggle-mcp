@@ -1,13 +1,20 @@
 // End-to-end (MOCK MODE): the real engine, in-memory persistence, the simulated golden fleet and a
 // controllable clock, from deal to a settled DEMO payment. Everything external is simulated and
 // labelled; this proves the buyer workflow, not live Primitive / Claude / x402 behaviour.
-import { describe, expect, it } from "vitest";
-import { createMockEngine, EngineError, fleetBusinesses, GOLDEN_REQUEST, type HaggleEngine } from "../src/index.ts";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createMockEngine, EngineError, fleetBusinesses, GOLDEN_REQUEST, PostgresRepository, type HaggleEngine, type Repository } from "../src/index.ts";
+
+// Runs against InMemoryRepository always, and against a real Postgres (migrations applied) when
+// HAGGLE_TEST_DATABASE_URL is set: scripts/test-postgres.sh does that in a throwaway container.
+const PG_URL = process.env.HAGGLE_TEST_DATABASE_URL;
+const pgRepos: PostgresRepository[] = [];
+afterAll(async () => { for (const r of pgRepos) await r.close(); });
+let makeRepo: (() => Repository) | undefined;
 
 function setup() {
-  let t = Date.parse("2026-10-17T18:00:00Z");
+  let t = Date.now(); // anchored to real time: the x402 SDK checks challenge expiry against the wall clock
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
-  const m = createMockEngine({ now: clock.now });
+  const m = createMockEngine({ now: clock.now, ...(makeRepo ? { repo: makeRepo() } : {}) });
   return { ...m, clock };
 }
 
@@ -30,7 +37,10 @@ async function runUntil(engine: HaggleEngine, clock: { advance(ms: number): void
   throw new Error("scenario did not converge");
 }
 
-describe("golden scenario, end to end (mock mode)", () => {
+for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`golden scenario, end to end (mock mode, ${backend})`, { timeout: 120_000 }, () => {
+  beforeAll(() => {
+    makeRepo = backend === "postgres" ? () => { const r = new PostgresRepository(PG_URL!, { max: 2 }); pgRepos.push(r); return r; } : undefined;
+  });
   it("deal → replies → follow-up → question → negotiation → Bay $995 wins → approval → x402 → DEMO receipt", async () => {
     const { engine, fleet, clock, repo } = setup();
     const deal = await startDeal(engine);
@@ -146,7 +156,7 @@ describe("golden scenario, end to end (mock mode)", () => {
   });
 
   it("simulated approval is impossible outside mock mode", async () => {
-    const m = createMockEngine({ config: { mode: "live" } });
+    const m = createMockEngine({ config: { mode: "live" }, ...(makeRepo ? { repo: makeRepo() } : {}) });
     await expect(m.engine.decideApproval("ap_x", "approve", "simulated", null)).resolves.toBe(false); // unknown approval
   });
 });

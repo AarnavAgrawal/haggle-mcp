@@ -9,12 +9,13 @@ import { HaggleEngine } from "./workflow/engine.ts";
 import { inlineAttachments, type EngineConfig } from "./workflow/ports.ts";
 import type { Brain } from "@haggle/core/contracts";
 import type { PayerClient } from "./payments/x402Challenge.ts";
+import type { Repository } from "./store/types.ts";
 
 export const MOCK_INBOX_DOMAIN = "mock.haggle.dev";
 
-export function createMockEngine(opts: { now?: () => Date; delayScale?: number; brain?: Brain; config?: Partial<EngineConfig> } = {}) {
+export function createMockEngine(opts: { now?: () => Date; delayScale?: number; brain?: Brain; config?: Partial<EngineConfig>; repo?: Repository } = {}) {
   const now = opts.now ?? (() => new Date());
-  const repo = new InMemoryRepository();
+  const repo = opts.repo ?? new InMemoryRepository();
   const fleet = new SimFleet({ now, delayScale: opts.delayScale ?? 1 });
   const payerClient = createX402Client({ apiKey: "prim_mock", fetch: (async () => { throw new Error("mock payer has no network"); }) as typeof fetch });
   const engine: HaggleEngine = new HaggleEngine({

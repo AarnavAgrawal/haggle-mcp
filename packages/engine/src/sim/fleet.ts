@@ -140,6 +140,8 @@ export class SimFleet implements EmailPort, ExtractorPort {
   private extractions = new Map<string, QuoteExtraction>();
   private counts = new Map<string, number>();
   private seq = 0;
+  /** Provider ids are globally unique in Primitive; make simulated ones unique per fleet instance too. */
+  private readonly prefix = Math.random().toString(36).slice(2, 8);
   private deliver: Deliver | null = null;
 
   constructor(private readonly opts: { now: () => Date; delayScale?: number; personas?: Persona[] } ) {}
@@ -155,8 +157,8 @@ export class SimFleet implements EmailPort, ExtractorPort {
   async send(msg: OutboundEmail): Promise<SendOutcome> {
     const prior = this.sent.find((s) => s.idempotencyKey === msg.idempotencyKey);
     const n = ++this.seq;
-    const outId = `<sim-out-${n}@haggle.sim>`;
-    if (prior) return { providerId: `sim_out_${n}`, status: "queued", idempotentReplay: true, messageId: outId };
+    const outId = `<sim-out-${this.prefix}-${n}@haggle.sim>`;
+    if (prior) return { providerId: `sim_out_${this.prefix}_${n}`, status: "queued", idempotentReplay: true, messageId: outId };
     this.sent.push(msg);
     const p = this.persona(msg.to);
     if (p) {
@@ -171,7 +173,7 @@ export class SimFleet implements EmailPort, ExtractorPort {
         if (r) this.schedule(p, msg, outId, r);
       }
     }
-    return { providerId: `sim_out_${n}`, status: "queued", idempotentReplay: false, messageId: outId };
+    return { providerId: `sim_out_${this.prefix}_${n}`, status: "queued", idempotentReplay: false, messageId: outId };
   }
 
   /** The job id is recoverable from the RFQ the fleet received from this job inbox. */
@@ -182,14 +184,14 @@ export class SimFleet implements EmailPort, ExtractorPort {
 
   private schedule(p: Persona, out: OutboundEmail, outId: string, r: Reply) {
     const n = ++this.seq;
-    const id = `sim_in_${n}`;
+    const id = `sim_in_${this.prefix}_${n}`;
     if (r.extraction) this.extractions.set(id, r.extraction);
     this.queue.push({
       dueMs: this.opts.now().getTime() + p.delayMs * (this.opts.delayScale ?? 1),
       attachments: r.attachments ?? [],
       msg: {
-        providerEventId: `sim_evt_${n}`, eventType: "email.received", providerEmailId: id, threadId: `sim-thread-${p.email}-${out.from}`,
-        messageId: `<sim-in-${n}@${p.email.split("@")[1]}>`, inReplyTo: [outId], references: [...(out.thread?.references ?? []), outId],
+        providerEventId: `sim_evt_${this.prefix}_${n}`, eventType: "email.received", providerEmailId: id, threadId: `sim-thread-${p.email}-${out.from}`,
+        messageId: `<sim-in-${this.prefix}-${n}@${p.email.split("@")[1]}>`, inReplyTo: [outId], references: [...(out.thread?.references ?? []), outId],
         from: p.email, to: [out.from], subject: out.subject.startsWith("Re:") ? out.subject : `Re: ${out.subject}`, bodyText: r.text,
         attachments: [], attachmentsDownloadUrl: null,
       },

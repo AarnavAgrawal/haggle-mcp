@@ -31,3 +31,4 @@ export * from "./workflow/engine.ts";
 export * from "./brain/stubBrain.ts";
 export * from "./sim/fleet.ts";
 export * from "./mock.ts";
+export * from "./store/postgres.ts";

@@ -79,7 +79,14 @@ export async function preparePayment(
   });
   if (!verdict.ok) return { ok: false, guard: verdict };
   if (verdict.existingPayment) return { ok: false, guard: { ok: false, code: "PAYMENT_IN_FLIGHT", existingPayment: verdict.existingPayment } };
-  const built = await payer.payEmailChallenge(parsed.challenge, { signer });
+  let built;
+  try {
+    built = await payer.payEmailChallenge(parsed.challenge, { signer });
+  } catch (e) {
+    // The SDK re-checks the challenge (e.g. expiry against the real clock) and refuses to sign.
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, guard: { ok: false, code: /expired/i.test(msg) ? "CHALLENGE_EXPIRED" : "SIGNING_REFUSED" } };
+  }
   const interactionJson = typeof built.json === "string" ? new TextEncoder().encode(built.json) : built.json;
   return { ok: true, amountBaseUnits: verdict.amountBaseUnits, stepId: parsed.stepId, interactionJson };
 }

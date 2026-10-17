@@ -90,6 +90,17 @@ describe("preparePayment", () => {
   });
 });
 
+describe("preparePayment when the SDK refuses to sign", () => {
+  it("returns CHALLENGE_EXPIRED instead of throwing", async () => {
+    const parsed = parseChallengePart(envelope());
+    if (!parsed.ok) throw new Error(parsed.reason);
+    const payer: PayerClient = { payEmailChallenge: async () => { throw new Error("challenge has already expired; not signing"); } };
+    expect(await preparePayment(payer, stubSigner, parsed.parsed, guardBase())).toMatchObject({ ok: false, guard: { code: "CHALLENGE_EXPIRED" } });
+    const other: PayerClient = { payEmailChallenge: async () => { throw new Error("bad signer"); } };
+    expect(await preparePayment(other, stubSigner, parsed.parsed, guardBase())).toMatchObject({ ok: false, guard: { code: "SIGNING_REFUSED" } });
+  });
+});
+
 describe("sendEmail", () => {
   function fake(result = { id: "se_1", status: "queued", accepted: ["x@y"], rejected: [] as string[], idempotentReplay: false }) {
     const calls: any[] = [];

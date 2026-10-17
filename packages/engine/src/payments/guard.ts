@@ -61,7 +61,8 @@ export type X402GuardCode =
   | "UNTRUSTED_PAYEE"
   | "WRONG_NETWORK"
   | "PAYEE_CHANGED"
-  | "CHALLENGE_EXPIRED";
+  | "CHALLENGE_EXPIRED"
+  | "SIGNING_REFUSED";
 
 export type X402GuardResult =
   | { ok: true; amountBaseUnits: string; existingPayment?: { id: string; status: string } }
