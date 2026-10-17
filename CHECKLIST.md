@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: ChatGPT render of the live board (needs a human to add the app), then Stripe test mode · Aarnav: going live on Inkbox (seller setup) and checking views in ChatGPT/Claude
+**Now working on:** Yash: ChatGPT render of the live board (needs a human to add the app), then Stripe test mode · Aarnav: live Haggle in the Claude app (`haggle-aarnav` on Manufact, branch `aarnav-live-e2e`), then the first live call to Mission Eats
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -54,7 +54,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 - [ ] **Deal board view:** business cards with channel and live status, ranked quotes, flags, verdicts, actions, fullscreen
   - Status: built on fixtures (ladder vs budget, channel badges, live polling, answer question, approve, fullscreen, light/dark); screenshots in `apps/bench/screenshots`. Left: check in ChatGPT/Claude, real engine data
 - [x] **Email sellers:** webhook server with email personas replying in character
-  - Status: done, verified live on Inkbox from `haggle-buyer`: Golden Grill (6 veg), Harbor Table (PDF, deposit on p2), Sunset Kitchen (plates question → quote in the same thread), QuickQuote Deli (pay-now bait), Bay Catering (email + quote.json). Run: `npm run dev -w @haggle/sellers`
+  - Status: done, verified live on Inkbox from `haggle-buyer`: Golden Grill (6 veg), Harbor Table (PDF, deposit on p2), Sunset Kitchen (plates question → quote in the same thread), QuickQuote Deli (pay-now bait), Bay Catering (email + quote.json). Every conversation now draws its own price, fees, deposit, negotiation room, first question, menu and mood (`SELLERS_VARY=0` for base numbers); quote emails always state vegetarian count + delivery. Run: `npm run start -w @haggle/sellers`
 - [ ] **Business learning:** every reply (any channel) updates a business profile
   - Status: `brain.learnFromReply` built and tested (email, phone, A2A, questions, negotiation; Supabase/file/memory stores). Left: engine calls it after each parsed reply
 - [ ] **Phone and A2A sellers:** Voice AI persona answering calls; A2A agent-ready business
@@ -92,11 +92,15 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 - Brain persistence (live): calm-spark runs the real brain on its seeded container-file store (lost on redeploy/restart). For Supabase: (1) Aarnav adds a 2xx migration granting `select, insert, update, delete on public.brain_profiles to service_role` (migration 200 grants nothing: REST returns 403/42501), applied on the live DB; (2) set the corrected `SUPABASE_URL` on calm-spark (`SUPABASE_SERVICE_ROLE_KEY` is already set); (3) land the brain start-up fix from `yashnil-channels` (80aa84c) first: on `main` a failing brain start is an unhandled rejection that can crash the server.
 - Live `discover` now returns the brain directory (Aarnav's six sellers), but live sends are still limited to HAGGLE_DEMO_FLEET (Golden Grill + the deleted test seller), so a live deal(discover) would reach only Golden Grill, whose replies are unverified across orgs. The six-seller demo runs on a local mock server.
 - Payments: Stripe test mode is on `main` (migration 102 raises the cap ceiling; test card attached to the test customer). Live charges stay off until `HAGGLE_ENABLE_PAYMENTS=true` and `STRIPE_*` are set on Manufact (Yash's call); not yet demonstrated live.
+- Yash (parsing): Harbor Table's live replies come back `requirement_unknown` although the email body says "12 … vegetarian meals" and "Delivery … included" (job_ab9cf02c488f4ce0b2be); likely the body+PDF extraction drops the dietary count. Harbor can't win until fixed.
+- Aarnav's live server `haggle-aarnav` (https://keen-cloud-z3xyf.run.mcp-use.com/mcp) shares `haggle-buyer` (and its webhook signing key) with the errand server; both receive each other's events and ignore unknown threads/calls. Engine tables live in schema `haggle` of errand's Supabase (`HAGGLE_DB_SCHEMA=haggle`; `public` has errand-era tables with the same names).
 - Shared, open decision D8: mock mode's `simulated` approval channel (headless client, DEMO only) isn't in `Approval.channel`; `apps/mcp/src/views.ts` extends the schema for it until both agree.
 
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 16:50 · Aarnav · `aarnav-live-e2e`: live Haggle on Manufact (`haggle-aarnav`, Aarnav's Inkbox org: buyer `haggle-buyer` + its number + the six sellers); 4 live deals verified via mcp-use client (RFQs → varied seller replies → signed webhooks → quotes; scam/veg/hidden-deposit caught; question answered in thread; negotiation $1,100 → $1,023 citing a real quote); engine fixes: no 'replied' overwrite of a concurrent 'quoted', one advance per job (no duplicate questions/quotes), answer keys cover the text, Inkbox refusals → actionable errors; `HAGGLE_DB_SCHEMA`, `HAGGLE_DIRECTORY_JSON`, `npm run live -w @haggle/sellers`
 
 - 16:30 · Yash · Channels on `yashnil-channels`: A2A buyer tasks (live attempt → 403 diagnosed), Voice AI call origin/retry/full transcripts/inbound callers, iMessage approval, quote.json v5 shapes, brain start-up no longer crashes the server; SUPABASE_URL typo fixed locally
 - 3:31 PM · Yash · calm-spark redeployed from `main` (f5d6699), live: start command fixed for npm workspaces; real brain (container-file store; Supabase blocked, see Blockers); live deal job_512a5d0265b144ed9337 ($1,080) renders in the shared deal board (light/dark); ask/business_profile/check_price/discover OK; pay refuses without approval, headless approve → NO_HUMAN_CHANNEL; unsigned webhook → 401; payments and calls off; 263 tests + 168 on Postgres
