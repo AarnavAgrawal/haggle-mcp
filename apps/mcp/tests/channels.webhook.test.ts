@@ -87,7 +87,7 @@ describe("POST /webhooks/inkbox: A2A, iMessage, calls", () => {
     await engine.advanceJob(deal.job_id);
     const board = await engine.getQuotes(deal.job_id);
     expect(board.quotes[0]).toMatchObject({ business: "Mission Eats", channel: "phone", total_usd: 1070 });
-    expect(board.businesses[0]!.transcript_snippet).toMatch(/AI assistant/);
+    expect(board.businesses[0]!.transcript_snippet).toBe("Mission Eats: For 40 people it's $1,070 total, 14 vegetarian, $50 deposit.");
   });
 });
 

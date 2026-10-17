@@ -77,3 +77,9 @@
   color: var(--risk);
   font-size: 12px;
 }
+.es-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}

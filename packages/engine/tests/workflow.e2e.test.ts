@@ -174,7 +174,7 @@ describe("v5 channels and deal board (mock mode)", { timeout: 60_000 }, () => {
     const ready = await runUntil(engine, clock, deal.job_id, (q) => q.ready);
     const biz = (name: string) => ready.businesses.find((b) => b.name === name)!;
     expect(biz("Mission Eats")).toMatchObject({ channel: "phone", status: "quoted" });
-    expect(biz("Mission Eats").transcript_snippet).toMatch(/AI assistant/);
+    expect(biz("Mission Eats").transcript_snippet).toMatch(/^Mission Eats: .*\$1,070 total/);
     expect(biz("Bay Catering")).toMatchObject({ channel: "email", status: "quoted" });
     const q = (name: string) => ready.quotes.find((x) => x.business === name)!;
     expect(q("Bay Catering")).toMatchObject({ verdict: "compliant", eligible: true });

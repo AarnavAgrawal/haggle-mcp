@@ -391,8 +391,8 @@ export const ask = server.tool(
     title: "Instant estimate (warm path)",
     description:
       "Instant estimates from businesses Haggle has already learned, each with a confidence and the number of real quotes behind it. Estimates are not quotes: nothing is ordered and no business is contacted. " +
-      "Use for a fast price idea; use deal for real quotes. Read-only.",
-    inputSchema: z.object(requestShape),
+      "Use for a fast price idea; use deal for real quotes. Read-only. date is optional here.",
+    inputSchema: z.object({ ...requestShape, date: requestShape.date.optional() }),
     outputSchema: Estimates,
     annotations: { readOnlyHint: true, openWorldHint: false },
     ...viewIf({ name: "estimates", description: "Haggle instant estimates from learned businesses" }),
@@ -400,11 +400,11 @@ export const ask = server.tool(
   async (req) =>
     run(async (rt) => {
       const area = await areaOr(rt, req.area);
-      const request = { what: req.what, quantity: req.quantity, date: req.date, area, ...(req.unit ? { unit: req.unit } : {}) };
+      const request = { what: req.what, quantity: req.quantity, area, ...(req.date ? { date: req.date } : {}), ...(req.unit ? { unit: req.unit } : {}) };
       const base = toEstimatesView(request, await rt.brain.core.estimate(request));
       // The brain's own hint passes bare business ids to deal, which deal rejects: point at discover instead.
       const v = { ...base, mode: rt.mode, next: base.estimates.length
-        ? `These are estimates, not quotes. For confirmed prices call deal(request={what:'${request.what}', quantity:${request.quantity}, date:'${request.date}', area:'${request.area}'}, discover:true): Haggle contacts the learned businesses it may contact, each on its own channel.`
+        ? `These are estimates, not quotes. For confirmed prices call deal(request={what:'${request.what}', quantity:${request.quantity}, date:'${request.date ?? "YYYY-MM-DD"}', area:'${request.area}'}, discover:true): Haggle contacts the learned businesses it may contact, each on its own channel.`
         : base.next };
       const text = v.estimates.length
         ? `${v.estimates.length} estimates (not quotes): ${v.estimates.map((e) => `${e.business} ~${usd(e.total_usd)} (${Math.round(e.confidence * 100)}%, ${e.n_quotes} quotes)`).join("; ")}. next: ${v.next}`
@@ -505,7 +505,7 @@ server.settings({
   fields: {
     spending_cap_usd: { schema: z.number().positive().max(1_000_000), title: "Spending cap (USD)", description: "Default hard cap for a deal's order total when the agent gives no budget. Payments also need a human approval." },
     approver_email: { schema: z.string().max(200), title: "Approver email", description: "Stored for receipts; approval itself happens in the approval form or card (empty = none)." },
-    approver_phone: { schema: z.string().max(20), title: "Approver phone (iMessage)", description: "E.164, e.g. +14155550123 (empty = none). iMessage approval is coming; stored now." },
+    approver_phone: { schema: z.string().max(20), title: "Approver phone (iMessage)", description: "E.164, e.g. +14155550123 (empty = none). With iMessage enabled, approvals are texted here: reply YES <code>. The approver must first text connect @<buyer handle>." },
     default_area: { schema: z.string().max(200), title: "Default area", description: "City or address used when a request has no area (empty = none)." },
   },
   layout: [{ kind: "group", title: "Spending and approval", items: [{ kind: "property", property: "spending_cap_usd" }, { kind: "property", property: "approver_email" }, { kind: "property", property: "approver_phone" }, { kind: "property", property: "default_area" }] }],

@@ -282,8 +282,8 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     clock.advance(61_000);
     await engine.advanceJob(deal.job_id);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.reason).toMatch(/You are an AI assistant/);
-    expect(calls[0]!.reason).toMatch(/another quote of \$1080\.00 total/);
+    expect(calls[0]!.reason).toMatch(/this is Haggle, an AI assistant/);
+    expect(calls[0]!.reason).toMatch(/real quote of \$1,080 total/);
     expect((await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "haggle: I'm an AI assistant...\nremote: For you, $995 total all-in, 12 vegetarian, delivery included, $150 deposit." })).outcome).toBe("stored");
     await engine.advanceJob(deal.job_id);
 
@@ -310,7 +310,22 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     await engine.advanceJob(deal.job_id);
     await engine.advanceJob(deal.job_id);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.reason).toMatch(/follows up on an email/);
+    expect(calls[0]!.reason).toMatch(/emailed earlier/);
+  });
+
+  it("an unanswered call is shown as no reply, makes no quote, and its redelivery changes nothing", async () => {
+    const { engine, calls } = demoEngine();
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Quiet Bistro", phone: "+14155550122" }] });
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(1);
+    const ended = { callId: "call_1", outcome: "no_answer" as const, transcript: "" };
+    expect((await engine.ingestCall(ended)).outcome).toBe("call:no_answer");
+    expect((await engine.ingestCall(ended)).outcome).toBe("duplicate");
+    const board = await engine.getQuotes(deal.job_id);
+    expect(board.quotes).toHaveLength(0);
+    expect(board.businesses[0]).toMatchObject({ name: "Quiet Bistro", status: "no_reply" });
+    expect(board.businesses[0]!.transcript_snippet).toBeUndefined();
   });
 
   it("a text from an unknown number, or one never texted, is not a business reply", async () => {

@@ -162,7 +162,7 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // (Per-field evidence such as "deposit from pdf p.2" stays engine-internal; the shared Quote has `source`.)
     // Mission Eats: reached by (simulated) phone; quote from the call transcript.
     expect(biz("Mission Eats")).toMatchObject({ channel: "phone", status: "quoted" });
-    expect(biz("Mission Eats").transcript_snippet).toMatch(/AI assistant/);
+    expect(biz("Mission Eats").transcript_snippet).toMatch(/^Mission Eats: .*\$1,070 total/);
     expect(q("Mission Eats")).toMatchObject({ total_usd: 1070, source: "call transcript" });
     // QuickQuote Deli: "pay now at this link" + injection → rejected, never followed.
     expect(q("QuickQuote Deli")).toMatchObject({ verdict: "rejected", eligible: false });

@@ -23,6 +23,7 @@ import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers } from "../negotiation/counteroffer.ts";
 import { buildRfqEmail } from "../outbound/rfq.ts";
+import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.ts";
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
 import { validateQuote } from "../parsing/validate.ts";
@@ -35,6 +36,9 @@ import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
 import { start, TERMINAL, transition, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
 import type { EngineDeps } from "./ports.ts";
+
+/** Board excerpt of what a business said (see transcriptSnippet.ts), only when there is one. */
+const snippet = (s: string) => (s ? { transcript_snippet: s } : {});
 
 export class EngineError extends Error {
   override name = "EngineError";
@@ -505,7 +509,7 @@ export class HaggleEngine {
       stored++;
       if (!TERMINAL.has(job.state)) {
         await this.repo.updateBusiness(job.id, b.business_id, { last_reply_at: this.now().toISOString(), ...(b.status === "contacted" || b.status === "question" ? { status: "replied" as const } : {}) });
-        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `A2A reply from ${b.name}`, channel: "a2a" });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `A2A reply from ${b.name}`, channel: "a2a", ...snippet(messageSnippet(m.text)) });
       }
     }
     if (stored === 0 && ["failed", "canceled", "rejected"].includes(view.state) && b.status === "contacted") {
@@ -601,7 +605,7 @@ export class HaggleEngine {
     });
     if (!stored) return { jobId: job.id, outcome: "duplicate" };
     await this.repo.updateBusiness(job.id, b.business_id, { last_reply_at: this.now().toISOString(), ...(b.status === "contacted" || b.status === "question" ? { status: "replied" as const } : {}) });
-    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Text from ${b.name}`, channel: "imessage" });
+    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Text from ${b.name}`, channel: "imessage", ...snippet(messageSnippet(m.text)) });
     await this.repo.touchJob(job.id);
     return { jobId: job.id, outcome: "stored" };
   }
@@ -630,6 +634,27 @@ export class HaggleEngine {
     }
   }
 
+  /**
+   * The Voice AI's instructions for one quote call: short numbered steps, AI disclosure first, the
+   * date as people say it, only real competing figures, no commitments. Under Inkbox's 2,000 chars.
+   */
+  static callBrief(name: string, job: Pick<JobRow, "request" | "short_code">, reqs: string[], opts: { escalation?: boolean; competingTotalUsd?: number } = {}): string {
+    const r = job.request;
+    const d = new Date(`${r.date}T12:00:00Z`);
+    const when = Number.isNaN(d.getTime()) ? r.date : d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
+    const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+    return [
+      `You are Haggle, an AI assistant phoning ${name} for a customer to get a price quote. Be brief, warm and natural; keep the call under three minutes.`,
+      `1. Open with: "Hi, this is Haggle, an AI assistant calling for a customer about a quote for ${r.what}. Do you have a minute?"${opts.escalation ? " Mention we emailed earlier and wanted to follow up by phone." : ""}`,
+      `2. The order: ${r.what} for ${r.quantity} ${r.unit ?? "people"} on ${when}${r.area ? `, in ${r.area}` : ""}.${reqs.length ? ` Must have: ${reqs.join("; ")}.` : ""}`,
+      `3. Ask for: the all-in total including delivery and tax, how each requirement is met (for example how many vegetarian meals), any deposit and when it is due, and what is included.`,
+      opts.competingTotalUsd !== undefined ? `4. We have a real quote of ${money(opts.competingTotalUsd)} total for the same order. You may say that figure and ask if they can do better. Never invent, round down or exaggerate it.` : `4. Do not mention other businesses or prices.`,
+      `5. Read the numbers back to confirm, thank them and end the call.`,
+      `If they ask something you don't know, say you'll pass it on to the customer; never guess. If they can't do it or decline, thank them and end politely. If you reach voicemail, leave one sentence asking for a quote by email and hang up.`,
+      `Never agree to buy, book or pay, and never share payment details. Reference HG-${job.short_code}.`,
+    ].join("\n").slice(0, 2000);
+  }
+
   private async placeRfqCall(job: JobRow, b: JobBusinessRow, opts: { escalation?: boolean } = {}) {
     const key = `call:${job.id}:${b.business_id}`;
     if (!this.d.phone || !b.phone) {
@@ -639,14 +664,7 @@ export class HaggleEngine {
     if (await this.repo.findMessageByIdempotencyKey(key)) return;
     const reqs = job.request.requirements.filter((r) => r.hard).map((r) => r.text);
     const competing = await this.bestCompetingQuote(job, b.business_id);
-    const reason = [
-      `You are an AI assistant calling on behalf of a customer to request a price quote. Say you are an AI assistant at the start of the call.`,
-      `Ask ${b.name} for a quote for: ${job.request.what}, ${job.request.quantity} ${job.request.unit ?? "people"}, on ${job.request.date}, in ${job.request.area}.`,
-      reqs.length ? `Requirements: ${reqs.join("; ")}.` : "",
-      opts.escalation ? `This follows up on an email we sent them that hasn't been answered.` : "",
-      competing ? `We have received another quote of $${centsToUsd(competing.total_cents).toFixed(2)} total for the same order and requirements. You may tell them that figure and ask whether they can beat it; never invent or exaggerate a competing offer.` : "",
-      `Ask for the all-in total, any deposit, and what is included. Confirm the numbers back to them. Do not agree to buy or pay anything, and do not share payment details. Reference code HG-${job.short_code}.`,
-    ].filter(Boolean).join(" ").slice(0, 2000);
+    const reason = HaggleEngine.callBrief(b.name, job, reqs, { escalation: opts.escalation, competingTotalUsd: competing ? centsToUsd(competing.total_cents) : undefined });
     try {
       const { callId } = await this.d.phone.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason, idempotencyKey: key });
       await this.repo.insertMessage({
@@ -687,7 +705,7 @@ export class HaggleEngine {
     if (!stored) return { jobId: job.id, outcome: "duplicate" };
     if (TERMINAL.has(job.state)) return { jobId: job.id, outcome: "job_closed" };
     await this.repo.updateBusiness(job.id, b.business_id, completed ? { status: "replied", last_reply_at: this.now().toISOString() } : { status: call.outcome === "declined" ? "declined" : "no_reply" });
-    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call with ${b.name} ended: ${call.outcome}`, channel: "phone", transcript_snippet: transcript.slice(0, 160) });
+    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call with ${b.name} ended: ${call.outcome}`, channel: "phone", transcript_snippet: transcriptSnippet(transcript, b.name) });
     await this.repo.touchJob(job.id);
     return { jobId: job.id, outcome: completed ? "stored" : `call:${call.outcome}` };
   }
@@ -712,7 +730,7 @@ export class HaggleEngine {
       parse_status: call.outcome === "completed" && transcript ? "pending" : "none", quarantine_reason: null, round: null, simulated: call.simulated ?? false,
     });
     if (!stored) return { jobId: job.id, outcome: "duplicate" };
-    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${b.name} called Haggle${trusted ? "" : " (caller ID not verified)"}`, channel: "phone", transcript_snippet: transcript.slice(0, 160) });
+    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${b.name} called Haggle${trusted ? "" : " (caller ID not verified)"}`, channel: "phone", transcript_snippet: transcriptSnippet(transcript, b.name) });
     await this.repo.touchJob(job.id);
     return { jobId: job.id, outcome: trusted ? "stored" : "stored_unverified" };
   }
@@ -887,7 +905,7 @@ export class HaggleEngine {
       ...(msg.messageId ? { last_inbound_message_id: msg.messageId, references: [...b.references, msg.messageId].slice(-20) } : {}),
       ...(b.status === "contacted" || b.status === "question" ? { status: "replied" as const } : {}),
     });
-    await this.repo.appendEvent(b.job_id, "reply", { business_id: b.business_id, summary: `Email from ${b.name}${trust.trusted ? "" : " (sender NOT verified)"}` });
+    await this.repo.appendEvent(b.job_id, "reply", { business_id: b.business_id, summary: `Email from ${b.name}${trust.trusted ? "" : " (sender NOT verified)"}`, ...(trust.trusted ? snippet(messageSnippet(msg.bodyText, { pricedOnly: true })) : {}) });
     await this.repo.touchJob(b.job_id);
     return { jobId: b.job_id, outcome: "stored" };
   }

@@ -129,9 +129,52 @@
 }
 .db-approve {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   padding-top: 2px;
+}
+.db-approve-hint { font-size: 12px; }
+.db-paid,
+.db-approved {
+  color: var(--win);
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.db-why {
+  font-size: 12.5px;
+  color: var(--win);
+  font-weight: 550;
+}
+.db-neg {
+  font-size: 12px;
+  color: var(--warn);
+}
+.db-rejected {
+  font-size: 12px;
+  color: var(--risk);
+}
+.db-said {
+  font-size: 12px;
+  color: var(--ink-2);
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--ch-email);
+  overflow-wrap: anywhere;
+}
+.db-said-phone { border-left-color: var(--ch-phone); }
+.db-said-imessage { border-left-color: var(--ch-imessage); }
+.db-said-a2a { border-left-color: var(--ch-a2a); }
+.db-said-src {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  margin-right: 4px;
+}
+.db-progress {
+  font-size: 12.5px;
+  color: var(--ink-2);
 }
 .db-approve-status {
   color: var(--warn);
@@ -270,12 +313,64 @@
 /* Footer */
 .db-foot {
   display: flex;
-  justify-content: flex-end;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   padding-top: 10px;
   border-top: 1px solid var(--rule);
 }
+.db-foot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.db-sync {
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.db-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--ch-email);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.db-link:disabled { color: var(--ink-3); cursor: default; }
+
+/* Inline businesses: chips + who we're still waiting on */
+.db-biz-inline {
+  display: grid;
+  gap: 6px;
+}
+.db-waiting {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+/* Empty launcher */
+.db-welcome .db-title p { max-width: 60ch; }
+.db-welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 
 @media (max-width: 480px) {
+  .db-head { flex-direction: column; }
+  .db-quote-line { flex-wrap: wrap; }
+  .db-biz { white-space: normal; }
   .db-foot { flex-direction: column; align-items: stretch; }
+  .db-foot-actions { flex-direction: column; }
   .db-q-form { flex-direction: column; }
 }

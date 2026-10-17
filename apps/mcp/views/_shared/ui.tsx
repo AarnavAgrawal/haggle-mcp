@@ -18,6 +18,21 @@ export function Shell({ children, wide }: { children: ReactNode; wide?: boolean 
   );
 }
 
+/** LIVE (real businesses, real messages) or DEMO (simulated businesses). Every view shows one. */
+export function ModeBadge({ mode }: { mode?: "mock" | "live" }) {
+  if (!mode) return null;
+  return mode === "live" ? (
+    <span className="hg-mode hg-mode-live" title="Real businesses, real messages over Inkbox">
+      <span className="hg-mode-dot" aria-hidden="true" />
+      Live
+    </span>
+  ) : (
+    <span className="hg-mode hg-mode-demo" title="Simulated businesses: nothing here is real">
+      Demo · simulated
+    </span>
+  );
+}
+
 export function ChannelBadge({ channel }: { channel: string }) {
   const c = (channel in CHANNEL_LABEL ? channel : "email") as Channel;
   return (

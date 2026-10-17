@@ -14,6 +14,8 @@ export { BusinessProfile, DealBoard, DealBoardOrEmpty, Estimates } from "@haggle
 export const ApprovalOut = Approval.extend({
   channel: z.enum([...Approval.shape.channel.options, "simulated"]),
   demo: z.string().optional(),
+  /** The quote's order total; amount_usd is what is paid now (the deposit). */
+  order_total_usd: z.number().nonnegative().optional(),
   payment: z.looseObject({ status: z.string(), simulated: z.boolean() }).optional(),
 });
 export type ApprovalOut = z.infer<typeof ApprovalOut>;
@@ -69,7 +71,7 @@ export function toApproval(
   return ApprovalOut.parse({
     job_id: b.job.id, quote_id, business, quote_channel: channel,
     summary: `${business}: ${money(total)} order total; pay ${money(payNow)} deposit now`,
-    items: q?.items ?? [], amount_usd: payNow, deposit_usd: payNow, cap_usd: a?.cap_usd ?? payNow,
+    items: q?.items ?? [], amount_usd: payNow, ...(q || a ? { order_total_usd: total } : {}), deposit_usd: payNow, cap_usd: a?.cap_usd ?? payNow,
     status, channel: how,
     ...(a?.approved_at ? { approved_at: a.approved_at } : {}),
     ...(a ? { approval_id: a.approval_id, expires_at: a.expires_at } : {}),

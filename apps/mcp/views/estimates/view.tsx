@@ -4,7 +4,7 @@
  */
 import { ModelContext, useCallTool, useSendFollowUp, useToolContext } from "mcp-use/react";
 import type { Estimates } from "@haggle/core";
-import { ChannelBadge, ErrorNote, Meter, Shell, Skeleton, usd } from "../_shared/ui.tsx";
+import { ChannelBadge, ErrorNote, Meter, ModeBadge, Shell, Skeleton, usd } from "../_shared/ui.tsx";
 import "./view.css";
 
 export default function EstimatesView() {
@@ -58,7 +58,10 @@ function EstimatesList({ data }: { data: Estimates }) {
         content={`Haggle estimates for ${title}: ${data.estimates.map((e) => `${e.business} ~${usd(e.total_usd)} (${e.n_quotes} quotes)`).join("; ") || "none"}.`}
       />
       <header className="es-head">
-        <h1>{title}</h1>
+        <div className="es-title">
+          <h1>{title}</h1>
+          <ModeBadge mode={data.mode} />
+        </div>
         <p className="es-note">{data.note}</p>
       </header>
 

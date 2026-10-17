@@ -3,8 +3,9 @@
  * needs up front, how it negotiates and how to reach it — plus the history it was learned from.
  */
 import { ModelContext, useSendFollowUp, useToolContext } from "mcp-use/react";
+import { useState } from "react";
 import type { BusinessProfile } from "@haggle/core";
-import { ChannelBadge, ErrorNote, Meter, Shell, Skeleton, usd } from "../_shared/ui.tsx";
+import { ChannelBadge, ErrorNote, Meter, ModeBadge, Shell, Skeleton, usd } from "../_shared/ui.tsx";
 import "./view.css";
 
 export default function BusinessProfileView() {
@@ -25,6 +26,8 @@ export default function BusinessProfileView() {
 
 function Profile({ p }: { p: BusinessProfile }) {
   const followUp = useSendFollowUp();
+  const [allHistory, setAllHistory] = useState(false);
+  const history = allHistory ? p.history : p.history.slice(0, 5);
   const facts: [string, string | undefined][] = [
     ["Price", p.price_model],
     ["Minimum", p.minimum],
@@ -38,7 +41,9 @@ function Profile({ p }: { p: BusinessProfile }) {
       <ModelContext content={`Haggle profile of ${p.name}: ${p.price_model}; ${p.discount_behavior}; best reached by ${p.best_channel}.`} />
       <header className="bp-head">
         <div>
-          <h1>{p.name}</h1>
+          <h1>
+            {p.name} <ModeBadge mode={p.mode} />
+          </h1>
           <p className="hg-muted">
             {capitalize(p.category)}
             {p.area ? ` in ${p.area}` : ""}, learned from {p.n_quotes} quote{p.n_quotes === 1 ? "" : "s"}
@@ -81,7 +86,7 @@ function Profile({ p }: { p: BusinessProfile }) {
         <section className="bp-history" aria-label="History">
           <h2>History</h2>
           <ol>
-            {p.history.map((h, i) => (
+            {history.map((h, i) => (
               <li key={`${h.date}-${i}`}>
                 <time>{formatDate(h.date)}</time>
                 <ChannelBadge channel={h.channel} />
@@ -90,6 +95,11 @@ function Profile({ p }: { p: BusinessProfile }) {
               </li>
             ))}
           </ol>
+          {p.history.length > 5 && (
+            <button className="bp-more" onClick={() => setAllHistory((v) => !v)} aria-expanded={allHistory}>
+              {allHistory ? "Show fewer" : `Show all ${p.history.length}`}
+            </button>
+          )}
         </section>
       )}
 
