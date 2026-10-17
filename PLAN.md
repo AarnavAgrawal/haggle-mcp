@@ -2,6 +2,8 @@
 
 YC "Make Something Agents Want" hackathon · Yash + Aarnav · Sat Oct 17, 11:30 AM → Sun Oct 18, 10:00 AM
 
+> Rules for building are in `CLAUDE.md`; shared specs in `CONTRACTS.md`; progress in `CHECKLIST.md`. `PLAN.pdf` is an export of this file.
+
 ## 1. TL;DR
 
 Haggle is an MCP server that lets any AI agent buy from businesses the way businesses actually work: **by email, phone calls and text messages.** The agent says what it needs; Haggle reaches each business on its channel (email, a phone call placed by a voice agent, iMessage or agent-to-agent), collects quotes, reads messy replies and call transcripts, follows up, negotiates, gets a human's approval and pays.
@@ -14,7 +16,7 @@ Haggle is also an **MCP App**: the same server that agents call headlessly rende
 
 **Tracks:** Inkbox (email, phone, iMessage, A2A identity), Manufact (best MCP server, built and hosted on their stack), Stripe (safe agent spending), Armature (agent experience, from our benchmark numbers).
 
-**What changed from v4:** a full interface plan using mcp-use MCP Apps and ChatGPT extensions; Manufact's agent setup prompt adapted for our repo; the demo rebuilt around the interface; the team split now gives Aarnav the views (built against shared schemas) so both of you build in parallel.
+**What changed from v4:** a full interface plan using mcp-use MCP Apps and ChatGPT extensions; Manufact's agent setup prompt adapted for our repo; the demo rebuilt around the interface; the team split now gives Aarnav the views (built against shared schemas) so Yash and Aarnav build in parallel.
 
 ## 2. The problem
 
@@ -141,7 +143,7 @@ Manufact's "copy prompt" on manufact.com is https://manufact.com/prompt.md. It t
 # 1. Log in to Manufact
 npx -y mcp-use@latest login
 
-# 2. Install the mcp-use skill for Claude Code (both of you)
+# 2. Install the mcp-use skill for Claude Code (Yash and Aarnav)
 npx --yes skills add mcp-use/mcp-use#main --yes --skill mcp-apps-builder -a claude-code
 
 # 3. Scaffold the app inside the monorepo
