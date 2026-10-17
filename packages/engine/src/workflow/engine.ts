@@ -568,7 +568,8 @@ export class HaggleEngine {
     });
     if (!stored) return { jobId: job.id, outcome: "duplicate" };
     if (TERMINAL.has(job.state)) return { jobId: job.id, outcome: "job_closed" };
-    await this.repo.updateBusiness(job.id, b.business_id, completed ? { status: "replied", last_reply_at: this.now().toISOString() } : { status: call.outcome === "declined" ? "declined" : "no_reply" });
+    // Conditional: a concurrent parse of this transcript may already have set "quoted".
+    await this.repo.updateBusiness(job.id, b.business_id, completed ? { status: "replied", last_reply_at: this.now().toISOString() } : { status: call.outcome === "declined" ? "declined" : "no_reply" }, { ifStatus: ["pending", "contacted", "ringing", "question"] });
     await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call with ${b.name} ended: ${call.outcome}`, channel: "phone", transcript_snippet: transcript.slice(0, 160) });
     await this.repo.touchJob(job.id);
     return { jobId: job.id, outcome: completed ? "stored" : `call:${call.outcome}` };
@@ -753,8 +754,10 @@ export class HaggleEngine {
     await this.repo.updateBusiness(b.job_id, b.business_id, {
       last_reply_at: this.now().toISOString(), ...(msg.threadId ? { thread_id: msg.threadId } : {}),
       ...(msg.messageId ? { last_inbound_message_id: msg.messageId, references: [...b.references, msg.messageId].slice(-20) } : {}),
-      ...(b.status === "contacted" || b.status === "question" ? { status: "replied" as const } : {}),
     });
+    // Conditional in the store: a concurrent parse (wait_for_update, the tick) may already have set
+    // "quoted" from this very message; `b` was read before the insert and must not overwrite it.
+    await this.repo.updateBusiness(b.job_id, b.business_id, { status: "replied" }, { ifStatus: ["contacted", "question"] });
     await this.repo.appendEvent(b.job_id, "reply", { business_id: b.business_id, summary: `Email from ${b.name}${trust.trusted ? "" : " (sender NOT verified)"}` });
     await this.repo.touchJob(b.job_id);
     return { jobId: b.job_id, outcome: "stored" };

@@ -75,9 +75,10 @@ export class InMemoryRepository implements Repository {
   async getBusinesses(jobId: string) {
     return this.businesses.filter((b) => b.job_id === jobId).map(clone);
   }
-  async updateBusiness(jobId: string, businessId: string, patch: Partial<JobBusinessRow>) {
+  async updateBusiness(jobId: string, businessId: string, patch: Partial<JobBusinessRow>, opts: { ifStatus?: JobBusinessRow["status"][] } = {}) {
     const b = this.businesses.find((x) => x.job_id === jobId && x.business_id === businessId);
     if (!b) return;
+    if (opts.ifStatus && !opts.ifStatus.includes(b.status)) return;
     // Snapshots are immutable (DB trigger in the migration).
     const { business_id: _a, name: _b, email: _c, job_id: _d, phone: _e, ...rest } = patch;
     Object.assign(b, rest);

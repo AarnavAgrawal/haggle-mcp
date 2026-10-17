@@ -218,7 +218,8 @@ export interface Repository {
   // businesses
   insertBusinesses(rows: JobBusinessRow[]): Promise<void>;
   getBusinesses(jobId: string): Promise<JobBusinessRow[]>;
-  updateBusiness(jobId: string, businessId: string, patch: Partial<JobBusinessRow>): Promise<void>;
+  /** `ifStatus`: apply only while the row's status is one of these (atomic; no stale-read overwrite). */
+  updateBusiness(jobId: string, businessId: string, patch: Partial<JobBusinessRow>, opts?: { ifStatus?: JobBusinessRow["status"][] }): Promise<void>;
   /** Candidates for matching an inbound email: by job short codes, thread id, or our Message-IDs. */
   findBusinessCandidates(q: { shortCodes: string[]; threadId: string | null; messageIds: string[] }): Promise<(JobBusinessRow & { short_code: string })[]>;
 

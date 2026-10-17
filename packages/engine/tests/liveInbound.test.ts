@@ -71,6 +71,24 @@ describe("live inbound path", () => {
     expect(w.updates).toContainEqual({ type: "flag", business_id: bay.business_id, flag: "unverified_sender" });
   });
 
+  it("a parse that runs while the webhook is still storing the reply isn't undone (business stays quoted)", async () => {
+    const { engine } = liveEngine(new Map([["Bay: $995 total, $5 deposit", quote(995)]]));
+    const deal = await engine.deal({ request: { what: "x", quantity: 40, date: "2026-10-22", area: "SF", requirements: [] }, businesses: [{ name: "Bay", email: "quotes@bay.primitive.email" }] });
+    // Hosted: a wait_for_update (or the backup tick) parses the message right after it is inserted,
+    // before ingest() has finished its own bookkeeping for that reply.
+    const repo = (engine as unknown as { repo: InMemoryRepository }).repo;
+    const insert = repo.insertMessage.bind(repo);
+    repo.insertMessage = async (m) => {
+      const row = await insert(m);
+      if (row && m.kind === "reply") await engine.advanceJob(deal.job_id);
+      return row;
+    };
+    await deliver(engine, { from: "quotes@bay.primitive.email", to: deal.inbox, bodyText: "Bay: $995 total, $5 deposit" });
+    const q = await engine.getQuotes(deal.job_id);
+    expect(q.businesses.find((b) => b.name === "Bay")).toMatchObject({ status: "quoted", engine_status: "quoted" });
+    expect(q.ready).toBe(true); // everyone answered, so the collection window closed early
+  });
+
   it("drops a replayed webhook delivery", async () => {
     const { engine } = liveEngine(new Map([["Bay: $995 total, $5 deposit", quote(995)]]));
     const deal = await engine.deal({ request: { what: "x", quantity: 40, date: "2026-10-22", area: "SF", requirements: [] }, businesses: [{ name: "Bay", email: "quotes@bay.primitive.email" }] });
