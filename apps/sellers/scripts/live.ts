@@ -102,7 +102,13 @@ async function cmdEnv() {
     const check = await verifyStripeTestSetup(cfg);
     for (const c of check.checks) console.log(`  stripe [${c.ok ? "PASS" : "FAIL"}] ${c.check}`);
     if (!check.ok) throw new Error("Stripe test setup failed; run node packages/engine/scripts/stripe-setup.ts .env --confirm");
-    stripe = { HAGGLE_ENABLE_PAYMENTS: "true", STRIPE_SECRET_KEY: cfg.secretKey, STRIPE_CUSTOMER_ID: cfg.customerId, STRIPE_PAYMENT_METHOD_ID: cfg.paymentMethodId };
+    stripe = {
+      HAGGLE_ENABLE_PAYMENTS: "true", STRIPE_SECRET_KEY: cfg.secretKey, STRIPE_CUSTOMER_ID: cfg.customerId, STRIPE_PAYMENT_METHOD_ID: cfg.paymentMethodId,
+      // Test money, but sized for real orders: a 200-person deposit is $500–1,750. Every charge still
+      // needs the human's approval of that exact quote and amount, under the deal's own cap.
+      HAGGLE_GLOBAL_PAYMENT_CAP_CENTS: env.HAGGLE_GLOBAL_PAYMENT_CAP_CENTS ?? "500000",
+      HAGGLE_SPENDING_CAP_CEILING_CENTS: env.HAGGLE_SPENDING_CAP_CEILING_CENTS ?? "1000000",
+    };
   }
 
   const { fleet, directory, phone } = fleetConfig();
