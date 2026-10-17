@@ -148,9 +148,10 @@ describe("model output guard", () => {
   it("requires the total and forbids Harbor's deposit in the email body", () => {
     const harbor = persona("harbor_table");
     const plan = planReply(harbor, undefined, RFQ).plan;
-    expect(factChecks(harbor, plan)).toEqual({ must: ["$1,150"], mustNot: ["$345", "deposit"] });
+    expect(factChecks(harbor, plan)).toEqual({ must: ["$1,150", "12 "], mustNot: ["$345", "deposit"] });
     const body = templateReply(harbor, plan);
     expect(body).toContain("$1,150");
+    expect(body).toMatch(/12 vegetarian meals and delivery/); // comparable without opening the PDF
     expect(body.toLowerCase()).not.toContain("deposit");
   });
 });
