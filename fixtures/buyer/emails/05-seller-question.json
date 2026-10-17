@@ -1,0 +1,30 @@
+{
+  "id": "05-seller-question",
+  "description": "Benchmark trap: seller asks a question instead of quoting; must be routed (answered or escalated).",
+  "provider_message_id": "prov_05-seller-question",
+  "from": "nopaprovisions@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "nopaprovisions@sellers.example",
+  "text": "Happy to quote! Quick question before I do: do you need plates, napkins and utensils for everyone, or will your office provide them?",
+  "html": null,
+  "attachments": [],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "question",
+    "question_contains": "plates",
+    "creates_quote": false,
+    "seller_state": "clarifying"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "id": "07-malformed-json",
+  "description": "quote.json is invalid JSON; must fall back to text and flag the malformed part.",
+  "provider_message_id": "prov_07-malformed-json",
+  "from": "fogcity@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "fogcity@sellers.example",
+  "text": "Fog City Deli quote: 40 sandwich lunches incl. 15 vegetarian, delivered, $1,040 total incl. tax. JSON attached.",
+  "html": null,
+  "attachments": [
+    {
+      "filename": "quote.json",
+      "content_type": "application/json",
+      "inline": "{\"protocol\": \"haggle.v0\", \"type\": \"quote\", \"total_usd\": 1040,,}"
+    }
+  ],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "source": "email_text",
+    "total_cents": 104000,
+    "flags_include": [
+      "malformed_structured_part"
+    ]
+  }
+}

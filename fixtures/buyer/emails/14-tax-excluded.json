@@ -1,0 +1,33 @@
+{
+  "id": "14-tax-excluded",
+  "description": "Listed total excludes tax; effective total is unknown until tax is stated.",
+  "provider_message_id": "prov_14-tax-excluded",
+  "from": "dogpatch@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "dogpatch@sellers.example",
+  "text": "Dogpatch Deli: 40 lunches, 12 vegetarian, delivery included. $1,000 plus tax.",
+  "html": null,
+  "attachments": [],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "total_cents": null,
+    "subtotal_cents": 100000,
+    "flags_include": [
+      "tax_excluded"
+    ],
+    "needs_clarification": true
+  }
+}

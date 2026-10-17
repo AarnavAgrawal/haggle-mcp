@@ -1,0 +1,42 @@
+{
+  "id": "04-hidden-pdf-deposit",
+  "description": "Benchmark trap: 30% non-refundable deposit ($304.80) appears only on page 2 of the PDF.",
+  "provider_message_id": "prov_04-hidden-pdf-deposit",
+  "from": "goldengate@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "goldengate@sellers.example",
+  "text": "Hello, please find our quote attached. Total $1,016 including tax and delivery. Thanks, Golden Gate Kitchen",
+  "html": null,
+  "attachments": [
+    {
+      "filename": "golden-gate-quote-hidden-deposit.pdf",
+      "content_type": "application/pdf",
+      "path": "attachments/golden-gate-quote-hidden-deposit.pdf"
+    }
+  ],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "source": "pdf_attachment",
+    "total_cents": 101600,
+    "deposit_cents": 30480,
+    "deposit_provenance_page": 2,
+    "meets_requirements": "yes",
+    "flags_include": [
+      "deposit_required"
+    ],
+    "valid_until_date": "2026-10-19"
+  }
+}

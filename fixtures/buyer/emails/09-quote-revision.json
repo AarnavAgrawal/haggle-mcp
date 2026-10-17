@@ -1,0 +1,37 @@
+{
+  "id": "09-quote-revision",
+  "description": "Revision of fixture 01 after a counteroffer; supersedes revision 1 and invalidates any approval of it.",
+  "provider_message_id": "prov_09-quote-revision",
+  "from": "baycatering@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Counteroffer for job_offsite01",
+  "in_reply_to_rfq_of": "baycatering@sellers.example",
+  "text": "Thanks for the counter. We can do $995.00 all-in for the same order. Revised quote attached.",
+  "html": null,
+  "attachments": [
+    {
+      "filename": "quote.json",
+      "content_type": "application/json",
+      "inline": "{\n  \"protocol\": \"haggle.v0\",\n  \"type\": \"quote\",\n  \"job_id\": \"job_offsite01\",\n  \"seller\": \"Bay Catering\",\n  \"seller_kind\": \"agent\",\n  \"items\": [\n    {\n      \"description\": \"Chicken mains\",\n      \"quantity\": 28,\n      \"unit_price_usd\": 27.5,\n      \"total_usd\": 770,\n      \"tags\": []\n    },\n    {\n      \"description\": \"Vegetarian mains\",\n      \"quantity\": 12,\n      \"unit_price_usd\": 26,\n      \"total_usd\": 312,\n      \"tags\": [\n        \"vegetarian\"\n      ]\n    }\n  ],\n  \"delivery_included\": true,\n  \"tax_included\": true,\n  \"total_usd\": 995,\n  \"per_head_usd\": 24.88,\n  \"deposit_usd\": 5,\n  \"fulfillment_date\": \"2026-10-22\",\n  \"valid_until\": \"2026-10-20T23:59:00-07:00\",\n  \"round\": 1,\n  \"revision\": 2\n}"
+    }
+  ],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "revision": 2,
+    "supersedes_fixture": "01-clean-agent-quote",
+    "total_cents": 99500,
+    "negotiated_from_cents": 115000
+  }
+}
