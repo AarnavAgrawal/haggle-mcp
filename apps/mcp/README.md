@@ -26,12 +26,18 @@ Point the buyer identity's Inkbox webhook subscription (`message.received`, `cal
 
 ## Deploy (Manufact)
 
+calm-spark-ck3qm is a managed upload (not GitHub): pushing `main` doesn't deploy it. Deploy from the repo
+root of a clean checkout of the commit you want, holding the gitignored link file
+`.mcp-use/cloud/link.json` (no `--new`/`--name`, so the same server is updated; `.env*` is never uploaded):
+
 ```bash
 npx mcp-use login
-npx mcp-use deploy --name haggle --root-dir apps/mcp     # GitHub App installed on the repo
-# or: npx -y mcp-use@latest deploy --no-github -y
+./node_modules/.bin/mcp-use deploy --json            # then follow the "building" deployment:
+./node_modules/.bin/mcp-use deployments logs <id> --build --follow
 ```
-Set the live env vars in the Manufact dashboard and copy the MCP URL from it (don't guess it).
+Server config (npm workspaces hoist the CLI to the repo root): start command
+`cd apps/mcp && ../../node_modules/.bin/mcp-use start --host 0.0.0.0`, port 3000. Env vars persist across
+deploys; `servers env` commands take the server id, not the slug. Copy the MCP URL from the dashboard.
 
 ## Tools
 
