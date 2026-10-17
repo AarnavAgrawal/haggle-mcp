@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: live Inkbox round trip (blocked on credentials), then Stripe test mode · Aarnav: —
+**Now working on:** Yash: live Inkbox round trip (hosted server live; waiting on the test seller identity), then Stripe test mode · Aarnav: —
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -23,10 +23,10 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
   - Status: in progress. The live MCP server no longer needs Primitive/x402 (payments disabled and refused, never faked; no x402 accept email). Legacy x402 code is still in the engine for mock mode until Stripe lands.
 - [ ] **MCP server on Manufact:** all tools exposed (returning fixtures at first), deployed, callable from Claude Code
   - Done when: every tool in `CLAUDE.md` section 6 is listed and callable via `npx mcp-use client`; the Manufact URL is copied from the dashboard into the log
-  - Status: deployed on Manufact (mock mode): https://calm-spark-ck3qm.run.mcp-use.com/mcp. All 11 tools verified through `mcp-use client`, locally and hosted (29/29 checks: deal → wait_for_update → get_quotes → answer_business, errors, retry idempotency, structuredContent). Not yet added to Claude Code itself.
+  - Status: deployed on Manufact (mock mode): https://calm-spark-ck3qm.run.mcp-use.com/mcp. All 11 tools verified through `mcp-use client`, locally and hosted (29/29 checks: deal → wait_for_update → get_quotes → answer_business, errors, retry idempotency, structuredContent). Now LIVE mode (Inkbox `haggle`, Supabase, Claude; calls/payments off; recipients = demo fleet only) and added to Claude Code (`claude mcp add --transport http haggle <url>`, Connected).
 - [ ] **Email deal loop:** outreach, inbound webhook, parsing (text, PDF, JSON), replies feed the brain
   - Done when: `deal` emails the sellers from `haggle`; a signed `message.received` webhook becomes a `Quote`; `brain.learnFromReply` is called
-  - Status: Inkbox adapter + `/webhooks/inkbox` built; route tests with fakes (401 bad signature, signed reply → quote, dedupe, 503 retry, call.ended). Hosted route reachable. No live Inkbox round trip yet (no credentials).
+  - Status: Inkbox adapter + `/webhooks/inkbox` built; route tests with fakes (401 bad signature, signed reply → quote, dedupe, 503 retry, call.ended). Live infra ready: Supabase migrations 100+101 applied (safety assertions pass on the live DB), Inkbox webhook subscription → hosted `/webhooks/inkbox` (unsigned → 401), sender trust `pinned-org-identity` for the agent-scoped key. Live round trip not yet demonstrated (needs a same-org seller identity).
 - [ ] **Results:** `wait_for_update` and `get_quotes` return real deal board data
   - Done when: output validates against `DealBoard` and stays around 1,500 tokens for six quotes, with a `next` hint
   - Status: deal board read model returned by get_quotes/open_haggle (channels, statuses, eligibility, negotiation, questions); renders in the existing deal-board view (screenshot). Real engine data in mock mode; live data pending Inkbox.
@@ -85,8 +85,8 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 ## Blockers
 
-- Yash: Inkbox API key + `haggle` identity signing key, Supabase DB URL, Anthropic key → live email loop (from Yash/team).
-- Yash: hosted is mock-only until live env vars are set on the Manufact server (`mcp-use servers env set`).
+- Yash: create the email-only test seller `haggle-test-seller` + its agent-scoped key (Inkbox dashboard) → live round trip.
+- Team: Aarnav's seller identities are not visible in Yash's Inkbox org (his buyer is `haggle-buyer` in his org). Same-org sellers are required for reply trust: run apps/sellers setup in Yash's org, or agree on one org.
 - Yash: ChatGPT test needs a human: add https://calm-spark-ck3qm.run.mcp-use.com/mcp as a developer-mode app in ChatGPT.
 - Shared: `packages/core/views.ts` + contracts.ts v5 fields; proposal in `apps/mcp/src/schemas/views.ts` and `apps/mcp/README.md` (needs Aarnav's OK).
 - Aarnav: seller Inkbox identities (email addresses for HAGGLE_DEMO_FLEET) → needed for the live email round trip.
@@ -96,6 +96,8 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 1:50 PM · Yash · Live infra: Supabase migrations applied + verified, Manufact switched to live (secrets set, redeployed), Inkbox webhook subscribed, Claude Code connected; pinned-org-identity trust for the agent-scoped key; fleet parser accepts bare addresses
 
 - 12:55 PM · Yash · Synced main; MCP on Manufact (mock) with 11 tools verified via mcp-use client locally + hosted; live payer disabled (no Primitive/x402); email approval removed; webhook route tests; demo fixed
 - 12:20 PM · Yash · v5 MCP tools on the real engine, Inkbox adapter + webhook, deal board data, channel routing (mock phone), settings/launcher/mentions; 186 unit + 6 transport tests, migrations verified (branch yashnil)
