@@ -12,6 +12,9 @@ merged. Source of every port: `AarnavAgrawal/quote-broker@8a68559`.
 | `02bc8ac` | honest counteroffers; x402 payment guard |
 | `1a327d1` | Primitive webhook edge (verify, strict From, sender trust) + signed-event test builder |
 | `8953454` | RFQ email builder; quote ranking; engine exports |
+| `65362ed` | apps/mcp: template demo tools/view removed, Haggle metadata, engine dependency |
+| `e0d8724` | Primitive outbound sender (pinned-recipient replies) and x402 challenge processing |
+| `0d647e0` | fix: counteroffers never cite a quote the ranker rejects; golden module-chain test |
 
 ## Files (all in `packages/engine/`, Yash's lane)
 
@@ -85,3 +88,8 @@ Catering $1,150 → countered with Harbor's real $1,120 → $995 revision recomm
 4. Job driver with CAS + after-commit effects (pattern from `advanceJob`).
 5. `deal`, `wait_for_update`, `get_quotes` on mcp-use with the frozen result types; deploy a preview; register the webhook endpoint → **2 PM gate**.
 6. `answer_seller`, counteroffers, `approve` (elicitation + `verifyApproval`), x402 payer behind `checkX402PaymentAllowed`, deal board from `quote-board` → **8 PM gate**.
+
+
+## Update 09:30 PDT
+
+See `docs/kickoff-baseline-and-parity.md` for the verified baseline, parity matrix and handoff. Tests now: core 40, engine 114.
