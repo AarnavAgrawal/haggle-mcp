@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated.** After finishing any piece of work: tick what's done, update the status line, update "Now working on", and add one line to the log. Keep it short.
 
-**Now working on:** Yash: — · Aarnav: —
+**Now working on:** Yash: — · Aarnav: going live on Inkbox (seller setup) and checking views in ChatGPT/Claude
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -13,7 +13,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 ## Together (first hour)
 
 - [ ] **Foundation:** monorepo, `contracts.ts` + `views.ts` schemas, view fixtures, database, Inkbox identities, both skills installed, MCP App scaffolded and running in the Inspector
-  - Status: not started
+  - Status: Aarnav (on `aarnav`): npm-workspaces monorepo, `packages/core` contracts + view schemas (needs Yash's sign-off), view fixtures, MCP App scaffolded and rendering in the Inspector, mcp-use skill. Left: database (brain migration written, not applied), Inkbox identities (need `INKBOX_API_KEY`), Inkbox skill
 
 ## Yash: tools and deal engine
 
@@ -38,22 +38,22 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 ## Aarnav: views, brain, sellers, proof
 
-- [ ] **Brain stub:** fake data for every brain function (first)
-  - Status: not started
+- [x] **Brain stub:** fake data for every brain function (first)
+  - Status: done: `createStubBrain()` in `@haggle/brain`, tested against the contracts
 - [ ] **Deal board view:** business cards with channel and live status, ranked quotes, flags, verdicts, actions, fullscreen
-  - Status: not started
+  - Status: built on fixtures (ladder vs budget, channel badges, live polling, answer question, approve, fullscreen, light/dark); screenshots in `apps/bench/screenshots`. Left: check in ChatGPT/Claude, real engine data
 - [ ] **Email sellers:** webhook server with email personas replying in character
-  - Status: not started
+  - Status: built and tested offline (`apps/sellers`, Claude prose + number guard + templates, Harbor PDF, signed webhooks, demo speed). Left: `npm run setup` with `INKBOX_API_KEY`, live run
 - [ ] **Business learning:** every reply (any channel) updates a business profile
-  - Status: not started
+  - Status: `brain.learnFromReply` built and tested (email, phone, A2A, questions, negotiation; Supabase/file/memory stores). Left: engine calls it after each parsed reply
 - [ ] **Phone and A2A sellers:** Voice AI persona answering calls; A2A agent-ready business
-  - Status: not started
+  - Status: built (Mission Eats Voice AI instructions + number in setup; Bay Catering A2A skill, tasks answered with quote.json). Left: live setup and a real call
 - [ ] **Brain features:** instant estimates, price check, negotiation hints, discovery with channels
-  - Status: not started
+  - Status: built and tested on seeded history; `ask`, `check_price`, `discover`, `business_profile` call the real brain. Left: verify from Claude Code
 - [ ] **Other views:** approval card, estimates, business profile
-  - Status: not started
+  - Status: built on fixtures/brain data, screenshots saved. Left: check in ChatGPT/Claude
 - [ ] **Benchmark:** baseline vs Haggle on Manufact test suites, plus a UI-judged run
-  - Status: not started
+  - Status: baseline MCP server, suite spec (`apps/bench/suites`), results summary script. Left: deploy baseline, create suites in the dashboard, run
 
 ## Gates
 
@@ -70,8 +70,16 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 ## Blockers
 
-_(none yet)_
+- Aarnav needs `INKBOX_API_KEY` (and `ANTHROPIC_API_KEY`) in `.env` to create seller identities and go live.
+- Yash: please review `packages/core` (contracts + view schemas, on `aarnav`) and replace the fixture handlers in `apps/mcp/index.ts` with the engine.
 
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 13:00 · Aarnav · bench: baseline MCP server, Manufact suite spec, results summary, view screenshots
+- 12:55 · Aarnav · reply fixtures for every seller behavior (`fixtures/replies`, with expected ParsedReply)
+- 12:50 · Aarnav · seller fleet: 6 personas, webhook server, Inkbox setup script, brain migration
+- 12:40 · Aarnav · views: deal board, approval card, estimates, business profile (+ fixture-mode MCP server)
+- 12:25 · Aarnav · brain stub + real brain (learning, estimates, price check, hints, discovery)
+- 12:15 · Aarnav · foundation: monorepo, `packages/core` contracts + view schemas, view fixtures
