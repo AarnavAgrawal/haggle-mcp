@@ -1,16 +1,18 @@
 node_modules/
 dist/
 build/
-.mcp-use/
 coverage/
+.mcp-use/
+.vite/
+.turbo/
+*.tsbuildinfo
 *.log
 .env
 .env.*
 !.env.example
 .DS_Store
-.turbo/
-.vite/
-*.tsbuildinfo
+Thumbs.db
+# Local runtime data (brain file store, seller state)
 .haggle-data/
 # Planning PDF is kept out of version control (private planning document)
 *.pdf

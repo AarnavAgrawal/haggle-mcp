@@ -1,0 +1,16 @@
+{
+  "job_id": "job_demo",
+  "quote_id": "q_bay_1",
+  "business": "Bay Catering",
+  "quote_channel": "a2a",
+  "summary": "Lunch for 40, 14 vegetarian, delivered Thu Oct 22 at 11:30 AM",
+  "items": ["Mediterranean buffet for 40", "14 vegetarian bowls", "Delivery and setup 11:30 AM", "Plates and cutlery"],
+  "amount_usd": 995,
+  "deposit_usd": 200,
+  "cap_usd": 1500,
+  "status": "pending_human",
+  "channel": "imessage",
+  "approver": "+1 ••• ••• 0142",
+  "reason": "Waiting for YES on iMessage: “Approve $995 to Bay Catering? Reply YES”",
+  "next": "Wait for the human: call wait_for_update(job_id='job_demo'). Once status is approved, call pay(job_id='job_demo', quote_id='q_bay_1')."
+}

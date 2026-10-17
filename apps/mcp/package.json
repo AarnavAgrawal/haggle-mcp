@@ -1,11 +1,12 @@
 {
   "name": "@haggle/mcp",
   "type": "module",
+  "private": true,
   "engines": {
     "node": ">=22.22.2"
   },
-  "version": "1.0.0",
-  "description": "Haggle buyer MCP server (mcp-use) with the deal board view",
+  "version": "0.1.0",
+  "description": "Haggle MCP server and MCP App views (mcp-use)",
   "author": "Haggle",
   "scripts": {
     "build": "mcp-use build",
@@ -16,8 +17,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@haggle/core": "workspace:*",
-    "@haggle/engine": "workspace:*",
+    "@haggle/brain": "*",
+    "@haggle/core": "*",
+    "@haggle/engine": "*",
     "mcp-use": "2.10.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -30,6 +32,5 @@
     "@types/react-dom": "^19.2.3",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
-  },
-  "private": true
+  }
 }

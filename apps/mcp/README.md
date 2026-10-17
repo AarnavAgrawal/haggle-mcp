@@ -6,12 +6,12 @@ also render the views in `views/` (Aarnav).
 ## Run
 
 ```bash
-corepack pnpm install
-corepack pnpm --filter @haggle/mcp build                 # production build (views included)
-cd apps/mcp && HAGGLE_MODE=mock ./node_modules/.bin/mcp-use start   # http://localhost:3000/mcp
+npm install                                              # repo root (npm workspaces)
+npm run build -w @haggle/mcp                             # production build (views included)
+cd apps/mcp && HAGGLE_MODE=mock npx mcp-use start        # http://localhost:3000/mcp
 #   Inspector (with --with-inspector, or `mcp-use dev`): http://localhost:3000/mcp/inspector · health: /health
 #   Faster demo replies: HAGGLE_SIM_DELAY_SCALE=0.2
-corepack pnpm --filter @haggle/mcp test                  # transport E2E against the built server + webhook route
+npm test -w @haggle/mcp                                  # transport E2E against the built server, webhook route, view mapping
 # Real MCP client: mcp-use client connect local http://localhost:3000/mcp && mcp-use client local tools call open_haggle '{}'
 ```
 
@@ -37,35 +37,27 @@ Set the live env vars in the Manufact dashboard and copy the MCP URL from it (do
 
 | Tool | View | Backed by |
 | --- | --- | --- |
-| `ask` | estimates* | brain.estimate |
-| `discover` | | brain.discover |
+| `ask` | estimates | brain.estimate (real `@haggle/brain`, seeded) |
+| `discover` | | brain.discover (mock mode: the simulated fleet only) |
 | `check_price` | | brain.checkPrice |
 | `deal` | | engine (Inkbox email; phone when enabled) |
 | `wait_for_update` | | engine (≤ 60 s long-poll, cursor) |
-| `get_quotes` | deal-board | engine (deal board read model) |
+| `get_quotes` | deal-board | engine (deal board read model → shared `DealBoard`, `src/views.ts`) |
 | `answer_business` | | engine |
-| `approve` | approval* | engine (human: client form or approval card; NO_HUMAN_CHANNEL otherwise; DEMO sim in mock) |
-| `pay` | | engine: Stripe TEST MODE deposit (opt-in `HAGGLE_ENABLE_PAYMENTS=true`); exact approved quote + amount, cap, quoting payee, one charge per approval; simulated in mock |
-| `business_profile` | business-profile* | brain (optional `getProfile`) |
-| `open_haggle` `{}` | haggle-home* (global + thread entrypoints) | engine |
+| `approve` | approval | engine (human: client form or approval card; NO_HUMAN_CHANNEL otherwise; DEMO sim in mock) |
+| `pay` | payment (same card) | engine: Stripe TEST MODE deposit (opt-in `HAGGLE_ENABLE_PAYMENTS=true`); exact approved quote + amount, cap, quoting payee, one charge per approval; simulated in mock |
+| `business_profile` | business-profile | brain.getProfile |
+| `open_haggle` `{}` | launcher (global + thread entrypoints) | engine |
 | `settings.read` / `settings.update` | native | engine (cap ≤ operator ceiling) |
 | `mention_businesses` + `business://{slug}` | native | engine |
-| `approve_in_view`, `answer_seller` | app-only | approval card button; v3 view alias |
+| `approve_in_view` | app-only | the human's tap on the approval card / deal board (one-time code in `_meta`, never model-visible) |
 
-\* Bound automatically as soon as `views/<name>/view.tsx` exists. mcp-use refuses to start when a
-tool names a missing view, and allows one tool per view.
+Views bind only when `views/<name>/view.tsx` exists (mcp-use refuses to start when a tool names a
+missing view, and allows one tool per view).
 
-## Requests (shared / partner-owned files; not edited here)
+## Brain and view schemas
 
-1. **`packages/core/views.ts` (shared):** move `src/schemas/views.ts` there verbatim (DealBoard,
-   Approval, Estimates, BusinessProfile). Additions over CLAUDE.md §5 are marked; one needs agreement:
-   business status `unavailable` (business whose only channel isn't enabled; never contacted).
-2. **`packages/core/contracts.ts` (shared):** v5 `Business` (`phone?`, `a2a_card_url?`, `best_channel`),
-   `Quote.channel`, `ReplyMeta.channel` + `"call"`, `ApprovalRecord.channel` + `"view" | "imessage"`, and
-   `Brain.getProfile(businessId): Promise<Profile | null>` (the engine already calls it when present).
-3. **Aarnav, views:** `views/deal-board` should call `answer_business` (then `answer_seller` goes) and poll
-   `wait_for_update`; add `views/haggle-home/view.tsx` (`export { default } from "../deal-board/view";`) so
-   the launcher binds; the approval card reads `_meta["haggle/approval"] = { approval_id, code }` and calls
-   `approve_in_view` on the human's tap.
-4. **Aarnav, brain:** export a class implementing `Brain` (+ `getProfile`); swap it for `StubBrain` in
-   `src/live.ts` and `@haggle/engine` mock wiring.
+View-bound tools return the shared `@haggle/core` view schemas (`packages/core/views.ts`); the engine's
+read models are mapped in `src/views.ts`. The engine teaches the real brain through
+`@haggle/engine` `BrainAdapter` (directory business ids, one flat reply per item, trusted senders only);
+`src/brain.ts` builds it. Mock mode keeps the brain in memory.

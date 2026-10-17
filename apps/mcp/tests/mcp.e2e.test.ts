@@ -4,9 +4,14 @@
 // app UI) and payment. Scenario (PLAN §8/§10): 40-person SF lunch, ≥12 vegetarian, delivery, $1,200.
 // Run `mcp-use build` first: this starts the built entry, as Manufact does.
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Approval, DealBoard, DealBoardOrEmpty, Estimates } from "../src/schemas/views.ts";
+import { ApprovalOut as Approval, BusinessProfile, DealBoard, DealBoardOrEmpty, Estimates } from "../src/views.ts";
 
+// npm workspaces hoist the binary to the repo root; a per-package install keeps it local.
+const APP_DIR = join(import.meta.dirname, "..");
+const MCP_USE_BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].find((p) => existsSync(p)) ?? "mcp-use";
 const PORT = 3900 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
 let proc: ChildProcess;
@@ -33,7 +38,7 @@ const REQUEST = {
 };
 
 beforeAll(async () => {
-  proc = spawn("./node_modules/.bin/mcp-use", ["start"], { env: { ...process.env, PORT: String(PORT), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0" }, stdio: "ignore" });
+  proc = spawn(MCP_USE_BIN, ["start"], { cwd: APP_DIR, env: { ...process.env, PORT: String(PORT), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0" }, stdio: "ignore" });
   for (let i = 0; i < 80; i++) {
     try {
       if ((await fetch(`${BASE}/health`)).ok) return;
@@ -56,10 +61,11 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const byName = Object.fromEntries(tools.map((t: { name: string }) => [t.name, t]));
     expect(JSON.stringify(byName.get_quotes._meta)).toContain("deal-board");
     expect(byName.get_quotes.outputSchema).toBeTruthy();
-    for (const hidden of ["answer_seller", "approve_in_view"]) expect(byName[hidden]._meta.ui.visibility).toEqual(["app"]);
+    expect(byName.approve_in_view._meta.ui.visibility).toEqual(["app"]);
+    expect(names).not.toContain("answer_seller"); // views call answer_business now
     expect(byName.open_haggle.inputSchema.required ?? []).toEqual([]);
     const health = await (await fetch(`${BASE}/health`)).json();
-    expect(health).toMatchObject({ ok: true, mode: "mock", phone: true, brain: "stub" });
+    expect(health).toMatchObject({ ok: true, mode: "mock", phone: true, brain: "connected" });
   });
 
   it("open_haggle({}) returns an empty board before any deal", async () => {
@@ -77,11 +83,16 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(errorOf(noJob)).toMatchObject({ ok: false, mode: "mock", error: { code: "job_not_found" }, next: "deal" });
     const badPhone = await call("deal", { request: REQUEST, businesses: [{ name: "X", phone: "+1415555012345678" }] });
     expect(badPhone.isError).toBe(true);
+    const unknown = await call("business_profile", { business: "nobody-we-know" });
+    expect(errorOf(unknown)).toMatchObject({ error: { code: "NOT_LEARNED" }, next: "deal" });
+    // The real brain is seeded: a learned business has a profile and the warm path answers instantly.
     const prof = await call("business_profile", { business: "bay-catering" });
-    expect(errorOf(prof)).toMatchObject({ error: { code: "NOT_LEARNED" }, next: "deal" });
-    const ask = await call("ask", { what: "lunch", quantity: 25, date: "2026-10-28", area: "San Francisco" });
+    expect(BusinessProfile.safeParse(prof.structuredContent).success).toBe(true);
+    expect(prof.structuredContent).toMatchObject({ name: "Bay Catering", mode: "mock" });
+    const ask = await call("ask", { what: "lunch catering", quantity: 25, date: "2026-10-28", area: "San Francisco" });
     expect(Estimates.safeParse(ask.structuredContent).success).toBe(true);
-    expect(ask.structuredContent).toMatchObject({ note: "estimates, not quotes", estimates: [], brain: "stub (not learning yet)" });
+    expect(ask.structuredContent.estimates.length).toBeGreaterThan(0);
+    expect(ask.structuredContent.note).toMatch(/estimate/i);
   });
 
   it("settings: read, update within the ceiling, refuse above it", async () => {
@@ -143,7 +154,7 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // Harbor Table: deposit found on page 2 of the PDF.
     expect(q("Harbor Table").flags).toContain("hidden_deposit");
     expect(q("Harbor Table")).toMatchObject({ deposit_usd: 300 });
-    expect(q("Harbor Table").evidence.deposit_usd.source).toBe("pdf p.2");
+    // (Per-field evidence such as "deposit from pdf p.2" stays engine-internal; the shared Quote has `source`.)
     // Mission Eats: reached by (simulated) phone; quote from the call transcript.
     expect(biz("Mission Eats")).toMatchObject({ channel: "phone", status: "quoted" });
     expect(biz("Mission Eats").transcript_snippet).toMatch(/AI assistant/);
@@ -174,28 +185,32 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // Approval (simulated human in mock mode: this client has no approval card or form).
     const ap = await call("approve", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(Approval.safeParse(ap.structuredContent).success).toBe(true);
-    expect(ap.structuredContent).toMatchObject({ status: "approved", amount_usd: 5, quote: { business: "Bay Catering", total_usd: 995 }, channel: "simulated" });
+    expect(ap.structuredContent).toMatchObject({ status: "approved", amount_usd: 5, deposit_usd: 5, business: "Bay Catering", quote_channel: "email", channel: "simulated", mode: "mock" });
+    expect(ap.structuredContent.summary).toMatch(/\$995 order total/);
     expect(ap.structuredContent.demo).toMatch(/DEMO MODE/);
 
     await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
     let final;
     for (let i = 0; i < 30; i++) {
       final = (await call("get_quotes", { job_id: job })).structuredContent;
-      if (final.state === "paid") break;
+      if (final.job.state === "paid") break;
       await call("wait_for_update", { job_id: job, cursor, timeout_s: 1 });
     }
-    expect(final.state).toBe("paid");
-    expect(final.payment).toMatchObject({ status: "settled", simulated: true, rail: "stripe", network: "stripe-test" }); // simulated Stripe test-mode rail
-    expect(final.payment.payment_intent_id).toMatch(/^pi_DEMO/);
-    expect(final.payment.receipt_url).toBeUndefined(); // no dashboard link for a simulated charge
-    expect(final.payment.explorer_url).toBeUndefined();
+    expect(final.job.state).toBe("paid");
+    expect(DealBoard.safeParse(final).success).toBe(true);
+    expect(final.payment).toMatchObject({ status: "settled", simulated: true });
+    expect(final.payment.receipt_url).toBeUndefined(); // simulated payments never get a receipt link
     expect(final.businesses.find((b: { name: string }) => b.name === "Bay Catering").status).toBe("won");
     const paidView = await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(paidView.structuredContent).toMatchObject({ status: "paid" });
+    // The approval card keeps the full payment: the simulated Stripe test-mode rail, one DEMO PaymentIntent.
+    expect(paidView.structuredContent.payment).toMatchObject({ status: "settled", rail: "stripe", network: "stripe-test", simulated: true });
+    expect(paidView.structuredContent.payment.payment_intent_id).toMatch(/^pi_DEMO/);
+    expect(paidView.structuredContent.receipt_url).toBeUndefined();
 
     // The launcher now opens this deal.
     const home = await call("open_haggle", {});
-    expect(home.structuredContent).toMatchObject({ empty: false, job_id: job });
+    expect(home.structuredContent).toMatchObject({ empty: false, job: { id: job } });
     // @-mentions find businesses from this deal.
     const m = await call("mention_businesses", { query: "bay" });
     expect(m.structuredContent.items[0]).toMatchObject({ uri: "business://bay-catering", name: "Bay Catering" });

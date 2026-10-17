@@ -29,6 +29,7 @@ export * from "./workflow/quotePart.ts";
 export * from "./workflow/mapping.ts";
 export * from "./workflow/engine.ts";
 export * from "./brain/stubBrain.ts";
+export * from "./brain/adapter.ts";
 export * from "./sim/fleet.ts";
 export * from "./mock.ts";
 export * from "./store/postgres.ts";

@@ -5,10 +5,10 @@ import { createX402Client } from "@primitivedotdev/sdk/x402";
 import { parseChallengePart, preparePayment, type PayerClient } from "../src/payments/x402Challenge.ts";
 import { replySubject, sendEmail, sendKeys, SendRejected, type SenderClient } from "../src/outbound/primitiveSender.ts";
 
-// Relative to the real clock: the x402 SDK checks challenge expiry against wall time, so fixed
-// dates turn this into a time bomb.
-const NOW = new Date();
-const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000).toISOString();
+// Anchored to the wall clock: the x402 SDK checks challenge expiry against real time, so fixed
+// dates would expire the fixtures (they did on 2026-10-17 at 21:05Z).
+const NOW = new Date(Math.floor(Date.now() / 60_000) * 60_000);
+const at = (min: number) => new Date(NOW.getTime() + min * 60_000).toISOString();
 const envelope = (over: Record<string, unknown> = {}, req: Record<string, unknown> = {}) => JSON.stringify({
   interaction_version: 1,
   interaction_id: "5f0c1b9e-2d3a-4c5b-9e8f-7a6b5c4d3e2f@bay-catering.primitive.email",

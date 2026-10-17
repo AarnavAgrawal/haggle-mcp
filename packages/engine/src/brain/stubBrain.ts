@@ -2,7 +2,7 @@
 // frozen Brain interface with fixed, honest answers and does no learning (learning is Partner's
 // code): estimates are empty, price checks are "unknown" with sample_size 0, discovery returns
 // only the configured demo fleet, marked simulated. Replace with `@haggle/brain` when it lands.
-import type { Brain, Business, Estimate, Hints, PriceVerdict, Profile } from "@haggle/core/contracts";
+import type { Brain, Business, Estimate, Hints, PriceVerdict, Profile } from "../contract.ts";
 
 export class StubBrain implements Brain {
   readonly stub = true;

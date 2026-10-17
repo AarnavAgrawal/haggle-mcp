@@ -32,9 +32,10 @@ import {
 const SECRET = "whsec_chain_test";
 const DOMAIN = "brave-dog.primitive.email";
 const INBOX = jobInboxAddress("7F3K", DOMAIN);
-// Relative to the real clock: the x402 SDK checks challenge expiry against wall time.
-const NOW = new Date();
-const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000).toISOString();
+// Anchored to the wall clock: the x402 SDK checks challenge expiry against real time, so fixed
+// dates would expire the fixtures (they did on 2026-10-17 at 21:05Z).
+const NOW = new Date(Math.floor(Date.now() / 60_000) * 60_000);
+const at = (min: number) => new Date(NOW.getTime() + min * 60_000).toISOString();
 const REQS: EngineRequirement[] = [
   { id: "veg12", kind: "dietary", need: "vegetarian", min_count: 12, text: "At least 12 vegetarian meals", hard: true },
   { id: "delivery", kind: "delivery", text: "Delivery included", hard: true },

@@ -1,0 +1,18 @@
+{
+  "name": "@haggle/brain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Haggle brain: business profiles, estimates, price checks, negotiation hints, discovery",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@haggle/core": "*",
+    "@supabase/supabase-js": "^2.118.0",
+    "zod": "^4.6.7"
+  }
+}

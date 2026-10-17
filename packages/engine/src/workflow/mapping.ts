@@ -1,5 +1,5 @@
 // Engine rows <-> frozen contract types (packages/core/contracts.ts).
-import type { ParsedReply, Quote, QuoteField, QuoteFlag, Request, Requirement } from "@haggle/core/contracts";
+import type { ParsedReply, Quote, QuoteField, QuoteFlag, Request, Requirement } from "../contract.ts";
 import { centsToUsd } from "../money.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
 import type { EngineRequirement } from "../parsing/requirements.ts";

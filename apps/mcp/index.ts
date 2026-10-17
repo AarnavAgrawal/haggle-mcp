@@ -4,14 +4,16 @@ import { inputRequired, inputResponse, MCPServer } from "mcp-use";
 import { z } from "zod";
 import { EngineError, type DealBoardData } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
-import { Approval, BusinessProfile, DealBoard, DealBoardOrEmpty, Estimates } from "./src/schemas/views.ts";
+import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
+import { ApprovalOut, BusinessProfile, DealBoard, DealBoardOrEmpty, emptyBoard, Estimates, toApproval, toDealBoard } from "./src/views.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
 import "./src/live.ts";
 
 // Haggle buyer MCP server (v5): lets any agent buy from businesses by email (Inkbox), with phone
 // and A2A routed per business. Tool handlers are thin (validate -> engine -> envelope): ok()/fail()
 // envelopes, stable error codes with a fix and a next step, compact model text, full
-// structuredContent for the views. Views are Aarnav's (apps/mcp/views/**); schemas in src/schemas.
+// structuredContent for the views. Views are Aarnav's (apps/mcp/views/**); view-bound tools return the
+// shared @haggle/core view schemas (mapped in src/views.ts). Warm-path tools read the real brain.
 
 const server = new MCPServer({
   name: "haggle",
@@ -33,7 +35,7 @@ const server = new MCPServer({
 type Mode = "mock" | "live";
 
 /** Success envelope: short model-readable text; structuredContent validated against the tool's outputSchema. */
-function ok<T extends { mode: Mode }>(data: T, text: string, meta?: Record<string, unknown>) {
+function ok<T extends { mode?: Mode | undefined }>(data: T, text: string, meta?: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text: data.mode === "mock" ? `[DEMO] ${text}` : text }], structuredContent: data as never, ...(meta ? { _meta: meta } : {}) };
 }
 
@@ -218,9 +220,9 @@ export const getQuotes = server.tool(
     annotations: { readOnlyHint: true, openWorldHint: false, idempotentHint: true },
     view: { name: "deal-board", description: "Haggle deal board: businesses by channel and status, ranked quotes, risks, approval and payment", prefersBorder: false },
   },
-  async ({ job_id }) => run(async ({ engine }) => {
+  async ({ job_id }) => run(async ({ engine, mode }) => {
     const b = await engine.getQuotes(job_id);
-    return ok(b, boardText(b));
+    return ok(toDealBoard(b, mode), boardText(b));
   }),
 );
 
@@ -246,39 +248,10 @@ export const answerBusiness = server.tool(
   answerHandler,
 );
 
-/**
- * Compatibility only: the current deal-board view (views/deal-board, Aarnav) still calls
- * `answer_seller`. Hidden from the model (app visibility); remove when the view uses answer_business.
- */
-export const answerSellerCompat = server.tool(
-  {
-    name: "answer_seller",
-    title: "Answer a business's question (view compatibility)",
-    description: "Deprecated alias of answer_business for the deal-board view. Models: use answer_business.",
-    inputSchema: answerInput,
-    outputSchema: answerOutput,
-    visibility: "app",
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: true },
-  },
-  answerHandler,
-);
-
 // ───────────────────────────── approval & payment ─────────────────────────────
 
-async function approvalView(rt: Runtime, job_id: string, quote_id: string, status: "pending_human" | "approved" | "paid" | "refused", extra: Record<string, unknown> = {}) {
-  const b = await rt.engine.getQuotes(job_id);
-  const q = b.quotes.find((x) => x.quote_id === quote_id);
-  const a = b.approval?.quote_id === quote_id ? b.approval : null;
-  return {
-    ok: true, mode: rt.mode, job_id, quote_id,
-    quote: { business: q?.business ?? "unknown", total_usd: q?.total_usd ?? a?.quote_total_usd ?? 0, items: q?.items ?? [] },
-    amount_usd: a?.payment_usd ?? q?.deposit_usd ?? 0, deposit_usd: q?.deposit_usd ?? a?.payment_usd ?? 0, cap_usd: a?.cap_usd ?? 0,
-    status, channel: a?.channel ?? "none",
-    ...(a ? { approval_id: a.approval_id, expires_at: a.expires_at } : {}),
-    ...(b.payment ? { payment: b.payment } : {}),
-    ...(b.payment?.receipt_url ? { receipt_url: b.payment.receipt_url } : b.payment?.explorer_url ? { receipt_url: b.payment.explorer_url } : {}),
-    next: "", ...extra,
-  };
+async function approvalView(rt: Runtime, job_id: string, quote_id: string, status: ApprovalOut["status"], extra: { next: string; reason?: string; demo?: string }) {
+  return toApproval(await rt.engine.getQuotes(job_id), quote_id, status, rt.mode, extra);
 }
 
 export const approve = server.tool(
@@ -290,7 +263,7 @@ export const approve = server.tool(
       "(the model can't fill it). Calling this tool is never an approval by itself. Returns approved, pending_human or refused; NO_HUMAN_CHANNEL means this client can show neither. " +
       "Only for an eligible quote from get_quotes. Next: pay(job_id, quote_id) once approved.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
-    outputSchema: Approval,
+    outputSchema: ApprovalOut,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     ...viewIf({ name: "approval", description: "Haggle approval card: business, amount, deposit, cap, status and receipt" }),
   },
@@ -366,15 +339,16 @@ export const pay = server.tool(
       "Refuses without a stored human approval for that exact quote, above the spending cap, if the quote changed, or to a business that didn't quote; safe to retry (one charge per approval). " +
       "Don't call it to ask for approval (use approve). Next: get_quotes shows the receipt; wait_for_update if it is still charging.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
-    outputSchema: Approval,
+    outputSchema: ApprovalOut,
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: true },
+    ...viewIf({ name: "payment", description: "Haggle approval card after payment: status and receipt" }),
   },
   async ({ job_id, quote_id }) =>
     run(async (rt) => {
       const payment = await rt.engine.pay(job_id, quote_id);
       const status = payment.status === "settled" ? "paid" : payment.status === "awaiting_approval" ? "pending_human" : ["rejected", "failed", "expired"].includes(payment.status) ? "refused" : "approved";
       const v = await approvalView(rt, job_id, quote_id, status, {
-        payment, ...(payment.reason ? { reason: payment.reason } : {}), ...(payment.simulated ? { demo: "DEMO MODE: simulated payment; no real funds" } : {}),
+        ...(payment.reason ? { reason: payment.reason } : {}), ...(payment.simulated ? { demo: "DEMO MODE: simulated payment; no real funds" } : {}),
         next: status === "paid" ? "Done: get_quotes shows the receipt." : status === "pending_human" ? "The human hasn't approved yet. Call wait_for_update." : status === "refused" ? "Payment refused; see reason." : "Call wait_for_update until the payment settles.",
       });
       return ok(v, `Payment ${payment.status}${payment.amount_usd ? ` (${usd(payment.amount_usd)})` : ""}${payment.reason ? `: ${payment.reason}` : ""}. next: ${v.next}`);
@@ -398,14 +372,12 @@ export const ask = server.tool(
   async (req) =>
     run(async (rt) => {
       const area = await areaOr(rt, req.area);
-      const r = await rt.engine.ask({ ...req, area, requirements: [] });
-      const estimates = r.estimates.map((e) => ({
-        business: e.business, business_id: e.business_id, total_usd: e.estimate_usd, low_usd: e.low_usd, high_usd: e.high_usd, ...(e.per_unit_usd !== undefined ? { per_unit_usd: e.per_unit_usd } : {}),
-        confidence: e.confidence, n_quotes: e.quote_count, best_channel: "email" as const, simulated: e.simulated,
-      }));
-      const next = estimates.length ? "To get real quotes, call deal with these businesses." : r.brain.startsWith("stub") ? "No learned businesses yet (the brain isn't connected); call deal for real quotes." : "No learned businesses match; call deal for real quotes.";
-      const text = estimates.length ? `${estimates.length} estimates (not quotes): ${estimates.map((e) => `${e.business} ~${usd(e.total_usd)} (${Math.round(e.confidence * 100)}%, ${e.n_quotes} quotes)`).join("; ")}. next: ${next}` : `No estimates. next: ${next}`;
-      return ok({ ok: true, mode: rt.mode, request: { what: req.what, quantity: req.quantity, date: req.date, area }, estimates, note: r.note, brain: r.brain, next }, text);
+      const request = { what: req.what, quantity: req.quantity, date: req.date, area, ...(req.unit ? { unit: req.unit } : {}) };
+      const v = { ...toEstimatesView(request, await rt.brain.core.estimate(request)), mode: rt.mode };
+      const text = v.estimates.length
+        ? `${v.estimates.length} estimates (not quotes): ${v.estimates.map((e) => `${e.business} ~${usd(e.total_usd)} (${Math.round(e.confidence * 100)}%, ${e.n_quotes} quotes)`).join("; ")}. next: ${v.next}`
+        : `No estimates. next: ${v.next}`;
+      return ok(v, text);
     }),
 );
 
@@ -463,20 +435,11 @@ export const businessProfile = server.tool(
     ...viewIf({ name: "business-profile", description: "Haggle business profile: what Haggle learned about a business" }),
   },
   async ({ business }) =>
-    run(async ({ engine, mode }) => {
-      const { profile, business: b } = await engine.businessProfile(business);
-      if (!profile) {
-        return fail(mode, "NOT_LEARNED", `Haggle hasn't learned ${b?.name ?? business} yet${engine.brainIsStub ? " (the brain isn't connected)" : ""}.`, "Run a deal with this business; every reply teaches Haggle.", "deal");
-      }
-      const p = profile;
-      const out = {
-        ok: true, mode, business_id: p.business_id, name: p.name, best_channel: "email" as const, menu: p.menu, price_model: p.price_model, minimum: p.price_model.minimum_order_usd ?? null,
-        deposit_rule: p.deposit_rule ? (p.deposit_rule.kind === "percent" ? `${p.deposit_rule.value}% deposit` : `$${p.deposit_rule.value} deposit`) : null,
-        discount_behavior: p.discount_behavior.responds_to_competing_quote === null ? "unknown" : p.discount_behavior.responds_to_competing_quote ? `matches competing quotes${p.discount_behavior.usual_concession_pct ? ` (~${p.discount_behavior.usual_concession_pct}% off)` : ""}` : "does not negotiate",
-        reply_speed: p.median_reply_s === undefined ? null : `~${Math.round(p.median_reply_s / 60)} min`, history: [], confidence: p.confidence, simulated: p.simulated, quote_count: p.quote_count,
-        next: "Call deal with this business for a real quote, or ask for an instant estimate.",
-      };
-      return ok(out, `${p.name}: ${p.quote_count} real quotes, confidence ${Math.round(p.confidence * 100)}%.`);
+    run(async ({ brain, mode }) => {
+      const p = (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business)));
+      if (!p) return fail(mode, "NOT_LEARNED", `Haggle hasn't learned ${business} yet.`, "Run a deal with this business; every reply teaches Haggle.", "deal");
+      const v = { ...toBusinessProfileView(p), mode };
+      return ok(v, `${p.name}: ${p.n_quotes} real quotes, confidence ${Math.round(p.confidence * 100)}%. next: ${v.next}`);
     }),
 );
 
@@ -490,16 +453,14 @@ export const openHaggle = server.tool(
     inputSchema: z.object({}),
     outputSchema: DealBoardOrEmpty,
     annotations: { readOnlyHint: true, openWorldHint: false, idempotentHint: true },
-    ...viewIf({ name: "haggle-home", description: "Haggle launcher: the latest deal board", entrypoints: [{ type: "global" as const }, { type: "thread" as const }] }),
+    ...viewIf({ name: "launcher", description: "Haggle launcher: the latest deal board", entrypoints: [{ type: "global" as const }, { type: "thread" as const }] }),
   },
   async () =>
     run(async ({ engine, mode }) => {
       const job = await engine.latestJob();
-      if (!job) {
-        return ok({ ok: true, mode, empty: true, job: null, businesses: [], quotes: [], open_questions: [], next: "No deals yet. Call deal with what to buy, or ask for an instant estimate." }, "No deals yet. next: deal or ask");
-      }
+      if (!job) return ok(emptyBoard(mode), "No deals yet. next: deal or ask");
       const b = await engine.getQuotes(job.id);
-      return ok({ ...b, empty: false }, boardText(b));
+      return ok(DealBoardOrEmpty.parse({ ...toDealBoard(b, mode), empty: false }), boardText(b));
     }),
 );
 

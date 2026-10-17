@@ -1,10 +1,13 @@
 // Builds the engine for the configured mode. Mock mode (default) needs no credentials and is
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
-import { createMockEngine, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
+import { createMockEngine, fleetBusinesses, type BrainAdapter, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
+import { makeBrain } from "./brain.ts";
 
 export type Runtime = {
   mode: "mock" | "live";
   engine: HaggleEngine;
+  /** The real brain (via the engine's adapter); warm-path tools use `brain.core` and its view mappers. */
+  brain: BrainAdapter;
   /** Mock mode: the simulated fleet's delivery pump (the engine also pumps on every wait). */
   tick?: () => Promise<number>;
   /** Live mode: the Inkbox buyer identity and its webhook signing key. */
@@ -40,8 +43,12 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
     return runtime;
   }
   const delayScale = Number(env.HAGGLE_SIM_DELAY_SCALE ?? "1");
-  const m = createMockEngine({ delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1 });
-  runtime = Promise.resolve({ mode: "mock", engine: m.engine, tick: () => m.fleet.deliverDue(), missing: [] });
+  // Mock mode never writes simulated profiles to a real database (the brain stays in memory), and
+  // discover offers only the simulated fleet, which the mock email/phone ports can play.
+  const fleet = fleetBusinesses();
+  const brain = makeBrain(fleet, { HAGGLE_BRAIN_STORE: "memory" }, { discovery: fleet });
+  const m = createMockEngine({ delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain });
+  runtime = Promise.resolve({ mode: "mock", engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [] });
   return runtime;
 }
 

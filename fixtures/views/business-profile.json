@@ -1,0 +1,22 @@
+{
+  "business_id": "biz_harbor_table",
+  "name": "Harbor Table",
+  "category": "catering",
+  "area": "San Francisco",
+  "best_channel": "email",
+  "channels": ["email"],
+  "menu": ["Family-style lunch", "Grilled salmon", "Mushroom risotto (vegetarian)", "Seasonal salad (vegetarian)", "Lemon bars"],
+  "price_model": "$26–29 per person",
+  "minimum": "$400 minimum order",
+  "deposit_rule": "30% deposit, stated on page 2 of the PDF quote",
+  "discount_behavior": "Drops ~10% when shown a real competing quote; doesn't move otherwise",
+  "reply_speed": "Usually replies in ~25 min by email, with a PDF",
+  "history": [
+    { "date": "2026-10-17", "channel": "email", "total_usd": 1150, "note": "Quote for 40 people (PDF, deposit on page 2)" },
+    { "date": "2026-10-17", "channel": "email", "total_usd": 1035, "note": "Dropped 10% after a competing quote" },
+    { "date": "2026-10-09", "channel": "email", "total_usd": 580, "note": "Quote for 20 people" }
+  ],
+  "n_quotes": 3,
+  "confidence": 0.82,
+  "next": "Get a real quote with deal(request=..., businesses=['biz_harbor_table']), or an instant estimate with ask(what, quantity, date, area)."
+}

@@ -6,7 +6,7 @@
 // finishes). Changes for Haggle v3: the contract's 9 JobStates; "ready" is a flag rather than a
 // state; approval leads to `paying` (x402 invoice + payment) instead of a Stripe charge; a
 // deadline with no eligible quote fails the job with a reason.
-import type { JobState } from "@haggle/core/contracts";
+import type { JobState } from "../contract.ts";
 
 export const TERMINAL: ReadonlySet<JobState> = new Set(["paid", "cancelled", "failed"]);
 

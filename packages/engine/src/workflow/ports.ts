@@ -2,7 +2,7 @@
 // workflow code. Live (v5): Inkbox email + attachments, Claude extractor, Partner's brain, x402
 // payer; phone/A2A ports are absent until enabled, so those businesses are reported "unavailable".
 // Mock (labelled DEMO everywhere): SimFleet (email + simulated calls), inline attachments, StubBrain.
-import type { Brain } from "@haggle/core/contracts";
+import type { Brain } from "../contract.ts";
 import type { ExtractedFile, PdfFile } from "../inbound/attachments.ts";
 import type { OutboundEmail, SendOutcome } from "../outbound/primitiveSender.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
