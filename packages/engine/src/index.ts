@@ -33,3 +33,4 @@ export * from "./sim/fleet.ts";
 export * from "./mock.ts";
 export * from "./store/postgres.ts";
 export * from "./live/adapters.ts";
+export * from "./live/inkbox.ts";

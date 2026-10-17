@@ -101,7 +101,10 @@ export interface AuthEvidence {
 
 export type TrustVerdict =
   | { trusted: true; address: string; reason: "trusted"; evidence: AuthEvidence }
-  | { trusted: false; retryable: boolean; reason: TrustReason | "no-expected-address"; evidence: AuthEvidence };
+  | { trusted: false; retryable: boolean; reason: TrustReason | "no-expected-address" | InkboxTrustReason; evidence: AuthEvidence };
+
+/** Inkbox (v5) verdicts: see live/inkbox.ts `inkboxSenderTrust`. */
+export type InkboxTrustReason = "unverified-external-sender" | "sender-not-verifiable" | "inkbox-verify-unavailable";
 
 /**
  * Is this signed webhook event really from `expected` (a business snapshot address, the

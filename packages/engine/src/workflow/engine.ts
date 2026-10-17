@@ -653,6 +653,14 @@ export class HaggleEngine {
         await this.repo.updateMessage(msg.id, { parse_status: "failed" });
         continue;
       }
+      // Unauthenticated mail is kept for audit but never parsed: no LLM call, no attachment
+      // download, no quote, question or payment step can come from it.
+      if (msg.sender_trusted !== true) {
+        await this.repo.updateMessage(msg.id, { parse_status: "done" });
+        await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `ignored an unauthenticated email claiming to be ${b.name}` });
+        await this.repo.touchJob(job.id);
+        continue;
+      }
       try {
         const files = await this.d.attachments.load(msg);
         const interaction = files.find((f) => f.kind === "json" && /interaction\.json$/i.test(f.filename));
