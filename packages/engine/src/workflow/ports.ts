@@ -1,6 +1,7 @@
 // Every external dependency of the engine is a port, so mock mode and live mode run the same
-// workflow code. Live: Primitive sender, Claude extractor, Primitive attachments, Partner's brain,
-// x402 payer. Mock (labelled DEMO everywhere): SimFleet, SimExtractor, inline attachments, StubBrain.
+// workflow code. Live (v5): Inkbox email + attachments, Claude extractor, Partner's brain, x402
+// payer; phone/A2A ports are absent until enabled, so those businesses are reported "unavailable".
+// Mock (labelled DEMO everywhere): SimFleet (email + simulated calls), inline attachments, StubBrain.
 import type { Brain } from "@haggle/core/contracts";
 import type { ExtractedFile, PdfFile } from "../inbound/attachments.ts";
 import type { OutboundEmail, SendOutcome } from "../outbound/primitiveSender.ts";
@@ -11,6 +12,23 @@ import type { MessageRow, Mode, Repository } from "../store/types.ts";
 
 export interface EmailPort {
   send(msg: OutboundEmail): Promise<SendOutcome>;
+}
+
+/** A Voice AI call request. `reason` is the task brief (≤ 2,000 chars) and says it is an AI assistant. */
+export interface PhoneCallRequest {
+  jobId: string;
+  businessId: string;
+  toNumber: string; // pinned E.164 snapshot
+  reason: string;
+  idempotencyKey: string;
+}
+
+/**
+ * Places outbound calls. Results come back later as one call-ended event, handed to
+ * HaggleEngine.ingestCall(). Absent in live mode until calls are explicitly enabled.
+ */
+export interface PhonePort {
+  placeCall(req: PhoneCallRequest): Promise<{ callId: string }>;
 }
 
 export interface ExtractorPort {
@@ -36,11 +54,22 @@ export interface EngineConfig {
   approvalTtlMs: number;
   globalPaymentCapCents: number;
   maxRounds: number;
+  /**
+   * v5 (Inkbox): one buyer identity mailbox for every job. Replies are matched by thread,
+   * In-Reply-To and the [HG-code] subject tag instead of a per-job address. Omit for per-job inboxes.
+   */
+  sharedInbox?: string;
+  /** Default per-job order cap (settings) when deal() has no budget. */
+  defaultSpendingCapCents?: number;
+  /** Hard ceiling the settings cap can never exceed (operator env, not the model). */
+  spendingCapCeilingCents?: number;
 }
 
 export interface EngineDeps {
   repo: Repository;
   email: EmailPort;
+  /** Optional: Voice AI calls (mock: simulated fleet; live: only when explicitly enabled). */
+  phone?: PhonePort;
   extractor: ExtractorPort;
   attachments: AttachmentPort;
   brain: Brain;

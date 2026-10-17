@@ -34,13 +34,23 @@ export interface JobRow {
   updated_at: string;
 }
 
-export type BusinessStatus = "pending" | "contacted" | "replied" | "quoted" | "question" | "declined" | "bounced" | "silent";
+export type BusinessStatus =
+  | "pending" | "contacted" | "replied" | "quoted" | "question" | "declined" | "bounced" | "silent"
+  // v5 channels: a placed call is "ringing" until call.ended; "no_reply" = call not answered;
+  // "unavailable" = the business's only channel isn't enabled in this deployment (never contacted).
+  | "ringing" | "no_reply" | "unavailable";
+
+/** v5 channel a business is reached on. Email is live; phone/A2A are simulated in mock mode only. */
+export type Channel = "email" | "phone" | "a2a" | "imessage";
 
 export interface JobBusinessRow {
   job_id: string;
   business_id: string;
   name: string; // snapshot
-  email: string; // snapshot, lowercased; the only address Haggle ever sends to or trusts for this job
+  email: string | null; // snapshot, lowercased; the only address Haggle ever sends to or trusts for this job
+  phone: string | null; // snapshot, E.164; the only number Haggle ever calls for this job
+  a2a_card_url: string | null;
+  channel: Channel; // chosen at deal time (A2A card > email > phone)
   source: "fleet" | "web" | "agent";
   simulated: boolean;
   status: BusinessStatus;
@@ -56,7 +66,7 @@ export interface JobBusinessRow {
 
 export type MessageKind =
   | "rfq" | "reply" | "followup" | "answer" | "counter" | "approval_request" | "approval_reply"
-  | "accept" | "payment" | "receipt" | "cancel" | "quarantine";
+  | "accept" | "payment" | "receipt" | "cancel" | "quarantine" | "call";
 
 export interface StoredAttachment {
   filename: string | null;
@@ -91,6 +101,8 @@ export interface MessageRow {
   quarantine_reason: string | null;
   round: number | null;
   simulated: boolean;
+  /** Channel the message travelled on; phone rows hold a call transcript in body_text. */
+  channel: Channel;
   created_at: string;
 }
 
@@ -132,7 +144,7 @@ export interface ApprovalRow {
   payment_cents: number;
   cap_cents: number;
   approver: string | null;
-  channel: "elicitation" | "email" | "simulated";
+  channel: "elicitation" | "email" | "simulated" | "view" | "imessage";
   status: "pending" | "approved" | "declined" | "expired" | "used";
   code: string;
   expires_at: string;
@@ -173,7 +185,16 @@ export interface JobEventRow {
   at: string;
 }
 
-export type NewMessage = Omit<MessageRow, "id" | "created_at">;
+export type NewMessage = Omit<MessageRow, "id" | "created_at" | "channel"> & { channel?: Channel };
+
+/** Buyer settings (ChatGPT native settings / settings tools). Never changed by business messages. */
+export interface SettingsRow {
+  spending_cap_cents: number; // per-job order cap used when deal() has no budget_usd
+  approver_phone: string | null; // E.164; iMessage approver (9 PM gate)
+  approver_email: string | null;
+  default_area: string | null;
+  updated_at: string;
+}
 
 /** Persistence port. InMemoryRepository for tests/mock mode; PostgresRepository for live. */
 export interface Repository {
@@ -199,6 +220,8 @@ export interface Repository {
   /** Idempotent: returns null when provider_email_id or idempotency_key already exists. */
   insertMessage(m: NewMessage): Promise<MessageRow | null>;
   findMessageByIdempotencyKey(key: string): Promise<MessageRow | null>;
+  /** Inbound dedupe key / outbound provider send id (e.g. an Inkbox call id). */
+  findMessageByProviderId(providerId: string): Promise<MessageRow | null>;
   getMessage(id: string): Promise<MessageRow | null>;
   updateMessage(id: string, patch: Partial<MessageRow>): Promise<void>;
   listMessages(jobId: string): Promise<MessageRow[]>;
@@ -238,4 +261,10 @@ export interface Repository {
   listEvents(jobId: string, afterSeq?: number): Promise<JobEventRow[]>;
   /** True the first time an event id is seen. */
   recordInboundEvent(providerEventId: string): Promise<boolean>;
+
+  // jobs (launcher) + settings
+  /** Most recently updated jobs, newest first. */
+  listRecentJobs(limit: number): Promise<JobRow[]>;
+  getSettings(): Promise<SettingsRow | null>;
+  saveSettings(s: Omit<SettingsRow, "updated_at">): Promise<SettingsRow>;
 }

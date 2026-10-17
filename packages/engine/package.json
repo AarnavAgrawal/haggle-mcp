@@ -15,6 +15,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
     "@haggle/core": "workspace:*",
+    "@inkbox/sdk": "0.7.19",
     "@primitivedotdev/sdk": "2.4.0",
     "postgres": "^3.4.9",
     "tar": "^7.5.22",

@@ -12,6 +12,7 @@ import type {
   QuestionRow,
   QuoteRow,
   Repository,
+  SettingsRow,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -28,6 +29,7 @@ export class InMemoryRepository implements Repository {
   private payments: PaymentRow[] = [];
   private events: JobEventRow[] = [];
   private inboundEvents = new Set<string>();
+  private settings: SettingsRow | null = null;
 
   async insertJob(job: JobRow) {
     if (this.jobs.has(job.id)) throw new Error("duplicate job id");
@@ -66,7 +68,7 @@ export class InMemoryRepository implements Repository {
 
   async insertBusinesses(rows: JobBusinessRow[]) {
     for (const r of rows) {
-      if (this.businesses.some((b) => b.job_id === r.job_id && (b.business_id === r.business_id || b.email === r.email))) throw new Error("duplicate business on job");
+      if (this.businesses.some((b) => b.job_id === r.job_id && (b.business_id === r.business_id || (r.email !== null && b.email === r.email)))) throw new Error("duplicate business on job");
     }
     this.businesses.push(...rows.map(clone));
   }
@@ -77,7 +79,7 @@ export class InMemoryRepository implements Repository {
     const b = this.businesses.find((x) => x.job_id === jobId && x.business_id === businessId);
     if (!b) return;
     // Snapshots are immutable (DB trigger in the migration).
-    const { business_id: _a, name: _b, email: _c, job_id: _d, ...rest } = patch;
+    const { business_id: _a, name: _b, email: _c, job_id: _d, phone: _e, ...rest } = patch;
     Object.assign(b, rest);
   }
   async findBusinessCandidates(q: { shortCodes: string[]; threadId: string | null; messageIds: string[] }) {
@@ -91,12 +93,16 @@ export class InMemoryRepository implements Repository {
   async insertMessage(m: NewMessage) {
     if (m.provider_email_id && this.messages.some((x) => x.provider_email_id === m.provider_email_id)) return null;
     if (m.idempotency_key && this.messages.some((x) => x.idempotency_key === m.idempotency_key)) return null;
-    const row: MessageRow = { ...clone(m), id: newId("msg"), created_at: now() };
+    const row: MessageRow = { ...clone(m), channel: m.channel ?? "email", id: newId("msg"), created_at: now() };
     this.messages.push(row);
     return clone(row);
   }
   async findMessageByIdempotencyKey(key: string) {
     const m = this.messages.find((x) => x.idempotency_key === key);
+    return m ? clone(m) : null;
+  }
+  async findMessageByProviderId(providerId: string) {
+    const m = this.messages.find((x) => x.provider_email_id === providerId);
     return m ? clone(m) : null;
   }
   async getMessage(id: string) {
@@ -220,5 +226,16 @@ export class InMemoryRepository implements Repository {
     if (this.inboundEvents.has(providerEventId)) return false;
     this.inboundEvents.add(providerEventId);
     return true;
+  }
+
+  async listRecentJobs(limit: number) {
+    return [...this.jobs.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.created_at.localeCompare(a.created_at)).slice(0, limit).map(clone);
+  }
+  async getSettings() {
+    return this.settings ? clone(this.settings) : null;
+  }
+  async saveSettings(s: Omit<SettingsRow, "updated_at">) {
+    this.settings = { ...clone(s), updated_at: now() };
+    return clone(this.settings);
   }
 }

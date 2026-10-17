@@ -6,7 +6,7 @@ import type { MessageRow } from "../src/store/types.ts";
 const msg = (url: string | null): MessageRow => ({
   id: "m", job_id: "j", business_id: "b", approval_id: null, direction: "in", kind: "reply", provider_email_id: "e", idempotency_key: null, rfc_message_id: null,
   thread_id: null, from_address: null, to_address: null, subject: null, body_text: null, attachments: [{ filename: "q.pdf", content_type: "application/pdf", size_bytes: 1, tar_path: "parts/q.pdf" }],
-  attachments_download_url: url, sender_trusted: true, trust_reason: null, matched_via: null, parse_status: "pending", quarantine_reason: null, round: null, simulated: false, created_at: "",
+  attachments_download_url: url, sender_trusted: true, trust_reason: null, matched_via: null, parse_status: "pending", quarantine_reason: null, round: null, simulated: false, channel: "email", created_at: "",
 });
 
 describe("live adapters", () => {

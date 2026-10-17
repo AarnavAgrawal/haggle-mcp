@@ -1,8 +1,10 @@
 // End-to-end (MOCK MODE): the real engine, in-memory persistence, the simulated golden fleet and a
 // controllable clock, from deal to a settled DEMO payment. Everything external is simulated and
-// labelled; this proves the buyer workflow, not live Primitive / Claude / x402 behaviour.
+// labelled; this proves the buyer workflow, not live Inkbox / Claude / x402 behaviour.
+// v5 fleet (PLAN §8): Mission Eats only answers the phone, so its quote comes from a simulated
+// Voice AI call transcript; every job shares one buyer mailbox, as with Inkbox.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createMockEngine, EngineError, fleetBusinesses, GOLDEN_REQUEST, PostgresRepository, type HaggleEngine, type Repository } from "../src/index.ts";
+import { createMockEngine, EngineError, fleetBusinesses, GOLDEN_REQUEST, MOCK_BUYER_INBOX, PostgresRepository, type HaggleEngine, type Persona, type Repository } from "../src/index.ts";
 
 // Runs against InMemoryRepository always, and against a real Postgres (migrations applied) when
 // HAGGLE_TEST_DATABASE_URL is set: scripts/test-postgres.sh does that in a throwaway container.
@@ -11,16 +13,16 @@ const pgRepos: PostgresRepository[] = [];
 afterAll(async () => { for (const r of pgRepos) await r.close(); });
 let makeRepo: (() => Repository) | undefined;
 
-function setup() {
+function setup(extra: Partial<Parameters<typeof createMockEngine>[0]> = {}) {
   let t = Date.now(); // anchored to real time: the x402 SDK checks challenge expiry against the wall clock
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
-  const m = createMockEngine({ now: clock.now, ...(makeRepo ? { repo: makeRepo() } : {}) });
+  const m = createMockEngine({ now: clock.now, ...(makeRepo ? { repo: makeRepo() } : {}), ...extra });
   return { ...m, clock };
 }
 
 async function startDeal(engine: HaggleEngine) {
   const { budget_usd, ...request } = GOLDEN_REQUEST;
-  return engine.deal({ request, budget_usd, businesses: fleetBusinesses().map((b) => ({ name: b.name, email: b.email, source: "fleet", simulated: true })) });
+  return engine.deal({ request, budget_usd, businesses: fleetBusinesses().map((b) => ({ name: b.name, ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), source: "fleet" as const, simulated: true })) });
 }
 
 /** Advance simulated time until `done` holds, answering seller questions like an agent would. */
@@ -46,7 +48,8 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
     const deal = await startDeal(engine);
     expect(deal).toMatchObject({ ok: true, mode: "mock", state: "collecting" });
     expect(deal.contacted).toHaveLength(6);
-    expect(deal.inbox).toMatch(/^job-[a-z0-9]{4}@mock\.haggle\.dev$/);
+    expect(deal.inbox).toBe(MOCK_BUYER_INBOX);
+    expect(deal.contacted.find((c) => c.business === "Mission Eats")).toMatchObject({ channel: "phone" });
 
     const ready = await runUntil(engine, clock, deal.job_id, (q) => q.ready);
     const bay = ready.quotes.find((q) => q.business === "Bay Catering")!;
@@ -57,7 +60,9 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
     const harbor = ready.quotes.find((q) => q.business === "Harbor Table")!;
     expect(harbor.flags).toContain("hidden_deposit");
     expect(harbor.total_usd).toBe(1008);
-    expect(ready.quotes.find((q) => q.business === "Mission Eats")!.total_usd).toBe(1070); // after the follow-up, never from "~900ish"
+    expect(ready.quotes.find((q) => q.business === "Mission Eats")).toMatchObject({ total_usd: 1070, channel: "phone", source: "call transcript", deposit_usd: 50 });
+    expect(fleet.calls).toHaveLength(1);
+    expect(fleet.calls[0]!.reason).toMatch(/AI assistant/);
     expect(ready.quotes.find((q) => q.business === "Sunset Kitchen")!.total_usd).toBe(1180); // after answer_seller
 
     // Negotiation cited only real recorded quotes; the scam quote was never cited.
@@ -72,7 +77,7 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
     }
     // Every outbound email has a unique idempotency key and goes to a pinned business address.
     expect(new Set(fleet.sent.map((s) => s.idempotencyKey)).size).toBe(fleet.sent.length);
-    const pinned = new Set(fleetBusinesses().map((b) => b.email));
+    const pinned = new Set(fleetBusinesses().map((b) => b.email).filter(Boolean));
     for (const s of fleet.sent) expect(pinned.has(s.to)).toBe(true);
 
     // pay before approval is refused.
@@ -158,5 +163,84 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
   it("simulated approval is impossible outside mock mode", async () => {
     const m = createMockEngine({ config: { mode: "live" }, ...(makeRepo ? { repo: makeRepo() } : {}) });
     await expect(m.engine.decideApproval("ap_x", "approve", "simulated", null)).resolves.toBe(false); // unknown approval
+  });
+});
+
+describe("v5 channels and deal board (mock mode, memory)", { timeout: 60_000 }, () => {
+  it("the deal board shows channels, statuses, eligibility, the call transcript and honest negotiation", async () => {
+    const { engine, clock } = setup();
+    const deal = await startDeal(engine);
+    const ready = await runUntil(engine, clock, deal.job_id, (q) => q.ready);
+    const biz = (name: string) => ready.businesses.find((b) => b.name === name)!;
+    expect(biz("Mission Eats")).toMatchObject({ channel: "phone", status: "quoted" });
+    expect(biz("Mission Eats").transcript_snippet).toMatch(/AI assistant/);
+    expect(biz("Bay Catering")).toMatchObject({ channel: "email", status: "quoted" });
+    const q = (name: string) => ready.quotes.find((x) => x.business === name)!;
+    expect(q("Bay Catering")).toMatchObject({ verdict: "compliant", eligible: true });
+    expect(q("Golden Grill")).toMatchObject({ verdict: "rejected", eligible: false, excluded_reason: "does not meet every hard requirement" });
+    expect(q("QuickQuote Deli")).toMatchObject({ verdict: "rejected", eligible: false });
+    expect(q("QuickQuote Deli").excluded_reason).toMatch(/external link/);
+    // Every counteroffer cites a real, eligible, current quote; the phone business is cited, not countered.
+    expect(ready.negotiation.length).toBeGreaterThan(0);
+    const eligibleIds = new Set(ready.quotes.filter((x) => x.eligible).map((x) => x.quote_id));
+    const allIds = new Set((await engine.getQuotes(deal.job_id)).quotes.map((x) => x.quote_id));
+    for (const n of ready.negotiation) {
+      expect(n.business).not.toBe("Mission Eats");
+      expect(n.target_total_usd).toBe(1070); // Mission Eats' real phone quote was the best competing total
+    }
+    expect([...eligibleIds].every((id) => allIds.has(id))).toBe(true);
+    expect(ready.negotiation.find((n) => n.business === "Bay Catering")).toMatchObject({ outcome_total_usd: 995 });
+    expect(ready.job).toMatchObject({ id: deal.job_id, budget_usd: 1200 });
+  });
+
+  it("a phone-only business is reported unavailable (never contacted) when calls aren't enabled", async () => {
+    const { engine, clock } = setup({ phone: false });
+    const deal = await startDeal(engine);
+    expect(deal.contacted).toHaveLength(5);
+    expect(deal.not_contacted).toEqual([expect.objectContaining({ business: "Mission Eats", channel: "phone", reason: "phone calls are not enabled in this deployment" })]);
+    const board = await runUntil(engine, clock, deal.job_id, (x) => x.ready);
+    expect(board.businesses.find((b) => b.name === "Mission Eats")).toMatchObject({ status: "unavailable", channel: "phone" });
+    expect(board.quotes.some((x) => x.business === "Mission Eats")).toBe(false);
+    await expect(engine.deal({ request: GOLDEN_REQUEST, businesses: [{ name: "Phone only", phone: "+14155550199" }] })).rejects.toMatchObject({ code: "no_usable_channel" });
+  });
+
+  it("a vague emailed price gets one follow-up, never a guessed total", async () => {
+    const vague: Persona = {
+      name: "Vague Bistro", email: "hi@vague.sim.haggle.dev", delayMs: 1_000,
+      reply(t) {
+        if (t === "rfq") return { text: "~900ish lmk", extraction: { available: true, price_per_head_usd: null, headcount: 40, subtotal_usd: null, delivery_fee_usd: null, delivery_included: null, tax_usd: null, tax_included: true, total_usd: null, deposit_usd: null, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }], valid_until: null, questions: [], payment_request: "none", instructions_to_agent: false, sources: [], missing_fields: ["total"], confidence: 0.35 } };
+        if (t === "followup") return { text: "$1,070 total delivered, $50 deposit.", extraction: { available: true, price_per_head_usd: null, headcount: 40, subtotal_usd: null, delivery_fee_usd: null, delivery_included: true, tax_usd: null, tax_included: true, total_usd: 1070, deposit_usd: 50, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }], valid_until: null, questions: [], payment_request: "none", instructions_to_agent: false, sources: [{ field: "total", source: "email body", excerpt: "$1,070 total" }], missing_fields: [], confidence: 0.9 } };
+        return null;
+      },
+    };
+    const { engine, fleet, clock } = setup({ personas: [vague] });
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: vague.name, email: vague.email }] });
+    const ready = await runUntil(engine, clock, deal.job_id, (x) => x.ready);
+    expect(fleet.sent.filter((s) => s.idempotencyKey.startsWith("followup:"))).toHaveLength(1);
+    expect(ready.quotes).toEqual([expect.objectContaining({ total_usd: 1070, verdict: "compliant" })]);
+  });
+
+  it("deal validates contacts and refuses Haggle's own mailbox", async () => {
+    const { engine } = setup();
+    await expect(engine.deal({ request: GOLDEN_REQUEST, businesses: [{ name: "X", phone: "415-555-0100" }] })).rejects.toMatchObject({ code: "bad_phone" });
+    await expect(engine.deal({ request: GOLDEN_REQUEST, businesses: [{ name: "X" }] })).rejects.toMatchObject({ code: "no_contact" });
+    await expect(engine.deal({ request: GOLDEN_REQUEST, businesses: [{ name: "Me", email: MOCK_BUYER_INBOX }] })).rejects.toMatchObject({ code: "bad_email" });
+  });
+
+  it("settings: cap ceiling enforced; launcher returns the newest open job; view approval needs the code", async () => {
+    const { engine, clock } = setup();
+    expect((await engine.getSettings()).spending_cap_cents).toBe(150_000);
+    await expect(engine.updateSettings({ spending_cap_cents: 10_000_000 })).rejects.toMatchObject({ code: "cap_above_ceiling" });
+    expect((await engine.updateSettings({ spending_cap_cents: 120_000, default_area: "San Francisco, CA" })).default_area).toBe("San Francisco, CA");
+    expect(await engine.latestJob()).toBeNull();
+    const deal = await startDeal(engine);
+    expect((await engine.latestJob())!.id).toBe(deal.job_id);
+    const ready = await runUntil(engine, clock, deal.job_id, (x) => x.ready);
+    const bay = ready.quotes.find((x) => x.business === "Bay Catering")!;
+    const a = await engine.requestApproval(deal.job_id, bay.quote_id, "view");
+    await expect(engine.approveWithViewCode(a.id, a.code === "0000" ? "1111" : "0000")).rejects.toMatchObject({ code: "bad_code" });
+    expect((await engine.approveWithViewCode(a.id, a.code)).status).toBe("approved");
+    expect((await engine.getQuotes(deal.job_id)).businesses.find((b) => b.name === "Bay Catering")!.status).toBe("won");
   });
 });

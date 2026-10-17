@@ -1,10 +1,10 @@
-// Postgres Repository (live mode) over supabase/migrations/100_engine_core.sql. Uses a direct
+// Postgres Repository (live mode) over supabase/migrations/100_engine_core.sql + 101_engine_channels.sql. Uses a direct
 // Postgres connection (Supabase pooler URL, role with BYPASSRLS) so multi-statement operations run
 // in real transactions; the database re-checks every safety invariant on its own.
 import postgres from "postgres";
 import { newId } from "../ids.ts";
 import type {
-  ApprovalRow, JobBusinessRow, JobEventRow, JobRow, MessageRow, NewMessage, PaymentRow, QuestionRow, QuoteRow, Repository,
+  ApprovalRow, JobBusinessRow, JobEventRow, JobRow, MessageRow, NewMessage, PaymentRow, QuestionRow, QuoteRow, Repository, SettingsRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -79,7 +79,7 @@ export class PostgresRepository implements Repository {
     return rows<JobBusinessRow>(await this.sql`select * from job_businesses where job_id = ${jobId} order by name`);
   }
   async updateBusiness(jobId: string, businessId: string, patch: Partial<JobBusinessRow>) {
-    const { business_id: _a, name: _b, email: _c, job_id: _d, ...rest } = patch;
+    const { business_id: _a, name: _b, email: _c, job_id: _d, phone: _e, ...rest } = patch;
     const set = this.vals(rest);
     if (Object.keys(set).length === 0) return;
     await this.sql`update job_businesses set ${this.sql(set)} where job_id = ${jobId} and business_id = ${businessId}`;
@@ -102,6 +102,9 @@ export class PostgresRepository implements Repository {
   }
   async findMessageByIdempotencyKey(key: string) {
     return row<MessageRow>((await this.sql`select * from messages where idempotency_key = ${key}`)[0]);
+  }
+  async findMessageByProviderId(providerId: string) {
+    return row<MessageRow>((await this.sql`select * from messages where provider_email_id = ${providerId}`)[0]);
   }
   async getMessage(id: string) {
     return row<MessageRow>((await this.sql`select * from messages where id = ${id}`)[0]);
@@ -213,5 +216,21 @@ export class PostgresRepository implements Repository {
   async recordInboundEvent(providerEventId: string) {
     const r = await this.sql`insert into inbound_events (provider_event_id) values (${providerEventId}) on conflict do nothing returning provider_event_id`;
     return r.length > 0;
+  }
+
+  async listRecentJobs(limit: number) {
+    return rows<JobRow>(await this.sql`select * from jobs order by updated_at desc, created_at desc limit ${limit}`);
+  }
+  async getSettings() {
+    return row<SettingsRow>((await this.sql`select spending_cap_cents, approver_phone, approver_email, default_area, updated_at from engine_settings where id = 1`)[0]);
+  }
+  async saveSettings(s: Omit<SettingsRow, "updated_at">) {
+    const r = await this.sql`
+      insert into engine_settings (id, spending_cap_cents, approver_phone, approver_email, default_area, updated_at)
+      values (1, ${s.spending_cap_cents}, ${s.approver_phone}, ${s.approver_email}, ${s.default_area}, now())
+      on conflict (id) do update set spending_cap_cents = excluded.spending_cap_cents, approver_phone = excluded.approver_phone,
+        approver_email = excluded.approver_email, default_area = excluded.default_area, updated_at = now()
+      returning spending_cap_cents, approver_phone, approver_email, default_area, updated_at`;
+    return row<SettingsRow>(r[0])!;
   }
 }

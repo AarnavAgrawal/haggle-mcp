@@ -1,22 +1,26 @@
 // MOCK MODE ONLY: a simulated seller fleet so the whole buyer workflow runs with no credentials.
-// It is a test double of Partner's real fleet (apps/sellers, Primitive Functions): it implements
-// the engine's email and extractor ports, plays the six v3 golden-scenario personas from fixed
-// scripts, and marks everything it produces as simulated. Numbers not fixed by the v3 plan are
-// PROPOSED (docs/v3-prekickoff-readiness.md section 7F). It never touches the network.
+// It is a test double of Partner's real fleet (apps/sellers on Inkbox): it implements the engine's
+// email, phone and extractor ports, plays the six golden-scenario personas from fixed scripts,
+// and marks everything it produces as simulated. v5: Mission Eats is phone-only and answers a
+// simulated Voice AI call with a transcript. Numbers not fixed by the plan are PROPOSED
+// (docs/v3-prekickoff-readiness.md section 7F). It never touches the network.
 import type { Business } from "@haggle/core/contracts";
-import { businessIdFor } from "../ids.ts";
+import { businessIdForContact } from "../ids.ts";
+import { subjectShortCode } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import type { OutboundEmail, SendOutcome } from "../outbound/primitiveSender.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
-import type { EmailPort, ExtractorPort } from "../workflow/ports.ts";
+import type { EmailPort, ExtractorPort, PhoneCallRequest, PhonePort } from "../workflow/ports.ts";
 
 type Attachment = { filename: string; contentType: string; data: Uint8Array };
 type Reply = { text: string; extraction?: QuoteExtraction; attachments?: Attachment[] };
-type Trigger = "rfq" | "counter" | "answer" | "followup" | "accept" | "payment" | "cancel";
+type Trigger = "rfq" | "counter" | "answer" | "followup" | "accept" | "payment" | "cancel" | "call";
 
-interface Persona {
+export interface Persona {
   name: string;
+  /** Empty for a phone-only business. */
   email: string;
+  phone?: string;
   delayMs: number;
   reply(trigger: Trigger, ctx: { jobId: string; inbox: string; msg: OutboundEmail; nowMs: number; count: number }): Reply | null;
 }
@@ -82,11 +86,19 @@ export const GOLDEN_PERSONAS: Persona[] = [
     },
   },
   {
-    name: "Mission Eats", email: "hi@mission-eats.sim.haggle.dev", delayMs: 3_000,
+    // v5: only answers the phone. The simulated Voice AI call returns a transcript.
+    name: "Mission Eats", email: "", phone: "+14155550104", delayMs: 3_000,
     reply(t) {
-      if (t === "rfq") return { text: "~900ish lmk", extraction: { ...blank, delivery_included: null, missing_fields: ["total"], confidence: 0.35 } };
-      if (t === "followup") return { text: "Sure: $980 for food plus $90 delivery, so $1,070 total. No deposit needed... actually $50 deposit.", extraction: priced(1070, 50, "email body", { delivery_fee_usd: 90, sources: [{ field: "total", source: "email body", excerpt: "$1,070 total" }, { field: "deposit", source: "email body", excerpt: "$50 deposit" }, { field: "delivery_fee", source: "email body", excerpt: "$90 delivery" }] }) };
-      if (t === "counter") return { text: "Sorry, $1,070 is our best.", extraction: priced(1070, 50, "email body", { sources: [{ field: "total", source: "email body", excerpt: "$1,070" }, { field: "deposit", source: "email body", excerpt: "$50 deposit" }] }) };
+      if (t === "call") {
+        return {
+          text: [
+            "Haggle (AI assistant): Hi, I'm an AI assistant calling for a customer to request a quote. Lunch for 40 people on October 22nd in San Francisco, at least 12 vegetarian meals, delivered. Reference HG.",
+            "Mission Eats: Sure. We'd do $980 for the food plus $90 delivery, so $1,070 total. 14 of them vegetarian. We'd need a $50 deposit.",
+            "Haggle (AI assistant): Thank you, we'll be in touch. Goodbye.",
+          ].join("\n"),
+          extraction: priced(1070, 50, "call transcript", { delivery_fee_usd: 90, dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 14 }], sources: [{ field: "total", source: "call transcript", excerpt: "$1,070 total" }, { field: "deposit", source: "call transcript", excerpt: "$50 deposit" }, { field: "delivery_fee", source: "call transcript", excerpt: "$90 delivery" }] }),
+        };
+      }
       return null;
     },
   },
@@ -128,15 +140,26 @@ export const GOLDEN_REQUEST = {
   budget_usd: 1200,
 };
 
-export function fleetBusinesses(personas = GOLDEN_PERSONAS): Business[] {
-  return personas.map((p) => ({ business_id: businessIdFor(p.email), slug: p.name.toLowerCase().replace(/\s+/g, "-"), name: p.name, email: p.email, source: "fleet", simulated: true, found_at: "DEMO simulated fleet" }));
+/** Contract Business plus the v5 phone (proposed for contracts.ts); phone-only businesses have email "". */
+export type FleetBusiness = Business & { phone?: string };
+
+export function fleetBusinesses(personas = GOLDEN_PERSONAS): FleetBusiness[] {
+  return personas.map((p) => ({
+    business_id: businessIdForContact({ email: p.email || null, phone: p.phone ?? null }), slug: p.name.toLowerCase().replace(/\s+/g, "-"), name: p.name, email: p.email,
+    ...(p.phone ? { phone: p.phone } : {}), source: "fleet" as const, simulated: true, found_at: "DEMO simulated fleet",
+  }));
 }
 
 type Deliver = (msg: InboundMessage, trustFor: (expected: string) => TrustVerdict, opts: { simulated: true; inlineAttachments: Attachment[] }) => Promise<unknown>;
+type CallEnded = { callId: string; outcome: "completed" | "no_answer" | "declined" | "failed"; transcript: string; simulated: true };
+type DeliverCall = (call: CallEnded) => Promise<unknown>;
 
-export class SimFleet implements EmailPort, ExtractorPort {
+export class SimFleet implements EmailPort, ExtractorPort, PhonePort {
   readonly sent: OutboundEmail[] = [];
+  readonly calls: PhoneCallRequest[] = [];
   private queue: { dueMs: number; msg: InboundMessage; attachments: Attachment[] }[] = [];
+  private callQueue: { dueMs: number; call: CallEnded }[] = [];
+  private deliverCall: DeliverCall | null = null;
   private extractions = new Map<string, QuoteExtraction>();
   private counts = new Map<string, number>();
   private seq = 0;
@@ -149,12 +172,27 @@ export class SimFleet implements EmailPort, ExtractorPort {
     this.opts = opts;
   }
 
-  connect(deliver: Deliver) {
+  connect(deliver: Deliver, deliverCall?: DeliverCall) {
     this.deliver = deliver;
+    this.deliverCall = deliverCall ?? null;
   }
 
   private persona(email: string) {
-    return (this.opts.personas ?? GOLDEN_PERSONAS).find((p) => p.email === email.toLowerCase());
+    return email ? (this.opts.personas ?? GOLDEN_PERSONAS).find((p) => p.email !== "" && p.email === email.toLowerCase()) : undefined;
+  }
+
+  /** Simulated Voice AI call: the persona "answers" and a call-ended result is queued. */
+  async placeCall(req: PhoneCallRequest): Promise<{ callId: string }> {
+    const prior = this.calls.findIndex((c) => c.idempotencyKey === req.idempotencyKey);
+    if (prior >= 0) return { callId: `sim_call_${this.prefix}_${prior + 1}` };
+    this.calls.push(req);
+    const callId = `sim_call_${this.prefix}_${this.calls.length}`;
+    const p = (this.opts.personas ?? GOLDEN_PERSONAS).find((x) => x.phone === req.toNumber);
+    const r = p?.reply("call", { jobId: req.jobId, inbox: "", msg: { from: "", to: req.toNumber, subject: "", bodyText: req.reason, idempotencyKey: req.idempotencyKey }, nowMs: this.opts.now().getTime(), count: 1 });
+    const dueMs = this.opts.now().getTime() + (p?.delayMs ?? 1_000) * (this.opts.delayScale ?? 1);
+    if (r?.extraction) this.extractions.set(`call-ended:${callId}`, r.extraction);
+    this.callQueue.push({ dueMs, call: r ? { callId, outcome: "completed", transcript: r.text, simulated: true } : { callId, outcome: "no_answer", transcript: "", simulated: true } });
+    return { callId };
   }
 
   async send(msg: OutboundEmail): Promise<SendOutcome> {
@@ -179,9 +217,10 @@ export class SimFleet implements EmailPort, ExtractorPort {
     return { providerId: `sim_out_${this.prefix}_${n}`, status: "queued", idempotentReplay: false, messageId: outId };
   }
 
-  /** The job id is recoverable from the RFQ the fleet received from this job inbox. */
+  /** The job id is recoverable from the RFQ carrying the same [HG-code] (one shared inbox serves every job). */
   private jobFor(msg: OutboundEmail): string {
-    const rfq = this.sent.find((s) => s.from === msg.from && s.idempotencyKey.startsWith("rfq:"));
+    const code = subjectShortCode(msg.subject);
+    const rfq = this.sent.find((s) => s.idempotencyKey.startsWith("rfq:") && (code ? subjectShortCode(s.subject) === code : s.from === msg.from));
     return rfq?.idempotencyKey.split(":")[1] ?? "";
   }
 
@@ -193,7 +232,7 @@ export class SimFleet implements EmailPort, ExtractorPort {
       dueMs: this.opts.now().getTime() + p.delayMs * (this.opts.delayScale ?? 1),
       attachments: r.attachments ?? [],
       msg: {
-        providerEventId: `sim_evt_${this.prefix}_${n}`, eventType: "email.received", providerEmailId: id, threadId: `sim-thread-${p.email}-${out.from}`,
+        providerEventId: `sim_evt_${this.prefix}_${n}`, eventType: "email.received", providerEmailId: id, threadId: `sim-thread-${p.email}-${subjectShortCode(out.subject) ?? out.from}`,
         messageId: `<sim-in-${this.prefix}-${n}@${p.email.split("@")[1]}>`, inReplyTo: [outId], references: [...(out.thread?.references ?? []), outId],
         from: p.email, to: [out.from], subject: out.subject.startsWith("Re:") ? out.subject : `Re: ${out.subject}`, bodyText: r.text,
         attachments: [], attachmentsDownloadUrl: null,
@@ -205,16 +244,19 @@ export class SimFleet implements EmailPort, ExtractorPort {
   async deliverDue(): Promise<number> {
     if (!this.deliver) return 0;
     const nowMs = this.opts.now().getTime();
+    const calls = this.callQueue.filter((c) => c.dueMs <= nowMs);
+    this.callQueue = this.callQueue.filter((c) => c.dueMs > nowMs);
+    for (const c of calls) await this.deliverCall?.(c.call);
     const due = this.queue.filter((q) => q.dueMs <= nowMs).sort((a, b) => a.dueMs - b.dueMs);
     this.queue = this.queue.filter((q) => q.dueMs > nowMs);
     for (const d of due) {
       await this.deliver(d.msg, (expected) => ({ trusted: true, address: expected, reason: "trusted", evidence: { dmarc: "simulated", dmarcPolicy: null, dmarcFromDomain: null, spf: "simulated", alignedDkimDomains: [] } }), { simulated: true, inlineAttachments: d.attachments });
     }
-    return due.length;
+    return due.length + calls.length;
   }
 
   pending(): number {
-    return this.queue.length;
+    return this.queue.length + this.callQueue.length;
   }
 
   async extract(input: { message: { provider_email_id: string | null } }): Promise<QuoteExtraction> {

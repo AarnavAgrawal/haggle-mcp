@@ -10,10 +10,14 @@
 // v3 additions: per-job inbox and pinned recipients, quote.json fast path, questions and
 // answer_seller, totals-based honest negotiation, brain.learnFromReply after every parse,
 // approval (elicitation / verified email / simulated in mock mode) and the x402 payer.
+// v5 additions: channel routing (A2A card > email > phone; a channel without an enabled port is
+// "unavailable", never faked), Voice AI call results via ingestCall, one shared Inkbox mailbox,
+// the deal-board read model, approval from the approval view, settings, and the launcher.
+import { timingSafeEqual } from "node:crypto";
 import type {
-  ApprovalRecord, Business, DealResult, JobState, JobUpdate, PaymentStatus, Quote, QuotesResult, Request, WaitResult,
+  ApprovalRecord, Business, DealResult, JobState, JobUpdate, PaymentStatus, Profile, Quote, QuotesResult, Request, WaitResult,
 } from "@haggle/core/contracts";
-import { businessIdFor, newApprovalCode, newId, newShortCode, slugify } from "../ids.ts";
+import { businessIdForContact, newApprovalCode, newId, newShortCode, slugify } from "../ids.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, subjectShortCode } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
@@ -25,7 +29,7 @@ import { validateQuote } from "../parsing/validate.ts";
 import { verifyApproval } from "../approvals/verifyApproval.ts";
 import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
 import { rankQuotes, rejectReason, type RankableQuote } from "../ranking/rank.ts";
-import type { ApprovalRow, JobBusinessRow, JobRow, MessageRow, PaymentRow, QuoteRow, Repository } from "../store/types.ts";
+import type { ApprovalRow, Channel, JobBusinessRow, JobRow, MessageRow, PaymentRow, QuoteRow, Repository, SettingsRow } from "../store/types.ts";
 import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
 import { start, TERMINAL, transition, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
@@ -44,15 +48,98 @@ export class EngineError extends Error {
   }
 }
 
+/** A business to contact. At least one of email / phone / a2a_card_url. */
+export interface DealBusiness {
+  name: string;
+  email?: string;
+  phone?: string; // E.164
+  a2a_card_url?: string; // https
+  source?: Business["source"];
+  simulated?: boolean;
+}
+
 export interface DealInput {
   request: Request;
-  businesses: { name: string; email: string; source?: Business["source"]; simulated?: boolean }[];
+  businesses: DealBusiness[];
   budget_usd?: number;
   reply_by?: string; // ISO
   approver_email?: string;
   max_rounds?: number;
   client_request_id?: string;
 }
+
+/** Proposed addition to the Brain contract; used only when the brain implements it. */
+export interface ProfileReader {
+  getProfile(businessId: string): Promise<Profile | null>;
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const E164_RE = /^\+[1-9]\d{6,14}$/;
+
+/** Contract DealResult plus the v5 channel per business and who could not be contacted (and why). */
+export type EngineDealResult = Omit<DealResult, "contacted"> & {
+  contacted: (DealResult["contacted"][number] & { channel: Channel })[];
+  not_contacted: { business_id: string; business: string; channel: Channel; reason: string }[];
+};
+
+/** Engine-side business status → the deal board's v5 status. */
+export type BoardStatus = "contacted" | "ringing" | "on_call" | "quoted" | "negotiating" | "won" | "declined" | "no_reply" | "unavailable";
+
+export interface BoardBusiness {
+  id: string;
+  business_id: string;
+  name: string;
+  business: string;
+  channel: Channel;
+  status: BoardStatus;
+  engine_status: JobBusinessRow["status"];
+  simulated: boolean;
+  last_event: string | null;
+  transcript_snippet?: string;
+  unavailable_reason?: string;
+}
+
+export type BoardQuote = Omit<Quote, "total_usd"> & {
+  /** null when the business hasn't stated a total (unknown is never 0). */
+  total_usd: number | null;
+  channel: Channel;
+  eligible: boolean;
+  verdict: "compliant" | "rejected" | "incomplete";
+  excluded_reason?: string;
+};
+
+export interface NegotiationStep {
+  business_id: string;
+  business: string;
+  round: number;
+  target_total_usd: number;
+  basis_quote_id: string;
+  outcome_total_usd: number | null; // the business's answer, when it came back
+}
+
+export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_questions"> & {
+  job: { id: string; request: Request; state: JobState; budget_usd: number | null; created_at: string; updated_at: string };
+  quotes: BoardQuote[];
+  rejected: { business_id: string; quote_id: string; reason: import("@haggle/core/contracts").QuoteFlag; detail: string }[];
+  open_questions: { question_id: string; business_id: string; business: string; text: string }[];
+  /** Same list as open_questions (v3 name, kept for the existing deal-board view). */
+  pending_questions: { question_id: string; business_id: string; business: string; text: string }[];
+  negotiation: NegotiationStep[];
+  business_names: Record<string, string>;
+  businesses: BoardBusiness[];
+  approval: EngineApprovalRecord | null;
+  payment: PaymentStatus | null;
+  ready: boolean;
+  inbox: string;
+  request: Request;
+  budget_usd: number | null;
+};
+
+const REJECT_TEXT: Record<import("../ranking/rank.ts").RejectReason, string> = {
+  not_current: "superseded by a newer quote", unavailable: "the business declined", unverified_sender: "sender could not be verified",
+  external_payment_link: "asked for payment through an external link (blocked)", prompt_injection: "contained instructions aimed at the agent (ignored)",
+  requirement_unmet: "does not meet every hard requirement", no_total: "no exact total yet", over_budget: "over the budget",
+};
 
 const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
 const jsonPart = (filename: string, o: unknown): OutboundAttachment => ({ filename, contentType: "application/json", content: enc(o) });
@@ -78,20 +165,31 @@ export class HaggleEngine {
 
   // ───────────────────────────── deal ─────────────────────────────
 
-  async deal(input: DealInput): Promise<DealResult> {
+  async deal(input: DealInput): Promise<EngineDealResult> {
     const mode = this.d.config.mode;
     if (input.client_request_id) {
       const existing = await this.repo.findJobByClientRequestId(input.client_request_id);
       if (existing) return this.dealResult(existing);
     }
-    if (input.businesses.length === 0) throw new EngineError("no_businesses", "No businesses to contact.", "Pass businesses[] (name + email), or call discover first.", "discover");
+    if (input.businesses.length === 0) throw new EngineError("no_businesses", "No businesses to contact.", "Pass businesses[] (name + email or phone), or call discover first.", "discover");
     const seen = new Set<string>();
-    for (const b of input.businesses) {
-      const e = normalizeAddress(b.email);
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new EngineError("bad_email", `Not an email address: ${b.email}`, "Fix the business email.", "deal");
-      if (seen.has(e)) throw new EngineError("duplicate_business", `Listed twice: ${b.email}`, "Remove the duplicate.", "deal");
-      if (e.endsWith(`@${this.d.config.inboxDomain}`)) throw new EngineError("bad_email", "That's Haggle's own inbox.", "Use the business's address.", "deal");
-      seen.add(e);
+    const planned = input.businesses.map((b) => {
+      const email = b.email ? normalizeAddress(b.email) : null;
+      const phone = b.phone ? b.phone.replace(/[\s().-]/g, "") : null;
+      const card = b.a2a_card_url?.trim() || null;
+      if (!email && !phone && !card) throw new EngineError("no_contact", `${b.name} has no email, phone or Agent Card.`, "Add an email (or an E.164 phone) for every business.", "deal");
+      if (email && !EMAIL_RE.test(email)) throw new EngineError("bad_email", `Not an email address: ${b.email}`, "Fix the business email.", "deal");
+      if (phone && !E164_RE.test(phone)) throw new EngineError("bad_phone", `Not an E.164 phone number: ${b.phone}`, "Use the +<country><number> form, e.g. +14155550123.", "deal");
+      if (card && !/^https:\/\//.test(card)) throw new EngineError("bad_a2a_card", `Agent Card URL must be https: ${card}`, "Fix the Agent Card URL or omit it.", "deal");
+      if (email && this.isOwnAddress(email)) throw new EngineError("bad_email", "That's Haggle's own inbox.", "Use the business's address.", "deal");
+      for (const key of [email, phone].filter((k): k is string => k !== null)) {
+        if (seen.has(key)) throw new EngineError("duplicate_business", `Listed twice: ${key}`, "Remove the duplicate.", "deal");
+        seen.add(key);
+      }
+      return { b, email, phone, card, ...this.route({ email, phone, card }) };
+    });
+    if (!planned.some((p) => p.reachable)) {
+      throw new EngineError("no_usable_channel", "None of these businesses can be reached: phone and A2A outreach aren't enabled in this deployment.", "Give at least one business an email address.", "deal");
     }
     const budgetCents = input.budget_usd === undefined ? null : usdToCents(input.budget_usd);
     if (budgetCents !== null && budgetCents <= 0) throw new EngineError("bad_budget", "budget_usd must be positive.", "Pass a positive budget_usd or omit it.", "deal");
@@ -106,7 +204,7 @@ export class HaggleEngine {
         job = await this.repo.insertJob({
           id: newId("job"), short_code: code, state: "created", mode, request: input.request, budget_cents: budgetCents,
           payment_cap_cents: this.d.config.globalPaymentCapCents, approver_email: input.approver_email ? normalizeAddress(input.approver_email) : null,
-          inbox: jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.min(input.max_rounds ?? this.d.config.maxRounds, 2),
+          inbox: this.d.config.sharedInbox ?? jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.min(input.max_rounds ?? this.d.config.maxRounds, 2),
           collect_until: replyBy.toISOString(), ready: false, pay_intent: false, failure_reason: null,
           client_request_id: input.client_request_id ?? null, version: 0, created_at: at, updated_at: at,
         });
@@ -119,26 +217,48 @@ export class HaggleEngine {
       }
     }
     if (!job) throw new Error("could not allocate a job code");
-    await this.repo.insertBusinesses(input.businesses.map((b): JobBusinessRow => ({
-      job_id: job!.id, business_id: businessIdFor(b.email), name: b.name.slice(0, 120), email: normalizeAddress(b.email),
-      source: b.source ?? "agent", simulated: b.simulated ?? mode === "mock", status: "pending", thread_id: null, rfq_message_id: null,
+    await this.repo.insertBusinesses(planned.map(({ b, email, phone, card, channel, reachable }): JobBusinessRow => ({
+      job_id: job!.id, business_id: businessIdForContact({ email, phone, a2a_card_url: card }), name: b.name.slice(0, 120), email, phone, a2a_card_url: card, channel,
+      source: b.source ?? "agent", simulated: b.simulated ?? mode === "mock", status: reachable ? "pending" : "unavailable", thread_id: null, rfq_message_id: null,
       last_inbound_message_id: null, references: [], contacted_at: null, last_reply_at: null, followups_sent: 0, countered_round: 0,
     })));
     await this.repo.appendEvent(job.id, "state", { from: null, to: "created" });
+    for (const p of planned.filter((x) => !x.reachable)) {
+      await this.repo.appendEvent(job.id, "reply", { business_id: businessIdForContact({ email: p.email, phone: p.phone, a2a_card_url: p.card }), summary: `${p.b.name} not contacted: ${p.reason}` });
+    }
     const started = start(this.machine(job));
     if (started.ok) await this.commit(job, started.next, started.effects, "deal");
     // RFQs are sent by the effect (synchronously here, like quote-broker); the job is returned at once.
     return this.dealResult((await this.repo.getJob(job.id))!);
   }
 
-  private async dealResult(job: JobRow): Promise<DealResult> {
+  private async dealResult(job: JobRow): Promise<EngineDealResult> {
     const businesses = await this.repo.getBusinesses(job.id);
     return {
       ok: true, mode: job.mode, job_id: job.id, inbox: job.inbox, state: job.state,
-      contacted: businesses.filter((b) => b.contacted_at).map((b) => ({ business_id: b.business_id, business: b.name, simulated: b.simulated })),
+      contacted: businesses.filter((b) => b.contacted_at).map((b) => ({ business_id: b.business_id, business: b.name, simulated: b.simulated, channel: b.channel })),
+      not_contacted: businesses.filter((b) => !b.contacted_at).map((b) => ({ business_id: b.business_id, business: b.name, channel: b.channel, reason: b.status === "unavailable" ? this.route(b).reason : b.status === "bounced" ? "send failed" : "pending" })),
       eta: `replies usually within minutes; collecting until ${job.collect_until}`,
       next: "Call wait_for_update with this job_id (timeout_s up to 60). Don't email the businesses yourself.",
     };
+  }
+
+  /** Is this address Haggle's own mailbox (shared Inkbox identity, or any per-job inbox)? */
+  private isOwnAddress(address: string): boolean {
+    const a = normalizeAddress(address);
+    if (this.d.config.sharedInbox) return a === normalizeAddress(this.d.config.sharedInbox);
+    return a.endsWith(`@${this.d.config.inboxDomain}`);
+  }
+
+  /**
+   * Channel routing (CLAUDE.md §6): A2A if the business has an Agent Card, else email, else a Voice
+   * AI call. A channel whose port isn't enabled is skipped; email is the fallback for A2A.
+   */
+  private route(c: { email: string | null; phone: string | null; card?: string | null; a2a_card_url?: string | null }): { channel: Channel; reachable: boolean; reason: string } {
+    const card = c.card ?? c.a2a_card_url ?? null;
+    if (c.email) return { channel: "email", reachable: true, reason: card ? "A2A not enabled; using email" : "email" };
+    if (c.phone) return this.d.phone ? { channel: "phone", reachable: true, reason: "phone" } : { channel: "phone", reachable: false, reason: "phone calls are not enabled in this deployment" };
+    return { channel: "a2a", reachable: false, reason: "A2A outreach is not enabled in this deployment" };
   }
 
   // ───────────────────────────── state plumbing ─────────────────────────────
@@ -159,16 +279,24 @@ export class HaggleEngine {
   private async context(job: JobRow) {
     const { rankable, ranking } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
-    const names = new Map(businesses.map((b) => [b.business_id, b.name]));
-    const plan = planCounteroffers(
-      rankable.map((r) => ({ ...r, businessName: names.get(r.businessId) ?? "there", round: this.quoteRound(r.quoteId) })),
-      new Date(job.collect_until), job.max_rounds, job.budget_cents,
-    );
+    const plan = this.counterPlan(job, rankable, businesses);
     const payment = await this.repo.getPaymentForJob(job.id);
     return {
       now: this.now(), eligibleQuotes: ranking.ranked.length, counterable: plan.length > 0,
       negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent"].includes(payment.status),
     };
+  }
+
+  /**
+   * Honest counteroffers. Every eligible quote (any channel) can be the cited basis, but only
+   * businesses reachable by email get a counter: there is no in-call negotiation yet.
+   */
+  private counterPlan(job: JobRow, rankable: RankableQuote[], businesses: JobBusinessRow[]) {
+    const byId = new Map(businesses.map((b) => [b.business_id, b]));
+    return planCounteroffers(
+      rankable.map((r) => ({ ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: this.quoteRound(r.quoteId) })),
+      new Date(job.collect_until), job.max_rounds, job.budget_cents,
+    ).filter((c) => byId.get(c.businessId)?.email);
   }
 
   private roundCache = new Map<string, number>();
@@ -215,15 +343,17 @@ export class HaggleEngine {
   }
 
   /** Send once per idempotency key; record the outbound message. */
-  private async sendRecorded(job: JobRow, b: JobBusinessRow | null, kind: MessageRow["kind"], key: string, msg: { to: string; subject: string; bodyText: string; attachments?: OutboundAttachment[]; inThread?: boolean; round?: number; approvalId?: string }) {
+  private async sendRecorded(job: JobRow, b: JobBusinessRow | null, kind: MessageRow["kind"], key: string, msg: { to: string | null; subject: string; bodyText: string; attachments?: OutboundAttachment[]; inThread?: boolean; round?: number; approvalId?: string }) {
     const prior = await this.repo.findMessageByIdempotencyKey(key);
     if (prior) return prior;
+    if (!msg.to) throw new EngineError("no_email", `${b?.name ?? "This recipient"} has no email address.`, "Reach this business on its own channel.", "get_quotes");
+    const to = msg.to;
     const thread = msg.inThread && b?.last_inbound_message_id ? { inReplyTo: b.last_inbound_message_id, references: b.references.slice(-10) } : undefined;
-    const out = await this.d.email.send({ from: job.inbox, to: msg.to, subject: msg.subject, bodyText: msg.bodyText, idempotencyKey: key, ...(thread ? { thread } : {}), ...(msg.attachments ? { attachments: msg.attachments } : {}) });
+    const out = await this.d.email.send({ from: job.inbox, to, subject: msg.subject, bodyText: msg.bodyText, idempotencyKey: key, ...(thread ? { thread } : {}), ...(msg.attachments ? { attachments: msg.attachments } : {}) });
     const row = await this.repo.insertMessage({
       job_id: job.id, business_id: b?.business_id ?? null, approval_id: msg.approvalId ?? null, direction: "out", kind,
       provider_email_id: out.providerId, idempotency_key: key, rfc_message_id: out.messageId, thread_id: b?.thread_id ?? null,
-      from_address: job.inbox, to_address: msg.to, subject: msg.subject, body_text: msg.bodyText,
+      from_address: job.inbox, to_address: to, subject: msg.subject, body_text: msg.bodyText,
       attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, content_type: a.contentType, size_bytes: a.content.byteLength, tar_path: null })),
       attachments_download_url: null, sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null,
       round: msg.round ?? null, simulated: job.mode === "mock",
@@ -235,6 +365,11 @@ export class HaggleEngine {
     const reqs = job.request.requirements.filter((r) => r.hard).map((r) => r.text);
     for (const b of await this.repo.getBusinesses(job.id)) {
       if (b.status !== "pending") continue;
+      if (b.channel === "phone") {
+        await this.placeRfqCall(job, b);
+        continue;
+      }
+      if (!b.email) continue;
       const email = buildRfqEmail({
         shortCode: job.short_code, businessName: b.name, what: job.request.what, quantity: job.request.quantity, date: job.request.date,
         location: job.request.area, requirements: reqs, replyBy: new Date(job.collect_until),
@@ -258,15 +393,73 @@ export class HaggleEngine {
     await this.fire(job.id, { type: "rfqs_sent" });
   }
 
+  /** Voice AI call to a phone-only business. Recorded once (idempotency key) like an RFQ email. */
+  private async placeRfqCall(job: JobRow, b: JobBusinessRow) {
+    const key = `call:${job.id}:${b.business_id}`;
+    if (!this.d.phone || !b.phone) {
+      await this.repo.updateBusiness(job.id, b.business_id, { status: "unavailable" });
+      return;
+    }
+    if (await this.repo.findMessageByIdempotencyKey(key)) return;
+    const reqs = job.request.requirements.filter((r) => r.hard).map((r) => r.text);
+    const reason = [
+      `You are an AI assistant calling on behalf of a customer to request a price quote. Say you are an AI assistant at the start of the call.`,
+      `Ask ${b.name} for a quote for: ${job.request.what}, ${job.request.quantity} ${job.request.unit ?? "people"}, on ${job.request.date}, in ${job.request.area}.`,
+      reqs.length ? `Requirements: ${reqs.join("; ")}.` : "",
+      `Ask for the all-in total, any deposit, and what is included. Do not agree to buy or pay anything, and do not share payment details. Reference code HG-${job.short_code}.`,
+    ].filter(Boolean).join(" ").slice(0, 2000);
+    try {
+      const { callId } = await this.d.phone.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason, idempotencyKey: key });
+      await this.repo.insertMessage({
+        job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind: "call", channel: "phone", provider_email_id: callId, idempotency_key: key,
+        rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: reason, attachments: [], attachments_download_url: null,
+        sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null, round: 1, simulated: job.mode === "mock",
+      });
+      await this.repo.updateBusiness(job.id, b.business_id, { status: "ringing", contacted_at: this.now().toISOString() });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} (Voice AI)` });
+    } catch (err) {
+      await this.repo.updateBusiness(job.id, b.business_id, { status: "bounced" });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call to ${b.name} failed: ${(err as Error).name}` });
+      this.log("call_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+    }
+  }
+
+  /**
+   * One call-ended result (Inkbox `call.ended`, or the simulated fleet). Matched by the call id we
+   * recorded when placing the call, so only calls Haggle placed to the pinned number count. The
+   * transcript is untrusted data, parsed like an email body. Idempotent per call id.
+   */
+  async ingestCall(call: { callId: string; outcome: "completed" | "no_answer" | "declined" | "failed"; transcript: string; endedAt?: string; simulated?: boolean }): Promise<{ jobId: string | null; outcome: string }> {
+    const placed = await this.repo.findMessageByProviderId(call.callId);
+    if (!placed || placed.kind !== "call" || placed.direction !== "out" || !placed.job_id || !placed.business_id) return { jobId: null, outcome: "unknown_call" };
+    const job = await this.repo.getJob(placed.job_id);
+    const b = (await this.repo.getBusinesses(placed.job_id)).find((x) => x.business_id === placed.business_id);
+    if (!job || !b) return { jobId: null, outcome: "unknown_call" };
+    const transcript = call.transcript.trim().slice(0, 20_000);
+    const completed = call.outcome === "completed" && transcript.length > 0;
+    const stored = await this.repo.insertMessage({
+      job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: "phone", provider_email_id: `call-ended:${call.callId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: b.phone, to_address: job.inbox, subject: null, body_text: transcript || null, attachments: [], attachments_download_url: null,
+      // Trusted: Haggle placed this call to the business's pinned number (not caller ID on an inbound call).
+      sender_trusted: true, trust_reason: "outbound-call-to-pinned-number", matched_via: "call_id", parse_status: completed ? "pending" : "none", quarantine_reason: null,
+      round: null, simulated: call.simulated ?? false,
+    });
+    if (!stored) return { jobId: job.id, outcome: "duplicate" };
+    if (TERMINAL.has(job.state)) return { jobId: job.id, outcome: "job_closed" };
+    await this.repo.updateBusiness(job.id, b.business_id, completed ? { status: "replied", last_reply_at: this.now().toISOString() } : { status: call.outcome === "declined" ? "declined" : "no_reply" });
+    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call with ${b.name} ended: ${call.outcome}`, channel: "phone", transcript_snippet: transcript.slice(0, 160) });
+    await this.repo.touchJob(job.id);
+    return { jobId: job.id, outcome: completed ? "stored" : `call:${call.outcome}` };
+  }
+
+
+
   private async sendCounteroffers(job: JobRow, round: number) {
     await this.refreshRounds(job);
     const { rankable } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
     const byId = new Map(businesses.map((b) => [b.business_id, b]));
-    const plan = planCounteroffers(
-      rankable.map((r) => ({ ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: this.quoteRound(r.quoteId) })),
-      new Date(job.collect_until), job.max_rounds, job.budget_cents,
-    );
+    const plan = this.counterPlan(job, rankable, businesses);
     let sent = 0;
     for (const c of plan) {
       const b = byId.get(c.businessId);
@@ -278,6 +471,7 @@ export class HaggleEngine {
         });
         await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name}: match ${counter.target_total_usd} (real quote ${c.basisQuoteId})`, basis_quote_id: c.basisQuoteId });
+        await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId });
         sent++;
       } catch (err) {
         this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -338,7 +532,7 @@ export class HaggleEngine {
     const [bizRows, apprRows] = await Promise.all([this.repo.findBusinessCandidates(lookup), this.repo.listPendingApprovalCandidates(lookup)]);
     const match = matchInbound(
       { to: msg.to, threadId: msg.threadId, inReplyTo: msg.inReplyTo, references: msg.references, subject: msg.subject, from: msg.from ?? "" },
-      bizRows.map((b) => ({ businessId: b.business_id, jobId: b.job_id, shortCode: b.short_code, email: b.email, threadId: b.thread_id, outboundMessageId: b.rfq_message_id })),
+      bizRows.filter((b) => b.email).map((b) => ({ businessId: b.business_id, jobId: b.job_id, shortCode: b.short_code, email: b.email!, threadId: b.thread_id, outboundMessageId: b.rfq_message_id })),
       apprRows.map((a) => ({ approvalId: a.id, jobId: a.job_id, shortCode: a.short_code, approverEmail: a.approver_email, threadId: a.thread_id, outboundMessageId: a.outbound_message_id })),
       this.d.config.inboxDomain,
     );
@@ -381,7 +575,7 @@ export class HaggleEngine {
 
     // A business on a job.
     const b = bizRows.find((x) => x.job_id === match.jobId && x.business_id === match.businessId)!;
-    const trust = trustFor(b.email);
+    const trust = trustFor(b.email!);
     if (!trust.trusted && trust.retryable) throw new RetryLater("sender authentication temporarily unavailable");
     const stored = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "reply", sender_trusted: trust.trusted, trust_reason: trust.reason, matched_via: match.via, parse_status: msg.bodyText || attachments.length ? "pending" : "failed", quarantine_reason: null });
     if (!stored) return { jobId: b.job_id, outcome: "duplicate" };
@@ -419,7 +613,7 @@ export class HaggleEngine {
     if (job.state === "contacting") return businesses.every((b) => b.status !== "pending") ? { type: "rfqs_sent" } : null;
     if ((job.state === "collecting" || job.state === "negotiating") && !job.ready) {
       if (job.state === "collecting") {
-        const waiting = businesses.filter((b) => b.status === "contacted" || b.status === "replied" || b.status === "question");
+        const waiting = businesses.filter((b) => b.status === "contacted" || b.status === "replied" || b.status === "question" || b.status === "ringing");
         if (businesses.length > 0 && waiting.length === 0) return { type: "window_closed" };
       } else {
         const sent = (await this.repo.listEvents(job.id)).some((e) => e.type === "counteroffers_sent" && e.data.round === job.round);
@@ -530,7 +724,7 @@ export class HaggleEngine {
     } else if (record.questions.length === 0) {
       for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
       // Vague reply ("~900ish"): ask once for an itemised total instead of guessing a number.
-      if (record.available && b.followups_sent < 1) {
+      if (record.available && b.followups_sent < 1 && b.email) {
         try {
           await this.sendRecorded(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), {
             to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
@@ -549,7 +743,7 @@ export class HaggleEngine {
     try {
       const contractQuote = quoteRow ? toContractQuote(quoteRow, b, { budgetCents: job.budget_cents }) : null;
       await this.d.brain.learnFromReply(b.business_id, toParsedReply(x, contractQuote, questionIds), {
-        job_id: job.id, business_id: b.business_id, business_email: b.email, message_id: msg.id, thread_id: msg.thread_id ?? "",
+        job_id: job.id, business_id: b.business_id, business_email: b.email ?? `tel:${b.phone ?? ""}`, message_id: msg.id, thread_id: msg.thread_id ?? "",
         received_at: msg.created_at, rfq_sent_at: b.contacted_at ?? job.created_at, channel: kind === "quote.json" ? "quote.json" : kind === "pdf" ? "pdf" : "text",
         sender_trusted: msg.sender_trusted === true, sender_trust_reason: msg.trust_reason ?? "unknown", request: job.request, simulated: b.simulated,
       });
@@ -707,14 +901,19 @@ export class HaggleEngine {
   private async nextHint(job: JobRow): Promise<string> {
     const pending = (await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending");
     if (TERMINAL.has(job.state)) return job.state === "paid" ? "Done. get_quotes shows the receipt." : `Job ${job.state}${job.failure_reason ? ` (${job.failure_reason})` : ""}.`;
-    if (pending.length) return `A business asked a question: answer with answer_seller(job_id, question_id='${pending[0]!.id}', answer) or ask the user.`;
+    if (pending.length) return `A business asked a question: answer with answer_business(job_id, question_id='${pending[0]!.id}', answer) or ask the user.`;
     if (job.state === "awaiting_approval") return "Waiting for the human to approve. Call wait_for_update.";
     if (job.state === "paying") return job.pay_intent ? "Payment in progress. Call wait_for_update." : "Approved. Call pay(job_id, quote_id) to pay the deposit.";
     if (job.ready) return "Quotes are final. Call get_quotes, then approve(job_id, quote_id) for the recommended quote.";
     return "Still collecting. Call wait_for_update again (cursor from this response).";
   }
 
-  async getQuotes(jobId: string): Promise<QuotesResult & { business_names: Record<string, string>; payment: PaymentStatus | null; approval: ApprovalRecord | null; ready: boolean; inbox: string; request: Request; budget_usd: number | null; businesses: { business_id: string; business: string; status: string; simulated: boolean }[] }> {
+  /**
+   * The deal board read model (get_quotes / open_haggle): every contacted business with its channel,
+   * live status and latest event; every current quote with eligibility and the reason it can't win;
+   * negotiation history; open questions; approval and payment. Superset of the v3 QuotesResult.
+   */
+  async getQuotes(jobId: string): Promise<DealBoardData> {
     await this.advanceJob(jobId);
     const job = await this.loadJob(jobId);
     const businesses = await this.repo.getBusinesses(jobId);
@@ -722,8 +921,12 @@ export class HaggleEngine {
     const all = await this.repo.listQuotes(jobId);
     const { quotes, ranking } = await this.rankRows(job);
     const order = new Map(ranking.ranked.map((r, i) => [r.quoteId, i]));
+    const rejectedBy = new Map(ranking.rejected.map((r) => [r.quoteId, r.reason]));
     const sorted = [...quotes].sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9) || (a.total_cents ?? 1e12) - (b.total_cents ?? 1e12));
-    const out: Quote[] = [];
+    const approval = await this.repo.getLatestApproval(jobId);
+    const payment = await this.repo.getPaymentForJob(jobId);
+    const events = await this.repo.listEvents(jobId);
+    const out: BoardQuote[] = [];
     for (const q of sorted) {
       const b = byId.get(q.business_id)!;
       const prev = all.filter((x) => x.business_id === q.business_id && x.id !== q.id && x.total_cents !== null).sort((x, y) => y.round - x.round)[0];
@@ -734,23 +937,73 @@ export class HaggleEngine {
           if (v.verdict !== "unknown") price_check = v.verdict;
         } catch { /* brain optional */ }
       }
-      out.push(toContractQuote(q, b, { budgetCents: job.budget_cents, ...(prev?.total_cents != null && prev.total_cents !== q.total_cents ? { negotiatedFromCents: prev.total_cents } : {}), ...(price_check ? { price_check } : {}) }));
+      const cq = toContractQuote(q, b, { budgetCents: job.budget_cents, ...(prev?.total_cents != null && prev.total_cents !== q.total_cents ? { negotiatedFromCents: prev.total_cents } : {}), ...(price_check ? { price_check } : {}) });
+      const reason = rejectedBy.get(q.id);
+      const incomplete = reason === "no_total" || (q.total_cents === null) || cq.requirement_results.some((r) => r.met === null);
+      out.push({
+        ...cq, total_usd: q.total_cents === null ? null : cq.total_usd, channel: b.channel, eligible: order.has(q.id),
+        verdict: order.has(q.id) ? "compliant" : incomplete && reason !== "external_payment_link" && reason !== "prompt_injection" && reason !== "unverified_sender" ? "incomplete" : "rejected",
+        ...(reason ? { excluded_reason: REJECT_TEXT[reason] } : {}),
+      });
     }
     const questions = (await this.repo.listQuestions(jobId)).filter((q) => q.status === "pending");
-    const approval = await this.repo.getLatestApproval(jobId);
-    const payment = await this.repo.getPaymentForJob(jobId);
+    const lastEvent = new Map<string, string>();
+    const transcripts = new Map<string, string>();
+    for (const e of events) {
+      const bid = typeof e.data.business_id === "string" ? e.data.business_id : null;
+      if (!bid) continue;
+      const summary = e.type === "quote" ? (e.data.total_usd == null ? "Replied without a total" : `Quoted $${Number(e.data.total_usd).toLocaleString("en-US")} (round ${e.data.round})`)
+        : e.type === "question" ? `Asked: ${String(e.data.text).slice(0, 120)}` : e.type === "flag" ? `Flagged: ${String(e.data.flag).replace(/_/g, " ")}`
+        : e.type === "reply" ? String(e.data.summary ?? "") : null;
+      if (summary) lastEvent.set(bid, summary);
+      if (typeof e.data.transcript_snippet === "string" && e.data.transcript_snippet) transcripts.set(bid, e.data.transcript_snippet);
+    }
+    const wonBusiness = approval && ["approved", "used"].includes(approval.status) ? approval.business_id : job.state === "paid" && payment ? payment.business_id : null;
+    const board: BoardBusiness[] = businesses.map((b) => {
+      const transcript = transcripts.get(b.business_id);
+      return {
+        id: b.business_id, business_id: b.business_id, name: b.name, business: b.name, channel: b.channel, status: this.boardStatus(b, job, wonBusiness, all), engine_status: b.status,
+        simulated: b.simulated, last_event: lastEvent.get(b.business_id) ?? null, ...(transcript ? { transcript_snippet: transcript } : {}),
+        ...(b.status === "unavailable" ? { unavailable_reason: this.route(b).reason } : {}),
+      };
+    });
+    const negotiation: NegotiationStep[] = events.filter((e) => e.type === "counteroffer").map((e) => {
+      const bid = String(e.data.business_id);
+      const answer = all.filter((q) => q.business_id === bid && q.round >= Number(e.data.round)).sort((x, y) => x.round - y.round)[0];
+      return { business_id: bid, business: byId.get(bid)?.name ?? bid, round: Number(e.data.round), target_total_usd: Number(e.data.target_total_usd), basis_quote_id: String(e.data.basis_quote_id), outcome_total_usd: answer?.total_cents == null ? null : centsToUsd(answer.total_cents) };
+    });
+    const openQuestions = questions.map((q) => ({ question_id: q.id, business_id: q.business_id, business: byId.get(q.business_id)?.name ?? q.business_id, text: q.text }));
     return {
-      ok: true, mode: job.mode, job_id: jobId, state: job.state, quotes: out,
+      ok: true, mode: job.mode, job_id: jobId, state: job.state,
+      job: { id: job.id, request: job.request, state: job.state, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents), created_at: job.created_at, updated_at: job.updated_at },
+      quotes: out,
       ...(ranking.recommendedQuoteId ? { recommended_quote_id: ranking.recommendedQuoteId } : {}),
-      rejected: ranking.rejected.map((r) => ({ business_id: r.businessId, reason: rejectToFlag(r.reason) })),
-      pending_questions: questions.map((q) => ({ question_id: q.id, business_id: q.business_id, text: q.text })),
+      rejected: ranking.rejected.map((r) => ({ business_id: r.businessId, quote_id: r.quoteId, reason: rejectToFlag(r.reason), detail: REJECT_TEXT[r.reason] })),
+      open_questions: openQuestions,
+      pending_questions: openQuestions,
+      negotiation,
       business_names: Object.fromEntries(businesses.map((b) => [b.business_id, b.name])),
-      businesses: businesses.map((b) => ({ business_id: b.business_id, business: b.name, status: b.status, simulated: b.simulated })),
+      businesses: board,
       approval: approval ? approvalRecord(approval, job) : null,
       payment: payment ? paymentStatus(payment) : job.state === "awaiting_approval" ? { status: "awaiting_approval", network: "base-sepolia", simulated: this.d.payer.simulated } : null,
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
       next: await this.nextHint(job),
     };
+  }
+
+  private boardStatus(b: JobBusinessRow, job: JobRow, wonBusiness: string | null, quotes: QuoteRow[]): BoardStatus {
+    if (wonBusiness === b.business_id) return "won";
+    switch (b.status) {
+      case "ringing": return "ringing";
+      case "quoted": {
+        const latest = Math.max(0, ...quotes.filter((q) => q.business_id === b.business_id).map((q) => q.round));
+        return job.state === "negotiating" && b.countered_round > 0 && latest < b.countered_round ? "negotiating" : "quoted";
+      }
+      case "declined": case "bounced": return "declined";
+      case "silent": case "no_reply": return "no_reply";
+      case "unavailable": return "unavailable";
+      default: return "contacted"; // pending (sending now), contacted, replied, question
+    }
   }
 
   async answerSeller(jobId: string, questionId: string, answer: string) {
@@ -760,7 +1013,7 @@ export class HaggleEngine {
     if (!q || q.job_id !== jobId) throw new EngineError("question_not_found", "No such pending question on this job.", "Use a question_id from wait_for_update or get_quotes.", "get_quotes");
     if (q.status !== "pending") throw new EngineError("already_answered", "That question was already answered.", "Nothing to do; wait for the business's quote.", "wait_for_update");
     const text = answer.trim().slice(0, 2000);
-    if (!text) throw new EngineError("empty_answer", "Answer is empty.", "Pass the answer text.", "answer_seller");
+    if (!text) throw new EngineError("empty_answer", "Answer is empty.", "Pass the answer text.", "answer_business");
     const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id)!;
     const m = await this.sendRecorded(job, b, "answer", sendKeys.answer(q.id), { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\nThanks for asking. ${text}\n\nCould you send your full quote (total, deposit, delivery) when ready?` });
     if (!(await this.repo.answerQuestion(q.id, text))) throw new EngineError("already_answered", "That question was already answered.", "Wait for the business's quote.", "wait_for_update");
@@ -879,6 +1132,85 @@ export class HaggleEngine {
     return this.d.config.mode;
   }
 
+  /** True when a Voice AI phone port is configured (mock: simulated calls). */
+  get phoneEnabled(): boolean {
+    return this.d.phone !== undefined;
+  }
+
+  /**
+   * Learned profile for a business (id, slug or name). The frozen Brain contract has no read
+   * method yet, so this uses an optional `getProfile` on the brain when present (proposed for
+   * contracts.ts); otherwise null = not learned.
+   */
+  async businessProfile(ref: string): Promise<{ profile: Profile | null; business: Business | null }> {
+    const needle = ref.trim().toLowerCase();
+    const known = await this.knownBusinesses("", 50);
+    const business = known.find((b) => b.business_id === needle || b.slug === needle || b.name.toLowerCase() === needle || b.email === needle) ?? null;
+    const reader = this.d.brain as Partial<ProfileReader>;
+    if (typeof reader.getProfile !== "function") return { profile: null, business };
+    const profile = await reader.getProfile(business?.business_id ?? needle);
+    return { profile, business };
+  }
+
+  /** Businesses the brain knows (for @-mentions); empty when the brain has none. */
+  async knownBusinesses(query: string, limit = 8): Promise<Business[]> {
+    const q = query.trim().toLowerCase();
+    // Businesses from this server's own deals; plus the stub's demo fleet (never a real brain's
+    // discover(), which may search the web).
+    const seen = new Map<string, Business>();
+    for (const job of await this.repo.listRecentJobs(50)) {
+      for (const b of await this.repo.getBusinesses(job.id)) {
+        if (!seen.has(b.business_id)) seen.set(b.business_id, { business_id: b.business_id, slug: slugify(b.name), name: b.name, email: b.email ?? "", source: b.source, simulated: b.simulated });
+      }
+    }
+    if (this.brainIsStub) for (const b of await this.d.brain.discover("", "", 12).catch(() => [] as Business[])) if (!seen.has(b.business_id)) seen.set(b.business_id, b);
+    const known = [...seen.values()];
+    return known.filter((b) => !q || b.name.toLowerCase().includes(q) || b.slug.includes(q)).slice(0, limit);
+  }
+
+  // ───────────────────────────── launcher + settings ─────────────────────────────
+
+  /** Most relevant job for the launcher: newest open job, else the newest job. */
+  async latestJob(): Promise<JobRow | null> {
+    const recent = await this.repo.listRecentJobs(20);
+    return recent.find((j) => !TERMINAL.has(j.state)) ?? recent[0] ?? null;
+  }
+
+  async getSettings(): Promise<SettingsRow> {
+    return (await this.repo.getSettings()) ?? {
+      spending_cap_cents: this.d.config.defaultSpendingCapCents ?? 150_000, approver_phone: null, approver_email: null, default_area: null, updated_at: new Date(0).toISOString(),
+    };
+  }
+
+  /** Settings change only through this call (settings tools / native settings UI), never from business mail. */
+  async updateSettings(patch: Partial<Omit<SettingsRow, "updated_at">>): Promise<SettingsRow> {
+    const cur = await this.getSettings();
+    const next = { ...cur, ...patch };
+    const ceiling = this.d.config.spendingCapCeilingCents ?? 500_000;
+    if (!Number.isInteger(next.spending_cap_cents) || next.spending_cap_cents <= 0) throw new EngineError("bad_cap", "The spending cap must be a positive amount.", "Pass a positive spending cap.", "settings");
+    if (next.spending_cap_cents > ceiling) throw new EngineError("cap_above_ceiling", `The spending cap can't exceed $${centsToUsd(ceiling).toFixed(2)} on this server.`, "Pick a lower cap; the operator sets the ceiling.", "settings");
+    if (next.approver_phone && !E164_RE.test(next.approver_phone)) throw new EngineError("bad_phone", "Approver phone must be E.164, e.g. +14155550123.", "Fix the approver phone.", "settings");
+    if (next.approver_email && !EMAIL_RE.test(next.approver_email)) throw new EngineError("bad_email", "Approver email is not an email address.", "Fix the approver email.", "settings");
+    const { updated_at: _u, ...row } = next;
+    return this.repo.saveSettings({ ...row, approver_email: row.approver_email ? normalizeAddress(row.approver_email) : null });
+  }
+
+  /**
+   * Approve from the approval view: the human taps Approve, and the view sends back the code it
+   * received in the tool result's view-only `_meta` (never in model-visible content). Only an app
+   * tool calls this; the model never sees the code.
+   */
+  async approveWithViewCode(approvalId: string, code: string): Promise<{ status: ApprovalRow["status"]; approval: ApprovalRow }> {
+    const a = await this.repo.getApproval(approvalId);
+    if (!a || a.channel !== "view") throw new EngineError("approval_not_found", "No approval waiting on the approval view.", "Call approve(job_id, quote_id) to start one.", "approve");
+    if (a.status !== "pending") return { status: a.status, approval: a };
+    const okCode = code.length === a.code.length && timingSafeEqual(Buffer.from(code), Buffer.from(a.code));
+    if (!okCode) throw new EngineError("bad_code", "That approval code doesn't match.", "Approve from the approval card shown to the human.", "approve");
+    await this.decideApproval(a.id, "approve", "view", "human (approval view)");
+    const after = (await this.repo.getApproval(a.id))!;
+    return { status: after.status, approval: after };
+  }
+
   async cancel(jobId: string) {
     const job = await this.loadJob(jobId);
     if (job.state === "cancelled") return { ok: true as const, state: job.state };
@@ -900,11 +1232,14 @@ function rejectToFlag(r: string) {
   return m[r] ?? "low_confidence";
 }
 
-function approvalRecord(a: ApprovalRow, job: JobRow): ApprovalRecord {
+/** Contract ApprovalRecord, except `channel` reports the real human channel (incl. v5 view / iMessage). */
+export type EngineApprovalRecord = Omit<ApprovalRecord, "channel"> & { channel: ApprovalRow["channel"]; status: ApprovalRow["status"] };
+
+function approvalRecord(a: ApprovalRow, job: JobRow): EngineApprovalRecord {
   return {
     approval_id: a.id, job_id: a.job_id, quote_id: a.quote_id, quote_total_usd: centsToUsd(a.quote_total_cents), payment_usd: centsToUsd(a.payment_cents),
     cap_usd: centsToUsd(a.cap_cents), approver: a.approver ?? (a.channel === "simulated" ? "DEMO simulated human" : job.approver_email ?? "unknown"),
-    channel: a.channel === "simulated" ? "elicitation" : a.channel, approved_at: a.decided_at ?? "", expires_at: a.expires_at,
+    channel: a.channel, status: a.status, approved_at: a.decided_at ?? "", expires_at: a.expires_at,
   };
 }
 
