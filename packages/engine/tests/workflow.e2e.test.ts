@@ -4,7 +4,7 @@
 // v5 fleet (PLAN §8): Mission Eats only answers the phone, so its quote comes from a simulated
 // Voice AI call transcript; every job shares one buyer mailbox, as with Inkbox.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createMockEngine, EngineError, fleetBusinesses, GOLDEN_REQUEST, MOCK_BUYER_INBOX, PostgresRepository, type HaggleEngine, type Persona, type Repository } from "../src/index.ts";
+import { createMockEngine, disabledPayer, EngineError, fleetBusinesses, GOLDEN_REQUEST, MOCK_BUYER_INBOX, PostgresRepository, type HaggleEngine, type Persona, type Repository } from "../src/index.ts";
 
 // Runs against InMemoryRepository always, and against a real Postgres (migrations applied) when
 // HAGGLE_TEST_DATABASE_URL is set: scripts/test-postgres.sh does that in a throwaway container.
@@ -254,5 +254,20 @@ describe("recipient allowlist (live safety)", () => {
     expect(fleet.sent).toHaveLength(0);
     const ok = await engine.deal({ request, budget_usd, businesses: [{ name: "Bay Catering", email: "quotes@bay-catering.sim.haggle.dev" }, { name: "Harbor Table", email: "orders@harbor-table.sim.haggle.dev" }, { name: "Mission Eats", phone: "+14155550104" }] });
     expect(ok.contacted).toHaveLength(3);
+  });
+
+  it("with payments disabled (live v5 until Stripe), approval sends no x402 accept email and the payment is refused, never faked", async () => {
+    const { engine, fleet, clock, repo } = setup({ payer: disabledPayer("Payments are not enabled yet") });
+    const deal = await startDeal(engine);
+    const ready = await runUntil(engine, clock, deal.job_id, (q) => q.ready);
+    const bay = ready.quotes.find((q) => q.business === "Bay Catering")!;
+    const approval = await engine.requestApproval(deal.job_id, bay.quote_id, "simulated");
+    expect(await engine.decideApproval(approval.id, "approve", "simulated", "DEMO human")).toBe(true);
+    await engine.advanceJob(deal.job_id);
+    expect(fleet.sent.filter((s) => s.idempotencyKey.startsWith("accept:"))).toHaveLength(0);
+    const board = await engine.getQuotes(deal.job_id);
+    expect(board.payment).toMatchObject({ status: "failed", simulated: false, reason: "Payments are not enabled yet" });
+    expect((await repo.getJob(deal.job_id))!).toMatchObject({ state: "failed", failure_reason: "payment_failed" });
+    await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: "not_payable" });
   });
 });

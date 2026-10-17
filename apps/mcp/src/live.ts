@@ -1,10 +1,10 @@
 // LIVE MODE wiring (HAGGLE_MODE=live), v5: Postgres persistence, the Inkbox buyer identity for
 // email (+ attachments), Claude extraction, and the brain (engine stand-in until Partner's
 // @haggle/brain is published). Voice AI calls stay OFF unless HAGGLE_ENABLE_CALLS=true (separate
-// human approval; only simulated businesses or people who agreed). Payments: the x402 payer is
-// kept from v3 and refuses without a testnet key; Stripe test mode is the 9 PM item.
+// human approval; only simulated businesses or people who agreed). Payments: disabled (every
+// signature refused, never faked) until Stripe test mode, the 9 PM item; no Primitive/x402 keys.
 import {
-  businessIdFor, claudeExtractor, connectInkboxBuyer, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, StubBrain, slugify, x402Payer,
+  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, StubBrain, slugify,
 } from "@haggle/engine";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
 
@@ -31,7 +31,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     extractor: claudeExtractor({ apiKey: env.ANTHROPIC_API_KEY!, model: env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }),
     attachments: inkboxAttachments(api, buyerMailbox),
     brain: new StubBrain(fleet),
-    payer: x402Payer({ apiKey: env.PRIMITIVE_API_KEY ?? "", privateKey: env.HAGGLE_PAYER_PRIVATE_KEY }),
+    payer: disabledPayer("Payments are not enabled yet (Stripe test mode is pending); nothing was charged."),
     config: {
       mode: "live", inboxDomain: buyerMailbox.split("@")[1]!, sharedInbox: buyerMailbox, collectionWindowMs: 30 * 60_000, negotiationWindowMs: 15 * 60_000,
       approvalTtlMs: 30 * 60_000, globalPaymentCapCents: Number.isInteger(cap) && cap > 0 && cap <= 1000 ? cap : 500, maxRounds: 2,

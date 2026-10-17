@@ -499,8 +499,14 @@ export class HaggleEngine {
       id: newId("pay"), job_id: job.id, approval_id: approval.id, business_id: b.business_id, status: "awaiting_invoice",
       amount_cents: approval.payment_cents, amount_base_units: centsToUsdcBaseUnits(approval.payment_cents), network: "base-sepolia",
       challenge_json: null, challenge_step_id: null, challenge_message_id: null, challenge_trusted: false, challenge_thread_matched: false,
-      pay_to: null, interaction_json: null, settle_tx: null, simulated: this.d.payer.simulated, reason: null,
+      pay_to: null, interaction_json: null, settle_tx: null, simulated: this.d.payer.simulated, reason: this.d.payer.disabledReason ?? null,
+      ...(this.d.payer.disabledReason ? { status: "failed" as const } : {}),
     });
+    if (this.d.payer.disabledReason) {
+      // No payment rail: never ask the seller for an invoice we can't pay.
+      await this.repo.appendEvent(job.id, "payment", { status: "failed", reason: this.d.payer.disabledReason });
+      return;
+    }
     const accept = { haggle: "accept/1", job_id: job.id, quote_total_usd: centsToUsd(approval.quote_total_cents), deposit_usd: centsToUsd(approval.payment_cents), network: "base-sepolia", payer: job.inbox, conditional: true };
     const text = [
       `Hi ${b.name},`, "",

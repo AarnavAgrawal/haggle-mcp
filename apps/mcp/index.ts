@@ -2,9 +2,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { inputRequired, inputResponse, MCPServer } from "mcp-use";
 import { z } from "zod";
-import { EngineError, inkboxCallEnded, inkboxSenderTrust, inkboxToInbound, RetryLater, trustForSender, verifyInkboxWebhook, type DealBoardData } from "@haggle/engine";
+import { EngineError, type DealBoardData } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { Approval, BusinessProfile, DealBoard, DealBoardOrEmpty, Estimates } from "./src/schemas/views.ts";
+import { handleInkboxWebhook } from "./src/webhook.ts";
 import "./src/live.ts";
 
 // Haggle buyer MCP server (v5): lets any agent buy from businesses by email (Inkbox), with phone
@@ -133,7 +134,7 @@ export const deal = server.tool(
       requirements: z.array(requirement).max(20).optional().describe("Extra requirements (merged with request.requirements)"),
       budget_usd: z.number().positive().max(1_000_000).optional().describe("Hard cap for the order total (defaults to the settings spending cap)"),
       deadline: z.string().datetime({ offset: true }).optional().describe("ISO time the businesses should reply by"),
-      approver_email: z.string().email().optional().describe("Human who can approve by email if the client can't show an approval card or form"),
+      approver_email: z.string().email().optional().describe("Stored with the deal; email approval isn't enabled (approve in the client's form or approval card)"),
       approver_phone: z.string().regex(/^\+[1-9]\d{6,14}$/).optional().describe("iMessage approver (not enabled yet; reported as a warning)"),
       max_rounds: z.number().int().min(1).max(2).optional().describe("Quote rounds including one negotiation round (default 2)"),
       client_request_id: z.string().max(64).optional().describe("Reuse to get the same job back instead of contacting businesses again"),
@@ -159,7 +160,7 @@ export const deal = server.tool(
       const budget = input.budget_usd ?? settings.spending_cap_cents / 100;
       const warnings: string[] = [];
       if (input.budget_usd === undefined) warnings.push(`No budget_usd given: using the settings spending cap ${usd(budget)}.`);
-      if (input.approver_phone) warnings.push("approver_phone ignored: iMessage approval isn't enabled yet. The human approves in the approval card, the client's form, or by email (approver_email).");
+      if (input.approver_phone) warnings.push("approver_phone ignored: iMessage approval isn't enabled yet. The human approves in the approval card or the client's form.");
       const r = await engine.deal({
         request: { ...input.request, area, requirements: reqs },
         businesses,
@@ -285,8 +286,8 @@ export const approve = server.tool(
     name: "approve",
     title: "Ask the human to approve a quote",
     description:
-      "Ask the human to approve one exact quote and its deposit. The decision always comes from the human: the Approve button on the approval card, an approval form shown by the client " +
-      "(the model can't fill it), or the approver's verified email. Calling this tool is never an approval by itself. Returns approved, pending_human or refused. " +
+      "Ask the human to approve one exact quote and its deposit. The decision always comes from the human: the Approve button on the approval card or an approval form shown by the client " +
+      "(the model can't fill it). Calling this tool is never an approval by itself. Returns approved, pending_human or refused; NO_HUMAN_CHANNEL means this client can show neither. " +
       "Only for an eligible quote from get_quotes. Next: pay(job_id, quote_id) once approved.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
     outputSchema: Approval,
@@ -298,9 +299,11 @@ export const approve = server.tool(
       const { engine, mode } = rt;
       const canForm = ctx.client.can("elicitation");
       const canView = approveHasView && ctx.client.extension("io.modelcontextprotocol/ui") !== undefined;
-      const job = await engine.loadJob(job_id);
-      const channel = canForm ? "elicitation" : canView ? "view" : job.approver_email && mode === "live" ? "email" : mode === "mock" ? "simulated" : null;
-      if (!channel) return fail(mode, "NO_HUMAN_CHANNEL", "No way to reach a human approver: this client shows neither an approval card nor a form, and the deal has no approver_email.", "Use ChatGPT/Claude (approval card) or a client with form support, or start the deal with approver_email.", "deal");
+      await engine.loadJob(job_id); // job_not_found before anything else
+      // Email approval is off in v5 live mode: Inkbox only verifies Inkbox identities, so an outside
+      // approver's reply could never be trusted. iMessage approval replaces it (9 PM item).
+      const channel = canForm ? "elicitation" : canView ? "view" : mode === "mock" ? "simulated" : null;
+      if (!channel) return fail(mode, "NO_HUMAN_CHANNEL", "No way to reach a human approver: this client shows neither an approval card nor an approval form.", "Approve from a client that shows forms (e.g. Claude Code) or the approval card (ChatGPT/Claude once the approval view ships).", "get_quotes");
       const approval = await engine.requestApproval(job_id, quote_id, channel);
       const summary = `${usd(approval.quote_total_cents / 100)} total, pay ${usd(approval.payment_cents / 100)} deposit now`;
       if (approval.status === "approved") return ok(await approvalView(rt, job_id, quote_id, "approved", { next: "Call pay(job_id, quote_id)." }), `Approved (${summary}). next: pay(job_id, quote_id)`);
@@ -332,8 +335,7 @@ export const approve = server.tool(
         const v = await approvalView(rt, job_id, quote_id, "pending_human", { next: "Waiting for the human to tap Approve on the approval card. Call wait_for_update." });
         return ok(v, `Waiting for the human to approve on the approval card (${summary}). next: wait_for_update`, { "haggle/approval": { approval_id: approval.id, code: approval.code } });
       }
-      const v = await approvalView(rt, job_id, quote_id, "pending_human", { next: "The approver must reply APPROVE <code> from their own address. Call wait_for_update." });
-      return ok(v, `Approval request emailed to the approver (${summary}). next: wait_for_update`);
+      return fail(mode, "NO_HUMAN_CHANNEL", "No approval channel available.", "Use a client with forms or the approval card.", "get_quotes");
     }),
 );
 const approveHasView = "view" in viewIf({ name: "approval" });
@@ -503,7 +505,7 @@ export const openHaggle = server.tool(
 server.settings({
   fields: {
     spending_cap_usd: { schema: z.number().positive().max(1_000_000), title: "Spending cap (USD)", description: "Default hard cap for a deal's order total when the agent gives no budget. Payments also need a human approval." },
-    approver_email: { schema: z.string().max(200), title: "Approver email", description: "Human who approves payments by email when there's no approval card (empty = none)." },
+    approver_email: { schema: z.string().max(200), title: "Approver email", description: "Stored for receipts; approval itself happens in the approval form or card (empty = none)." },
     approver_phone: { schema: z.string().max(20), title: "Approver phone (iMessage)", description: "E.164, e.g. +14155550123 (empty = none). iMessage approval is coming; stored now." },
     default_area: { schema: z.string().max(200), title: "Default area", description: "City or address used when a request has no area (empty = none)." },
   },
@@ -556,49 +558,16 @@ server.get("/health", async (c) => {
   }
 });
 
-/**
- * Inkbox webhooks (mail + call.ended) for the buyer identity: verify the signature on the RAW body
- * first, then one idempotent ingest. Unknown event types are acknowledged and ignored.
- */
+/** Inkbox webhooks for the buyer identity (logic and tests in src/webhook.ts). */
 server.post("/webhooks/inkbox", async (c) => {
-  const requestId = crypto.randomUUID();
   let rt: Runtime;
   try {
     rt = await getRuntime();
   } catch {
     return c.json({ error: "not configured" }, 503);
   }
-  if (!rt.inkbox) return c.json({ error: "webhooks are disabled in mock mode" }, 404);
-  const raw = await c.req.text();
-  const v = verifyInkboxWebhook(raw, c.req.raw.headers, rt.inkbox.webhookSecret);
-  if (!v.ok) return c.json({ error: v.reason }, 401);
-  const { payload } = v;
-  try {
-    let jobId: string | null = null;
-    let outcome = "ignored";
-    if (payload.event_type === "message.received") {
-      const id = (payload.data.message as { id?: string; direction?: string } | undefined)?.id;
-      if (!id) return c.json({ error: "bad payload" }, 400);
-      const detail = await rt.inkbox.api.get(rt.inkbox.buyerMailbox, id);
-      if (!detail.toAddresses.map((a) => a.toLowerCase()).includes(rt.inkbox.buyerMailbox)) {
-        outcome = "not_for_buyer";
-      } else {
-        const msg = inkboxToInbound(payload, detail);
-        const trust = await inkboxSenderTrust(rt.inkbox.api, payload as never, detail);
-        if (!trust.trusted && trust.retryable) throw new RetryLater("sender verification temporarily unavailable");
-        ({ jobId, outcome } = await rt.engine.ingest(msg, trustForSender(trust, msg.from)));
-      }
-    } else if (payload.event_type === "call.ended") {
-      const call = inkboxCallEnded(payload);
-      if (call) ({ jobId, outcome } = await rt.engine.ingestCall(call));
-    }
-    if (jobId) void rt.engine.advanceJob(jobId).catch((e) => console.error(JSON.stringify({ level: "error", event: "advance_failed", requestId, error: (e as Error).message })));
-    console.log(JSON.stringify({ level: "info", event: "inkbox_webhook", requestId, type: payload.event_type, outcome, job_id: jobId }));
-    return c.json({ ok: true });
-  } catch (e) {
-    console.error(JSON.stringify({ level: "error", event: "inkbox_webhook_failed", requestId, retry: e instanceof RetryLater, error: (e as Error).message }));
-    return c.json({ error: e instanceof RetryLater ? "retry later" : "processing failed" }, 503);
-  }
+  const r = await handleInkboxWebhook(rt, await c.req.text(), c.req.raw.headers);
+  return c.json(r.body, r.status);
 });
 
 export default server;

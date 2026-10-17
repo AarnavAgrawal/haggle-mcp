@@ -1,6 +1,6 @@
 // Live adapters' safety rules, with fakes (no network).
 import { describe, expect, it } from "vitest";
-import { isPrimitiveHost, parseFleet, primitiveAttachments, x402Payer } from "../src/live/adapters.ts";
+import { disabledPayer, isPrimitiveHost, parseFleet, primitiveAttachments, x402Payer } from "../src/live/adapters.ts";
 import type { MessageRow } from "../src/store/types.ts";
 
 const msg = (url: string | null): MessageRow => ({
@@ -31,5 +31,11 @@ describe("live adapters", () => {
     expect(x402Payer({ apiKey: "prim_x", privateKey: "0x123" }).signer).toBeNull();
     const ok = x402Payer({ apiKey: "prim_x", privateKey: `0x${"11".repeat(32)}` });
     expect((ok.signer as { address: string }).address).toMatch(/^0x[0-9a-fA-F]{40}$/);
+  });
+
+  it("the disabled payer (live v5 until Stripe) never signs and needs no Primitive key or wallet", async () => {
+    const p = disabledPayer("Stripe test-mode payments are not enabled yet");
+    expect(p).toMatchObject({ signer: null, simulated: false });
+    await expect(p.client.payEmailChallenge({} as never, { signer: null })).rejects.toThrow(/Stripe test-mode payments are not enabled yet/);
   });
 });

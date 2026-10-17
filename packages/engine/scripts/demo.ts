@@ -13,9 +13,9 @@ const log = (s: string) => console.log(`${clock()}  ${s}`);
 
 console.log(`\n${c.y}${c.b}DEMO MODE${c.x}${c.y} · simulated businesses, approval and payment · no real email or funds${c.x}\n`);
 const { budget_usd, ...request } = GOLDEN_REQUEST;
-const deal = await engine.deal({ request, budget_usd, businesses: fleetBusinesses().map((b) => ({ name: b.name, email: b.email, source: "fleet" })) });
+const deal = await engine.deal({ request, budget_usd, businesses: fleetBusinesses().map((b) => ({ name: b.name, ...(b.email ? { email: b.email } : {}), ...((b as { phone?: string }).phone ? { phone: (b as { phone?: string }).phone } : {}), source: "fleet" })) });
 log(`${c.b}deal${c.x} ${deal.job_id}: ${request.quantity} × ${request.what}, ${request.date}, ${request.area}, budget $${budget_usd}, ≥12 vegetarian, delivery`);
-log(`job inbox ${deal.inbox} · RFQs sent to ${deal.contacted.length} businesses`);
+log(`buyer inbox ${deal.inbox} · contacted ${deal.contacted.length} businesses: ${deal.contacted.map((x) => `${x.business} [${x.channel}]`).join(", ")}`);
 
 let cursor = 0;
 let ready = false;
@@ -33,7 +33,7 @@ for (let i = 0; i < 400 && !ready; i++) {
   }
   const q = await engine.getQuotes(deal.job_id);
   for (const p of q.pending_questions) {
-    log(`agent answers ${names.get(p.business_id)} via answer_seller: "Yes, plates and cutlery for 40."`);
+    log(`agent answers ${names.get(p.business_id)} via answer_business: "Yes, plates and cutlery for 40."`);
     await engine.answerSeller(deal.job_id, p.question_id, "Yes, plates and cutlery for 40.");
   }
   ready = q.ready;

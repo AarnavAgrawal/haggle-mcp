@@ -44,6 +44,8 @@ export interface PayerPort {
   signer: unknown;
   /** True when payments are simulated (no real signing key, receipts are DEMO). */
   simulated: boolean;
+  /** Set when no payment rail is enabled: approval records a refused payment and asks no seller for an invoice. */
+  disabledReason?: string;
 }
 
 export interface EngineConfig {

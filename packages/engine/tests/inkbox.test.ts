@@ -1,67 +1,17 @@
 // Inkbox (v5) buyer adapter: webhook signature, in-thread sending with bounded retries, sender
 // trust, signed-URL attachments, and the full email loop through the real engine. Fakes only: no
 // network. Reply content comes from fixtures/buyer (seller text and the hidden-deposit PDF).
-import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { InkboxAPIError } from "@inkbox/sdk";
+import { BUYER, FakeInkbox, SECRET, signed } from "./helpers/fakeInkbox.ts";
 import { describe, expect, it } from "vitest";
 import {
   GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, inkboxAttachments, inkboxCallEnded, inkboxEmail, inkboxSenderTrust, inkboxToInbound, trustForSender,
-  verifyInkboxWebhook, type InkboxMailApi, type InkboxMessageDetail, type QuoteExtraction,
+  verifyInkboxWebhook, type QuoteExtraction,
 } from "../src/index.ts";
 
 const FIX = new URL("../../../fixtures/buyer/", import.meta.url);
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`emails/${name}.json`, FIX), "utf8")) as { from: string; text: string; attachments: { filename: string; content_type: string; path?: string }[] };
-const SECRET = "whsec_dGVzdC1zZWNyZXQ"; // fake test key (base64 "test-secret") gitleaks:allow
-const BUYER = "haggle@inkboxmail.test";
-
-function signed(body: string, opts: { secret?: string; ts?: string; tamper?: boolean } = {}) {
-  const ts = opts.ts ?? String(Math.floor(Date.now() / 1000));
-  const key = (opts.secret ?? SECRET).replace(/^whsec_/, "");
-  const sig = createHmac("sha256", key).update(`req_1.${ts}.${body}`).digest("hex");
-  return new Headers({ "x-inkbox-signature": `sha256=${sig}`, "x-inkbox-request-id": "req_1", "x-inkbox-timestamp": ts, ...(opts.tamper ? {} : {}) });
-}
-
-/** In-memory Inkbox mail: mailboxes keyed by address; outbound messages get RFC Message-IDs. */
-class FakeInkbox implements InkboxMailApi {
-  sent: { mailbox: string; o: Parameters<InkboxMailApi["send"]>[1] }[] = [];
-  messages = new Map<string, InkboxMessageDetail & { mailbox: string; direction: string }>();
-  failNext: number[] = [];
-  listError: InkboxAPIError | Error | null = null;
-  private n = 0;
-  async send(mailbox: string, o: Parameters<InkboxMailApi["send"]>[1]) {
-    const code = this.failNext.shift();
-    if (code) throw new InkboxAPIError(code, "unavailable");
-    const prior = this.sent.find((s) => s.o.idempotencyKey && s.o.idempotencyKey === o.idempotencyKey);
-    const id = prior ? `m_${this.sent.indexOf(prior) + 1}` : `m_${++this.n}`;
-    if (!prior) {
-      this.sent.push({ mailbox, o });
-      this.messages.set(id, { id, mailbox, direction: "outbound", threadId: `t_${o.to[0]}`, messageId: `<${id}@inkbox.test>`, fromAddress: mailbox, toAddresses: o.to, subject: o.subject, bodyText: o.bodyText ?? null, inReplyTo: o.inReplyToMessageId ?? null, references: null, attachmentMetadata: null });
-    }
-    return { id, messageId: `<${id}@inkbox.test>`, status: "queued" };
-  }
-  /** A seller mailbox (Inkbox identity) sends a reply to the buyer. */
-  reply(from: string, inReplyTo: string, text: string, attachments: Record<string, unknown>[] = [], opts: { recordOutbound?: boolean } = {}) {
-    const id = `in_${++this.n}`;
-    const rfc = `<${id}@${from.split("@")[1]}>`;
-    const detail = { id, mailbox: BUYER, direction: "inbound", threadId: `t_${from}`, messageId: rfc, fromAddress: from, toAddresses: [BUYER], subject: "Re: [HG-X] Quote request", bodyText: text, inReplyTo, references: [inReplyTo], attachmentMetadata: attachments };
-    this.messages.set(id, detail);
-    if (opts.recordOutbound !== false) this.messages.set(`out_${id}`, { ...detail, id: `out_${id}`, mailbox: from, direction: "outbound" });
-    return detail;
-  }
-  async get(_mailbox: string, id: string) {
-    const m = this.messages.get(id);
-    if (!m) throw new InkboxAPIError(404, "not found");
-    return m;
-  }
-  async getAttachment(_mailbox: string, id: string, filename: string) {
-    return { url: `https://files.inkbox.test/${id}/${filename}` };
-  }
-  async *list(mailbox: string, o?: { direction?: string }) {
-    if (this.listError) throw this.listError;
-    for (const m of [...this.messages.values()].reverse()) if (m.mailbox === mailbox && (!o?.direction || m.direction === o.direction)) yield m;
-  }
-}
 
 describe("verifyInkboxWebhook", () => {
   const body = JSON.stringify({ id: "evt_1", event_type: "message.received", timestamp: new Date().toISOString(), data: { message: { id: "in_1" }, agent_identities: [] } });

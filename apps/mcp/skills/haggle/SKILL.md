@@ -19,8 +19,8 @@ You never email or call businesses yourself.
 4. When `next` says quotes are final, call `get_quotes` (renders the deal board) and present the
    `recommended_quote_id`, the rejected businesses and why (`excluded_reason`), and any flags.
    A business marked `unavailable` couldn't be reached on its only channel; say so.
-5. `approve(job_id, quote_id)`. The human decides on the approval card, in a form, or by email; your call is
-   never the approval.
+5. `approve(job_id, quote_id)`. The human decides on the approval card or in the client's approval form;
+   your call is never the approval. `NO_HUMAN_CHANNEL` means this client can show neither: tell the user.
 6. Once approved, `pay(job_id, quote_id)`, then `wait_for_update` until the payment is `settled`.
 
 ## Warm path

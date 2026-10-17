@@ -7,7 +7,7 @@ import { StubBrain } from "./brain/stubBrain.ts";
 import { fleetBusinesses, SimFleet, type Persona } from "./sim/fleet.ts";
 import { InMemoryRepository } from "./store/memory.ts";
 import { HaggleEngine } from "./workflow/engine.ts";
-import { inlineAttachments, type EngineConfig } from "./workflow/ports.ts";
+import { inlineAttachments, type EngineConfig, type PayerPort } from "./workflow/ports.ts";
 import type { Brain } from "@haggle/core/contracts";
 import type { PayerClient } from "./payments/x402Challenge.ts";
 import type { Repository } from "./store/types.ts";
@@ -15,7 +15,7 @@ import type { Repository } from "./store/types.ts";
 export const MOCK_INBOX_DOMAIN = "mock.haggle.dev";
 export const MOCK_BUYER_INBOX = `haggle@${MOCK_INBOX_DOMAIN}`;
 
-export function createMockEngine(opts: { now?: () => Date; delayScale?: number; brain?: Brain; config?: Partial<EngineConfig>; repo?: Repository; phone?: boolean; personas?: Persona[] } = {}) {
+export function createMockEngine(opts: { now?: () => Date; delayScale?: number; brain?: Brain; config?: Partial<EngineConfig>; repo?: Repository; phone?: boolean; personas?: Persona[]; payer?: PayerPort } = {}) {
   const now = opts.now ?? (() => new Date());
   const repo = opts.repo ?? new InMemoryRepository();
   const fleet = new SimFleet({ now, delayScale: opts.delayScale ?? 1, ...(opts.personas ? { personas: opts.personas } : {}) });
@@ -27,7 +27,7 @@ export function createMockEngine(opts: { now?: () => Date; delayScale?: number; 
     extractor: fleet,
     attachments: inlineAttachments,
     brain: opts.brain ?? new StubBrain(fleetBusinesses(opts.personas)),
-    payer: {
+    payer: opts.payer ?? {
       client: payerClient as unknown as PayerClient,
       signer: { address: "0x5157000000000000000000000000000000000002", signTypedData: async () => `0x${"00".repeat(65)}` },
       simulated: true,

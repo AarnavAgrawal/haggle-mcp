@@ -9,9 +9,10 @@ also render the views in `views/` (Aarnav).
 corepack pnpm install
 corepack pnpm --filter @haggle/mcp build                 # production build (views included)
 cd apps/mcp && HAGGLE_MODE=mock ./node_modules/.bin/mcp-use start   # http://localhost:3000/mcp
-#   Inspector: http://localhost:3000/inspector · health: /health
+#   Inspector (with --with-inspector, or `mcp-use dev`): http://localhost:3000/mcp/inspector · health: /health
 #   Faster demo replies: HAGGLE_SIM_DELAY_SCALE=0.2
-corepack pnpm --filter @haggle/mcp test                  # transport E2E against the built server
+corepack pnpm --filter @haggle/mcp test                  # transport E2E against the built server + webhook route
+# Real MCP client: mcp-use client connect local http://localhost:3000/mcp && mcp-use client local tools call open_haggle '{}'
 ```
 
 `HAGGLE_MODE=mock` (default) needs no credentials: simulated businesses (email + one simulated Voice AI
@@ -43,8 +44,8 @@ Set the live env vars in the Manufact dashboard and copy the MCP URL from it (do
 | `wait_for_update` | | engine (≤ 60 s long-poll, cursor) |
 | `get_quotes` | deal-board | engine (deal board read model) |
 | `answer_business` | | engine |
-| `approve` | approval* | engine (human: form > approval card > approver email; DEMO sim in mock) |
-| `pay` | | engine (refuses without the human approval) |
+| `approve` | approval* | engine (human: client form or approval card; NO_HUMAN_CHANNEL otherwise; DEMO sim in mock) |
+| `pay` | | engine (refuses without the human approval; live payments disabled until Stripe test mode) |
 | `business_profile` | business-profile* | brain (optional `getProfile`) |
 | `open_haggle` `{}` | haggle-home* (global + thread entrypoints) | engine |
 | `settings.read` / `settings.update` | native | engine (cap ≤ operator ceiling) |

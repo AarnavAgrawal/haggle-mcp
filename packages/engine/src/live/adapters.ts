@@ -64,6 +64,14 @@ export function x402Payer(opts: { apiKey: string; privateKey: string | undefined
   return { client, signer: privateKeyToAccount(opts.privateKey as `0x${string}`), simulated: false };
 }
 
+/**
+ * v5 live payer until Stripe test mode lands: refuses every signature, so a payment is recorded as
+ * SIGNING_REFUSED and never faked. Needs no Primitive key or wallet.
+ */
+export function disabledPayer(reason: string): PayerPort {
+  return { client: { payEmailChallenge: async () => { throw new Error(reason); } }, signer: null, simulated: false, disabledReason: reason };
+}
+
 /** "Name <email>; Name <email>" -> demo fleet entries for discover (quote-broker DEMO_VENDORS format). */
 export function parseFleet(spec: string | undefined): { name: string; email: string }[] {
   if (!spec) return [];
