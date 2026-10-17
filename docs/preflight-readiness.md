@@ -29,7 +29,7 @@ Re-run any time: `corepack pnpm --filter @haggle/spikes preflight [env|primitive
 | `interactions_enabled` | PASS | in `/account` entitlements |
 | x402 payer (`x402_payments`) | **BLOCKED** | `/x402/spend-policy` → 403 `feature_disabled`, invite-only: https://docs.primitive.dev/docs/collecting-payments#requesting-access |
 | Payer private key | PASS (format) | `0x` + 64 hex, user-confirmed; no signing performed |
-| Anthropic | **BLOCKED** | Models API → 400: key isn't scoped to a workspace; requests need `anthropic-workspace-id`. Set `ANTHROPIC_WORKSPACE_ID` (Console → Workspaces) or use a workspace-scoped key. Extraction code at kickoff must send the same header |
+| Anthropic | **BLOCKED** | Models API → 400: key isn't scoped to a workspace; requests need `anthropic-workspace-id`. Set `ANTHROPIC_WORKSPACE_ID` (Console → Workspaces) or use a workspace-scoped key. Extraction code at kickoff must send the same header. Auto-discovery is impossible with this key: `GET /v1/organizations/me` → 200 (org `36104006…`), but `/v1/organizations/workspaces?include_default=true`, `/api_keys`, `/users` → 403 `permission_error`, and every workspace endpoint (incl. free `count_tokens`) → 400 without returning an `anthropic-workspace-id` response header. Copy the Default Workspace `wrkspc_…` ID from platform.claude.com/settings/workspaces (ID column) |
 | Supabase project `behfuaxftitnzkkbnaia` | PASS | read-only session via session pooler; Postgres 17.11; `postgres` role BYPASSRLS; public schema empty, no migrations applied, extensions include pgcrypto |
 | Supabase `sb_secret_` key | PASS | `GET /rest/v1/` → 200 (bad-key control → 401) |
 | Manufact CLI | PASS | `mcp-use whoami` → logged in (Yashnil Mohanty's Projects); nothing deployed |
