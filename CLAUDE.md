@@ -1,6 +1,27 @@
 # CLAUDE.md: Haggle (master instructions)
 
-Read this whole file before doing anything in this repo. `PLAN.md` has the full plan; `CHECKLIST.md` tracks progress. If a request conflicts with this file, ask before acting.
+Read this whole file before doing anything in this repo. If a request conflicts with this file, ask before acting.
+
+## 0. Start here
+
+**Docs, in reading order:**
+
+| File | What it is | When to read |
+| --- | --- | --- |
+| `CLAUDE.md` (this file) | Rules, stack, ownership, contracts summary | Always, first |
+| `CHECKLIST.md` | What's done, who's on what, blockers, log | Before and after every task |
+| `CONTRACTS.md` | Full spec of every shared surface: types, view schemas, states, Inkbox channels, quote protocol, payment, DB, env | Before touching anything that crosses the Yash/Aarnav line |
+| `PLAN.md` | Full product plan: views, seller fleet, benchmark, schedule, demo, risks (`PLAN.pdf` is an export of it) | For product context, or when unsure what "done" looks like |
+
+**Every task, in order:**
+1. Read `CHECKLIST.md` and set your "Now working on".
+2. Confirm the files you'll touch are in your lane (section 4). If not, stop and say so.
+3. Write or extend a test against `fixtures/` first.
+4. Build it, using the stack exactly as listed in section 3 (all channels through **Inkbox**, payment through **Stripe test mode**).
+5. Check it against the definition of done (section 10).
+6. Commit on your branch; update `CHECKLIST.md` (tick, status line, log line).
+
+**Legacy code:** v3/v4 used Primitive (email) and x402 (USDC payment). Neither is in v5. Treat any `primitive*` / `x402*` files or `PRIMITIVE_*` env vars as legacy to replace with Inkbox and Stripe; don't extend them.
 
 ## 1. What we are building
 
@@ -54,7 +75,7 @@ Event: YC "Make Something Agents Want". Building ends Sun 10:00 AM. Team: Yash a
 | --- | --- | --- |
 | **Yash** | `apps/mcp/index.ts`, `apps/mcp/src/**` (tools, settings, mentions, webhook route), `packages/engine/`, `supabase/migrations/1xx_engine_*.sql` | `haggle` buyer identity |
 | **Aarnav** | `apps/mcp/views/**`, `packages/brain/`, `apps/sellers/`, `apps/bench/`, `fixtures/`, `supabase/migrations/2xx_brain_*.sql` | 6 seller identities, A2A, Voice AI persona |
-| **Shared (both must agree)** | `packages/core/` (`contracts.ts`, `views.ts`), this file, `PLAN.md`, `apps/mcp/package.json` | |
+| **Shared (both must agree)** | `packages/core/` (`contracts.ts`, `views.ts`), this file, `CONTRACTS.md`, `PLAN.md`, `apps/mcp/package.json`, `.env.example` (each adds only their own vars) | |
 
 Rules for Claude Code:
 1. **Only edit files inside the current owner's folders.** If a change is needed elsewhere, stop and say what and why.
@@ -66,6 +87,8 @@ Rules for Claude Code:
 7. Never commit secrets. Use `.env` (gitignored) and keep `.env.example` current.
 
 ## 5. Contracts
+
+Summary only. `CONTRACTS.md` has the full spec (state machines, channel events, quote protocol, payment gate, DB and env).
 
 ### `packages/core/contracts.ts`
 ```ts
