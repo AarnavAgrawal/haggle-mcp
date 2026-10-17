@@ -108,7 +108,7 @@ export function createSellerApp(opts: SellerAppOptions) {
     opts.state.set(key, state);
 
     later(p, describePlan(plan), async () => {
-      const text = await opts.composer.write(p, plan, task.text);
+      const text = await opts.composer.write(p, plan, task.text, "a2a");
       const structured = plan.kind === "question" ? undefined : quoteJson(p, plan.facts, now());
       await opts.ports.replyA2A(p.handle, taskId, { text, ...(structured ? { data: structured } : {}) });
       log(`[sellers] ${p.name}: A2A ${describePlan(plan)} sent`);

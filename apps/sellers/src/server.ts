@@ -40,7 +40,8 @@ const ports: SellerPorts = {
     return { contextId: task.contextId, text, data };
   },
   async replyA2A(handle, taskId, { text, data }) {
-    await (await identity(handle)).a2aReply(taskId, { intent: "complete", text, ...(data ? { parts: [{ data }] } : {}) });
+    // The SDK takes text or parts, not both: send the prose and quote.json as two parts.
+    await (await identity(handle)).a2aReply(taskId, data ? { intent: "complete", parts: [{ text }, { data }] } : { intent: "complete", text });
   },
 };
 
@@ -105,8 +106,15 @@ server.listen(PORT, async () => {
   const tunnelName = process.env.SELLERS_TUNNEL;
   if (tunnelName) {
     const { connect } = await import("@inkbox/sdk/tunnels/connect");
-    await connect(inkbox, { name: tunnelName, forwardTo: `http://127.0.0.1:${PORT}` });
-    console.log(`[sellers] tunnel up: https://${tunnelName}.inkboxwire.com → localhost:${PORT}`);
+    const listener = await connect(inkbox, {
+      name: tunnelName,
+      forwardTo: `http://127.0.0.1:${PORT}`,
+      installSignalHandlers: false,
+      onStatus: (s) => console.log(`[sellers] tunnel ${String(s)}`),
+    });
+    // connect() only prepares the tunnel; traffic flows once it is served.
+    listener.serveForever().catch((e: unknown) => console.error(`[sellers] tunnel stopped: ${(e as Error).message}`));
+    console.log(`[sellers] tunnel: ${listener.publicUrl} → localhost:${PORT}`);
   }
 });
 

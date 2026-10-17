@@ -7,8 +7,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { usd, type Plan, type QuoteFacts } from "./logic.ts";
 import type { Persona } from "./personas.ts";
 
+export type Medium = "email" | "a2a";
+
 export interface Composer {
-  write(p: Persona, plan: Plan, inbound: string): Promise<string>;
+  write(p: Persona, plan: Plan, inbound: string, medium?: Medium): Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,9 +85,9 @@ export function createClaudeComposer(options: { client?: Anthropic; model?: stri
   const log = options.log ?? ((m: string) => console.warn(m));
 
   return {
-    async write(p, plan, inbound) {
+    async write(p, plan, inbound, medium = "email") {
       try {
-        const text = await callClaude(client, model, p, plan, inbound);
+        const text = await callClaude(client, model, p, plan, inbound, medium);
         if (!text) return templateReply(p, plan);
         const { must, mustNot } = factChecks(p, plan);
         const lower = text.toLowerCase();
@@ -104,12 +106,16 @@ export function createClaudeComposer(options: { client?: Anthropic; model?: stri
   };
 }
 
-async function callClaude(client: Anthropic, model: string, p: Persona, plan: Plan, inbound: string): Promise<string | null> {
+async function callClaude(client: Anthropic, model: string, p: Persona, plan: Plan, inbound: string, medium: Medium): Promise<string | null> {
   const { must, mustNot } = factChecks(p, plan);
+  const where =
+    medium === "a2a"
+      ? "an agent-to-agent (A2A) reply to the customer's AI agent; a structured quote.json travels with it. Don't mention email; to confirm, they reply to this task"
+      : "an email reply";
   const system = [
-    `You write one email reply as ${p.name}, a catering business in San Francisco, to a customer asking for a quote.`,
+    `You write ${where} as ${p.name}, a catering business in San Francisco, to a customer asking for a quote.`,
     `Voice: ${p.style}`,
-    "Write only the email body: no subject line, no placeholders, plain text, under 140 words.",
+    "Write only the message body: no subject line, no placeholders, plain text, under 140 words.",
     `Use exactly these facts and no other prices or numbers. Include these figures verbatim: ${must.length ? must.join(", ") : "(none)"}.`,
     mustNot.length ? `Do not mention: ${mustNot.join(", ")} (it is in the attached PDF).` : "",
     `End with this sign-off exactly:\n${p.signoff}`,
