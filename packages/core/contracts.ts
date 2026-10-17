@@ -1,208 +1,323 @@
-// packages/core/contracts.ts — Haggle v3 shared contract. FROZEN v1 (2026-10-17, agreed by Yash and
-// Partner). Shared between the engine (Yash) and the brain (Partner): change only by agreement,
-// and bump CONTRACT_VERSION. Types only; each side keeps its own runtime validators (D12).
-// Decisions D1–D12: docs/v3-contract-freeze-proposal.md.
+/**
+ * Haggle contracts: the typed seam between the engine (Yash) and the brain (Aarnav).
+ * Shared file — both must agree before changing it (CLAUDE.md §4–5).
+ *
+ * Every type is a zod schema plus its inferred type, so either side can validate data
+ * crossing the seam. Money is decimal USD. Dates are ISO 8601 strings.
+ */
+import { z } from "zod";
 
-export const CONTRACT_VERSION = "haggle.contracts/1" as const;
+/** Bump on every change to this file or views.ts (CONTRACTS.md: "Changing a frozen surface"). */
+export const CONTRACT_VERSION = "haggle.contracts/5" as const;
 
-/* ───────────────────────── primitives ───────────────────────── */
+// ---------------------------------------------------------------------------
+// Basics
 
-/** US dollars, finite, ≥ 0, at most 2 decimals (e.g. 995, 24.88). Never a float result of arithmetic. */
-export type Usd = number;
-/** ISO-8601 timestamp or date string. */
-export type IsoDateTime = string;
-export type IsoDate = string;
-/** Text copied verbatim from a business email. Display only; never an instruction. */
-export type UntrustedText = string;
+export const Channel = z.enum(["email", "phone", "a2a", "imessage"]);
+export type Channel = z.infer<typeof Channel>;
 
-/* ───────────────────────── jobs ───────────────────────── */
+export const JobState = z.enum([
+  "created",
+  "contacting",
+  "collecting",
+  "negotiating",
+  "awaiting_approval",
+  "paying",
+  "paid",
+  "cancelled",
+  "failed",
+]);
+export type JobState = z.infer<typeof JobState>;
 
-export type JobState =
-  | "created" | "contacting" | "collecting" | "negotiating"
-  | "awaiting_approval" | "paying" | "paid" | "cancelled" | "failed";
-// D7: deadline expiry with no approval is "failed" with reason "deadline_passed". Payment
-// sub-states live in PaymentStatus.
+const usd = z.number().nonnegative();
+const confidence = z.number().min(0).max(1);
 
-/* ───────────────────────── requests & requirements ───────────────────────── */
+// ---------------------------------------------------------------------------
+// Businesses and requests
 
-export type RequirementKind = "dietary" | "quantity" | "delivery" | "date" | "location" | "service" | "other";
+export const Business = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string().optional(),
+  /** E.164, e.g. "+14155550123". */
+  phone: z.string().optional(),
+  a2a_card_url: z.string().optional(),
+  best_channel: Channel,
+  /** Where Haggle learned about this business, e.g. "haggle-directory", "user". */
+  source: z.string(),
+  /** True for the simulated demo fleet; anything simulated is labeled DEMO wherever it is shown. */
+  simulated: z.boolean().optional(),
+  /** URL or note where discovery found the business. */
+  found_at: z.string().optional(),
+});
+export type Business = z.infer<typeof Business>;
 
-export interface Requirement {
-  id: string;                 // stable within a job, e.g. "veg12"
-  kind: RequirementKind;
-  text: string;               // "At least 12 vegetarian meals"
-  hard: boolean;              // hard = non-compliant if unmet
-  min_count?: number;         // e.g. 12 for "at least 12 vegetarian"
+/** A structured requirement. The engine checks hard ones against every quote. */
+export const RequirementKind = z.enum(["dietary", "quantity", "delivery", "date", "location", "service", "other"]);
+export type RequirementKind = z.infer<typeof RequirementKind>;
+
+export const Requirement = z.object({
+  /** Stable within a job, e.g. "veg12". */
+  id: z.string(),
+  kind: RequirementKind,
+  /** e.g. "At least 12 vegetarian meals". */
+  text: z.string(),
+  /** Hard = the quote is non-compliant if unmet. */
+  hard: z.boolean(),
+  /** e.g. 12 for "at least 12 vegetarian". */
+  min_count: z.number().int().positive().optional(),
+});
+export type Requirement = z.infer<typeof Requirement>;
+
+/** The display text of a requirement given either as a plain string or as a Requirement. */
+export function requirementText(r: string | Requirement): string {
+  return typeof r === "string" ? r : r.text;
 }
 
-/** What the agent wants. Shared by deal(), ask() and the brain's estimate(). */
-export interface Request {
-  what: string;               // "lunch catering"
-  quantity: number;           // 40
-  unit?: string;              // "people" | "meals" | "units"
-  date: IsoDate;              // "2026-10-22"
-  area: string;               // "San Francisco, CA"
-  requirements: Requirement[];
-  budget_usd?: Usd;           // buyer's hard cap for the order total
-}
+/** What a buyer agent wants. `ask` uses what/quantity/date/area; `deal` adds the rest. */
+export const Request = z.object({
+  what: z.string(),
+  /** Normalized category for learning, e.g. "catering". Derived from `what` when absent. */
+  category: z.string().optional(),
+  quantity: z.number().int().positive().optional(),
+  /** Unit for quantity; "people" when absent. */
+  unit: z.string().optional(),
+  /** ISO date (YYYY-MM-DD). */
+  date: z.string().optional(),
+  area: z.string().optional(),
+  /** Plain strings ("12 vegetarian") or structured Requirements; use requirementText() to display. */
+  requirements: z.array(z.union([z.string(), Requirement])).default([]),
+  budget_usd: usd.optional(),
+});
+export type Request = z.input<typeof Request>;
 
-/* ───────────────────────── businesses ───────────────────────── */
+// ---------------------------------------------------------------------------
+// Quotes
 
-export interface Business {
-  /** Deterministic: "biz_" + first 16 hex of sha256(lowercased email). (D5) */
-  business_id: string;
-  slug: string;               // "bay-catering" (for business://<slug>)
-  name: string;
-  email: string;              // contact address used for RFQs
-  source: "fleet" | "web" | "agent";   // fleet = simulated demo seller
-  simulated: boolean;         // true for the demo fleet; must be shown as such
-  found_at?: string;          // URL or note where discovery found it
-}
+/**
+ * Known quote flags. `Quote.flags` stays `string[]` so new flags don't break the seam;
+ * views render unknown flags as plain text.
+ */
+export const QUOTE_FLAGS = [
+  "requirement_unmet", // e.g. 6 of 12 vegetarian meals
+  "requirement_unknown", // business didn't say whether a hard requirement is met
+  "hidden_deposit", // deposit only mentioned in the fine print / page 2
+  "hidden_fee",
+  "tax_excluded",
+  "delivery_unclear",
+  "vague_price",
+  "conflicting_numbers",
+  "unsourced_figure",
+  "external_payment_link", // business asked to pay at a link: never followed
+  "prompt_injection", // business text tried to instruct the agent
+  "unverified_sender",
+  "over_budget",
+  "low_confidence",
+  "question_pending",
+  "expired",
+] as const;
+export type QuoteFlag = (typeof QUOTE_FLAGS)[number];
 
-/* ───────────────────────── evidence & quotes ───────────────────────── */
+export const PriceCheck = z.enum(["good", "typical", "high"]);
+export type PriceCheck = z.infer<typeof PriceCheck>;
 
-export type Provenance = "stated" | "derived" | "ambiguous";
-// "missing" is expressed by absence + an entry in Quote.missing, not as a provenance value.
+export const Quote = z.object({
+  quote_id: z.string(),
+  job_id: z.string(),
+  business_id: z.string(),
+  business: z.string(),
+  channel: Channel,
+  total_usd: usd,
+  per_unit_usd: usd.optional(),
+  deposit_usd: usd.optional(),
+  items: z.array(z.string()),
+  meets_requirements: z.boolean(),
+  flags: z.array(z.string()),
+  price_check: PriceCheck.optional(),
+  /** Total before negotiation, when this quote is a negotiated revision. */
+  negotiated_from: usd.optional(),
+  round: z.number().int().min(1),
+  confidence,
+  /** Where the numbers came from, e.g. "email:pdf p2", "call transcript", "a2a:quote.json". */
+  source: z.string(),
+  // Engine additions (all optional): ranking, revisions and audit trail.
+  /** Can be approved: compliant, current, from a trusted sender, within budget. */
+  eligible: z.boolean().optional(),
+  verdict: z.enum(["compliant", "rejected", "incomplete"]).optional(),
+  /** Why the quote is not eligible, e.g. "requirement_unmet". */
+  excluded_reason: z.string().optional(),
+  delivery_usd: usd.optional(),
+  tax_usd: usd.optional(),
+  valid_until: z.string().optional(),
+  status: z.enum(["current", "superseded", "expired", "withdrawn"]).optional(),
+  /** Inbox message, call or A2A task this quote came from. */
+  message_id: z.string().optional(),
+});
+export type Quote = z.infer<typeof Quote>;
 
-export interface Evidence {
-  provenance: Provenance;
-  source: string;             // "quote.json" | "pdf p.2" | "email body" | "html body"
-  excerpt?: UntrustedText;    // ≤ 200 chars around the figure
-}
+// ---------------------------------------------------------------------------
+// Replies: what the engine's parser hands the brain after every business reply
 
-export type QuoteField =
-  | "total_usd" | "per_unit_usd" | "deposit_usd" | "delivery_usd" | "tax_usd"
-  | "items" | "valid_until" | "date" | "quantity";
+export const ReplyKind = z.enum(["quote", "question", "decline", "no_answer", "other"]);
+export type ReplyKind = z.infer<typeof ReplyKind>;
 
-export interface RequirementResult {
-  requirement_id: string;
-  met: boolean | null;        // null = seller didn't say → follow-up, never assumed true
-  evidence?: Evidence;
-}
+export const ParsedReply = z.object({
+  kind: ReplyKind,
+  total_usd: usd.optional(),
+  per_unit_usd: usd.optional(),
+  /** Quantity the quote is priced for (people, units). */
+  quantity: z.number().int().positive().optional(),
+  deposit_usd: usd.optional(),
+  delivery_usd: usd.optional(),
+  minimum_order_usd: usd.optional(),
+  minimum_quantity: z.number().int().positive().optional(),
+  /** Menu / line items as short strings, e.g. "Veggie lasagna (vegetarian)". */
+  items: z.array(z.string()).default([]),
+  /** The business's question, when kind = "question". */
+  question: z.string().optional(),
+  /** Engine id for that question (answer_business uses it). */
+  question_id: z.string().optional(),
+  /** The parser found instructions aimed at the agent and ignored them. */
+  injection_detected: z.boolean().optional(),
+  flags: z.array(z.string()).default([]),
+  confidence: confidence.default(0.8),
+});
+export type ParsedReply = z.input<typeof ParsedReply>;
 
-export interface Quote {
-  kind: "quote";
-  quote_id: string;
-  job_id: string;
-  business_id: string;
-  business: string;           // display name
-  total_usd: Usd;             // all-in order total the business stated or that was derived from its lines
-  per_unit_usd?: Usd;
-  deposit_usd?: Usd;          // part of total_usd that is due up front; NOT an extra fee
-  delivery_usd?: Usd;
-  tax_usd?: Usd;
-  items: string[];
-  meets_requirements: boolean; // true only if every hard requirement has met === true
-  requirement_results: RequirementResult[];
-  missing: QuoteField[];
-  flags: QuoteFlag[];
-  price_check?: "good" | "typical" | "high";
-  negotiated_from?: Usd;       // previous total from the same business, if revised
-  round: number;               // 1 = first quote; +1 per revision
-  confidence: number;          // 0..1 extraction confidence (not correctness)
-  source: string;              // primary source, e.g. "pdf p.2" | "quote.json"
-  evidence: Partial<Record<QuoteField, Evidence>>;
-  valid_until?: IsoDateTime;
-  status: "current" | "superseded" | "expired" | "withdrawn";
-  message_id: string;          // inbound message this quote came from
-}
+export const ReplyMeta = z.object({
+  job_id: z.string(),
+  business_name: z.string(),
+  channel: Channel,
+  /** When the business replied. */
+  received_at: z.string(),
+  /** When Haggle contacted the business in this round (for reply speed). */
+  contacted_at: z.string().optional(),
+  round: z.number().int().min(1).default(1),
+  request: Request,
+  /** For round ≥ 2: the total before this round's counteroffer. */
+  negotiated_from: usd.optional(),
+  /** For round ≥ 2: whether Haggle's counter cited a real competing quote. */
+  cited_competing_quote: z.boolean().optional(),
+  // CONTRACTS.md section 1 fields (optional so brain fixtures stay valid).
+  business_id: z.string().optional(),
+  /** Inkbox message id, call id, iMessage id or A2A task id. */
+  message_id: z.string().optional(),
+  /** Format the reply arrived in; the channel is `channel`. */
+  format: z.enum(["quote.json", "pdf", "html", "text", "transcript", "a2a"]).optional(),
+  /** Inkbox webhook signature + sender matched the business record. The engine only teaches the brain trusted replies. */
+  sender_trusted: z.boolean().optional(),
+  simulated: z.boolean().optional(),
+});
+export type ReplyMeta = z.input<typeof ReplyMeta>;
 
-export type QuoteFlag =
-  | "requirement_unmet" | "requirement_unknown" | "hidden_deposit" | "hidden_fee"
-  | "tax_excluded" | "delivery_unclear" | "vague_price" | "conflicting_numbers"
-  | "expired" | "external_payment_link" | "prompt_injection" | "unverified_sender"
-  | "over_budget" | "low_confidence" | "question_pending" | "unsourced_figure";
+// ---------------------------------------------------------------------------
+// Brain outputs
 
-/* ───────────────────────── replies (engine → brain) ───────────────────────── */
+export const PriceModel = z.enum(["per_unit", "flat", "unknown"]);
+export type PriceModel = z.infer<typeof PriceModel>;
 
-/** One reply can carry several items (e.g. a quote plus a question). (D4) */
-export type ReplyItem =
-  | { kind: "quote"; quote: Omit<Quote, "quote_id" | "price_check" | "status"> }
-  | { kind: "question"; question_id: string; text: UntrustedText; blocks_quote: boolean }
-  | { kind: "status"; status: "will_reply_later" | "acknowledged" | "out_of_office" | "need_more_info";
-      follow_up_after?: IsoDateTime; text?: UntrustedText }
-  | { kind: "decline"; reason?: UntrustedText }
-  | { kind: "payment_request"; rail: "x402" | "external_link"; text?: UntrustedText }   // external_link is always flagged, never followed
-  | { kind: "unstructured"; summary: UntrustedText };
+export const ProfileHistoryEntry = z.object({
+  date: z.string(),
+  job_id: z.string(),
+  channel: Channel,
+  kind: ReplyKind,
+  total_usd: usd.optional(),
+  per_unit_usd: usd.optional(),
+  quantity: z.number().int().positive().optional(),
+  round: z.number().int().min(1),
+  negotiated_from: usd.optional(),
+  reply_minutes: z.number().nonnegative().optional(),
+});
+export type ProfileHistoryEntry = z.infer<typeof ProfileHistoryEntry>;
 
-export interface ParsedReply {
-  items: ReplyItem[];
-  injection_detected: boolean;     // instructions aimed at the agent were found and ignored
-}
+/** Everything Haggle has learned about one business: its "API". */
+export const Profile = z.object({
+  business_id: z.string(),
+  name: z.string(),
+  category: z.string(),
+  area: z.string().optional(),
+  best_channel: Channel,
+  channels_seen: z.array(Channel),
+  menu: z.array(z.string()),
+  price_model: PriceModel,
+  /** Typical price per unit (e.g. per person) across learned quotes. */
+  per_unit_usd: z.object({ low: usd, typical: usd, high: usd }).optional(),
+  minimum_order_usd: usd.optional(),
+  minimum_quantity: z.number().int().positive().optional(),
+  /** Deposit as a fraction of the total (0.25 = 25%). */
+  deposit_pct: z.number().min(0).max(1).optional(),
+  /** Typical discount given in negotiation (0.1 = 10%); 0 = never moves. */
+  discount_pct: z.number().min(0).max(1).optional(),
+  /** Whether the discount only came after citing a competing quote. */
+  discount_needs_competing_quote: z.boolean().optional(),
+  median_reply_minutes: z.number().nonnegative().optional(),
+  asks_questions: z.boolean(),
+  flags_seen: z.array(z.string()),
+  n_quotes: z.number().int().nonnegative(),
+  history: z.array(ProfileHistoryEntry),
+  confidence,
+  updated_at: z.string(),
+});
+export type Profile = z.infer<typeof Profile>;
 
-export interface ReplyMeta {
-  job_id: string;
-  business_id: string;
-  business_email: string;          // snapshot used for this job
-  message_id: string;              // Primitive email id
-  thread_id: string;
-  received_at: IsoDateTime;
-  rfq_sent_at: IsoDateTime;        // lets the brain learn reply speed
-  channel: "quote.json" | "pdf" | "html" | "text";
-  sender_trusted: boolean;         // engine's verdict from Primitive auth signals (see design B)
-  sender_trust_reason: string;     // e.g. "trusted" | "dmarc-domain-mismatch"
-  request: Request;                // what was asked, so the brain can normalise per-unit prices
-  simulated: boolean;
-}
+export const Estimate = z.object({
+  business_id: z.string(),
+  business: z.string(),
+  total_usd: usd,
+  per_unit_usd: usd.optional(),
+  confidence,
+  /** Number of real quotes this estimate is based on. */
+  n_quotes: z.number().int().nonnegative(),
+  best_channel: Channel,
+  /** Human-readable basis, e.g. "based on 3 real quotes, $24–27 per person". */
+  basis: z.string(),
+  low_usd: usd.optional(),
+  high_usd: usd.optional(),
+  simulated: z.boolean().optional(),
+});
+export type Estimate = z.infer<typeof Estimate>;
 
-/* ───────────────────────── brain outputs ───────────────────────── */
+/** Anything with a price that can be checked: a Quote, a ParsedReply or a hand-made object. */
+export const QuoteLike = z.object({
+  total_usd: usd,
+  quantity: z.number().int().positive().optional(),
+  per_unit_usd: usd.optional(),
+  category: z.string().optional(),
+  area: z.string().optional(),
+  business_id: z.string().optional(),
+});
+export type QuoteLike = z.input<typeof QuoteLike>;
 
-export interface Profile {
-  business_id: string;
-  slug: string;
-  name: string;
-  simulated: boolean;
-  menu: string[];
-  price_model: { typical_per_unit_usd?: Usd; delivery_fee_usd?: Usd; minimum_order_usd?: Usd };
-  deposit_rule?: { kind: "fixed" | "percent"; value: number; text?: UntrustedText };
-  discount_behavior: { opening_margin_pct?: number; usual_concession_pct?: number;
-                       responds_to_competing_quote: boolean | null; volume_threshold?: number };
-  median_reply_s?: number;
-  quote_count: number;             // real quotes seen
-  last_quote_at?: IsoDateTime;
-  confidence: number;              // 0..1
-  updated_at: IsoDateTime;
-}
+export const PriceVerdict = z.object({
+  /** "unknown" when the sample is too small to judge; Quote.price_check is then omitted. */
+  verdict: z.enum([...PriceCheck.options, "unknown"]),
+  /** Typical price per unit for this category and area. */
+  typical_per_unit_usd: usd.optional(),
+  range_per_unit_usd: z.object({ low: usd, high: usd }).optional(),
+  /** +0.18 = 18% above typical. */
+  delta_pct: z.number().optional(),
+  sample_size: z.number().int().nonnegative(),
+  /** e.g. "18% above typical for 40 people in SF". */
+  summary: z.string(),
+});
+export type PriceVerdict = z.infer<typeof PriceVerdict>;
 
-export interface Estimate {
-  kind: "estimate";                // never confused with a Quote
-  business_id: string;
-  business: string;
-  estimate_usd: Usd;
-  low_usd: Usd;
-  high_usd: Usd;
-  per_unit_usd?: Usd;
-  confidence: number;              // 0..1
-  quote_count: number;             // "based on N real quotes"
-  last_quote_at?: IsoDateTime;
-  simulated: boolean;
-  basis: string;                   // "per-unit $24.9 × 25 + $60 delivery"
-}
+export const Hints = z.object({
+  business_id: z.string(),
+  /** Typical discount this business accepts (0.1 = 10%). */
+  expected_discount_pct: z.number().min(0).max(1),
+  /** Whether citing a real competing quote is what moves this business. */
+  cite_competing_quote: z.boolean(),
+  /** Lowest per-unit price this business has accepted before. */
+  floor_per_unit_usd: usd.optional(),
+  /** Short tactics for the counteroffer, never inventing quotes. */
+  tactics: z.array(z.string()),
+  confidence,
+});
+export type Hints = z.infer<typeof Hints>;
 
-export interface QuoteLike {
-  business_id?: string;
-  request: Pick<Request, "what" | "quantity" | "area"> & { date?: IsoDate };
-  total_usd: Usd;
-}
-
-export interface PriceVerdict {
-  verdict: "good" | "typical" | "high" | "unknown";   // unknown when sample_size too small
-  typical_low_usd?: Usd;
-  typical_high_usd?: Usd;
-  delta_pct?: number;              // +18 = 18% above typical median
-  sample_size: number;
-  basis: string;                   // "40 people, SF, last 30 days"
-}
-
-export interface Hints {
-  business_id: string;
-  responds_to_competing_quote: boolean | null;
-  usual_concession_pct?: number;
-  floor_hint_usd?: Usd;            // brain's guess; the engine never states it to the seller
-  max_rounds_suggested: number;
-  sample_size: number;
-  confidence: number;
-}
+// ---------------------------------------------------------------------------
+// The brain interface (implemented in packages/brain, called by the engine and tools)
 
 export interface Brain {
   learnFromReply(businessId: string, parsed: ParsedReply, meta: ReplyMeta): Promise<Profile>;
@@ -210,103 +325,6 @@ export interface Brain {
   checkPrice(q: QuoteLike): Promise<PriceVerdict>;
   negotiationHints(businessId: string, req: Request): Promise<Hints>;
   discover(category: string, area: string, count: number): Promise<Business[]>;
+  /** Read a learned profile by id or (case-insensitive) name; null when unknown. */
+  getProfile(business: string): Promise<Profile | null>;
 }
-
-/* ───────────────────────── email JSON parts (application/json attachments) ───────────────────────── */
-
-export interface RfqPart {
-  haggle: "rfq/1";
-  job_id: string;
-  what: string; quantity: number; unit?: string;
-  date: IsoDate; location: string;
-  requirements: Pick<Requirement, "id" | "text" | "hard" | "min_count">[];
-  budget_hint_usd?: Usd;           // policy decides whether to reveal (default: omit)
-  reply_by: IsoDateTime;
-  reply_to: string;                // job inbox
-}
-
-export interface QuotePart {
-  haggle: "quote/1";
-  job_id: string;
-  business: string;
-  total_usd: Usd; per_unit_usd?: Usd; deposit_usd?: Usd; delivery_usd?: Usd; tax_usd?: Usd;
-  items: string[];
-  requirements_met?: { requirement_id: string; met: boolean }[];
-  valid_until: IsoDateTime;
-  revision_of?: Usd;               // previous total when revising
-}
-
-export interface CounterPart {
-  haggle: "counter/1";
-  job_id: string;
-  round: number;
-  target_total_usd: Usd;
-  basis: "competing_quote" | "budget" | "volume";
-  basis_quote_total_usd?: Usd;     // required when basis = competing_quote; must be a real recorded quote
-}
-
-/** (D9) Sent in-thread after human approval; asks the winner for the x402 invoice. */
-export interface AcceptPart {
-  haggle: "accept/1";
-  job_id: string;
-  quote_total_usd: Usd;
-  deposit_usd: Usd;                // amount the payer will pay now via x402
-  network: "base-sepolia";
-  payer: string;                   // job inbox address the challenge must be sent to
-  conditional: true;               // acceptance is conditional on payment settling
-}
-// Payment itself uses Primitive's own interaction.json (x402.payment challenge / payment / receipt).
-
-/* ───────────────────────── MCP tool results ───────────────────────── */
-
-export interface ToolOk { ok: true; mode: "mock" | "live"; next: string }
-export interface ToolErr { ok: false; mode: "mock" | "live"; error: { code: string; message: string; fix: string }; next: string }
-
-export interface DealResult extends ToolOk {
-  job_id: string; inbox: string; state: JobState;
-  contacted: { business_id: string; business: string; simulated: boolean }[];
-  eta: string;                     // "first replies in ~1–5 min"
-}
-
-export type JobUpdate =
-  | { type: "reply"; business_id: string; summary: string }
-  | { type: "quote"; quote_id: string; business_id: string; total_usd: Usd; round: number }
-  | { type: "question"; question_id: string; business_id: string; text: UntrustedText }
-  | { type: "flag"; business_id: string; flag: QuoteFlag }
-  | { type: "state"; from: JobState; to: JobState }
-  | { type: "payment"; status: PaymentStatus["status"] };
-
-export interface WaitResult extends ToolOk { job_id: string; state: JobState; cursor: string; updates: JobUpdate[]; timed_out: boolean }
-export interface QuotesResult extends ToolOk {
-  job_id: string; state: JobState;
-  quotes: Quote[];                 // ranked; compliant first by effective total
-  recommended_quote_id?: string;
-  rejected: { business_id: string; reason: QuoteFlag }[];
-  pending_questions: { question_id: string; business_id: string; text: UntrustedText }[];
-}
-export interface AskResult extends ToolOk { estimates: Estimate[]; note: "estimates, not quotes" }
-
-export interface ApprovalRecord {
-  approval_id: string; job_id: string; quote_id: string;
-  quote_total_usd: Usd; payment_usd: Usd; cap_usd: Usd;
-  approver: string; channel: "elicitation" | "email";
-  approved_at: IsoDateTime; expires_at: IsoDateTime;
-}
-export interface ApproveResult extends ToolOk { status: "approved" | "pending_human" | "declined"; approval?: ApprovalRecord }
-
-export interface PaymentStatus {
-  status: "awaiting_approval" | "awaiting_invoice" | "invoice_received" | "signed" | "sent"
-        | "settled" | "rejected" | "expired" | "failed";
-  amount_usd?: Usd;
-  amount_usdc_base_units?: string; // exact signed amount ("5000000" = 5 USDC)
-  network: "base-sepolia";
-  settle_tx?: string;              // only when a verified receipt arrived
-  explorer_url?: string;           // only with settle_tx
-  simulated: boolean;              // FakePaymentGateway → true, labelled DEMO
-  reason?: string;
-}
-export interface PayResult extends ToolOk { payment: PaymentStatus }
-
-/** (D1) ninth tool: answers a business's pending question in its thread. */
-export interface AnswerSellerInput { job_id: string; question_id: string; answer: string }
-export interface AnswerSellerResult extends ToolOk { question_id: string; sent: boolean; message_id?: string }

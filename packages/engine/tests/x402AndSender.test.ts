@@ -5,7 +5,10 @@ import { createX402Client } from "@primitivedotdev/sdk/x402";
 import { parseChallengePart, preparePayment, type PayerClient } from "../src/payments/x402Challenge.ts";
 import { replySubject, sendEmail, sendKeys, SendRejected, type SenderClient } from "../src/outbound/primitiveSender.ts";
 
-const NOW = new Date("2026-10-17T21:00:00Z");
+// Anchored to the wall clock: the x402 SDK checks challenge expiry against real time, so fixed
+// dates would expire the fixtures (they did on 2026-10-17 at 21:05Z).
+const NOW = new Date(Math.floor(Date.now() / 60_000) * 60_000);
+const at = (min: number) => new Date(NOW.getTime() + min * 60_000).toISOString();
 const envelope = (over: Record<string, unknown> = {}, req: Record<string, unknown> = {}) => JSON.stringify({
   interaction_version: 1,
   interaction_id: "5f0c1b9e-2d3a-4c5b-9e8f-7a6b5c4d3e2f@bay-catering.primitive.email",
@@ -14,7 +17,7 @@ const envelope = (over: Record<string, unknown> = {}, req: Record<string, unknow
   step: "challenge",
   step_id: "0b6d7f2e-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
   prev_step_id: null,
-  expires_at: "2026-10-17T21:05:00Z",
+  expires_at: at(5),
   payload: {
     challenge_nonce: "a".repeat(64),
     payment_requirements: {
@@ -29,7 +32,7 @@ const envelope = (over: Record<string, unknown> = {}, req: Record<string, unknow
 
 const guardBase = () => ({
   job: { id: "job-1", state: "paying" },
-  approval: { id: "ap-1", job_id: "job-1", quote_id: "q-bay-2", business_id: "b-bay", quote_total_cents: 99500, payment_cents: 500, status: "approved", expires_at: "2026-10-17T21:30:00Z" },
+  approval: { id: "ap-1", job_id: "job-1", quote_id: "q-bay-2", business_id: "b-bay", quote_total_cents: 99500, payment_cents: 500, status: "approved", expires_at: at(30) },
   quote: { id: "q-bay-2", business_id: "b-bay", total_cents: 99500, deposit_cents: 500, status: "current" },
   knownPayTo: null as string | null,
   existingPayment: null as { id: string; status: string } | null,

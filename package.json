@@ -2,19 +2,29 @@
   "name": "haggle",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.34.7",
   "engines": {
     "node": ">=22.22.2"
   },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
-    "typecheck": "corepack pnpm -r --if-present typecheck",
-    "test": "corepack pnpm -r --if-present test",
-    "build": "corepack pnpm -r --if-present build",
-    "lint": "corepack pnpm -r --if-present lint",
+    "test": "vitest run",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "dev:mcp": "npm run dev -w @haggle/mcp",
+    "dev:sellers": "npm run dev -w @haggle/sellers",
     "test:pg": "scripts/test-postgres.sh",
     "verify:db": "scripts/verify-migrations.sh",
-    "demo": "corepack pnpm --filter @haggle/engine demo",
-    "demo:server": "corepack pnpm --filter @haggle/mcp build && cd apps/mcp && HAGGLE_MODE=mock HAGGLE_SIM_DELAY_SCALE=${HAGGLE_SIM_DELAY_SCALE:-0.5} ./node_modules/.bin/mcp-use start --with-inspector",
-    "verify": "corepack pnpm typecheck && corepack pnpm test && corepack pnpm build && scripts/verify-migrations.sh && scripts/test-postgres.sh"
+    "demo": "npm run demo -w @haggle/engine",
+    "demo:server": "npm run build -w @haggle/mcp && cd apps/mcp && HAGGLE_MODE=mock HAGGLE_SIM_DELAY_SCALE=${HAGGLE_SIM_DELAY_SCALE:-0.5} npx mcp-use start --with-inspector",
+    "verify": "npm run typecheck && npm test && npm run build && scripts/verify-migrations.sh && scripts/test-postgres.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
   }
 }

@@ -16,7 +16,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type {
   ApprovalRecord, Business, DealResult, JobState, JobUpdate, PaymentStatus, Profile, Quote, QuotesResult, Request, WaitResult,
-} from "@haggle/core/contracts";
+} from "../contract.ts";
 import { businessIdForContact, newApprovalCode, newId, newShortCode, slugify } from "../ids.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, subjectShortCode } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
@@ -120,7 +120,7 @@ export interface NegotiationStep {
 export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_questions"> & {
   job: { id: string; request: Request; state: JobState; budget_usd: number | null; created_at: string; updated_at: string };
   quotes: BoardQuote[];
-  rejected: { business_id: string; quote_id: string; reason: import("@haggle/core/contracts").QuoteFlag; detail: string }[];
+  rejected: { business_id: string; quote_id: string; reason: import("../contract.ts").QuoteFlag; detail: string }[];
   open_questions: { question_id: string; business_id: string; business: string; text: string }[];
   /** Same list as open_questions (v3 name, kept for the existing deal-board view). */
   pending_questions: { question_id: string; business_id: string; business: string; text: string }[];
@@ -1142,7 +1142,7 @@ export class HaggleEngine {
   async discover(category: string, area: string, count: number) {
     return this.d.brain.discover(category, area, Math.min(Math.max(count, 1), 12));
   }
-  async checkPrice(input: Parameters<import("@haggle/core/contracts").Brain["checkPrice"]>[0]) {
+  async checkPrice(input: Parameters<import("../contract.ts").Brain["checkPrice"]>[0]) {
     return this.d.brain.checkPrice(input);
   }
   async quoteForCheck(jobId: string, quoteId: string) {
@@ -1248,7 +1248,7 @@ export class RetryLater extends Error {
 }
 
 function rejectToFlag(r: string) {
-  const m: Record<string, import("@haggle/core/contracts").QuoteFlag> = {
+  const m: Record<string, import("../contract.ts").QuoteFlag> = {
     unavailable: "requirement_unmet", unverified_sender: "unverified_sender", external_payment_link: "external_payment_link", prompt_injection: "prompt_injection",
     requirement_unmet: "requirement_unmet", no_total: "vague_price", over_budget: "over_budget", not_current: "expired",
   };
@@ -1286,7 +1286,7 @@ function toUpdate(e: { type: string; data: Record<string, unknown> }): JobUpdate
     case "question":
       return { type: "question", question_id: String(d.question_id), business_id: String(d.business_id), text: String(d.text) };
     case "flag":
-      return { type: "flag", business_id: String(d.business_id ?? ""), flag: d.flag as import("@haggle/core/contracts").QuoteFlag };
+      return { type: "flag", business_id: String(d.business_id ?? ""), flag: d.flag as import("../contract.ts").QuoteFlag };
     case "state":
       return d.from ? { type: "state", from: d.from as JobState, to: d.to as JobState } : null;
     case "payment":

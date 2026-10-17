@@ -1,0 +1,37 @@
+{
+  "request": { "what": "Lunch catering", "quantity": 25, "date": "2026-10-29", "area": "San Francisco" },
+  "estimates": [
+    {
+      "business_id": "biz_bay_catering",
+      "business": "Bay Catering",
+      "total_usd": 625,
+      "per_unit_usd": 25,
+      "confidence": 0.86,
+      "n_quotes": 3,
+      "best_channel": "a2a",
+      "basis": "based on 3 real quotes, $24–26 per person"
+    },
+    {
+      "business_id": "biz_harbor_table",
+      "business": "Harbor Table",
+      "total_usd": 650,
+      "per_unit_usd": 26,
+      "confidence": 0.78,
+      "n_quotes": 2,
+      "best_channel": "email",
+      "basis": "based on 2 real quotes, $26–29 per person; usually drops ~10% against a competing quote"
+    },
+    {
+      "business_id": "biz_mission_eats",
+      "business": "Mission Eats",
+      "total_usd": 675,
+      "per_unit_usd": 27,
+      "confidence": 0.64,
+      "n_quotes": 1,
+      "best_channel": "phone",
+      "basis": "based on 1 real quote (phone), $27 per person"
+    }
+  ],
+  "note": "Estimates from what these businesses quoted before, not quotes. Nothing is ordered until a business confirms.",
+  "next": "To get confirmed prices, call deal(request={what:'Lunch catering', quantity:25, date:'2026-10-29', area:'San Francisco'}, businesses=['biz_bay_catering','biz_harbor_table','biz_mission_eats'])."
+}

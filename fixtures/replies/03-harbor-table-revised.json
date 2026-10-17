@@ -1,0 +1,36 @@
+{
+  "name": "03-harbor-table-revised",
+  "business_id": "biz_harbor_table",
+  "business": "Harbor Table",
+  "channel": "email",
+  "round": 2,
+  "inbound": "Thanks for the quote. We have another quote at $995 from a competing caterer for the same order (40 people, 12 vegetarian, delivered). Can you come down to match or get closer?",
+  "reply": {
+    "subject": "Re: Catering quote request: lunch for 40 on Thu Oct 22 (job_demo)",
+    "body": "Hi there,\n\nThanks for sharing the other quote. We can come down from $1,150 to $1,035 for 40 people.\n\nWarmly,\nElena\nHarbor Table Catering",
+    "attachments": [
+      {
+        "filename": "harbor-table-sf-quote.pdf",
+        "contentType": "application/pdf",
+        "file": "harbor-table-quote-revised.pdf"
+      }
+    ]
+  },
+  "expected": {
+    "kind": "quote",
+    "total_usd": 1035,
+    "per_unit_usd": 25.88,
+    "quantity": 40,
+    "deposit_usd": 310.5,
+    "delivery_usd": 0,
+    "items": [
+      "Family-style lunch and Grilled salmon for 40",
+      "12 mushroom risotto (vegetarian)",
+      "Delivery included"
+    ],
+    "flags": [
+      "hidden_deposit"
+    ],
+    "confidence": 0.9
+  }
+}

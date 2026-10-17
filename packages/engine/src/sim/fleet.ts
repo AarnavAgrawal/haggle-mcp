@@ -4,7 +4,7 @@
 // and marks everything it produces as simulated. v5: Mission Eats is phone-only and answers a
 // simulated Voice AI call with a transcript. Numbers not fixed by the plan are PROPOSED
 // (docs/v3-prekickoff-readiness.md section 7F). It never touches the network.
-import type { Business } from "@haggle/core/contracts";
+import type { Business } from "../contract.ts";
 import { businessIdForContact } from "../ids.ts";
 import { subjectShortCode } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";

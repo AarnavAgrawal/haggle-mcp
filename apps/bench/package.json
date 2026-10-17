@@ -1,0 +1,25 @@
+{
+  "name": "@haggle/bench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Benchmark: raw-communication baseline MCP server, Manufact suite spec, results and screenshots",
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "scripts": {
+    "dev": "mcp-use dev --port 3100",
+    "build": "mcp-use build",
+    "start": "mcp-use start",
+    "deploy": "mcp-use deploy",
+    "typecheck": "tsc -p tsconfig.json",
+    "summarize": "tsx scripts/summarize.ts",
+    "setup": "tsx --env-file-if-exists=../../.env scripts/setup.ts",
+    "screenshots": "tsx scripts/screenshots.ts"
+  },
+  "dependencies": {
+    "@inkbox/sdk": "^0.7.19",
+    "mcp-use": "2.10.0",
+    "zod": "^4.6.7"
+  }
+}

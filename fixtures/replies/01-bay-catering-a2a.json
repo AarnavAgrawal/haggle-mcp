@@ -1,0 +1,50 @@
+{
+  "name": "01-bay-catering-a2a",
+  "business_id": "biz_bay_catering",
+  "business": "Bay Catering",
+  "channel": "a2a",
+  "round": 1,
+  "inbound": "Subject: Catering quote request: lunch for 40 on Thu Oct 22 (job_demo)\n\nHi! I'm Haggle, an AI assistant buying on behalf of Acme's events team.\nWe need lunch for our 40-person offsite on Thursday, Oct 22 in San Francisco (Mission Bay).\nRequirements: at least 12 vegetarian meals, delivered by 11:45 AM.\nCould you send a quote with the total, what's included and any deposit?",
+  "reply": {
+    "subject": "",
+    "body": "Hi there,\n\nHere's our quote for 40 people on Thu Oct 22: $995 total ($24.88 per person).\n\n- Mediterranean buffet and Herb chicken skewers for 40\n- 12 vegetarian grain bowls\n- Delivery included\nDeposit: $199 on booking.\n\nBay Catering (automated quoting)",
+    "attachments": [],
+    "data": {
+      "protocol": "haggle.quote.v1",
+      "type": "quote",
+      "business": "Bay Catering",
+      "business_id": "biz_bay_catering",
+      "total_usd": 995,
+      "per_unit_usd": 24.88,
+      "quantity": 40,
+      "unit": "people",
+      "vegetarian_meals": 12,
+      "deposit_usd": 199,
+      "delivery_usd": 0,
+      "delivery_included": true,
+      "items": [
+        "Mediterranean buffet and Herb chicken skewers for 40",
+        "12 vegetarian grain bowls",
+        "Delivery included"
+      ],
+      "date": "Thu Oct 22",
+      "round": 1,
+      "valid_until": "2026-10-24"
+    }
+  },
+  "expected": {
+    "kind": "quote",
+    "total_usd": 995,
+    "per_unit_usd": 24.88,
+    "quantity": 40,
+    "deposit_usd": 199,
+    "delivery_usd": 0,
+    "items": [
+      "Mediterranean buffet and Herb chicken skewers for 40",
+      "12 vegetarian grain bowls",
+      "Delivery included"
+    ],
+    "flags": [],
+    "confidence": 0.97
+  }
+}

@@ -5,7 +5,7 @@
 // approvals/payments/job_events/webhook_events), adapted to v3: businesses are per-job snapshots
 // keyed by the contract's deterministic business_id (no FK to brain tables), questions are rows,
 // payments are x402 state, and events carry a gap-free per-job seq used as the wait cursor.
-import type { JobState, Request } from "@haggle/core/contracts";
+import type { JobState, Request } from "../contract.ts";
 import type { QuoteRecord } from "../parsing/extraction.ts";
 import type { RequirementResult } from "../parsing/requirements.ts";
 

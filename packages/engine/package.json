@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
-    "@haggle/core": "workspace:*",
+    "@haggle/core": "*",
     "@inkbox/sdk": "0.7.19",
     "@primitivedotdev/sdk": "2.4.0",
     "postgres": "^3.4.9",
@@ -25,6 +25,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "~5.9.3",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "@haggle/brain": "*"
   }
 }

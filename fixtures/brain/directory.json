@@ -1,0 +1,51 @@
+[
+  {
+    "id": "biz_bay_catering",
+    "name": "Bay Catering",
+    "category": "catering",
+    "area": "san francisco",
+    "email": "bay-catering-sf@inkboxmail.com",
+    "a2a_card_url": "https://inkbox.ai/a2a/bay-catering-sf/card",
+    "source": "haggle-directory"
+  },
+  {
+    "id": "biz_harbor_table",
+    "name": "Harbor Table",
+    "category": "catering",
+    "area": "san francisco",
+    "email": "harbor-table-sf@inkboxmail.com",
+    "source": "haggle-directory"
+  },
+  {
+    "id": "biz_mission_eats",
+    "name": "Mission Eats",
+    "category": "catering",
+    "area": "san francisco",
+    "phone": "+14155550134",
+    "source": "haggle-directory"
+  },
+  {
+    "id": "biz_golden_grill",
+    "name": "Golden Grill",
+    "category": "catering",
+    "area": "san francisco",
+    "email": "golden-grill-sf@inkboxmail.com",
+    "source": "haggle-directory"
+  },
+  {
+    "id": "biz_sunset_kitchen",
+    "name": "Sunset Kitchen",
+    "category": "catering",
+    "area": "san francisco",
+    "email": "sunset-kitchen-sf@inkboxmail.com",
+    "source": "haggle-directory"
+  },
+  {
+    "id": "biz_quickquote_deli",
+    "name": "QuickQuote Deli",
+    "category": "catering",
+    "area": "san francisco",
+    "email": "quickquote-deli-sf@inkboxmail.com",
+    "source": "haggle-directory"
+  }
+]

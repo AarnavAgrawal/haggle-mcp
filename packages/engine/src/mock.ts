@@ -8,7 +8,7 @@ import { fleetBusinesses, SimFleet, type Persona } from "./sim/fleet.ts";
 import { InMemoryRepository } from "./store/memory.ts";
 import { HaggleEngine } from "./workflow/engine.ts";
 import { inlineAttachments, type EngineConfig, type PayerPort } from "./workflow/ports.ts";
-import type { Brain } from "@haggle/core/contracts";
+import type { Brain } from "./contract.ts";
 import type { PayerClient } from "./payments/x402Challenge.ts";
 import type { Repository } from "./store/types.ts";
 

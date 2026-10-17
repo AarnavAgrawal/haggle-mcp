@@ -1,0 +1,96 @@
+.bp {
+  display: grid;
+  gap: 12px;
+}
+.bp-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.bp-head h1 { font-size: 18px; }
+.bp-reach {
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+}
+.bp-reach-label {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.bp-conf {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+/* The learned "API": label on the left, value on the right, like a spec sheet */
+.bp-facts {
+  margin: 0;
+  display: grid;
+  border-top: 1px solid var(--rule);
+}
+.bp-facts div {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.bp-facts dt {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.bp-facts dd {
+  margin: 0;
+  font-weight: 500;
+}
+
+.bp-menu,
+.bp-history {
+  display: grid;
+  gap: 6px;
+}
+.bp-menu ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.bp-menu li {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: var(--radius-s);
+  background: var(--info-soft);
+  color: var(--ink-2);
+}
+.bp-history ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.bp-history li {
+  display: grid;
+  grid-template-columns: 52px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--rule);
+  font-size: 12.5px;
+}
+.bp-history time { color: var(--ink-3); }
+.bp-h-note {
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bp-h-total { font-weight: 600; }
+.bp-foot { padding-top: 2px; }

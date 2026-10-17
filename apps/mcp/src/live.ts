@@ -1,11 +1,12 @@
 // LIVE MODE wiring (HAGGLE_MODE=live), v5: Postgres persistence, the Inkbox buyer identity for
-// email (+ attachments), Claude extraction, and the brain (engine stand-in until Partner's
-// @haggle/brain is published). Voice AI calls stay OFF unless HAGGLE_ENABLE_CALLS=true (separate
+// email (+ attachments), Claude extraction, and the real brain (@haggle/brain via the engine's
+// adapter; profiles in Supabase when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set). Voice AI calls stay OFF unless HAGGLE_ENABLE_CALLS=true (separate
 // human approval; only simulated businesses or people who agreed). Payments: disabled (every
 // signature refused, never faked) until Stripe test mode, the 9 PM item; no Primitive/x402 keys.
 import {
-  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, StubBrain, slugify,
+  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
 } from "@haggle/engine";
+import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
 
 const TICK_MS = 30_000;
@@ -29,13 +30,14 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const senderTrust: InkboxTrustPolicy = env.INKBOX_SENDER_TRUST === "pinned-org-identity"
     ? { policy: "pinned-org-identity", allowedSenders: allowlist.filter((a) => a.includes("@") && !a.startsWith("@")) }
     : { policy: "outbound-verified" };
+  const brain = makeBrain(fleet.map((b) => ({ business_id: b.business_id, name: b.name, email: b.email, simulated: b.simulated })), env);
   const engine = new HaggleEngine({
     repo,
     email: inkboxEmail(api, buyerMailbox),
     ...(callsEnabled ? { phone: phone() } : {}),
     extractor: claudeExtractor({ apiKey: env.ANTHROPIC_API_KEY!, model: env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }),
     attachments: inkboxAttachments(api, buyerMailbox),
-    brain: new StubBrain(fleet),
+    brain,
     payer: disabledPayer("Payments are not enabled yet (Stripe test mode is pending); nothing was charged."),
     config: {
       mode: "live", inboxDomain: buyerMailbox.split("@")[1]!, sharedInbox: buyerMailbox, collectionWindowMs: 30 * 60_000, negotiationWindowMs: 15 * 60_000,
@@ -50,5 +52,5 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     void repo.listOpenJobs().then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
   }, TICK_MS).unref();
   console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
-  return { mode: "live", engine, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust } };
+  return { mode: "live", engine, brain, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust } };
 });
