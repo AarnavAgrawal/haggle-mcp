@@ -15,3 +15,14 @@
 | Primitive round-trip spike script | Implemented, **not run** (no credentials) | refuses without key; typechecks |
 | Primitive / Anthropic / Supabase / Manufact real calls | **Blocked** — no credentials in environment | — |
 | Parsing, negotiation, tools, deal board, approval/payment, demo | **Not started** — user chose to hold until organizers confirm pre-event work is allowed | — |
+
+## 2026-10-17 (Saturday, before kickoff) — infrastructure readiness
+
+| Item | Status | Evidence |
+|---|---|---|
+| Event-rules check | **Unresolved** — product work held until 10:30 AM | — |
+| Root scripts fixed to `corepack pnpm -r` | Locally verified | `corepack pnpm test`: 40 passed |
+| Read-only preflight script (`@haggle/spikes preflight`) | Implemented | `docs/preflight-readiness.md` |
+| `.env` (chmod 600, ignored) + `SUPABASE_DB_URL`/`HAGGLE_BUYER_INBOX`/`ANTHROPIC_MODEL` in template | Done; values pending | — |
+| Prod start on `$PORT`, `/health`, `tools/list`; core bundled into build | Locally verified | probe build |
+| Manufact CLI | Available, not logged in | `mcp-use whoami` |

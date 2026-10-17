@@ -6,7 +6,8 @@
   "description": "Throwaway integration spikes against real services (run manually with credentials).",
   "scripts": {
     "primitive-roundtrip": "node --env-file-if-exists=../../.env primitive-roundtrip.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "preflight": "node --env-file-if-exists=../../.env preflight.ts"
   },
   "dependencies": {
     "@primitivedotdev/sdk": "2.4.0"
