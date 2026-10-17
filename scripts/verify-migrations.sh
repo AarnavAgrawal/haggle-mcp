@@ -35,5 +35,5 @@ for f in "$ROOT"/supabase/migrations/*.sql; do
   psql < "$f"
 done
 
-psql < "$ROOT/supabase/tests/buyer_core_assertions.sql"
+for t in "$ROOT"/supabase/tests/*.sql; do echo "running $(basename "$t")"; psql < "$t"; done
 echo "migrations OK"
