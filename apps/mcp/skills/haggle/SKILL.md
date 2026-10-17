@@ -1,17 +1,19 @@
 ---
 name: haggle
-description: Buy from businesses that work by email or phone (catering, print, services) with Haggle's MCP tools. Use when a user wants real quotes, a comparison, negotiation or a safe deposit payment, or a quick price estimate.
+description: Buy from businesses that work by email, phone, text or agent-to-agent (catering, print, services) with Haggle's MCP tools. Use when a user wants real quotes, a comparison, negotiation or a safe deposit payment, or a quick price estimate.
 ---
 
 # Buying with Haggle
 
-Haggle contacts each business on its channel (email; a Voice AI phone call where enabled), reads replies and
-call transcripts (text, PDF, quote.json), negotiates honestly, and pays a deposit only after a human approves.
-You never email or call businesses yourself.
+Haggle contacts each business on its channel (email; A2A for agent-ready businesses; a Voice AI phone call;
+iMessage for businesses that asked to be texted), reads replies and call transcripts (text, PDF, quote.json),
+negotiates honestly, and pays a deposit (Stripe test mode) only after a human approves. You never email, call
+or text businesses yourself. Haggle only contacts businesses on the operator's allowlist.
 
 ## Cold deal (real quotes)
 
-1. `deal` with `request` (what, quantity, date, area, hard `requirements`), `businesses` (or `discover: true`),
+1. `deal` with `request` (what, quantity, date, area, hard `requirements`), `businesses` (each with email, phone or
+   `a2a_card_url`; add `channel: "imessage"` to text a business at its phone) or `discover: true`,
    `budget_usd`, and a `client_request_id` so retries never email twice. Returns at once with a `job_id`.
 2. Loop `wait_for_update(job_id, cursor)` (pass back `cursor`; up to 60 s). Don't poll `get_quotes` in a loop.
 3. When an update is a `question`, answer with `answer_business(job_id, question_id, answer)`. Ask the user if
@@ -19,8 +21,9 @@ You never email or call businesses yourself.
 4. When `next` says quotes are final, call `get_quotes` (renders the deal board) and present the
    `recommended_quote_id`, the rejected businesses and why (`excluded_reason`), and any flags.
    A business marked `unavailable` couldn't be reached on its only channel; say so.
-5. `approve(job_id, quote_id)`. The human decides on the approval card or in the client's approval form;
-   your call is never the approval. `NO_HUMAN_CHANNEL` means this client can show neither: tell the user.
+5. `approve(job_id, quote_id)`. The human decides on the approval card, in the client's approval form, or by
+   replying `YES <code>` to Haggle's iMessage; your call is never the approval. `NO_HUMAN_CHANNEL` means none of
+   these is available: tell the user.
 6. Once approved, `pay(job_id, quote_id)`, then `wait_for_update` until the payment is `settled`.
 
 ## Warm path
