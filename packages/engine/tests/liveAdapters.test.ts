@@ -24,6 +24,9 @@ describe("live adapters", () => {
     expect(parseFleet("Bay Catering <Quotes@Bay.primitive.email>; bad entry; Harbor <h@x.test>")).toEqual([
       { name: "Bay Catering", email: "quotes@bay.primitive.email" }, { name: "Harbor", email: "h@x.test" },
     ]);
+    // A bare address (as typed into an .env) is kept, never silently dropped from the allowlist.
+    expect(parseFleet("golden-grill-sf@inkboxmail.com")).toEqual([{ name: "Golden Grill Sf", email: "golden-grill-sf@inkboxmail.com" }]);
+    expect(parseFleet("A <a@x.test>, b@y.test")).toEqual([{ name: "A", email: "a@x.test" }, { name: "B", email: "b@y.test" }]);
   });
 
   it("a missing or malformed payer key yields no signer (payments are refused, never faked)", () => {
