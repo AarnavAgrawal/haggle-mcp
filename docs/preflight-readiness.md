@@ -1,6 +1,7 @@
 # Pre-kickoff infrastructure readiness
 
-Checked 2026-10-17 00:15–00:55 PDT (Saturday, before 10:30 AM kickoff). Infrastructure only: no
+First checked 2026-10-17 00:15–00:55 PDT; full re-run 07:38 PDT (Saturday, before 10:30 AM kickoff):
+**18 PASS, 1 BLOCKED (x402)**. Infrastructure only: no
 product code, no migration applied to the hosted project, no email sent, nothing deployed.
 
 Re-run any time: `corepack pnpm --filter @haggle/spikes preflight [env|primitive|anthropic|supabase]`
@@ -19,7 +20,7 @@ Re-run any time: `corepack pnpm --filter @haggle/spikes preflight [env|primitive
 | `@haggle/core` in the server bundle | PASS | probe build inlined core from workspace source; only `zod`/`mcp-use` stay external |
 | Migrations on throwaway Postgres 17 | PASS | `scripts/verify-migrations.sh`: all assertions passed |
 | Migration security posture | PASS (reviewed) | 14 tables, RLS enabled **and forced**, no policies, `revoke all` from anon/authenticated, `haggle_append_event` not executable by them, audit log append-only trigger |
-| `.env` | PASS | `chmod 600`, git-ignored, all required keys set, `HAGGLE_MODE=mock`. Fixed in place: `SUPABASE_URL` ref typo (19-char ref didn't resolve), raw `@` in DB password → `%40` (backup `.env.bak`, also ignored) |
+| `.env` | PASS | `chmod 600`, git-ignored, all required keys + `ANTHROPIC_WORKSPACE_ID` set, `HAGGLE_MODE=mock`. Fixed in place: `SUPABASE_URL` ref typo (19-char ref didn't resolve), raw `@` in DB password → `%40` (backup `.env.bak`, also ignored) |
 | Primitive API key | PASS | `/whoami` 200, org `ae53e147…`, plan `developer` |
 | Buyer domain `brave-dog.primitive.email` | PASS | in `/domains`, verified, DNS healthy; `managed_inbox_address` |
 | Send From `buyer@brave-dog.primitive.email` | PASS (non-sending) | `/outbound/status`: `ready`, domain `sendable`; `send_mail` entitlement present. `/send-mail` itself remains the final authority |
@@ -29,7 +30,7 @@ Re-run any time: `corepack pnpm --filter @haggle/spikes preflight [env|primitive
 | `interactions_enabled` | PASS | in `/account` entitlements |
 | x402 payer (`x402_payments`) | **BLOCKED** | `/x402/spend-policy` → 403 `feature_disabled`, invite-only: https://docs.primitive.dev/docs/collecting-payments#requesting-access |
 | Payer private key | PASS (format) | `0x` + 64 hex, user-confirmed; no signing performed |
-| Anthropic | **BLOCKED** | Models API → 400: key isn't scoped to a workspace; requests need `anthropic-workspace-id`. Set `ANTHROPIC_WORKSPACE_ID` (Console → Workspaces) or use a workspace-scoped key. Extraction code at kickoff must send the same header. Auto-discovery is impossible with this key: `GET /v1/organizations/me` → 200 (org `36104006…`), but `/v1/organizations/workspaces?include_default=true`, `/api_keys`, `/users` → 403 `permission_error`, and every workspace endpoint (incl. free `count_tokens`) → 400 without returning an `anthropic-workspace-id` response header. Copy the Default Workspace `wrkspc_…` ID from platform.claude.com/settings/workspaces (ID column) |
+| Anthropic | PASS | `GET /v1/models/claude-sonnet-5-5` → 200 (Models API only, no generation). The key is organization-scoped, so every request sends `anthropic-workspace-id` from `ANTHROPIC_WORKSPACE_ID` (set in `.env`). Extraction code must pass it too, e.g. `new Anthropic({ defaultHeaders: { "anthropic-workspace-id": … } })` |
 | Supabase project `behfuaxftitnzkkbnaia` | PASS | read-only session via session pooler; Postgres 17.11; `postgres` role BYPASSRLS; public schema empty, no migrations applied, extensions include pgcrypto |
 | Supabase `sb_secret_` key | PASS | `GET /rest/v1/` → 200 (bad-key control → 401) |
 | Manufact CLI | PASS | `mcp-use whoami` → logged in (Yashnil Mohanty's Projects); nothing deployed |
@@ -50,7 +51,7 @@ Re-run any time: `corepack pnpm --filter @haggle/spikes preflight [env|primitive
   connecting role has **BYPASSRLS**. That last one matters: every Haggle table forces RLS with no
   policies, so a role without BYPASSRLS would read and write nothing.
 - **Anthropic**: the extraction model (`ANTHROPIC_MODEL`, default `claude-sonnet-5-5`) is
-  visible to the key, plus one minimal Haiku request.
+  visible to the key in the configured workspace (Models API only; nothing billable).
 
 ## Manufact deployment configuration (prepared, not deployed)
 
@@ -67,26 +68,55 @@ Re-run any time: `corepack pnpm --filter @haggle/spikes preflight [env|primitive
 - The server binds `$PORT` (verified locally). `/health` exists; `POST /inbound` is added at kickoff.
 - The link file lives under `.mcp-use/` (git-ignored), so each machine links separately.
 
-## At kickoff (10:30 AM), in order
+## Pass 2 kickoff (10:30 AM PDT, Sat Oct 17), in order
 
 ```bash
 cd ~/Desktop/haggle
+# 0. Gate: confirm local time is ≥ 10:30 AM PDT, then record "hacking began" in docs/progress.md.
+date
+
+# 1. Baseline — everything below must be green before the first product commit.
 git status -sb                                             # clean, on yash/buyer-foundation
-corepack pnpm --filter @haggle/spikes preflight            # all PASS except known BLOCKED items
-corepack pnpm typecheck && corepack pnpm test && corepack pnpm build
+corepack pnpm --filter @haggle/spikes preflight            # expect 18 PASS, only x402 BLOCKED
+corepack pnpm typecheck && corepack pnpm test && corepack pnpm build   # 40 tests
 scripts/verify-migrations.sh                               # local DB invariants
-git switch -c yash/pass2-email-transport                   # start Pass 2 milestone 3
-# when the repository layer is ready, apply the migration to the hosted project:
-#   docker run --rm -i -e PGURL postgres:17-alpine sh -c 'psql "$PGURL" -v ON_ERROR_STOP=1' \
-#     < supabase/migrations/20261016000000_buyer_core.sql      (PGURL from .env)
-# controlled real email round trip (only to an inbox you own):
-#   SPIKE_TO=<your inbox> SPIKE_CONFIRM_RECIPIENT_IS_MINE=yes corepack pnpm --filter @haggle/spikes primitive-roundtrip
+
+# 2. Branch for Pass 2 milestone 3 (Primitive email transport + deal→quote slice).
+git switch -c yash/pass2-email-transport
+
+# 3. Hosted DB: apply the buyer migration once the repository layer needs it (allowed after kickoff).
+#    The URL is read from .env by node, never typed or echoed.
+PGURL="$(node --env-file=.env -p process.env.SUPABASE_DB_URL)" \
+  docker run --rm -i -e PGURL postgres:17-alpine sh -c 'psql "$PGURL" -v ON_ERROR_STOP=1 -q' \
+  < supabase/migrations/20261016000000_buyer_core.sql
+corepack pnpm --filter @haggle/spikes preflight supabase   # haggle_tables_present should become 4
+
+# 4. One controlled real email round trip (sends exactly ONE email, only to an inbox you own;
+#    your account email is in the org_member_email send scope).
+SPIKE_TO=<your own inbox> SPIKE_CONFIRM_RECIPIENT_IS_MINE=yes \
+  corepack pnpm --filter @haggle/spikes primitive-roundtrip
+
+# 5. After the first Manufact preview deploy exposes POST /inbound: create the Primitive webhook
+#    endpoint pointing at it, put its id in PRIMITIVE_WEBHOOK_ENDPOINT_ID, and push env vars:
+cd apps/mcp
+./node_modules/.bin/mcp-use deploy --root-dir apps/mcp --branch yash/pass2-email-transport
+./node_modules/.bin/mcp-use servers env set <server> KEY=VALUE   # one per variable; never commit
 ```
 
-## Still needed from the team
+## Remaining external blockers
 
-1. Set `ANTHROPIC_WORKSPACE_ID` in `.env`, then `preflight anthropic`.
-2. Request x402 access from Primitive.
-3. Create a private GitHub repo, add the partner, `git remote add origin …`, push `main` + `yash/*`.
-4. Agree with the partner that demo seller inboxes live on Primitive-managed domains (in scope today); real external sellers need them to email first or an outbound upgrade.
-5. Fund the buyer wallet with Base Sepolia test USDC (not checked).
+| Blocker | Owner | Impact if unresolved |
+|---|---|---|
+| Primitive `x402_payments` entitlement (invite-only) — request at https://docs.primitive.dev/docs/collecting-payments#requesting-access | Yash | Real x402 settlement impossible; payer is built against SDK types + FakePaymentGateway, demo receipts labelled DEMO |
+| No git remote; partner has no access | Yash (create private GitHub repo, invite partner) | No shared integration; Manufact's default GitHub deploy mode unavailable (`--no-github` upload is the fallback) |
+| Outbound send scope has no `any_recipient` | Both (agree seller inboxes) | Fine if demo sellers use Primitive-managed inboxes or write first; arbitrary external sellers need an outbound upgrade |
+| Primitive webhook endpoint not created (1 allowed per org) | Yash, after first deploy | No inbound processing until created |
+| Base Sepolia test USDC in buyer wallet — not checked | Yash | Only matters once x402 is granted |
+| Manufact monorepo build of `@haggle/core` — unverified | Yash, first deploy | Fallback build command above |
+
+## Housekeeping
+
+- `.env.bak` is the pre-fix copy of `.env` (wrong Supabase ref, un-encoded password) and still holds
+  secrets. It is git-ignored and `chmod 600`; delete it once you're satisfied with `.env`.
+- Consider rotating the Supabase DB password: an early version of the preflight echoed a 7-char
+  fragment of it into a local session log before the redaction fix.

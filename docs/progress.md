@@ -26,3 +26,5 @@
 | `.env` (chmod 600, ignored) + `SUPABASE_DB_URL`/`HAGGLE_BUYER_INBOX`/`ANTHROPIC_MODEL` in template | Done; values pending | — |
 | Prod start on `$PORT`, `/health`, `tools/list`; core bundled into build | Locally verified | probe build |
 | Manufact CLI | Available, not logged in | `mcp-use whoami` |
+| Full credential-safe preflight (07:38 PDT) | 18 PASS, 1 BLOCKED (x402 entitlement) | `docs/preflight-readiness.md` |
+| Primitive key/domain/From-sendable, Anthropic Models API, Supabase project + `sb_secret_` key, Manufact login | Externally verified (read-only) | same |
