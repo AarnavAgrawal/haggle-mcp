@@ -6,6 +6,7 @@ import { EngineError, type DealBoardData } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { ApprovalOut, BusinessProfile, DealBoard, DealBoardOrEmpty, emptyBoard, Estimates, toApproval, toDealBoard } from "./src/views.ts";
+import { DISCOVER_COUNT, fewerFound } from "./src/discovery.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
 import "./src/live.ts";
 
@@ -36,8 +37,10 @@ type Mode = "mock" | "live";
 
 /** Success envelope: short model-readable text; structuredContent validated against the tool's outputSchema. */
 function ok<T extends { mode?: Mode | undefined }>(data: T, text: string, meta?: Record<string, unknown>) {
-  return { content: [{ type: "text" as const, text: data.mode === "mock" ? `[DEMO] ${text}` : text }], structuredContent: data as never, ...(meta ? { _meta: meta } : {}) };
+  const tag = data.mode === "mock" ? "[DEMO]" : data.mode === "live" ? "[LIVE]" : null;
+  return { content: [{ type: "text" as const, text: tag ? `${tag} ${text}` : text }], structuredContent: data as never, ...(meta ? { _meta: meta } : {}) };
 }
+
 
 function fail(mode: Mode, code: string, message: string, fix: string, next: string) {
   return { isError: true as const, content: [{ type: "text" as const, text: JSON.stringify({ ok: false, mode, error: { code, message, fix }, next }) }] };
@@ -154,8 +157,9 @@ export const deal = server.tool(
       const { engine } = rt;
       const area = await areaOr(rt, input.request.area);
       let businesses = input.businesses ?? [];
-      if (businesses.length === 0 && input.discover) {
-        businesses = (await engine.discover(input.request.what, area, 6)).map((b) => ({ name: b.name, ...(b.email ? { email: b.email } : {}), ...((b as { phone?: string }).phone ? { phone: (b as { phone?: string }).phone } : {}) }));
+      const discovered = businesses.length === 0 && input.discover;
+      if (discovered) {
+        businesses = (await engine.discover(input.request.what, area, DISCOVER_COUNT)).map((b) => ({ name: b.name, ...(b.email ? { email: b.email } : {}), ...((b as { phone?: string }).phone ? { phone: (b as { phone?: string }).phone } : {}) }));
       }
       const reqs = [...input.request.requirements, ...(input.requirements ?? [])].map((r, i) => ({ ...r, id: r.id ?? `r${i + 1}` }));
       const settings = await engine.getSettings();
@@ -163,6 +167,8 @@ export const deal = server.tool(
       const warnings: string[] = [];
       if (input.budget_usd === undefined) warnings.push(`No budget_usd given: using the settings spending cap ${usd(budget)}.`);
       if (input.approver_phone) warnings.push("approver_phone ignored: iMessage approval isn't enabled yet. The human approves in the approval card or the client's form.");
+      const fewer = discovered ? fewerFound(rt.mode, businesses.length, DISCOVER_COUNT) : null;
+      if (fewer) warnings.push(fewer);
       const r = await engine.deal({
         request: { ...input.request, area, requirements: reqs },
         businesses,
@@ -387,7 +393,7 @@ export const discover = server.tool(
     title: "Find businesses",
     description: "Find businesses for a category and area, with contact email/phone, best channel and where they were found (the demo fleet is marked simulated). Read-only; contacts nobody. Next: deal with the chosen businesses.",
     inputSchema: z.object({ category: z.string().min(2).max(100), area: z.string().min(2).max(200).optional(), count: z.number().int().min(1).max(12).default(6) }),
-    outputSchema: z.looseObject({ ok: z.boolean(), mode: z.enum(["mock", "live"]), next: z.string(), businesses: z.array(z.looseObject({ business_id: z.string(), name: z.string(), best_channel: z.string(), simulated: z.boolean() })) }),
+    outputSchema: z.looseObject({ ok: z.boolean(), mode: z.enum(["mock", "live"]), next: z.string(), note: z.string().optional().describe("Set when fewer businesses were found than requested, and why"), businesses: z.array(z.looseObject({ business_id: z.string(), name: z.string(), best_channel: z.string(), simulated: z.boolean() })) }),
     annotations: { readOnlyHint: true, openWorldHint: true },
   },
   async ({ category, area, count }) =>
@@ -397,7 +403,11 @@ export const discover = server.tool(
         const phone = (b as { phone?: string }).phone;
         return { business_id: b.business_id, name: b.name, ...(b.email ? { email: b.email } : {}), ...(phone ? { phone } : {}), best_channel: b.email ? "email" : phone ? "phone" : "a2a", simulated: b.simulated, source: b.source, ...(b.found_at ? { found_at: b.found_at } : {}) };
       });
-      return ok({ ok: true, mode: rt.mode, businesses, next: "Call deal with the businesses to contact." }, `${businesses.length} businesses: ${businesses.map((b) => `${b.name} [${b.best_channel}]${b.simulated ? " (simulated)" : ""}`).join("; ")}. next: deal`);
+      const fewer = fewerFound(rt.mode, businesses.length, count);
+      return ok(
+        { ok: true, mode: rt.mode, businesses, ...(fewer ? { note: fewer } : {}), next: "Call deal with the businesses to contact." },
+        `${businesses.length} businesses: ${businesses.map((b) => `${b.name} [${b.best_channel}]${b.simulated ? " (simulated)" : ""}`).join("; ")}.${fewer ? ` ${fewer}` : ""} next: deal`,
+      );
     }),
 );
 

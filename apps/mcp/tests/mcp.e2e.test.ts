@@ -109,6 +109,11 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const businesses = found.structuredContent.businesses.map((b: { name: string; email?: string; phone?: string }) => ({ name: b.name, ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}) }));
     expect(businesses).toHaveLength(6);
     expect(found.structuredContent.businesses.every((b: { simulated: boolean }) => b.simulated)).toBe(true);
+    expect(found.structuredContent.note).toBeUndefined();
+    // Asking for more than the fleet says so (the Inspector chat once got 2 of 6 from a live server silently).
+    const more = await call("discover", { category: "catering", area: "San Francisco", count: 8 });
+    expect(more.structuredContent.note).toBe("Only 6 of the 8 requested businesses are available.");
+    expect(more.content[0].text).toMatch(/^\[DEMO\] .*Only 6 of the 8/);
 
     const deal = await call("deal", { request: REQUEST, businesses, budget_usd: 1200, client_request_id: "e2e-1" });
     expect(deal.isError).toBeFalsy();
