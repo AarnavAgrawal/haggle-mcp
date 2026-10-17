@@ -166,7 +166,8 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
   });
 });
 
-describe("v5 channels and deal board (mock mode, memory)", { timeout: 60_000 }, () => {
+// Runs on the backend selected last above (Postgres when HAGGLE_TEST_DATABASE_URL is set).
+describe("v5 channels and deal board (mock mode)", { timeout: 60_000 }, () => {
   it("the deal board shows channels, statuses, eligibility, the call transcript and honest negotiation", async () => {
     const { engine, clock } = setup();
     const deal = await startDeal(engine);
@@ -233,7 +234,7 @@ describe("v5 channels and deal board (mock mode, memory)", { timeout: 60_000 }, 
     expect((await engine.getSettings()).spending_cap_cents).toBe(150_000);
     await expect(engine.updateSettings({ spending_cap_cents: 10_000_000 })).rejects.toMatchObject({ code: "cap_above_ceiling" });
     expect((await engine.updateSettings({ spending_cap_cents: 120_000, default_area: "San Francisco, CA" })).default_area).toBe("San Francisco, CA");
-    expect(await engine.latestJob()).toBeNull();
+    if (!makeRepo) expect(await engine.latestJob()).toBeNull(); // a fresh memory store has no jobs (Postgres is shared by tests)
     const deal = await startDeal(engine);
     expect((await engine.latestJob())!.id).toBe(deal.job_id);
     const ready = await runUntil(engine, clock, deal.job_id, (x) => x.ready);
@@ -242,5 +243,16 @@ describe("v5 channels and deal board (mock mode, memory)", { timeout: 60_000 }, 
     await expect(engine.approveWithViewCode(a.id, a.code === "0000" ? "1111" : "0000")).rejects.toMatchObject({ code: "bad_code" });
     expect((await engine.approveWithViewCode(a.id, a.code)).status).toBe("approved");
     expect((await engine.getQuotes(deal.job_id)).businesses.find((b) => b.name === "Bay Catering")!.status).toBe("won");
+  });
+});
+
+describe("recipient allowlist (live safety)", () => {
+  it("deal refuses businesses that aren't explicitly allowed", async () => {
+    const { engine, fleet } = setup({ config: { recipientAllowlist: ["quotes@bay-catering.sim.haggle.dev", "@harbor-table.sim.haggle.dev", "+14155550104"] } });
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    await expect(engine.deal({ request, budget_usd, businesses: [{ name: "Real Diner", email: "owner@realdiner.example" }] })).rejects.toMatchObject({ code: "recipient_not_allowed" });
+    expect(fleet.sent).toHaveLength(0);
+    const ok = await engine.deal({ request, budget_usd, businesses: [{ name: "Bay Catering", email: "quotes@bay-catering.sim.haggle.dev" }, { name: "Harbor Table", email: "orders@harbor-table.sim.haggle.dev" }, { name: "Mission Eats", phone: "+14155550104" }] });
+    expect(ok.contacted).toHaveLength(3);
   });
 });

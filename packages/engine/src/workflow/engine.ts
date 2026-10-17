@@ -182,6 +182,8 @@ export class HaggleEngine {
       if (phone && !E164_RE.test(phone)) throw new EngineError("bad_phone", `Not an E.164 phone number: ${b.phone}`, "Use the +<country><number> form, e.g. +14155550123.", "deal");
       if (card && !/^https:\/\//.test(card)) throw new EngineError("bad_a2a_card", `Agent Card URL must be https: ${card}`, "Fix the Agent Card URL or omit it.", "deal");
       if (email && this.isOwnAddress(email)) throw new EngineError("bad_email", "That's Haggle's own inbox.", "Use the business's address.", "deal");
+      const blocked = [email, phone].find((c) => c !== null && !this.allowedRecipient(c));
+      if (blocked) throw new EngineError("recipient_not_allowed", `${b.name} (${blocked}) isn't on this server's list of businesses it may contact.`, "Use the simulated demo businesses from discover, or ask the operator to add it to HAGGLE_ALLOWED_RECIPIENTS.", "discover");
       for (const key of [email, phone].filter((k): k is string => k !== null)) {
         if (seen.has(key)) throw new EngineError("duplicate_business", `Listed twice: ${key}`, "Remove the duplicate.", "deal");
         seen.add(key);
@@ -241,6 +243,13 @@ export class HaggleEngine {
       eta: `replies usually within minutes; collecting until ${job.collect_until}`,
       next: "Call wait_for_update with this job_id (timeout_s up to 60). Don't email the businesses yourself.",
     };
+  }
+
+  private allowedRecipient(contact: string): boolean {
+    const list = this.d.config.recipientAllowlist;
+    if (!list) return true;
+    const c = contact.toLowerCase();
+    return list.some((e) => { const x = e.trim().toLowerCase(); return x === c || (x.startsWith("@") && c.endsWith(x)); });
   }
 
   /** Is this address Haggle's own mailbox (shared Inkbox identity, or any per-job inbox)? */

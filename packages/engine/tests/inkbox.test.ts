@@ -12,7 +12,7 @@ import {
 
 const FIX = new URL("../../../fixtures/buyer/", import.meta.url);
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`emails/${name}.json`, FIX), "utf8")) as { from: string; text: string; attachments: { filename: string; content_type: string; path?: string }[] };
-const SECRET = "whsec_dGVzdC1zZWNyZXQ";
+const SECRET = "whsec_dGVzdC1zZWNyZXQ"; // fake test key (base64 "test-secret") gitleaks:allow
 const BUYER = "haggle@inkboxmail.test";
 
 function signed(body: string, opts: { secret?: string; ts?: string; tamper?: boolean } = {}) {

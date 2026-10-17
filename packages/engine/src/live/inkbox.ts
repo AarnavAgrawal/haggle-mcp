@@ -7,7 +7,7 @@
 // Message-ID is found as an *outbound* message in that identity's own mailbox (it really sent it).
 // Mail from outside Inkbox is stored but never becomes a quote ("unverified-external-sender").
 // Seller content is untrusted data throughout.
-import { InkboxAPIError, InkboxConnectionError, verifyWebhook as sdkVerifyWebhook, type Inkbox, type MailWebhookPayload } from "@inkbox/sdk";
+import { CallMode, Inkbox, InkboxAPIError, InkboxConnectionError, verifyWebhook as sdkVerifyWebhook, type MailWebhookPayload } from "@inkbox/sdk";
 import { attachmentKind, MAX_JSON_BYTES, MAX_PDF_BYTES, type ExtractedFile } from "../inbound/attachments.ts";
 import { normalizeMessageId } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
@@ -226,11 +226,20 @@ export function inkboxCallEnded(payload: { data: Record<string, unknown> }): { c
  * PhonePort over Inkbox Voice AI (hosted agent). NOT wired by default: live calls need explicit
  * approval (HAGGLE_ENABLE_CALLS=true) and may only go to simulated businesses or people who agreed.
  */
-export function inkboxPhone(identity: { placeCall(o: { toNumber: string; mode?: never; reason?: string }): Promise<{ id: string }> }, hostedAgentMode: unknown): PhonePort {
+export function inkboxPhone(identity: { placeCall(o: { toNumber: string; mode?: CallMode; reason?: string }): Promise<{ id: string }> }): PhonePort {
   return {
     async placeCall(req: PhoneCallRequest) {
-      const call = await withRetry(() => identity.placeCall({ toNumber: req.toNumber, mode: hostedAgentMode as never, reason: req.reason.slice(0, 2000) }));
+      const call = await withRetry(() => identity.placeCall({ toNumber: req.toNumber, mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000) }));
       return { callId: call.id };
     },
   };
+}
+
+/** Connect the buyer identity (default handle `haggle`). Its mailbox address comes from Inkbox, never derived. */
+export async function connectInkboxBuyer(opts: { apiKey: string; handle: string }) {
+  const inkbox = new Inkbox({ apiKey: opts.apiKey });
+  const identity = await inkbox.getIdentity(opts.handle);
+  const buyerMailbox = identity.emailAddress?.toLowerCase();
+  if (!buyerMailbox) throw new Error(`Inkbox identity "${identity.agentHandle}" has no mailbox`);
+  return { api: inkboxMailApi(inkbox), buyerMailbox, phone: () => inkboxPhone(identity as never) };
 }

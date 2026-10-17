@@ -32,6 +32,11 @@ select pg_temp.expect_fail('zero spending cap', $$insert into public.engine_sett
 select pg_temp.expect_fail('anon reads settings', $$set local role anon; select * from public.engine_settings$$);
 reset role;
 
+-- Positive: two jobs can share the buyer mailbox (v5 Inkbox identity).
+insert into public.jobs (id, short_code, state, mode, request, payment_cap_cents, inbox, max_rounds, collect_until)
+  values ('job_ch2', 'CHN2', 'collecting', 'mock', '{}', 500, 'haggle@x.test', 2, now() + interval '1 hour');
+delete from public.jobs where id = 'job_ch2';
+
 -- Positive: status updates on a phone business still work; one settings row upserts.
 update public.job_businesses set status = 'no_reply' where business_id = 'biz_aaaaaaaaaaaaaaaa';
 insert into public.engine_settings (id, spending_cap_cents, default_area) values (1, 120000, 'San Francisco, CA')

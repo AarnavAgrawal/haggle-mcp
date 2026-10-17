@@ -4,7 +4,10 @@
 --   * call states for businesses (ringing, no_reply) and "unavailable" (channel not enabled);
 --   * messages record their channel; a placed call is an outbound 'call' message;
 --   * human approval from the approval view ('view') or iMessage ('imessage');
---   * buyer settings (one row; changed only through the settings tools, never by business mail).
+--   * buyer settings (one row; changed only through the settings tools, never by business mail);
+--   * one shared Inkbox buyer mailbox serves every job, so jobs.inbox is no longer unique.
+
+alter table public.jobs drop constraint jobs_inbox_key;
 
 alter table public.job_businesses alter column email drop not null;
 alter table public.job_businesses add column phone text check (phone is null or phone ~ '^\+[1-9][0-9]{6,14}$');

@@ -63,6 +63,11 @@ export interface EngineConfig {
   defaultSpendingCapCents?: number;
   /** Hard ceiling the settings cap can never exceed (operator env, not the model). */
   spendingCapCeilingCents?: number;
+  /**
+   * Who deal() may contact: exact emails, "@domain" entries, or E.164 numbers. Undefined = anyone
+   * (mock mode). Live mode sets it to the simulated fleet + HAGGLE_ALLOWED_RECIPIENTS.
+   */
+  recipientAllowlist?: string[];
 }
 
 export interface EngineDeps {
