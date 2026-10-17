@@ -3,6 +3,7 @@
  * ask a question, quote, revise in negotiation, hold, or confirm.
  */
 import type { Persona } from "./personas.ts";
+import { withTerms, type Terms } from "./variation.ts";
 
 export interface Rfq {
   quantity?: number;
@@ -42,6 +43,8 @@ export interface ThreadState {
   addOn: boolean;
   round: number;
   lastTotal?: number;
+  /** This conversation's own terms (variation.ts); absent = the persona's base numbers. */
+  terms?: Terms;
 }
 
 const DEFAULT_QUANTITY = 30;
@@ -152,18 +155,34 @@ export function computeQuote(p: Persona, rfq: Rfq, opts: { addOn: boolean; round
 // ---------------------------------------------------------------------------
 // The decision
 
-export function planReply(p: Persona, state: ThreadState | undefined, text: string, data?: unknown): { plan: Plan; state: ThreadState } {
+/**
+ * `draw` gives a new conversation its own terms (variation.ts); without it the persona's base
+ * numbers apply. Returns the persona as it behaves in this conversation, for the reply's words.
+ */
+export function planReply(
+  base: Persona,
+  state: ThreadState | undefined,
+  text: string,
+  data?: unknown,
+  draw?: (p: Persona) => Terms,
+): { plan: Plan; state: ThreadState; persona: Persona } {
+  const terms = state ? state.terms : draw?.(base);
+  const p = terms ? withTerms(base, terms) : base;
+  return { ...decide(p, state, text, data, terms), persona: p };
+}
+
+function decide(p: Persona, state: ThreadState | undefined, text: string, data: unknown, terms: Terms | undefined): { plan: Plan; state: ThreadState } {
   if (!state) {
     const rfq = parseRfq(text, data);
     if (p.question) {
-      return { plan: { kind: "question", question: p.question }, state: { persona: p.key, stage: "asked", rfq, addOn: false, round: 0 } };
+      return { plan: { kind: "question", question: p.question }, state: compact({ persona: p.key, stage: "asked" as const, rfq, addOn: false, round: 0, terms }) };
     }
-    return quoteRound1(p, rfq, false);
+    return quoteRound1(p, rfq, false, terms);
   }
 
   if (state.stage === "asked") {
     const rfq = { ...state.rfq, ...parseRfq(text, data) };
-    return quoteRound1(p, rfq, wantsAddOn(text));
+    return quoteRound1(p, rfq, wantsAddOn(text), state.terms);
   }
 
   const current = computeQuote(p, state.rfq, { addOn: state.addOn, round: state.round, total: state.lastTotal });
@@ -188,11 +207,11 @@ export function planReply(p: Persona, state: ThreadState | undefined, text: stri
   return { plan: { kind: "quote", facts, held: false }, state: { ...state, round: 2, lastTotal: revised } };
 }
 
-function quoteRound1(p: Persona, rfq: Rfq, addOn: boolean): { plan: Plan; state: ThreadState } {
+function quoteRound1(p: Persona, rfq: Rfq, addOn: boolean, terms: Terms | undefined): { plan: Plan; state: ThreadState } {
   const facts = computeQuote(p, rfq, { addOn, round: 1 });
   return {
     plan: { kind: "quote", facts, held: false },
-    state: { persona: p.key, stage: "quoted", rfq, addOn, round: 1, lastTotal: facts.total },
+    state: compact({ persona: p.key, stage: "quoted" as const, rfq, addOn, round: 1, lastTotal: facts.total, terms }),
   };
 }
 

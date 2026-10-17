@@ -116,6 +116,7 @@ async function callClaude(client: Anthropic, model: string, p: Persona, plan: Pl
     `You write ${where} as ${p.name}, a catering business in San Francisco, to a customer asking for a quote.`,
     `Voice: ${p.style}`,
     "Write only the message body: no subject line, no placeholders, plain text, under 140 words.",
+    "Write it fresh, the way a real person would today: vary the greeting, order and phrasing; no stock openers like 'Thank you for reaching out'.",
     `Use exactly these facts and no other prices or numbers. Include these figures verbatim: ${must.length ? must.join(", ") : "(none)"}.`,
     mustNot.length ? `Do not mention: ${mustNot.join(", ")} (it is in the attached PDF).` : "",
     `End with this sign-off exactly:\n${p.signoff}`,

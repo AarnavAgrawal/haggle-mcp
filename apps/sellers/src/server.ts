@@ -12,6 +12,7 @@ import { createClaudeComposer, templateReply, type Composer } from "./compose.ts
 import { PERSONAS } from "./personas.ts";
 import { join } from "node:path";
 import { DATA_DIR, StateStore, loadRegistry } from "./store.ts";
+import { baseTerms } from "./variation.ts";
 
 const PORT = Number(process.env.SELLERS_PORT ?? 8787);
 const ROUTE = /^\/webhooks\/inkbox\/([a-z0-9-]+)\/?$/;
@@ -54,6 +55,8 @@ const app = createSellerApp({
   state: new StateStore(process.env.SELLERS_STATE_FILE ?? join(DATA_DIR, "sellers-state.json")),
   ownAddresses: new Set(Object.values(registry).flatMap((r) => (r.email ? [r.email.toLowerCase()] : []))),
   fast: process.env.SELLERS_FAST === "1",
+  // Every conversation draws its own prices and behaviour; SELLERS_VARY=0 replays the base numbers.
+  ...(process.env.SELLERS_VARY === "0" ? { drawTerms: baseTerms } : {}),
 });
 
 const allowUnsigned = process.env.SELLERS_ALLOW_UNSIGNED === "1";
@@ -102,7 +105,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, async () => {
-  console.log(`[sellers] listening on http://localhost:${PORT} (fast=${process.env.SELLERS_FAST === "1"}, replies=${useClaude ? "claude" : "templates"})`);
+  console.log(`[sellers] listening on http://localhost:${PORT} (fast=${process.env.SELLERS_FAST === "1"}, replies=${useClaude ? "claude" : "templates"}, vary=${process.env.SELLERS_VARY !== "0"})`);
   const tunnelName = process.env.SELLERS_TUNNEL;
   if (tunnelName) {
     const { connect } = await import("@inkbox/sdk/tunnels/connect");
