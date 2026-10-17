@@ -63,6 +63,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.135.0
         version: 0.135.0(zod@4.6.7)
+      '@haggle/core':
+        specifier: workspace:*
+        version: link:../core
       '@primitivedotdev/sdk':
         specifier: 2.4.0
         version: 2.4.0(typescript@5.9.3)(zod@4.6.7)
