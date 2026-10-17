@@ -1,6 +1,6 @@
 # v3 contract freeze proposal (`packages/core/contracts.ts`)
 
-**Status: PROPOSAL by Yash's agent, 2026-10-17 ~09:30 PDT. Not adopted. Needs both owners'
+**Status: ADOPTED as `packages/core/contracts.ts` v1 (Yash + Partner agreement, 2026-10-17).** Originally proposed ~09:30 PDT; needs both owners'
 approval in the 10:30 contracts hour.** `packages/core/` has not been edited.
 
 Starting point: the contract sketch in root `CLAUDE.md` §5 and the v3 plan (quote schema p.7,
