@@ -16,14 +16,15 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@haggle/core": "workspace:*",
+    "@haggle/engine": "workspace:*",
     "mcp-use": "2.10.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "zod": "^4.6.7",
-    "@haggle/core": "workspace:*",
-    "@haggle/engine": "workspace:*"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@mcp-use/client": "^2.4.3",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

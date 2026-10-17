@@ -109,7 +109,7 @@ export default function DealBoard() {
 
         <header className="hg-head">
           <div>
-            <div className="hg-eyebrow">Haggle · {d.job_id}</div>
+            <div className="hg-eyebrow">Haggle · <span className="hg-id">{d.job_id}</span></div>
             <h1>{req.what} · {req.quantity} {req.unit ?? "people"}</h1>
             <div className="hg-sub">{req.date} · {req.area}{d.budget_usd ? ` · budget ${usd(d.budget_usd)}` : ""}</div>
           </div>
@@ -134,7 +134,7 @@ export default function DealBoard() {
         {rec && (
           <section className="hg-rec">
             <div>
-              <div className="hg-eyebrow">Recommended</div>
+              <div className="hg-eyebrow">{d.ready ? "Recommended" : "Leading so far · quotes still coming in"}</div>
               <div className="hg-rec-name">{rec.business}</div>
               <div className="hg-rec-why">
                 Cheapest quote that meets every hard requirement{rec.negotiated_from ? `, negotiated down from ${usd(rec.negotiated_from)} in round ${rec.round}` : ""}. Source: {rec.source}.
@@ -171,7 +171,7 @@ export default function DealBoard() {
           <div className="hg-section-title">Quotes <span className="hg-muted">one schema for every reply</span></div>
           {ranked.length === 0 && <div className="hg-empty-row">Waiting for the first replies…</div>}
           {ranked.length > 0 && (
-            <table>
+            <div className="hg-scroll"><table>
               <thead><tr><th>#</th><th>Business</th><th className="r">Total</th><th className="r">Deposit</th><th>Fits</th><th>Round</th><th className="r">Conf.</th><th>Flags</th></tr></thead>
               <tbody>
                 {ranked.map((q, i) => {
@@ -186,7 +186,7 @@ export default function DealBoard() {
                       <td>{q.meets_requirements ? <span className="hg-ok">✓</span> : <span className="hg-no">✗</span>}</td>
                       <td>{q.round}</td>
                       <td className="r">{Math.round(q.confidence * 100)}%</td>
-                      <td className="hg-flags">{[...new Set([...(rejected.has(q.business_id) ? [rejected.get(q.business_id)!] : []), ...q.flags])].slice(0, 4).map((f) => <Chip key={f} flag={f} />)}</td>
+                      <td><div className="hg-flags">{[...new Set([...(rejected.has(q.business_id) ? [rejected.get(q.business_id)!] : []), ...q.flags])].slice(0, 4).map((f) => <Chip key={f} flag={f} />)}</div></td>
                     </tr>,
                     open === q.quote_id ? (
                       <tr key={`${q.quote_id}-ev`} className="hg-ev"><td colSpan={8}>
@@ -200,7 +200,7 @@ export default function DealBoard() {
                   ];
                 })}
               </tbody>
-            </table>
+            </table></div>
           )}
         </section>
 
@@ -211,7 +211,7 @@ export default function DealBoard() {
               {PAY_STEPS.map((s, i) => <li key={s} className={i < payIdx || d.payment?.status === "settled" ? "done" : i === payIdx ? "now" : ""}><span />{PAY_LABEL[s]}</li>)}
             </ol>
             <div className="hg-pay-row">
-              {d.approval && <div>Approved {usd(d.approval.quote_total_usd)} · deposit {usd(d.approval.payment_usd)} by <b>{d.approval.approver}</b> via {d.approval.channel}</div>}
+              {d.approval && <div>Approved {usd(d.approval.quote_total_usd)} · deposit {usd(d.approval.payment_usd)} by <b>{d.approval.approver}</b> {d.approval.approver.startsWith("DEMO") ? <span className="hg-chip hg-warn">DEMO simulated approval</span> : `via ${d.approval.channel === "elicitation" ? "approval form" : "verified email"}`}</div>}
               {d.payment?.status === "settled" && (
                 <div className="hg-receipt">
                   Receipt {d.payment.simulated ? <span className="hg-chip hg-warn">DEMO receipt · not on-chain</span> : null}
