@@ -6,7 +6,7 @@
  *   corepack pnpm --filter @haggle/spikes preflight            # all checks
  *   corepack pnpm --filter @haggle/spikes preflight primitive  # one of: env primitive anthropic supabase
  *
- * The one billable call is a single Anthropic request with max_tokens=1 (a fraction of a cent).
+ * No billable calls: Anthropic is checked through the Models API only (no generation).
  */
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
@@ -49,6 +49,9 @@ function checkEnv() {
   const inbox = env("HAGGLE_BUYER_INBOX");
   if (inbox && env("HAGGLE_INBOX_DOMAIN") && !inbox.toLowerCase().endsWith(`@${env("HAGGLE_INBOX_DOMAIN").toLowerCase()}`))
     record("env", "HAGGLE_BUYER_INBOX domain", "ACTION REQUIRED", "inbox is not on HAGGLE_INBOX_DOMAIN");
+  const sk = env("SUPABASE_SERVICE_ROLE_KEY");
+  if (sk) record("env", "SUPABASE_SERVICE_ROLE_KEY format", sk.startsWith("sb_secret_") || sk.startsWith("eyJ") ? "PASS" : "ACTION REQUIRED",
+    sk.startsWith("sb_secret_") ? "modern secret key (sb_secret_)" : sk.startsWith("eyJ") ? "legacy service_role JWT" : "expected sb_secret_… or legacy JWT");
   const pk = env("HAGGLE_PAYER_PRIVATE_KEY");
   if (pk && !/^0x[0-9a-fA-F]{64}$/.test(pk)) record("env", "HAGGLE_PAYER_PRIVATE_KEY format", "ACTION REQUIRED", "expected 0x + 64 hex");
 }
@@ -86,7 +89,14 @@ async function checkPrimitive() {
       names.includes(want) ? want : `${want} not found in GET /domains`);
   }
   await show("inbox readiness", "/inbox/status");
-  await show("outbound readiness", "/outbound/status");
+  const outbound = await show("outbound readiness", "/outbound/status");
+  const from = env("HAGGLE_BUYER_INBOX") || (want ? `buyer@${want}` : "");
+  if (outbound && from) {
+    const fromDomain = from.split("@")[1]?.toLowerCase() ?? "";
+    const sendable: string[] = (outbound.sendable_domains ?? []).map((d: unknown) => String(typeof d === "object" && d ? (d as any).domain ?? (d as any).name : d).toLowerCase());
+    record("primitive", `can send From ${from} (non-sending check)`, sendable.includes(fromDomain) ? "PASS" : "BLOCKED",
+      sendable.includes(fromDomain) ? `${fromDomain} in sendable_domains` : `sendable_domains=${JSON.stringify(sendable)}`);
+  }
   await show("send-permissions (reply-only restriction)", "/send-permissions");
   await show("webhook endpoints", "/endpoints");
   await show("credits", "/credits/balance");
@@ -111,18 +121,15 @@ async function checkPrimitive() {
 async function checkAnthropic() {
   const key = env("ANTHROPIC_API_KEY");
   if (!key) return record("anthropic", "all", "ACTION REQUIRED", "ANTHROPIC_API_KEY missing");
-  const headers = { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" };
+  // Keys not scoped to a workspace must name one on every request.
+  const headers: Record<string, string> = { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" };
+  if (env("ANTHROPIC_WORKSPACE_ID")) headers["anthropic-workspace-id"] = env("ANTHROPIC_WORKSPACE_ID");
   const model = env("ANTHROPIC_MODEL") || "claude-sonnet-5-5";
   try {
     const m = await fetch(`https://api.anthropic.com/v1/models/${model}`, { headers, signal: AbortSignal.timeout(15_000) });
-    record("anthropic", `extraction model ${model} available`, m.ok ? "PASS" : "BLOCKED", `GET /v1/models → ${m.status}`);
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers, signal: AbortSignal.timeout(30_000),
-      body: JSON.stringify({ model: "claude-haiku-5-5", max_tokens: 1, messages: [{ role: "user", content: "ping" }] }),
-    });
-    const b: any = await r.json().catch(() => null);
-    record("anthropic", "minimal messages request (haiku, max_tokens=1)", r.ok ? "PASS" : "BLOCKED",
-      r.ok ? `usage ${JSON.stringify(b?.usage)}` : `${r.status} ${b?.error?.type ?? ""}: ${b?.error?.message ?? ""}`);
+    const b: any = await m.json().catch(() => null);
+    record("anthropic", `key can access ${model} (Models API, no generation)`, m.ok ? "PASS" : "BLOCKED",
+      m.ok ? `GET /v1/models/${model} → ${m.status} id=${b?.id}` : `${m.status} ${b?.error?.type ?? ""}: ${b?.error?.message ?? ""}`);
   } catch (e) {
     record("anthropic", "connectivity", "BLOCKED", (e as Error).message);
   }
@@ -155,18 +162,26 @@ function checkSupabase() {
   if (!url) return record("supabase", "all", "ACTION REQUIRED", "SUPABASE_DB_URL missing");
   const ref = env("SUPABASE_URL").match(/^https:\/\/([a-z0-9]+)\.supabase\.co/)?.[1];
   let dbHost = "", dbUser = "";
+  // psql splits userinfo at the FIRST '@', so a raw '@' in the password moves part of it into the host.
+  const userinfo = url.match(/^[a-z]+:\/\/(.*)@[^@]*$/i)?.[1] ?? "";
+  if ((userinfo.match(/@/g) ?? []).length > 0)
+    record("supabase", "SUPABASE_DB_URL password is URL-encoded", "ACTION REQUIRED", "password contains a raw '@'; write it as %40");
   try { const u = new URL(url); dbHost = u.hostname; dbUser = decodeURIComponent(u.username); } catch { return record("supabase", "SUPABASE_DB_URL parses", "ACTION REQUIRED", "not a valid postgres URL"); }
   if (ref) {
     const sameProject = dbHost.includes(ref) || dbUser.endsWith(`.${ref}`);
     record("supabase", "DB URL and SUPABASE_URL point at the same project", sameProject ? "PASS" : "ACTION REQUIRED",
-      `project ref ${ref}; db host ${dbHost}`);
+      sameProject ? `project ref ${ref}` : `SUPABASE_URL ref ${ref} (len ${ref.length}) ≠ db user ${dbUser} @ ${dbHost}`);
   } else record("supabase", "SUPABASE_URL format", "ACTION REQUIRED", "expected https://<ref>.supabase.co");
 
   const r = spawnSync("docker", ["run", "--rm", "-i", "-e", "PGURL", "-e", "PGCONNECT_TIMEOUT=15", "postgres:17-alpine", "sh", "-c", 'psql "$PGURL" -v ON_ERROR_STOP=1 -X -q'], {
     input: READONLY_SQL, env: { ...process.env, PGURL: url }, encoding: "utf8", timeout: 120_000,
   });
   if (r.status !== 0) {
-    const err = (r.stderr || r.error?.message || "").replace(url, "<db-url>").split("\n").filter(Boolean).slice(-3).join(" | ");
+    // Scrub the URL, its userinfo, and every userinfo fragment so no part of the password is echoed.
+    let err = r.stderr || r.error?.message || "";
+    for (const piece of [url, userinfo, ...userinfo.split(/[:@]/)].filter((p) => p.length >= 3).sort((a, b) => b.length - a.length))
+      err = err.split(piece).join("<redacted>");
+    err = err.split("\n").filter(Boolean).slice(-3).join(" | ");
     return record("supabase", "connect (read-only session)", "BLOCKED", err);
   }
   record("supabase", "connect (read-only session)", "PASS");

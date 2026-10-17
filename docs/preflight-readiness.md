@@ -1,10 +1,10 @@
 # Pre-kickoff infrastructure readiness
 
-Checked 2026-10-17 00:15–00:45 PDT (Saturday, before 10:30 AM kickoff). Infrastructure only: no
+Checked 2026-10-17 00:15–00:55 PDT (Saturday, before 10:30 AM kickoff). Infrastructure only: no
 product code, no migration applied to the hosted project, no email sent, nothing deployed.
 
 Re-run any time: `corepack pnpm --filter @haggle/spikes preflight [env|primitive|anthropic|supabase]`
-(read-only; never prints secret values; exits 1 on any BLOCKED).
+(read-only, no billable calls; never prints secret values; exits 1 on any BLOCKED).
 
 ## Status
 
@@ -19,11 +19,20 @@ Re-run any time: `corepack pnpm --filter @haggle/spikes preflight [env|primitive
 | `@haggle/core` in the server bundle | PASS | probe build inlined core from workspace source; only `zod`/`mcp-use` stay external |
 | Migrations on throwaway Postgres 17 | PASS | `scripts/verify-migrations.sh`: all assertions passed |
 | Migration security posture | PASS (reviewed) | 14 tables, RLS enabled **and forced**, no policies, `revoke all` from anon/authenticated, `haggle_append_event` not executable by them, audit log append-only trigger |
-| `.env` | ACTION REQUIRED | created from template, `chmod 600`, git-ignored; values not yet filled |
-| Primitive key, inbox domain, outbound/reply-only, x402 | ACTION REQUIRED | run `preflight primitive` after filling `.env` |
-| Anthropic key | ACTION REQUIRED | run `preflight anthropic` (one max_tokens=1 Haiku call) |
-| Supabase project connectivity | ACTION REQUIRED | run `preflight supabase` (read-only session via Dockerized psql) |
-| Manufact CLI | PASS (available) / ACTION REQUIRED (auth) | `mcp-use` 2.10 CLI in `apps/mcp`; `whoami` → not logged in |
+| `.env` | PASS | `chmod 600`, git-ignored, all required keys set, `HAGGLE_MODE=mock`. Fixed in place: `SUPABASE_URL` ref typo (19-char ref didn't resolve), raw `@` in DB password → `%40` (backup `.env.bak`, also ignored) |
+| Primitive API key | PASS | `/whoami` 200, org `ae53e147…`, plan `developer` |
+| Buyer domain `brave-dog.primitive.email` | PASS | in `/domains`, verified, DNS healthy; `managed_inbox_address` |
+| Send From `buyer@brave-dog.primitive.email` | PASS (non-sending) | `/outbound/status`: `ready`, domain `sendable`; `send_mail` entitlement present. `/send-mail` itself remains the final authority |
+| Outbound recipient scope | **Restricted** (no `any_recipient`) | allowed: Primitive-managed zones (`*.primitive.email`, `*.email.works`, …), opted-in domains, org domains, org member emails, addresses that have emailed us. Arbitrary external seller addresses fail until they write first or the org is upgraded |
+| Inbound processing | ACTION REQUIRED at deploy | `/inbox/status`: receiving ready, **no webhook endpoint** (`/endpoints` = []); create it pointing at the deployed `POST /inbound`, then set `PRIMITIVE_WEBHOOK_ENDPOINT_ID`. Org allows 1 webhook |
+| Webhook secret | PASS | configured value equals org secret (SHA-256 compare) |
+| `interactions_enabled` | PASS | in `/account` entitlements |
+| x402 payer (`x402_payments`) | **BLOCKED** | `/x402/spend-policy` → 403 `feature_disabled`, invite-only: https://docs.primitive.dev/docs/collecting-payments#requesting-access |
+| Payer private key | PASS (format) | `0x` + 64 hex, user-confirmed; no signing performed |
+| Anthropic | **BLOCKED** | Models API → 400: key isn't scoped to a workspace; requests need `anthropic-workspace-id`. Set `ANTHROPIC_WORKSPACE_ID` (Console → Workspaces) or use a workspace-scoped key. Extraction code at kickoff must send the same header |
+| Supabase project `behfuaxftitnzkkbnaia` | PASS | read-only session via session pooler; Postgres 17.11; `postgres` role BYPASSRLS; public schema empty, no migrations applied, extensions include pgcrypto |
+| Supabase `sb_secret_` key | PASS | `GET /rest/v1/` → 200 (bad-key control → 401) |
+| Manufact CLI | PASS | `mcp-use whoami` → logged in (Yashnil Mohanty's Projects); nothing deployed |
 | Git remote / shared repo | ACTION REQUIRED | no remote configured; partner has no access yet; Manufact's default deploy mode is GitHub |
 | Person 2 directories | PASS | `apps/sellers`, `sell-cli`, `wall`, `raw-email-mcp` absent and untouched |
 | Secrets in history | PASS | no `.env` tracked; no `prim_…`/`sk-ant-…`/JWT strings in tracked files |
@@ -76,8 +85,8 @@ git switch -c yash/pass2-email-transport                   # start Pass 2 milest
 
 ## Still needed from the team
 
-1. Fill in `.env` and run `preflight`.
-2. `cd apps/mcp && ./node_modules/.bin/mcp-use login` (interactive).
+1. Set `ANTHROPIC_WORKSPACE_ID` in `.env`, then `preflight anthropic`.
+2. Request x402 access from Primitive.
 3. Create a private GitHub repo, add the partner, `git remote add origin …`, push `main` + `yash/*`.
-4. Primitive: request an outbound upgrade if reply-only, and x402 + interactions entitlements.
-5. Base Sepolia buyer wallet + test USDC → `HAGGLE_PAYER_PRIVATE_KEY` (testnet only).
+4. Agree with the partner that demo seller inboxes live on Primitive-managed domains (in scope today); real external sellers need them to email first or an outbound upgrade.
+5. Fund the buyer wallet with Base Sepolia test USDC (not checked).
