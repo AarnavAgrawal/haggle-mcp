@@ -111,8 +111,9 @@ server.tool(
 server.tool(
   {
     name: "wait",
-    description: "Wait before checking again (businesses take time to reply). Max 60 seconds per call.",
-    inputSchema: z.object({ seconds: z.number().int().min(1).max(60) }),
+    // 25 s stays under the ~30 s tool-call timeout many MCP clients use.
+    description: "Wait before checking again (businesses take time to reply). Max 25 seconds per call; call again to wait longer.",
+    inputSchema: z.object({ seconds: z.number().int().min(1).max(25) }),
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   async ({ seconds }) => {
