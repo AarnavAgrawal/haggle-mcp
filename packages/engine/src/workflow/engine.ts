@@ -22,7 +22,7 @@ import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, subjectS
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers } from "../negotiation/counteroffer.ts";
-import { buildRfqEmail } from "../outbound/rfq.ts";
+import { buildRfqEmail, eventPlace, eventWhen, humanTime } from "../outbound/rfq.ts";
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.ts";
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
@@ -412,10 +412,7 @@ export class HaggleEngine {
         continue;
       }
       if (!b.email) continue;
-      const email = buildRfqEmail({
-        shortCode: job.short_code, businessName: b.name, what: job.request.what, quantity: job.request.quantity, date: job.request.date,
-        location: job.request.area, requirements: reqs, replyBy: new Date(job.collect_until),
-      });
+      const email = buildRfqEmail(this.rfqInput(job, b, reqs));
       const rfq = this.rfqPart(job);
       try {
         const m = await this.sendRecorded(job, b, "rfq", sendKeys.rfq(job.id, b.business_id), { to: b.email, ...email, attachments: [jsonPart("rfq.json", rfq)] });
@@ -435,12 +432,21 @@ export class HaggleEngine {
    * (protocol/type) and the flat keys Aarnav's sellers read (quantity, vegetarian, date). Additive:
    * unknown keys are ignored by every reader.
    */
+  /** RFQ email fields for one business: exact date + local time, venue, hard requirements. */
+  private rfqInput(job: JobRow, b: JobBusinessRow, reqs: string[]) {
+    const r = job.request;
+    return {
+      shortCode: job.short_code, businessName: b.name, what: r.what, quantity: r.quantity, date: r.date, ...(r.time ? { time: r.time } : {}),
+      location: eventPlace(r.area, r.venue), requirements: reqs, replyBy: new Date(job.collect_until),
+    };
+  }
+
   private rfqPart(job: JobRow) {
     const veg = job.request.requirements.find((r) => r.kind === "dietary" && /vegetarian/i.test(r.text) && r.min_count !== undefined);
     return {
       haggle: "rfq/1", protocol: "haggle.v0", type: "rfq", job_id: job.id, what: job.request.what, quantity: job.request.quantity, ...(job.request.unit ? { unit: job.request.unit } : {}),
       ...(veg ? { vegetarian: veg.min_count } : {}),
-      date: job.request.date, location: job.request.area,
+      date: job.request.date, ...(job.request.time ? { time: job.request.time } : {}), location: eventPlace(job.request.area, job.request.venue),
       requirements: job.request.requirements.map((r) => ({ id: r.id, text: r.text, label: r.text, hard: r.hard, mandatory: r.hard, ...(r.min_count !== undefined ? { min_count: r.min_count } : {}) })),
       reply_by: job.collect_until, reply_to: job.inbox,
     };
@@ -464,7 +470,7 @@ export class HaggleEngine {
     }
     if (await this.repo.findMessageByIdempotencyKey(key)) return;
     const reqs = job.request.requirements.filter((r) => r.hard).map((r) => r.text);
-    const email = buildRfqEmail({ shortCode: job.short_code, businessName: b.name, what: job.request.what, quantity: job.request.quantity, date: job.request.date, location: job.request.area, requirements: reqs, replyBy: new Date(job.collect_until) });
+    const email = buildRfqEmail(this.rfqInput(job, b, reqs));
     try {
       const t = await this.d.a2a.send({ cardUrl: b.a2a_card_url, text: email.bodyText, data: this.rfqPart(job), messageId: `haggle-rfq-${job.id}-${b.business_id}` });
       await this.repo.updateBusiness(job.id, b.business_id, { status: "contacted", contacted_at: this.now().toISOString(), thread_id: t.contextId, rfq_message_id: t.taskId });
@@ -549,9 +555,9 @@ export class HaggleEngine {
     const clean = (s: string, n: number) => s.replace(/https?:\/\/\S+|www\.\S+/gi, "").replace(/\+?\d[\d\s().-]{6,}\d/g, "").replace(/\s+/g, " ").trim().slice(0, n);
     const veg = r.requirements.find((q) => q.kind === "dietary" && q.min_count !== undefined);
     const delivery = r.requirements.some((q) => q.kind === "delivery" && q.hard);
-    const date = new Date(`${r.date}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+    const date = new Date(`${r.date}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) + (r.time ? ` ${humanTime(r.time).replace(":00", "").replace(" ", "").toLowerCase()}` : "");
     const needs = [veg ? `${veg.min_count}+ ${/veg/i.test(veg.text) ? "veg" : "special"}` : "", delivery ? "delivered" : ""].filter(Boolean).join(", ");
-    const text = `Hi ${clean(business, 24)}, Haggle AI assistant here. Quote for ${clean(r.what, 24)} for ${r.quantity} on ${date} in ${clean(r.area.split(",")[0]!, 18)}${needs ? `: ${needs}` : ""}. Total + deposit? HG-${job.short_code}`;
+    const text = `Hi ${clean(business, 24)}, Haggle AI assistant here. Quote for ${clean(r.what, 24)} for ${r.quantity} on ${date} ${r.venue ? `at ${clean(r.venue.split(",")[0]!, 22)}` : `in ${clean(r.area.split(",")[0]!, 18)}`}${needs ? `: ${needs}` : ""}. Total + deposit? HG-${job.short_code}`;
     return text.slice(0, 159);
   }
 
@@ -640,13 +646,12 @@ export class HaggleEngine {
    */
   static callBrief(name: string, job: Pick<JobRow, "request" | "short_code">, reqs: string[], opts: { escalation?: boolean; competingTotalUsd?: number } = {}): string {
     const r = job.request;
-    const d = new Date(`${r.date}T12:00:00Z`);
-    const when = Number.isNaN(d.getTime()) ? r.date : d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
+    const when = eventWhen(r.date, r.time);
     const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
     return [
       `You are Haggle, an AI assistant phoning ${name} for a customer to get a price quote. Be brief, warm and natural; keep the call under three minutes.`,
       `1. Open with: "Hi, this is Haggle, an AI assistant calling for a customer about a quote for ${r.what}. Do you have a minute?"${opts.escalation ? " Mention we emailed earlier and wanted to follow up by phone." : ""}`,
-      `2. The order: ${r.what} for ${r.quantity} ${r.unit ?? "people"} on ${when}${r.area ? `, in ${r.area}` : ""}.${reqs.length ? ` Must have: ${reqs.join("; ")}.` : ""}`,
+      `2. The order: ${r.what} for ${r.quantity} ${r.unit ?? "people"} on ${when}${r.area ? `, at ${eventPlace(r.area, r.venue)}` : ""}.${reqs.length ? ` Must have: ${reqs.join("; ")}.` : ""}`,
       `3. Ask for: the all-in total including delivery and tax, how each requirement is met (for example how many vegetarian meals), any deposit and when it is due, and what is included.`,
       opts.competingTotalUsd !== undefined ? `4. We have a real quote of ${money(opts.competingTotalUsd)} total for the same order. You may say that figure and ask if they can do better. Never invent, round down or exaggerate it.` : `4. Do not mention other businesses or prices.`,
       `5. Read the numbers back to confirm, thank them and end the call.`,

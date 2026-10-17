@@ -15,13 +15,36 @@ export function humanDate(isoDate: string): string {
   return `${WEEKDAYS[date.getUTCDay()]} ${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`;
 }
 
+/** "12:00" -> "12:00 PM"; "18:30" -> "6:30 PM". Anything else is returned as given. */
+export function humanTime(hhmm: string): string {
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(hhmm.trim());
+  if (!m) return hhmm;
+  const h = Number(m[1]);
+  return `${h % 12 === 0 ? 12 : h % 12}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
+}
+
+/** The exact event time as people read it: "Saturday, October 24, 2026 at 12:00 PM". */
+export function eventWhen(isoDate: string, time?: string): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const date = new Date(Date.UTC(y!, m! - 1, d!));
+  if (Number.isNaN(date.getTime())) return isoDate;
+  const day = `${WEEKDAYS[date.getUTCDay()]}, ${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}, ${date.getUTCFullYear()}`;
+  return time ? `${day} at ${humanTime(time)}` : day;
+}
+
+/** "Y Combinator office, San Francisco, CA" (venue first when given, area otherwise). */
+export function eventPlace(area: string, venue?: string): string {
+  if (!venue) return area;
+  return venue.toLowerCase().includes(area.split(",")[0]!.trim().toLowerCase()) ? venue : `${venue}, ${area}`;
+}
+
 export interface RfqInput {
   shortCode: string;
   businessName: string;
   what: string;
   quantity: number;
   date: string; // YYYY-MM-DD
-  time?: string;
+  time?: string; // "12:00" (24h, local)
   location: string;
   requirements: string[]; // hard requirements, human-readable
   replyBy: Date;
@@ -38,7 +61,7 @@ export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string 
     "I'm an AI assistant arranging this order for a client. Could you quote the following?",
     "",
     `- What: ${i.what}`,
-    `- Date: ${humanDate(i.date)}${i.time ? ` at ${i.time}` : ""}`,
+    `- When: ${eventWhen(i.date, i.time)}`,
     `- People: ${i.quantity}`,
     `- Location: ${i.location}`,
     ...(i.requirements.length ? ["- Must have:", ...i.requirements.map((r) => `  - ${r}`)] : []),
