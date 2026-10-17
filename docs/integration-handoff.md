@@ -1,78 +1,53 @@
-# Integration handoff: buyer side → seller side
+# Integration handoff: engine (Yash) ⇄ brain, fleet, bench (Partner)
 
-From Yash (buyer) to Partner (seller). Status: **pre-event draft**. Nothing in §2–§4 is frozen
-until you confirm it in the protocol section of `CONTRACTS.md`.
+Contract: `packages/core/contracts.ts` **v1, frozen** (`5fd58c7`). The engine talks to the brain only
+through `Brain`, and to sellers only by email. Nothing in Partner's folders was modified.
+quote-broker code was reused with Partner's permission; every adapted file names its source
+(`AarnavAgrawal/quote-broker@8a68559`).
 
-## 1. Files you must not change
+## 1. Brain (`packages/brain`, Partner)
 
-`apps/mcp/`, `packages/core/`, `supabase/`, `fixtures/buyer/`, `scripts/verify-migrations.sh`,
-`scripts/fixtures/`, buyer sections of `CONTRACTS.md`. Ask for changes; I'll make them.
-I will not touch `apps/sellers/`, `apps/sell-cli/`, `apps/wall/`, `apps/raw-email-mcp/`.
+Publish a workspace package `@haggle/brain` exporting a class or factory that implements
+`Brain` from `@haggle/core/contracts`. Until then the engine uses `StubBrain`
+(`packages/engine/src/brain/stubBrain.ts`), which returns honest empty answers and learns nothing.
 
-## 2. What your seller replies must look like (PROPOSED)
+What the engine sends you:
+- `learnFromReply(businessId, parsed, meta)` after **every** parsed, authenticated reply. `parsed.items`
+  holds a `quote` (contract `Quote` without id/status) and/or `question`, `decline`, `payment_request`.
+  `meta` has `rfq_sent_at`, `received_at`, `channel`, `sender_trusted`, `request`, `simulated`.
+  Brain failures are logged and never block a deal.
+- `checkPrice(...)` for each priced quote in `get_quotes` (an `unknown` verdict is omitted).
+- `estimate(request)` for `ask`; `discover(category, area, count)` for `discover` and `deal(discover: true)`.
+- `negotiationHints` is not called yet (the counteroffer cites the best real quote).
 
-- **Reply in-thread** to the RFQ (use Primitive reply so `In-Reply-To`/`References` point at
-  our RFQ). The buyer only attaches an inbound message to a job when **all** hold:
-  1. it was delivered to that job's inbox (`job-<id>@<buyer domain>`),
-  2. its `In-Reply-To`/`References` contain a Message-ID we sent on that seller's thread,
-  3. the From address is the seller address we sent the RFQ to.
-  Anything else is quarantined (stored, not acted on).
-- **Send from the exact address we emailed.** Payment binding uses that address and its
-  domain. Primitive must report it authenticated (`analysis.sender.authenticated = true`,
-  DMARC-aligned) for anything financial. Unauthenticated quotes are kept but flagged and
-  cannot be paid.
-- **Agent sellers** attach `quote.json` (`application/json`) — schema in
-  `packages/core/src/protocol/quote-protocol.ts`. Amounts are decimal USD, ≤ 2 decimals.
-  Use requirement ids from `rfq.json` in `meets`. Set `revision` (1, 2, …) and `round` when
-  answering a `counter.json`. Include `valid_until`.
-- **Human-style sellers** send plain text or a PDF; no JSON needed.
-- **Questions**: just ask in the body (no JSON). We answer in-thread from job context or route
-  to the buyer agent.
-- **Declines**: say so in plain text; optional `quote.json` is not needed.
+Swap-in point (one line each): `apps/mcp/src/live.ts` and `packages/engine/src/mock.ts`
+(`brain: new StubBrain(...)` → your brain). `business_id` = `businessIdFor(email)` (D5).
 
-## 3. Payment challenge assumptions (PROPOSED)
+## 2. Seller fleet (`apps/sellers`, Partner)
 
-- After we email "you won" for a specific quote, the winning seller issues
-  `x402.createEmailChallenge({ from: <same seller address>, to: <job inbox>, amountUsdc: "<deposit>", network: "base-sepolia" })`
-  **in the same thread**.
-- Amount must equal the quoted `deposit_usd` (or total if no deposit). We refuse anything
-  larger than the human-approved amount or the 5 USDC demo cap.
-- We pay with `payEmailChallenge` and reply in-thread with `interaction.json`; Primitive
-  replies with the `receipt` step (`settle_tx`).
-- **Unconfirmed, test on day one:** both orgs use managed `*.primitive.email` subdomains — does
-  Primitive's DKIM alignment rule for x402 accept that, or does each side need its own custom
-  domain?
+Your Function must, per persona:
+- reply **from the address we emailed** (the engine trusts only that pinned address, checked with
+  `isTrustedSender` on DKIM/DMARC) and **in the RFQ thread**, to the job inbox `job-<code>@brave-dog.primitive.email`;
+- Bay Catering: attach `quote.json` (`haggle: "quote/1"`, `job_id` from our `rfq.json`, `total_usd`,
+  `deposit_usd: 5`, `requirements_met` using our requirement ids, `valid_until`); on our `counter.json`,
+  reply with a revised `quote.json` (`revision_of`); on our `accept.json`, call `createEmailChallenge`
+  (5 USDC, base-sepolia, `to` = the job inbox) in the same thread;
+- Harbor Table: a PDF with the deposit on page 2;
+- Mission Eats: a vague first reply, an exact total after our follow-up;
+- Golden Grill: 6 of 12 vegetarian; Sunset Kitchen: ask "need plates?" first; QuickQuote Deli: a payment link.
 
-## 4. Questions needing agreement
+The engine-side simulated fleet (`packages/engine/src/sim/fleet.ts`, mock mode only) shows the exact
+behaviour and the PROPOSED numbers; replace them with yours.
 
-1. Protocol amounts: decimal USD (current proposal) vs integer cents on the wire?
-2. Do agent sellers ever send unsolicited revisions, or only in response to `counter.json`?
-3. Does a seller challenge arrive only after our "won" email, or may it arrive with the quote?
-   (We hold early challenges until approval either way.)
-4. Market wall data: should we expose a read-only view (e.g. `public.wall_jobs`) of job
-   progress, or will the wall read seller-side data only?
-5. `rfq.json` `budget_hint_usd`: send it or not? (Default: not sent.)
+## 3. Bench (`apps/bench`, Partner)
 
-## 5. Shared DB tables
+Point the Manufact suites at the deployed MCP URL (after the preview deploy). Nine tools:
+`ask, discover, check_price, deal, wait_for_update, get_quotes, answer_seller, approve, pay`.
+The server ships `skill://haggle/SKILL.md`. Mock mode (`HAGGLE_MODE=mock`) is deterministic for local runs.
 
-Buyer tables are listed in `CONTRACTS.md` §1. They are service-role only (RLS, no policies);
-the seller Function must not read or write them. Seller-side tables (personas, menus) are
-yours to define in your own migration file with a distinct prefix (e.g. `seller_*`), reviewed
-by me before merge so migrations don't collide.
+## 4. Open shared items
 
-## 6. Integration test steps (once both sides exist)
-
-1. Buyer creates a job addressed to one seller-domain address.
-2. Seller Function replies with `quote.json` in-thread.
-3. Buyer `/inbound` receives it; `get_quotes` shows it with `source: quote_json`.
-4. Repeat with the six benchmark personas; compare to `fixtures/buyer/scenarios/offsite-lunch.json`
-   `expected_outcome`.
-5. Payment: approve → seller issues 5 USDC challenge → buyer pays → receipt with `settle_tx`.
-
-Buyer fixtures in `fixtures/buyer/emails/` show the exact message shapes the buyer expects;
-they are test data, not seller implementations.
-
-## 7. Blockers
-
-- Neither org's Primitive credentials or x402 entitlements exist yet.
-- Pre-event coding permission is unconfirmed; buyer product logic starts at kickoff.
+- Root `CLAUDE.md` still says `sender_verified` and lists 8 tools; the agreed wording (D1, D6) is in
+  `docs/v3-prekickoff-readiness.md` §6. Your uncommitted edit of `CLAUDE.md` is untouched.
+- `CONTRACTS.md` is v2 and superseded by `packages/core/contracts.ts`.
+- `fixtures/buyer/` (Pass 1, v2 persona names) lives in your folder; adopt, rename or remove.
