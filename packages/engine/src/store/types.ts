@@ -159,10 +159,16 @@ export interface PaymentRow {
   job_id: string;
   approval_id: string; // unique: one payment per approval
   business_id: string;
-  status: "awaiting_invoice" | "invoice_received" | "signed" | "sent" | "settled" | "rejected" | "expired" | "failed";
+  /** x402: awaiting_invoice → invoice_received → signed → sent → settled. Stripe: charging → settled | failed. */
+  status: "awaiting_invoice" | "invoice_received" | "signed" | "sent" | "settled" | "rejected" | "expired" | "failed" | "charging";
+  /** v5: "stripe" (test mode) or the v3 "x402" rail (migration 102). */
+  rail: "x402" | "stripe";
   amount_cents: number;
-  amount_base_units: string;
-  network: "base-sepolia";
+  amount_base_units: string; // x402: USDC base units; stripe: cents
+  network: "base-sepolia" | "stripe-test";
+  /** Stripe: the key sent with every charge attempt for this approval (never reused for another). */
+  idempotency_key: string | null;
+  stripe_payment_intent_id: string | null;
   challenge_json: string | null; // the business's interaction.json challenge
   challenge_step_id: string | null; // unique
   challenge_message_id: string | null;

@@ -29,7 +29,8 @@ insert into public.payments (id, job_id, approval_id, business_id, status, amoun
   values ('p1', 'job_live', 'ap1', 'biz_0123456789abcdef', 'awaiting_invoice', 500, '5000000', 'base-sepolia', false);
 
 select pg_temp.expect_fail('unknown job state', $$update public.jobs set state = 'ready' where id = 'job_live'$$);
-select pg_temp.expect_fail('payment cap above 10 USDC', $$update public.jobs set payment_cap_cents = 1001 where id = 'job_live'$$);
+-- 102: the x402 $10 ceiling moved onto x402 payment rows (see engine_stripe_assertions.sql).
+select pg_temp.expect_fail('payment cap above the hard ceiling', $$update public.jobs set payment_cap_cents = 1000001 where id = 'job_live'$$);
 select pg_temp.expect_fail('business snapshot changed', $$update public.job_businesses set email = 'evil@x.test' where job_id = 'job_live'$$);
 select pg_temp.expect_fail('uppercase snapshot email', $$insert into public.job_businesses (job_id, business_id, name, email, source, simulated, status) values ('job_live','biz_1111111111111111','X','Up@X.test','agent',false,'pending')$$);
 select pg_temp.expect_fail('duplicate inbound email', $$insert into public.messages (id, job_id, direction, kind, provider_email_id, parse_status) values ('m3','job_live','in','reply','em_1','none')$$);

@@ -44,7 +44,7 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
     makeRepo = backend === "postgres" ? () => { const r = new PostgresRepository(PG_URL!, { max: 2 }); pgRepos.push(r); return r; } : undefined;
   });
   it("deal → replies → follow-up → question → negotiation → Bay $995 wins → approval → x402 → DEMO receipt", async () => {
-    const { engine, fleet, clock, repo } = setup();
+    const { engine, fleet, clock, repo } = setup({ rail: "x402" }); // the v3 x402 rail (Stripe is covered in stripe.test.ts)
     const deal = await startDeal(engine);
     expect(deal).toMatchObject({ ok: true, mode: "mock", state: "collecting" });
     expect(deal.contacted).toHaveLength(6);
@@ -126,7 +126,7 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
   });
 
   it("a revision after approval voids the approval (no payment for a changed quote)", async () => {
-    const { engine, clock, repo } = setup();
+    const { engine, clock, repo } = setup({ rail: "x402" }); // $5 x402 cap
     const deal = await startDeal(engine);
     const ready = await runUntil(engine, clock, deal.job_id, (q) => q.ready);
     const harbor = ready.quotes.find((q) => q.business === "Harbor Table")!;

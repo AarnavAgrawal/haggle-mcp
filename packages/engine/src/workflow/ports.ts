@@ -8,6 +8,7 @@ import type { OutboundEmail, SendOutcome } from "../outbound/primitiveSender.ts"
 import type { QuoteExtraction } from "../parsing/extraction.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
 import type { PayerClient } from "../payments/x402Challenge.ts";
+import type { StripePort } from "../payments/stripe.ts";
 import type { MessageRow, Mode, Repository } from "../store/types.ts";
 
 export interface EmailPort {
@@ -81,6 +82,11 @@ export interface EngineDeps {
   attachments: AttachmentPort;
   brain: Brain;
   payer: PayerPort;
+  /**
+   * v5 payment rail: Stripe test mode (live) or its labelled simulation (mock). When present it is
+   * THE rail: approval no longer emails an x402 invoice request; pay() charges the approved deposit.
+   */
+  stripe?: StripePort;
   config: EngineConfig;
   now?: () => Date;
   /** Mock mode: deliver due simulated replies before each advance. */

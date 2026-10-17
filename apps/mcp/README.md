@@ -45,7 +45,7 @@ Set the live env vars in the Manufact dashboard and copy the MCP URL from it (do
 | `get_quotes` | deal-board | engine (deal board read model) |
 | `answer_business` | | engine |
 | `approve` | approval* | engine (human: client form or approval card; NO_HUMAN_CHANNEL otherwise; DEMO sim in mock) |
-| `pay` | | engine (refuses without the human approval; live payments disabled until Stripe test mode) |
+| `pay` | | engine: Stripe TEST MODE deposit (opt-in `HAGGLE_ENABLE_PAYMENTS=true`); exact approved quote + amount, cap, quoting payee, one charge per approval; simulated in mock |
 | `business_profile` | business-profile* | brain (optional `getProfile`) |
 | `open_haggle` `{}` | haggle-home* (global + thread entrypoints) | engine |
 | `settings.read` / `settings.update` | native | engine (cap ≤ operator ceiling) |

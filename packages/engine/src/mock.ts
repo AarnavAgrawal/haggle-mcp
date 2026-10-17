@@ -1,6 +1,7 @@
 // MOCK MODE wiring: the real engine over in-memory persistence, the simulated fleet (email and
-// Voice AI calls), the stand-in brain and a payer that builds real x402 steps with a stub signer
-// and no network. Like live Inkbox mode, every job shares one buyer mailbox. Everything it
+// Voice AI calls), the stand-in brain and a payment rail: by default a SIMULATED Stripe (v5; no
+// network, DEMO PaymentIntents), or the v3 x402 payer (real x402 steps, stub signer, no network)
+// with rail: "x402" or an explicit payer. Like live Inkbox mode, every job shares one buyer mailbox. Everything it
 // produces is labelled simulated / DEMO. Used by `HAGGLE_MODE=mock` and the end-to-end tests.
 import { createX402Client } from "@primitivedotdev/sdk/x402";
 import { StubBrain } from "./brain/stubBrain.ts";
@@ -10,12 +11,16 @@ import { HaggleEngine } from "./workflow/engine.ts";
 import { inlineAttachments, type EngineConfig, type PayerPort } from "./workflow/ports.ts";
 import type { Brain } from "@haggle/core/contracts";
 import type { PayerClient } from "./payments/x402Challenge.ts";
+import { simulatedStripe, type StripePort } from "./payments/stripe.ts";
 import type { Repository } from "./store/types.ts";
 
 export const MOCK_INBOX_DOMAIN = "mock.haggle.dev";
 export const MOCK_BUYER_INBOX = `haggle@${MOCK_INBOX_DOMAIN}`;
 
-export function createMockEngine(opts: { now?: () => Date; delayScale?: number; brain?: Brain; config?: Partial<EngineConfig>; repo?: Repository; phone?: boolean; personas?: Persona[]; payer?: PayerPort } = {}) {
+export function createMockEngine(opts: { now?: () => Date; delayScale?: number; brain?: Brain; config?: Partial<EngineConfig>; repo?: Repository; phone?: boolean; personas?: Persona[]; payer?: PayerPort; rail?: "stripe" | "x402"; stripe?: StripePort } = {}) {
+  // An explicit payer means the x402 rail (e.g. tests of the disabled live payer).
+  const rail = opts.rail ?? (opts.payer ? "x402" : "stripe");
+  const stripe = rail === "stripe" ? (opts.stripe ?? simulatedStripe()) : undefined;
   const now = opts.now ?? (() => new Date());
   const repo = opts.repo ?? new InMemoryRepository();
   const fleet = new SimFleet({ now, delayScale: opts.delayScale ?? 1, ...(opts.personas ? { personas: opts.personas } : {}) });
@@ -24,6 +29,7 @@ export function createMockEngine(opts: { now?: () => Date; delayScale?: number; 
     repo,
     email: fleet,
     ...(opts.phone === false ? {} : { phone: fleet }),
+    ...(stripe ? { stripe } : {}),
     extractor: fleet,
     attachments: inlineAttachments,
     brain: opts.brain ?? new StubBrain(fleetBusinesses(opts.personas)),
@@ -34,7 +40,7 @@ export function createMockEngine(opts: { now?: () => Date; delayScale?: number; 
     },
     config: {
       mode: "mock", inboxDomain: MOCK_INBOX_DOMAIN, sharedInbox: MOCK_BUYER_INBOX, collectionWindowMs: 10 * 60_000, negotiationWindowMs: 5 * 60_000,
-      approvalTtlMs: 30 * 60_000, globalPaymentCapCents: 500, maxRounds: 2, defaultSpendingCapCents: 150_000, spendingCapCeilingCents: 500_000, ...opts.config,
+      approvalTtlMs: 30 * 60_000, globalPaymentCapCents: rail === "stripe" ? 50_000 : 500, maxRounds: 2, defaultSpendingCapCents: 150_000, spendingCapCeilingCents: 500_000, ...opts.config,
     },
     now,
     onTick: async () => {
@@ -45,5 +51,5 @@ export function createMockEngine(opts: { now?: () => Date; delayScale?: number; 
     (msg, trustFor, o) => engine.ingest(msg, trustFor, o).then(async (r) => (r.jobId ? engine.advanceJob(r.jobId) : undefined)),
     (call) => engine.ingestCall(call).then(async (r) => (r.jobId ? engine.advanceJob(r.jobId) : undefined)),
   );
-  return { engine, fleet, repo };
+  return { engine, fleet, repo, stripe };
 }

@@ -276,7 +276,7 @@ async function approvalView(rt: Runtime, job_id: string, quote_id: string, statu
     status, channel: a?.channel ?? "none",
     ...(a ? { approval_id: a.approval_id, expires_at: a.expires_at } : {}),
     ...(b.payment ? { payment: b.payment } : {}),
-    ...(b.payment?.explorer_url ? { receipt_url: b.payment.explorer_url } : {}),
+    ...(b.payment?.receipt_url ? { receipt_url: b.payment.receipt_url } : b.payment?.explorer_url ? { receipt_url: b.payment.explorer_url } : {}),
     next: "", ...extra,
   };
 }
@@ -362,8 +362,9 @@ export const pay = server.tool(
     name: "pay",
     title: "Pay the approved deposit",
     description:
-      "Pay the deposit of a quote the human approved (test funds only). Refuses without a stored human approval for that exact quote, above the cap, or to a business that didn't quote. " +
-      "Never blocks: returns the payment status while settlement is pending; only a verified receipt means paid. Next: wait_for_update until paid.",
+      "Pay the deposit of a quote the human approved, by Stripe TEST MODE (no real money). The amount is always the approved deposit, never an input. " +
+      "Refuses without a stored human approval for that exact quote, above the spending cap, if the quote changed, or to a business that didn't quote; safe to retry (one charge per approval). " +
+      "Don't call it to ask for approval (use approve). Next: get_quotes shows the receipt; wait_for_update if it is still charging.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
     outputSchema: Approval,
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: true },
@@ -552,7 +553,7 @@ server.get("/health", async (c) => {
   const missing = missingLiveConfig();
   try {
     const rt = await getRuntime();
-    return c.json({ ok: true, service: "haggle-mcp", version: "0.5.0", mode: rt.mode, phone: rt.engine.phoneEnabled, brain: rt.engine.brainIsStub ? "stub" : "connected" });
+    return c.json({ ok: true, service: "haggle-mcp", version: "0.5.0", mode: rt.mode, phone: rt.engine.phoneEnabled, payments: rt.engine.paymentsEnabled ? "enabled" : "disabled", brain: rt.engine.brainIsStub ? "stub" : "connected" });
   } catch (e) {
     return c.json({ ok: false, service: "haggle-mcp", error: (e as Error).message, missing }, 503);
   }

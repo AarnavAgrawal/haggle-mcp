@@ -28,6 +28,7 @@ import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } f
 import { validateQuote } from "../parsing/validate.ts";
 import { verifyApproval } from "../approvals/verifyApproval.ts";
 import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
+import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
 import { rankQuotes, rejectReason, type RankableQuote } from "../ranking/rank.ts";
 import type { ApprovalRow, Channel, JobBusinessRow, JobRow, MessageRow, PaymentRow, QuoteRow, Repository, SettingsRow } from "../store/types.ts";
 import { quotePartToExtraction } from "./quotePart.ts";
@@ -128,7 +129,7 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
   business_names: Record<string, string>;
   businesses: BoardBusiness[];
   approval: EngineApprovalRecord | null;
-  payment: PaymentStatus | null;
+  payment: EnginePaymentStatus | null;
   ready: boolean;
   inbox: string;
   request: Request;
@@ -198,6 +199,9 @@ export class HaggleEngine {
     const replyBy = input.reply_by ? new Date(input.reply_by) : new Date(this.now().getTime() + this.d.config.collectionWindowMs);
     if (Number.isNaN(replyBy.getTime()) || replyBy <= this.now()) throw new EngineError("bad_deadline", "reply_by must be a future ISO time.", "Pass a future reply_by or omit it.", "deal");
 
+    // Stripe rail: the per-job payment cap is the settings spending cap, never above the operator's
+    // per-payment ceiling. x402 keeps its fixed testnet ceiling.
+    const paymentCapCents = this.d.stripe ? Math.min(this.d.config.globalPaymentCapCents, (await this.getSettings()).spending_cap_cents) : this.d.config.globalPaymentCapCents;
     let job: JobRow | null = null;
     for (let i = 0; i < 5 && !job; i++) {
       const code = newShortCode();
@@ -205,7 +209,7 @@ export class HaggleEngine {
       try {
         job = await this.repo.insertJob({
           id: newId("job"), short_code: code, state: "created", mode, request: input.request, budget_cents: budgetCents,
-          payment_cap_cents: this.d.config.globalPaymentCapCents, approver_email: input.approver_email ? normalizeAddress(input.approver_email) : null,
+          payment_cap_cents: paymentCapCents, approver_email: input.approver_email ? normalizeAddress(input.approver_email) : null,
           inbox: this.d.config.sharedInbox ?? jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.min(input.max_rounds ?? this.d.config.maxRounds, 2),
           collect_until: replyBy.toISOString(), ready: false, pay_intent: false, failure_reason: null,
           client_request_id: input.client_request_id ?? null, version: 0, created_at: at, updated_at: at,
@@ -492,11 +496,13 @@ export class HaggleEngine {
   private async sendAccept(job: JobRow) {
     const approval = await this.repo.getLatestApproval(job.id);
     if (!approval || approval.status !== "approved") return;
+    // Stripe rail: nothing is sent to the business and nothing is charged until the agent calls pay().
+    if (this.d.stripe) return;
     const quote = await this.repo.getQuote(approval.quote_id);
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === approval.business_id);
     if (!quote || !b) return;
     await this.repo.insertPayment({
-      id: newId("pay"), job_id: job.id, approval_id: approval.id, business_id: b.business_id, status: "awaiting_invoice",
+      id: newId("pay"), job_id: job.id, approval_id: approval.id, business_id: b.business_id, status: "awaiting_invoice", rail: "x402", idempotency_key: null, stripe_payment_intent_id: null,
       amount_cents: approval.payment_cents, amount_base_units: centsToUsdcBaseUnits(approval.payment_cents), network: "base-sepolia",
       challenge_json: null, challenge_step_id: null, challenge_message_id: null, challenge_trusted: false, challenge_thread_matched: false,
       pay_to: null, interaction_json: null, settle_tx: null, simulated: this.d.payer.simulated, reason: this.d.payer.disabledReason ?? null,
@@ -781,7 +787,7 @@ export class HaggleEngine {
     const a = await this.repo.getLatestApproval(job.id);
     if (a && a.quote_id === old.id && (a.status === "pending" || a.status === "approved")) {
       const pay = await this.repo.getPaymentForJob(job.id);
-      if (pay && ["signed", "sent", "settled"].includes(pay.status)) return; // money already moving; guard protects anyway
+      if (pay && ["signed", "sent", "settled", "charging"].includes(pay.status)) return; // money already moving; guard protects anyway
       await this.repo.transitionApproval(a.id, a.status, { status: "expired", decided_at: this.now().toISOString() });
       if (pay && ["awaiting_invoice", "invoice_received"].includes(pay.status)) await this.repo.transitionPayment(pay.id, ["awaiting_invoice", "invoice_received"], { status: "failed", reason: "quote_revised" });
       await this.repo.appendEvent(job.id, "approval_void", { approval_id: a.id, reason: "quote revised after approval" });
@@ -843,6 +849,10 @@ export class HaggleEngine {
   }
 
   private async processPayment(jobId: string) {
+    if (this.d.stripe) {
+      await this.processStripePayment(jobId);
+      return;
+    }
     const job = await this.repo.getJob(jobId);
     if (!job || job.state !== "paying") return;
     const pay = await this.repo.getPaymentForJob(jobId);
@@ -878,6 +888,78 @@ export class HaggleEngine {
     await this.repo.transitionApproval(pay.approval_id, "approved", { status: "used" });
     await this.repo.appendEvent(job.id, "payment", { status: "signed" });
     await this.sendPaymentStep(job, b, signed, prepared.interactionJson);
+  }
+
+  /**
+   * Stripe rail (v5). Charges only when the agent asked to pay (pay_intent) and the guard passes:
+   * exact approved quote and amount, approved + unexpired, under the cap, payee = the business that
+   * quoted from a trusted sender. One `charging` row per approval is written BEFORE Stripe is called
+   * (unique approval_id, so concurrent pays charge once); a crash or a retryable error leaves it
+   * `charging` and the next advance resumes with the SAME idempotency key, so Stripe never charges
+   * twice. Returns the refusal code when the guard said no (nothing was charged).
+   */
+  private async processStripePayment(jobId: string): Promise<{ refused?: StripeGuardCode }> {
+    const stripe = this.d.stripe!;
+    const job = await this.repo.getJob(jobId);
+    if (!job || job.state !== "paying") return {};
+    const approval = await this.repo.getLatestApproval(jobId);
+    if (!approval) return {};
+    let pay = await this.repo.getPaymentForJob(jobId);
+    if (pay && pay.approval_id === approval.id && pay.status !== "charging") return {};
+    // A `charging` row is resumed only after a recorded retryable failure, or when it is stale (a
+    // crash between insert and result). A fresh one is in flight in another call: don't call Stripe
+    // again (its idempotency key would dedupe, but we never rely on that alone).
+    if (pay && pay.approval_id === approval.id && pay.status === "charging" && !pay.reason?.startsWith("retryable:") && Date.now() - Date.parse(pay.updated_at) < 60_000) return {};
+    if (!pay || pay.approval_id !== approval.id) {
+      if (!job.pay_intent) return {};
+      const quote = await this.repo.getQuote(approval.quote_id);
+      const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === approval.business_id);
+      const verdict = checkStripePaymentAllowed({
+        stripeConfigured: true,
+        job: { id: job.id, state: job.state },
+        approval: { id: approval.id, job_id: approval.job_id, quote_id: approval.quote_id, business_id: approval.business_id, quote_total_cents: approval.quote_total_cents, payment_cents: approval.payment_cents, status: approval.status, expires_at: approval.expires_at },
+        quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
+        payee: b && quote ? { business_id: b.business_id, on_job: true, quoted_from_trusted_sender: quote.sender_trusted && quote.business_id === b.business_id } : null,
+        existingPayment: null,
+        spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, approval.cap_cents),
+        now: this.now(),
+      });
+      if (!verdict.ok) {
+        await this.repo.appendEvent(jobId, "payment_refused", { code: verdict.code, approval_id: approval.id });
+        return { refused: verdict.code };
+      }
+      const inserted = await this.repo.insertPayment({
+        id: newId("pay"), job_id: jobId, approval_id: approval.id, business_id: approval.business_id, status: "charging", rail: "stripe",
+        amount_cents: approval.payment_cents, amount_base_units: String(approval.payment_cents), network: STRIPE_NETWORK,
+        idempotency_key: `haggle-pay-${approval.id}`, stripe_payment_intent_id: null,
+        challenge_json: null, challenge_step_id: null, challenge_message_id: null, challenge_trusted: false, challenge_thread_matched: false,
+        pay_to: null, interaction_json: null, settle_tx: null, simulated: stripe.simulated, reason: null,
+      });
+      if (!inserted) return {}; // another pay() won the race; it charges
+      await this.repo.appendEvent(jobId, "payment", { status: "charging", rail: "stripe", simulated: stripe.simulated });
+      pay = inserted;
+    }
+    const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === pay!.business_id);
+    const r = await stripe.charge({
+      amountCents: pay.amount_cents, idempotencyKey: pay.idempotency_key!,
+      description: `Haggle deposit to ${b?.name ?? "business"} (job HG-${job.short_code})${stripe.simulated ? " [DEMO]" : " [TEST MODE]"}`,
+      metadata: { job_id: jobId, approval_id: pay.approval_id, quote_id: approval.quote_id, business_id: pay.business_id, business: b?.name ?? "" },
+    });
+    if (r.ok) {
+      const done = await this.repo.transitionPayment(pay.id, ["charging"], { status: "settled", stripe_payment_intent_id: r.paymentIntentId, reason: null });
+      if (done) {
+        await this.repo.transitionApproval(pay.approval_id, "approved", { status: "used" });
+        await this.repo.appendEvent(jobId, "payment", { status: "settled", rail: "stripe", payment_intent_id: r.paymentIntentId, simulated: done.simulated });
+      }
+    } else if (r.retryable) {
+      // Stays `charging` and marked resumable; the next advance retries with the same key.
+      await this.repo.transitionPayment(pay.id, ["charging"], { reason: `retryable:${r.reason}`.slice(0, 200), ...(r.paymentIntentId ? { stripe_payment_intent_id: r.paymentIntentId } : {}) });
+      this.log("stripe_charge_retry", { job_id: jobId, reason: r.reason });
+    } else {
+      await this.repo.transitionPayment(pay.id, ["charging"], { status: "failed", reason: r.reason.slice(0, 200), ...(r.paymentIntentId ? { stripe_payment_intent_id: r.paymentIntentId } : {}) });
+      await this.repo.appendEvent(jobId, "payment", { status: "failed", rail: "stripe", reason: r.reason.slice(0, 200) });
+    }
+    return {};
   }
 
   private async sendPaymentStep(job: JobRow, b: JobBusinessRow, pay: PaymentRow, bytes: Uint8Array) {
@@ -1008,7 +1090,7 @@ export class HaggleEngine {
       business_names: Object.fromEntries(businesses.map((b) => [b.business_id, b.name])),
       businesses: board,
       approval: approval ? approvalRecord(approval, job) : null,
-      payment: payment ? paymentStatus(payment) : job.state === "awaiting_approval" ? { status: "awaiting_approval", network: "base-sepolia", simulated: this.d.payer.simulated } : null,
+      payment: payment ? paymentStatus(payment) : job.state === "awaiting_approval" ? this.noPayment() : null,
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
       next: await this.nextHint(job),
     };
@@ -1108,15 +1190,23 @@ export class HaggleEngine {
     return ok;
   }
 
-  async pay(jobId: string, quoteId: string): Promise<PaymentStatus> {
+  async pay(jobId: string, quoteId: string): Promise<EnginePaymentStatus> {
     await this.advanceJob(jobId);
     const job = await this.loadJob(jobId);
     const approval = await this.repo.getLatestApproval(jobId);
     if (!approval || approval.quote_id !== quoteId) throw new EngineError("no_approval", "There's no human approval for that quote.", "Call approve(job_id, quote_id) first; the human must confirm.", "approve");
-    if (approval.status === "pending") return { status: "awaiting_approval", network: "base-sepolia", simulated: this.d.payer.simulated, reason: "the human hasn't approved yet" };
+    if (approval.status === "pending") return { ...this.noPayment(), reason: "the human hasn't approved yet" };
     if (approval.status === "declined" || approval.status === "expired") throw new EngineError("approval_" + approval.status, `The approval was ${approval.status}.`, "Request a new approval.", "approve");
     if (job.state !== "paying" && job.state !== "paid") throw new EngineError("not_payable", `Job is ${job.state}.`, "Wait for approval.", "wait_for_update");
     if (!job.pay_intent) await this.repo.touchJob(jobId, { pay_intent: true });
+    if (this.d.stripe) {
+      const { refused } = await this.processStripePayment(jobId);
+      if (refused) throw stripeRefusal(refused);
+      await this.advanceJob(jobId); // a settled charge moves the job to paid
+      const p = await this.repo.getPaymentForJob(jobId);
+      if (!p) throw new EngineError("payment_not_started", "The payment didn't start.", "Call get_quotes to check the job, then pay again.", "get_quotes");
+      return paymentStatus(p);
+    }
     const p0 = await this.repo.getPaymentForJob(jobId);
     if (p0?.status === "expired") {
       // The invoice expired before payment: ask once more for a fresh one (bounded by the idempotency key).
@@ -1127,10 +1217,22 @@ export class HaggleEngine {
     await this.d.onTick?.();
     await this.advanceJob(jobId);
     const p = await this.repo.getPaymentForJob(jobId);
-    return p ? paymentStatus(p) : { status: "awaiting_invoice", network: "base-sepolia", simulated: this.d.payer.simulated };
+    return p ? paymentStatus(p) : { status: "awaiting_invoice", rail: "x402", network: "base-sepolia", simulated: this.d.payer.simulated };
   }
 
   // ───────────────────────────── brain-backed (Partner's brain via the contract) ─────────────────────────────
+
+  /** Payment status before any payment row exists (rail-aware). */
+  private noPayment(): EnginePaymentStatus {
+    return this.d.stripe
+      ? { status: "awaiting_approval", rail: "stripe", network: STRIPE_NETWORK, simulated: this.d.stripe.simulated }
+      : { status: "awaiting_approval", rail: "x402", network: "base-sepolia", simulated: this.d.payer.simulated };
+  }
+
+  /** True when a payment rail can actually charge (Stripe configured, or a signing x402 payer). */
+  get paymentsEnabled(): boolean {
+    return this.d.stripe !== undefined || !this.d.payer.disabledReason;
+  }
 
   get brainIsStub(): boolean {
     return (this.d.brain as { stub?: boolean }).stub === true;
@@ -1247,6 +1349,25 @@ export class RetryLater extends Error {
   override name = "RetryLater";
 }
 
+const STRIPE_REFUSALS: Record<StripeGuardCode, [string, string, string]> = {
+  PAYMENT_DISABLED: ["Payments aren't enabled on this server (Stripe test mode is not configured). Nothing was charged.", "Ask the operator to enable Stripe test mode.", "get_quotes"],
+  APPROVAL_NOT_FOUND: ["There's no human approval for this payment.", "Call approve(job_id, quote_id); the human must confirm.", "approve"],
+  PAYMENT_IN_FLIGHT: ["A payment for this approval is already in progress.", "Call wait_for_update until it settles.", "wait_for_update"],
+  APPROVAL_PENDING: ["The human hasn't approved yet.", "Call wait_for_update, then pay again.", "wait_for_update"],
+  APPROVAL_DECLINED: ["The human declined this quote.", "Pick another quote.", "get_quotes"],
+  APPROVAL_EXPIRED: ["The approval expired or was already used.", "Call approve again for a fresh approval.", "approve"],
+  QUOTE_CHANGED: ["The quote changed after the human approved it.", "Call get_quotes, then approve the current quote.", "get_quotes"],
+  AMOUNT_MISMATCH: ["The amount no longer matches what the human approved.", "Call get_quotes, then approve again.", "get_quotes"],
+  OVER_SPEND_CAP: ["The deposit is over the spending cap.", "Lower the deposit with the business, or raise the cap in settings.", "get_quotes"],
+  JOB_NOT_READY: ["The job is not ready to pay.", "Call get_quotes to see its state.", "get_quotes"],
+  PAYEE_NOT_QUOTED: ["The payee isn't a business that quoted on this job from a verified sender.", "Pick a compliant quote from get_quotes.", "get_quotes"],
+};
+
+function stripeRefusal(code: StripeGuardCode): EngineError {
+  const [message, fix, next] = STRIPE_REFUSALS[code];
+  return new EngineError(`payment_refused_${code.toLowerCase()}`, message, fix, next);
+}
+
 function rejectToFlag(r: string) {
   const m: Record<string, import("@haggle/core/contracts").QuoteFlag> = {
     unavailable: "requirement_unmet", unverified_sender: "unverified_sender", external_payment_link: "external_payment_link", prompt_injection: "prompt_injection",
@@ -1266,8 +1387,29 @@ function approvalRecord(a: ApprovalRow, job: JobRow): EngineApprovalRecord {
   };
 }
 
-export function paymentStatus(p: PaymentRow): PaymentStatus {
-  const s: PaymentStatus = { status: p.status, amount_usd: centsToUsd(p.amount_cents), amount_usdc_base_units: p.amount_base_units, network: p.network, simulated: p.simulated };
+/**
+ * Contract PaymentStatus widened for the v5 Stripe rail (shared contracts stay untouched):
+ * rail + network "stripe-test", status "charging", the PaymentIntent and a test-dashboard receipt.
+ */
+export type EnginePaymentStatus = Omit<PaymentStatus, "status" | "network"> & {
+  status: PaymentStatus["status"] | "charging";
+  rail: PaymentRow["rail"];
+  network: PaymentRow["network"];
+  payment_intent_id?: string;
+  receipt_url?: string;
+};
+
+export function paymentStatus(p: PaymentRow): EnginePaymentStatus {
+  if (p.rail === "stripe") {
+    const s: EnginePaymentStatus = { status: p.status === "charging" ? "charging" : (p.status as PaymentStatus["status"]), rail: "stripe", network: "stripe-test", amount_usd: centsToUsd(p.amount_cents), simulated: p.simulated };
+    if (p.stripe_payment_intent_id) {
+      s.payment_intent_id = p.stripe_payment_intent_id;
+      if (p.status === "settled" && !p.simulated) s.receipt_url = `https://dashboard.stripe.com/test/payments/${p.stripe_payment_intent_id}`;
+    }
+    if (p.reason) s.reason = p.reason;
+    return s;
+  }
+  const s: EnginePaymentStatus = { status: p.status as PaymentStatus["status"], rail: "x402", amount_usd: centsToUsd(p.amount_cents), amount_usdc_base_units: p.amount_base_units, network: p.network, simulated: p.simulated };
   if (p.settle_tx) {
     s.settle_tx = p.settle_tx;
     if (!p.simulated && /^0x[0-9a-f]{64}$/i.test(p.settle_tx)) s.explorer_url = `https://sepolia.basescan.org/tx/${p.settle_tx}`;

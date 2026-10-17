@@ -185,7 +185,9 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
       await call("wait_for_update", { job_id: job, cursor, timeout_s: 1 });
     }
     expect(final.state).toBe("paid");
-    expect(final.payment).toMatchObject({ status: "settled", simulated: true });
+    expect(final.payment).toMatchObject({ status: "settled", simulated: true, rail: "stripe", network: "stripe-test" }); // simulated Stripe test-mode rail
+    expect(final.payment.payment_intent_id).toMatch(/^pi_DEMO/);
+    expect(final.payment.receipt_url).toBeUndefined(); // no dashboard link for a simulated charge
     expect(final.payment.explorer_url).toBeUndefined();
     expect(final.businesses.find((b: { name: string }) => b.name === "Bay Catering").status).toBe("won");
     const paidView = await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
