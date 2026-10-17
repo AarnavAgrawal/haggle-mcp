@@ -13,7 +13,7 @@
 // v5 additions: channel routing (A2A card > email > phone; a channel without an enabled port is
 // "unavailable", never faked), Voice AI call results via ingestCall, one shared Inkbox mailbox,
 // the deal-board read model, approval from the approval view, settings, and the launcher.
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type {
   ApprovalRecord, Business, DealResult, JobState, JobUpdate, PaymentStatus, Profile, Quote, QuotesResult, Request, WaitResult,
 } from "../contract.ts";
@@ -765,7 +765,25 @@ export class HaggleEngine {
 
   // ───────────────────────────── advance ─────────────────────────────
 
+  private readonly advancing = new Map<string, Promise<void>>();
+
+  /**
+   * One advance per job at a time. The webhook, every wait_for_update and the backup tick all call
+   * this; run concurrently, two of them parse the same reply (a slow LLM call) and store it twice:
+   * duplicate questions, duplicate quotes. Callers queue behind the running advance instead.
+   */
   async advanceJob(jobId: string): Promise<void> {
+    const prev = this.advancing.get(jobId) ?? Promise.resolve();
+    const run = prev.catch(() => {}).then(() => this.advanceJobOnce(jobId));
+    this.advancing.set(jobId, run);
+    try {
+      await run;
+    } finally {
+      if (this.advancing.get(jobId) === run) this.advancing.delete(jobId);
+    }
+  }
+
+  private async advanceJobOnce(jobId: string): Promise<void> {
     const first = await this.repo.getJob(jobId);
     if (!first || TERMINAL.has(first.state)) return;
     await this.pollA2a(first);
@@ -1275,7 +1293,18 @@ export class HaggleEngine {
     const text = answer.trim().slice(0, 2000);
     if (!text) throw new EngineError("empty_answer", "Answer is empty.", "Pass the answer text.", "answer_business");
     const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id)!;
-    const m = await this.sendRecorded(job, b, "answer", sendKeys.answer(q.id), { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\nThanks for asking. ${text}\n\nCould you send your full quote (total, deposit, delivery) when ready?` });
+    // The key covers the answer text: a retry of the same answer is idempotent, a corrected answer
+    // (after a refused send) is a new message rather than a reused key.
+    const key = `${sendKeys.answer(q.id)}:${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
+    let m: MessageRow | null;
+    try {
+      m = await this.sendRecorded(job, b, "answer", key, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\nThanks for asking. ${text}\n\nCould you send your full quote (total, deposit, delivery) when ready?` });
+    } catch (err) {
+      const detail = (err as Error).message;
+      if (/conversation_unhealthy|identical body/i.test(detail)) throw new EngineError("send_limited", `Inkbox held this message: ${b.name} already got the same text without replying.`, "Reword the answer (it must differ from what you sent), or wait for the business to reply.", "answer_business");
+      if (/\b(403|409|429)\b/.test(detail)) throw new EngineError("send_refused", `The email to ${b.name} wasn't sent (${detail.slice(0, 120)}).`, "Wait a minute and answer again with the same question_id.", "answer_business");
+      throw err;
+    }
     if (!(await this.repo.answerQuestion(q.id, text))) throw new EngineError("already_answered", "That question was already answered.", "Wait for the business's quote.", "wait_for_update");
     await this.repo.updateBusiness(jobId, b.business_id, { status: "contacted" });
     await this.repo.appendEvent(jobId, "reply", { business_id: b.business_id, summary: `Answered ${b.name}'s question` });
