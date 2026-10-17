@@ -22,6 +22,9 @@ const inkbox = new Inkbox();
 const tunnel = process.env.SELLERS_TUNNEL ?? "bay-catering-sf";
 const publicUrl = (process.env.SELLERS_PUBLIC_URL ?? `https://${tunnel}.inkboxwire.com`).replace(/\/$/, "");
 const voice = process.env.MISSION_EATS_VOICE ?? "ara";
+/** Optional: a consenting person's phone (E.164) that plays Mission Eats instead of Voice AI. */
+const humanPhone = process.env.MISSION_EATS_PHONE?.replace(/[^\d+]/g, "") || undefined;
+if (humanPhone && !/^\+\d{10,15}$/.test(humanPhone)) throw new Error(`MISSION_EATS_PHONE must be E.164, e.g. +16505550123 (got ${humanPhone})`);
 
 async function ensureIdentity(p: Persona): Promise<AgentIdentity> {
   try {
@@ -42,7 +45,11 @@ async function main() {
     const rec: IdentityRecord = { ...registry[p.handle], identityId: id.id };
     if (id.emailAddress) rec.email = id.emailAddress;
 
-    if (p.channel === "phone") {
+    if (p.channel === "phone" && humanPhone) {
+      // A person plays this business on their own phone (PLAN §12 demo); no Inkbox number needed.
+      rec.phone = humanPhone;
+      console.log(`  answered by a person at ${humanPhone} (MISSION_EATS_PHONE)`);
+    } else if (p.channel === "phone") {
       // Persona first: it's identity-level, so it applies as soon as a number is attached.
       await id.setHostedAgentConfig({ voice, instructions: phoneInstructions(p) });
       try {

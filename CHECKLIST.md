@@ -47,7 +47,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 - [ ] **Business learning:** every reply (any channel) updates a business profile
   - Status: `brain.learnFromReply` built and tested (email, phone, A2A, questions, negotiation; Supabase/file/memory stores). Left: engine calls it after each parsed reply
 - [ ] **Phone and A2A sellers:** Voice AI persona answering calls; A2A agent-ready business
-  - Status: built (Mission Eats Voice AI instructions + number in setup; Bay Catering A2A skill, tasks answered with quote.json). Left: live setup and a real call
+  - Status: live on Inkbox: Bay Catering A2A card + 4 email sellers with signed webhooks; Mission Eats = Aarnav's cell for the demo (Voice AI persona configured, needs a 2nd number). Left: run the seller server with a tunnel, first real call
 - [ ] **Brain features:** instant estimates, price check, negotiation hints, discovery with channels
   - Status: built and tested on seeded history; `ask`, `check_price`, `discover`, `business_profile` call the real brain. Left: verify from Claude Code
 - [ ] **Other views:** approval card, estimates, business profile
@@ -70,7 +70,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 ## Blockers
 
-- Aarnav needs `INKBOX_API_KEY` (and `ANTHROPIC_API_KEY`) in `.env` to create seller identities and go live.
+- Inkbox plan allows 1 phone number. It's on the buyer identity `haggle-buyer` (+1 209-980-9489; handle `haggle` was taken). Mission Eats is played by Aarnav on his cell (`MISSION_EATS_PHONE`). Ask Inkbox for a 2nd number so the Voice AI persona can answer unattended benchmark runs.
 - Yash: please review `packages/core` (contracts + view schemas, on `aarnav`) and replace the fixture handlers in `apps/mcp/index.ts` with the engine.
 
 ## Log
