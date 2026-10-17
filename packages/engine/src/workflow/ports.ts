@@ -32,6 +32,36 @@ export interface PhonePort {
   placeCall(req: PhoneCallRequest): Promise<{ callId: string }>;
 }
 
+/** One agent message on an A2A task (the seller's side): readable text + structured data parts. */
+export interface A2AAgentMessage {
+  messageId: string;
+  text: string;
+  data: Record<string, unknown>[];
+}
+
+export interface A2ATaskView {
+  taskId: string;
+  contextId: string;
+  /** submitted | working | input_required | completed | failed | canceled | rejected | unknown */
+  state: string;
+  agentMessages: A2AAgentMessage[];
+}
+
+/**
+ * Buyer-to-seller A2A tasks (Inkbox A2A 1.0). Haggle only sends to a business's PINNED Agent Card
+ * URL; results come back on that task (webhook a2a.sent_task.updated, or getTask polling).
+ */
+export interface A2APort {
+  /** Start a task, or continue one (contextId + taskId) for a counteroffer. `messageId` makes resends idempotent. */
+  send(req: { cardUrl: string; text: string; data: Record<string, unknown>; messageId: string; contextId?: string; taskId?: string }): Promise<{ taskId: string; contextId: string; state: string }>;
+  getTask(req: { cardUrl: string; taskId: string }): Promise<A2ATaskView>;
+}
+
+/** iMessage from the buyer identity: approval requests to the settings approver only. */
+export interface IMessagePort {
+  send(req: { to: string; text: string; idempotencyKey: string }): Promise<{ messageId: string }>;
+}
+
 export interface ExtractorPort {
   extract(input: { request: ExtractionRequest; bodyText: string; pdfs: PdfFile[]; message: MessageRow }): Promise<QuoteExtraction>;
 }
@@ -71,6 +101,11 @@ export interface EngineConfig {
    * (mock mode). Live mode sets it to the simulated fleet + HAGGLE_ALLOWED_RECIPIENTS.
    */
   recipientAllowlist?: string[];
+  /**
+   * Calls a business places TO Haggle are matched by caller number. Caller ID can be spoofed, so such
+   * transcripts are trusted (can become a quote) only when the operator opts in. Default: false.
+   */
+  trustInboundCallerId?: boolean;
 }
 
 export interface EngineDeps {
@@ -78,6 +113,10 @@ export interface EngineDeps {
   email: EmailPort;
   /** Optional: Voice AI calls (mock: simulated fleet; live: only when explicitly enabled). */
   phone?: PhonePort;
+  /** Optional: A2A tasks to agent-ready businesses (mock: simulated fleet; live: only when enabled). */
+  a2a?: A2APort;
+  /** Optional: iMessage approval requests (live: only when enabled). */
+  imessage?: IMessagePort;
   extractor: ExtractorPort;
   attachments: AttachmentPort;
   brain: Brain;

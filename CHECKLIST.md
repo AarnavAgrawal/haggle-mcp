@@ -32,16 +32,16 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
   - Status: deal board read model returned by get_quotes/open_haggle (channels, statuses, eligibility, negotiation, questions); renders in the existing deal-board view (screenshot). Live board validated against DealBoard on the hosted server (1 quote, mode live, bound to deal-board). Six-quote size not yet measured live.
 - [ ] **Phone calls:** Voice AI calls businesses; call transcripts become quotes
   - Done when: `placeCall` with a `reason` that says it's an AI assistant; `call.ended` transcript becomes a `Quote` with `channel: "phone"`; `503` is retried
-  - Status: routing, ingestCall and transcript parsing done; simulated call in mock mode. Live Inkbox port built but off (HAGGLE_ENABLE_CALLS) pending approval.
+  - Status: built + tested (branch yashnil-channels): HOSTED_AGENT call with an "AI assistant" reason, 503 retried, origin = own number or Inkbox's shared iMessage line (`haggle` has no number), abridged `call.ended` transcripts replaced by the full transcript, inbound calls matched by caller number (untrusted unless HAGGLE_TRUST_INBOUND_CALLER_ID). Not placed live: needs Yash's go-ahead + an authorized number on the allowlist.
 - [ ] **A2A:** agent-ready businesses get a task and return a structured quote
   - Done when: Bay Catering's Agent Card gets a task and its result becomes a `Quote` with `channel: "a2a"`
-  - Status: not started
+  - Status: built + tested (branch yashnil-channels): RFQ task to the pinned card, result via a2a.sent_task.updated or polling, seller `haggle.quote.v1` data → Quote (channel a2a, source "a2a task"), counter in the same context. Live attempt from `haggle` → Bay (job_9a5f8491d69c498782fd): Inkbox A2A RPC 403, blocked by `haggle`'s A2A whitelist (0 rules; adding rules is admin-only).
 - [ ] **Conversation handling:** follow-ups (email, then call), answering business questions, one negotiation round
   - Done when: unanswered email triggers a call; `answer_business` replies in-thread; a counter cites a real competing quote
   - Status: email follow-up, answer_business and one honest negotiation round work (mock). Email→call escalation not built.
 - [ ] **Approval and payment:** iMessage or in-view approval, then capped Stripe payment
   - Done when: `pay` refuses without a stored approval for that exact quote, over the cap, or to a non-quoting payee; a test-mode charge returns a `receipt_url`
-  - Status: approval by client form or approval card (email approval removed: Inkbox can't verify outside senders). Live payments disabled until Stripe; mock still simulates x402. iMessage and Stripe not built; x402-sized caps in 100_engine_core.sql need a Stripe migration.
+  - Status: approval by client form or approval card (email approval removed: Inkbox can't verify outside senders). Live payments disabled until Stripe; mock still simulates x402. Stripe test mode on `main` (off). iMessage approval built + tested (branch yashnil-channels): "Reply YES <code>" to the settings approver only, group/forged/no-code ignored, deduped, card fallback. Not sent live: needs Yash's go-ahead + the approver texting `connect @haggle`.
 - [ ] **ChatGPT app features:** launcher entrypoint, settings (cap, approver, area), mentions
   - Status: open_haggle({}), native settings and mentions registered; launcher entrypoints bound to Aarnav's `views/launcher` on `main`. Not tested in ChatGPT.
 - [ ] **Agent polish:** helpful errors, Skill, `llms.txt`, publishing checks, works across clients
@@ -84,6 +84,9 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 ## Blockers
 
 - Yash: ChatGPT check needs a human: add https://calm-spark-ck3qm.run.mcp-use.com/mcp as a developer-mode app, then `get_quotes job_id=job_512a5d0265b144ed9337`.
+- Yash (Inkbox dashboard, admin): on `haggle` add an outbound A2A allow rule for `@bay-catering-sf` (filter mode is whitelist with 0 rules → A2A RPC 403). Aarnav may need an inbound allow for `@haggle` on Bay (cross-org).
+- Aarnav: migration 200 leaves `brain_profiles` without grants → Supabase REST 403 (42501) for the service key. Needs `grant select, insert, update, delete on public.brain_profiles to service_role;` in a 2xx migration. Until then the brain can't use Supabase (the server now logs it instead of crashing).
+- Shared: three quote.json shapes (v3 `quote/1`, CONTRACTS `haggle.v0`, sellers `haggle.quote.v1`); the engine accepts all three on yashnil-channels. Pick one in CONTRACTS.md.
 - Team: one Inkbox org. The buyer `haggle` (Yash's agent-scoped key) is in Yash's org; Aarnav's sellers and `haggle-buyer` (+ the one phone number) are in Aarnav's. Same-org sellers are required for pinned-org reply trust: run `apps/sellers` setup in Yash's org, or move the buyer.
 - Inkbox plan allows 1 phone number (on `haggle-buyer`, Aarnav's org). Mission Eats is played by Aarnav on his cell (`MISSION_EATS_PHONE`). Ask Inkbox for a 2nd number so the Voice AI persona can answer unattended benchmark runs.
 - Hosted calm-spark still runs the pre-integration `yashnil` build in live mode, whose fleet is 2 addresses: a chat asking it for the six-seller demo contacts only those two (job_f306c56c207c4f7eb8d6: no quotes; Golden Grill unverified across orgs, test seller deleted). Run the six-seller demo on a local mock server until calm-spark is redeployed from `main` (live DB already has migrations 100/101/102/200).
@@ -93,6 +96,8 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 16:30 · Yash · Channels on `yashnil-channels`: A2A buyer tasks (live attempt → 403 diagnosed), Voice AI call origin/retry/full transcripts/inbound callers, iMessage approval, quote.json v5 shapes, brain start-up no longer crashes the server; SUPABASE_URL typo fixed locally
 
 - 3:04 PM · Yash · `main` fast-forwarded to `yashnil-stripe` (Stripe test-mode deposits); `scripts/test-postgres.sh` runs on npm; discovery says when fewer businesses than requested are available and live responses are tagged [LIVE]; 263 tests + 168 engine tests on Postgres; six-seller mock flow verified through deal(discover) to paid
 - 2:45 PM · Yash · v5 integration: yashnil + aarnav merged on one v5 core (agreed reconciliation), npm workspaces; engine teaches the real brain through `BrainAdapter` (directory ids, trusted senders only); view tools return the shared schemas; approval card/deal board approve via `approve_in_view`; x402 test fixtures no longer expire; 250 tests pass; cold deal + warm ask verified through the mcp-use client, deal board and estimates screenshots

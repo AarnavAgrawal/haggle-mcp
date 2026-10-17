@@ -168,6 +168,9 @@ export class PostgresRepository implements Repository {
   async getLatestApproval(jobId: string) {
     return row<ApprovalRow>((await this.sql`select * from approvals where job_id = ${jobId} order by created_at desc, id desc limit 1`)[0]);
   }
+  async listPendingApprovalsByChannel(channel: ApprovalRow["channel"]) {
+    return rows<ApprovalRow>(await this.sql`select * from approvals where status = 'pending' and channel = ${channel} order by created_at desc`);
+  }
   async listPendingApprovalCandidates(q: { shortCodes: string[]; threadId: string | null; messageIds: string[] }) {
     const ids = q.messageIds.map(norm);
     const codes = q.shortCodes.map((c) => c.toUpperCase());

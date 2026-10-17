@@ -1,7 +1,8 @@
-// POST /webhooks/inkbox for the buyer identity (mail + call.ended): verify the signature on the RAW
-// body first, then one idempotent ingest. Unknown event types are acknowledged and ignored.
+// POST /webhooks/inkbox for the buyer identity (mail, call.ended, imessage.received,
+// a2a.sent_task.updated): verify the signature on the RAW body first, then one idempotent ingest.
+// Unknown event types are acknowledged and ignored.
 // Kept free of the HTTP framework so the route can be tested with Inkbox fakes.
-import { inkboxCallEnded, inkboxSenderTrust, inkboxToInbound, RetryLater, trustForSender, verifyInkboxWebhook } from "@haggle/engine";
+import { inkboxCallEnded, inkboxIMessageReceived, inkboxSenderTrust, inkboxToInbound, RetryLater, trustForSender, verifyInkboxWebhook } from "@haggle/engine";
 import type { Runtime } from "./runtime.ts";
 
 export type WebhookResult = { status: 200 | 400 | 401 | 404 | 503; body: Record<string, unknown>; jobId?: string | null; outcome?: string };
@@ -28,7 +29,17 @@ export async function handleInkboxWebhook(rt: Runtime, raw: string, headers: Hea
       }
     } else if (payload.event_type === "call.ended") {
       const call = inkboxCallEnded(payload);
-      if (call) ({ jobId, outcome } = await rt.engine.ingestCall(call));
+      if (call) {
+        // The inline transcript can be cut in the middle (where the price often is): fetch the full one.
+        if (call.abridged && call.outcome === "completed" && rt.inkbox.transcript) call.transcript = await rt.inkbox.transcript(call.callId);
+        ({ jobId, outcome } = await rt.engine.ingestCall(call));
+      }
+    } else if (payload.event_type === "imessage.received") {
+      const m = inkboxIMessageReceived(payload);
+      if (m) ({ jobId, outcome } = await rt.engine.ingestIMessage(m));
+    } else if (payload.event_type === "a2a.sent_task.updated") {
+      const taskId = (payload.data as { task_id?: string }).task_id;
+      if (taskId) ({ jobId, outcome } = await rt.engine.ingestA2aTask(taskId));
     }
     if (jobId) void rt.engine.advanceJob(jobId).catch((e) => console.error(JSON.stringify({ level: "error", event: "advance_failed", requestId, error: (e as Error).message })));
     console.log(JSON.stringify({ level: "info", event: "inkbox_webhook", requestId, type: payload.event_type, outcome, job_id: jobId }));

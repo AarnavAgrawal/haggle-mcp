@@ -13,7 +13,7 @@ import { registerLiveFactory, type Runtime } from "./runtime.ts";
 const TICK_MS = 30_000;
 
 registerLiveFactory(async (env): Promise<Runtime> => {
-  const { api, buyerMailbox, phone } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
+  const { api, buyerMailbox, phone, a2a, imessage, transcript, callOrigin } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
 
   // Only the explicitly configured simulated fleet is offered by discover (never arbitrary businesses).
   const fleet = parseFleet(env.HAGGLE_DEMO_FLEET).map((b) => ({
@@ -27,7 +27,14 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const capMax = stripe ? 1_000_000 : 1000;
   const ceiling = Number(env.HAGGLE_SPENDING_CAP_CEILING_CENTS ?? "500000");
   const repo = new PostgresRepository(env.SUPABASE_DB_URL!);
-  const callsEnabled = env.HAGGLE_ENABLE_CALLS === "true";
+  // Each outbound channel is OFF unless explicitly enabled (real calls / iMessages / A2A tasks need
+  // Yash's go-ahead). A2A cards and phone numbers must still be on the recipient allowlist; iMessage
+  // only ever goes to the settings approver.
+  const phonePort = env.HAGGLE_ENABLE_CALLS === "true" ? phone() : null;
+  const callsEnabled = phonePort !== null;
+  if (env.HAGGLE_ENABLE_CALLS === "true" && !phonePort) console.error(JSON.stringify({ level: "warn", event: "calls_unavailable", reason: "the buyer identity has no phone number and iMessage is off" }));
+  const a2aPort = env.HAGGLE_ENABLE_A2A === "true" ? a2a() : null;
+  const imessagePort = env.HAGGLE_ENABLE_IMESSAGE === "true" ? imessage() : null;
   // Never contact arbitrary businesses: only the simulated fleet and explicitly allowed recipients.
   const allowAny = env.HAGGLE_ALLOW_ANY_RECIPIENT === "true";
   const allowlist = [...fleet.map((b) => b.email), ...(env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
@@ -40,7 +47,9 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const engine = new HaggleEngine({
     repo,
     email: inkboxEmail(api, buyerMailbox),
-    ...(callsEnabled ? { phone: phone() } : {}),
+    ...(phonePort ? { phone: phonePort } : {}),
+    ...(a2aPort ? { a2a: a2aPort } : {}),
+    ...(imessagePort ? { imessage: imessagePort } : {}),
     extractor: claudeExtractor({ apiKey: env.ANTHROPIC_API_KEY!, model: env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }),
     attachments: inkboxAttachments(api, buyerMailbox),
     brain,
@@ -51,6 +60,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       approvalTtlMs: 30 * 60_000, globalPaymentCapCents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : stripe ? 50_000 : 500, maxRounds: 2,
       defaultSpendingCapCents: 150_000, spendingCapCeilingCents: Number.isInteger(ceiling) && ceiling > 0 ? ceiling : 500_000,
       ...(allowAny ? {} : { recipientAllowlist: allowlist }),
+      trustInboundCallerId: env.HAGGLE_TRUST_INBOUND_CALLER_ID === "true",
     },
     log: (event, data) => console.log(JSON.stringify({ level: "info", event, ...data })),
   });
@@ -58,6 +68,6 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   setInterval(() => {
     void repo.listOpenJobs().then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
   }, TICK_MS).unref();
-  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, payments: stripe ? "stripe-test" : "disabled", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
-  return { mode: "live", engine, brain, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust } };
+  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, payments: stripe ? "stripe-test" : "disabled", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
+  return { mode: "live", engine, brain, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript } };
 });

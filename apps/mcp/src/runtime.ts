@@ -11,7 +11,7 @@ export type Runtime = {
   /** Mock mode: the simulated fleet's delivery pump (the engine also pumps on every wait). */
   tick?: () => Promise<number>;
   /** Live mode: the Inkbox buyer identity and its webhook signing key. */
-  inkbox?: { api: InkboxMailApi; buyerMailbox: string; webhookSecret: string; senderTrust: InkboxTrustPolicy };
+  inkbox?: { api: InkboxMailApi; buyerMailbox: string; webhookSecret: string; senderTrust: InkboxTrustPolicy; transcript?: (callId: string) => Promise<string> };
   missing: string[];
 };
 

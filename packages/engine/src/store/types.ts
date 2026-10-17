@@ -252,6 +252,8 @@ export interface Repository {
   getApproval(id: string): Promise<ApprovalRow | null>;
   getLatestApproval(jobId: string): Promise<ApprovalRow | null>;
   listPendingApprovalCandidates(q: { shortCodes: string[]; threadId: string | null; messageIds: string[] }): Promise<(ApprovalRow & { short_code: string; approver_email: string })[]>;
+  /** Pending approvals on one human channel (e.g. iMessage), across jobs. */
+  listPendingApprovalsByChannel(channel: ApprovalRow["channel"]): Promise<ApprovalRow[]>;
   /** CAS on status. */
   transitionApproval(id: string, from: ApprovalRow["status"], patch: Partial<ApprovalRow>): Promise<boolean>;
   updateApproval(id: string, patch: Partial<ApprovalRow>): Promise<void>;

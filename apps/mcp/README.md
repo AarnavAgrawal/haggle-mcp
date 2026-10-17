@@ -20,7 +20,10 @@ call), simulated approval and payment, and every response says `[DEMO]` / `mode:
 
 `HAGGLE_MODE=live` needs `INKBOX_API_KEY`, `INKBOX_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY`, `SUPABASE_DB_URL`
 (see `/.env.example`), and refuses to start partially. Live mode emails only `HAGGLE_DEMO_FLEET` +
-`HAGGLE_ALLOWED_RECIPIENTS`; phone calls stay off unless `HAGGLE_ENABLE_CALLS=true`.
+`HAGGLE_ALLOWED_RECIPIENTS`; phone calls, A2A tasks and iMessage approvals stay off unless
+`HAGGLE_ENABLE_CALLS` / `HAGGLE_ENABLE_A2A` / `HAGGLE_ENABLE_IMESSAGE` are `true`. After deploying a
+server that handles them, add the channel events to the webhook subscription:
+`node packages/engine/scripts/inkbox-channel-events.ts apps/mcp/.env --confirm`.
 Point the buyer identity's Inkbox webhook subscription (`message.received`, `call.ended`) at
 `POST <public url>/webhooks/inkbox`.
 
@@ -44,7 +47,7 @@ Set the live env vars in the Manufact dashboard and copy the MCP URL from it (do
 | `wait_for_update` | | engine (≤ 60 s long-poll, cursor) |
 | `get_quotes` | deal-board | engine (deal board read model → shared `DealBoard`, `src/views.ts`) |
 | `answer_business` | | engine |
-| `approve` | approval | engine (human: client form or approval card; NO_HUMAN_CHANNEL otherwise; DEMO sim in mock) |
+| `approve` | approval | engine (human: client form, iMessage "YES <code>" to the settings approver, or the approval card; NO_HUMAN_CHANNEL otherwise; DEMO sim in mock) |
 | `pay` | payment (same card) | engine: Stripe TEST MODE deposit (opt-in `HAGGLE_ENABLE_PAYMENTS=true`); exact approved quote + amount, cap, quoting payee, one charge per approval; simulated in mock |
 | `business_profile` | business-profile | brain.getProfile |
 | `open_haggle` `{}` | launcher (global + thread entrypoints) | engine |

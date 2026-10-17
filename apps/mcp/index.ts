@@ -279,10 +279,11 @@ export const approve = server.tool(
       const canForm = ctx.client.can("elicitation");
       const canView = approveHasView && ctx.client.extension("io.modelcontextprotocol/ui") !== undefined;
       await engine.loadJob(job_id); // job_not_found before anything else
-      // Email approval is off in v5 live mode: Inkbox only verifies Inkbox identities, so an outside
-      // approver's reply could never be trusted. iMessage approval replaces it (9 PM item).
-      const channel = canForm ? "elicitation" : canView ? "view" : mode === "mock" ? "simulated" : null;
-      if (!channel) return fail(mode, "NO_HUMAN_CHANNEL", "No way to reach a human approver: this client shows neither an approval card nor an approval form.", "Approve from a client that shows forms (e.g. Claude Code) or the approval card (ChatGPT/Claude once the approval view ships).", "get_quotes");
+      // Email approval is off in v5 live mode (Inkbox only verifies Inkbox identities). iMessage to the
+      // settings approver ("Reply YES <code>") is used when enabled; the approval card works alongside it.
+      const canIMessage = engine.imessageEnabled && Boolean((await engine.getSettings()).approver_phone);
+      const channel = canForm ? "elicitation" : canIMessage ? "imessage" : canView ? "view" : mode === "mock" ? "simulated" : null;
+      if (!channel) return fail(mode, "NO_HUMAN_CHANNEL", "No way to reach a human approver: this client shows neither an approval card nor an approval form, and iMessage approval isn't set up.", "Approve from a client that shows forms (e.g. Claude Code) or the approval card, or set the approver phone in settings with iMessage enabled.", "get_quotes");
       const approval = await engine.requestApproval(job_id, quote_id, channel);
       const summary = `${usd(approval.quote_total_cents / 100)} total, pay ${usd(approval.payment_cents / 100)} deposit now`;
       if (approval.status === "approved") return ok(await approvalView(rt, job_id, quote_id, "approved", { next: "Call pay(job_id, quote_id)." }), `Approved (${summary}). next: pay(job_id, quote_id)`);
@@ -308,6 +309,15 @@ export const approve = server.tool(
       if (channel === "simulated") {
         await engine.decideApproval(approval.id, "approve", "simulated", "DEMO simulated human");
         return ok(await approvalView(rt, job_id, quote_id, "approved", { demo: "DEMO MODE: simulated human approval (this client has no approval card or form)", next: "Call pay(job_id, quote_id)." }), `Approved by a SIMULATED human (${summary}). next: pay(job_id, quote_id)`);
+      }
+      if (channel === "imessage") {
+        // The human replies "YES <code>" to the iMessage; the card (if shown) can approve with the same code.
+        const sent = await engine.approvalIMessageSent(approval.id);
+        const next = sent
+          ? "Waiting for the approver to reply YES on iMessage (or tap Approve on the card). Call wait_for_update."
+          : "The iMessage couldn't be sent (has the approver texted `connect @haggle`?). Approve on the card, or fix iMessage and call approve again.";
+        const v = await approvalView(rt, job_id, quote_id, "pending_human", { next, ...(sent ? {} : { reason: "imessage_not_sent" }) });
+        return ok(v, `${sent ? "Approval request sent to the approver by iMessage" : "iMessage approval request NOT sent"} (${summary}). next: ${next}`, canView ? { "haggle/approval": { approval_id: approval.id, code: approval.code } } : undefined);
       }
       if (channel === "view") {
         // The code goes only to the view (_meta), never to model-visible content. The human taps Approve.
@@ -401,7 +411,8 @@ export const discover = server.tool(
       const found = await rt.engine.discover(category, await areaOr(rt, area), count);
       const businesses = found.map((b) => {
         const phone = (b as { phone?: string }).phone;
-        return { business_id: b.business_id, name: b.name, ...(b.email ? { email: b.email } : {}), ...(phone ? { phone } : {}), best_channel: b.email ? "email" : phone ? "phone" : "a2a", simulated: b.simulated, source: b.source, ...(b.found_at ? { found_at: b.found_at } : {}) };
+        const card = (b as { a2a_card_url?: string }).a2a_card_url;
+        return { business_id: b.business_id, name: b.name, ...(b.email ? { email: b.email } : {}), ...(phone ? { phone } : {}), ...(card ? { a2a_card_url: card } : {}), best_channel: card && rt.engine.a2aEnabled ? "a2a" : b.email ? "email" : phone ? "phone" : "a2a", simulated: b.simulated, source: b.source, ...(b.found_at ? { found_at: b.found_at } : {}) };
       });
       const fewer = fewerFound(rt.mode, businesses.length, count);
       return ok(
@@ -524,7 +535,7 @@ server.get("/health", async (c) => {
   const missing = missingLiveConfig();
   try {
     const rt = await getRuntime();
-    return c.json({ ok: true, service: "haggle-mcp", version: "0.5.0", mode: rt.mode, phone: rt.engine.phoneEnabled, payments: rt.engine.paymentsEnabled ? "enabled" : "disabled", brain: rt.engine.brainIsStub ? "stub" : "connected" });
+    return c.json({ ok: true, service: "haggle-mcp", version: "0.5.0", mode: rt.mode, phone: rt.engine.phoneEnabled, a2a: rt.engine.a2aEnabled, imessage: rt.engine.imessageEnabled, payments: rt.engine.paymentsEnabled ? "enabled" : "disabled", brain: rt.engine.brainIsStub ? "stub" : "connected" });
   } catch (e) {
     return c.json({ ok: false, service: "haggle-mcp", error: (e as Error).message, missing }, 503);
   }

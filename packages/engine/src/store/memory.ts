@@ -172,6 +172,9 @@ export class InMemoryRepository implements Repository {
     const list = this.approvals.filter((a) => a.job_id === jobId);
     return list.length ? clone(list[list.length - 1]!) : null;
   }
+  async listPendingApprovalsByChannel(channel: ApprovalRow["channel"]) {
+    return this.approvals.filter((a) => a.status === "pending" && a.channel === channel).map(clone);
+  }
   async listPendingApprovalCandidates(q: { shortCodes: string[]; threadId: string | null; messageIds: string[] }) {
     const ids = new Set(q.messageIds.map(norm));
     const codes = new Set(q.shortCodes.map((c) => c.toUpperCase()));

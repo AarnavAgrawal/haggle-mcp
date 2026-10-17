@@ -7,13 +7,13 @@
 // Message-ID is found as an *outbound* message in that identity's own mailbox (it really sent it).
 // Mail from outside Inkbox is stored but never becomes a quote ("unverified-external-sender").
 // Seller content is untrusted data throughout.
-import { CallMode, Inkbox, InkboxAPIError, InkboxConnectionError, verifyWebhook as sdkVerifyWebhook, type MailWebhookPayload } from "@inkbox/sdk";
+import { CallMode, CallOrigin, Inkbox, InkboxAPIError, InkboxConnectionError, verifyWebhook as sdkVerifyWebhook, type A2AClient, type A2AResolvedTarget, type A2AWireMessage, type A2AWireTask, type MailWebhookPayload } from "@inkbox/sdk";
 import { attachmentKind, MAX_JSON_BYTES, MAX_PDF_BYTES, type ExtractedFile } from "../inbound/attachments.ts";
 import { normalizeMessageId } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { replySubject, type OutboundEmail, type SendOutcome } from "../outbound/primitiveSender.ts";
 import type { MessageRow } from "../store/types.ts";
-import type { AttachmentPort, EmailPort, PhoneCallRequest, PhonePort } from "../workflow/ports.ts";
+import type { A2AAgentMessage, A2APort, A2ATaskView, AttachmentPort, EmailPort, IMessagePort, PhoneCallRequest, PhonePort } from "../workflow/ports.ts";
 
 /** The slice of the Inkbox SDK the engine uses (`inkbox.messages`), so tests can fake it. */
 export interface InkboxMailApi {
@@ -231,24 +231,127 @@ export function inkboxAttachments(api: InkboxMailApi, buyerMailbox: string, fetc
   };
 }
 
+export type CallEnded = {
+  callId: string;
+  outcome: "completed" | "no_answer" | "declined" | "failed";
+  transcript: string;
+  endedAt?: string;
+  /** The webhook's inline transcript was cut in the middle; fetch the full one before parsing. */
+  abridged?: boolean;
+  direction?: "outbound" | "inbound";
+  remoteNumber?: string;
+};
+
 /** Map an Inkbox `call.ended` event to HaggleEngine.ingestCall input (transcript as plain text). */
-export function inkboxCallEnded(payload: { data: Record<string, unknown> }): { callId: string; outcome: "completed" | "no_answer" | "declined" | "failed"; transcript: string; endedAt?: string } | null {
-  const d = payload.data as { call?: { id?: string; ended_at?: string | null }; transcript?: { entries?: { party?: string; text?: string }[] } | null; outcome?: string | null };
+export function inkboxCallEnded(payload: { data: Record<string, unknown> }): CallEnded | null {
+  const d = payload.data as { call?: { id?: string; ended_at?: string | null; direction?: string; remote_phone_number?: string }; transcript?: { entries?: { party?: string; text?: string; marker?: string }[]; abridged?: boolean } | null; outcome?: string | null };
   if (!d.call?.id) return null;
   const outcome = (["completed", "no_answer", "declined", "failed"] as const).find((o) => o === d.outcome) ?? "failed";
   const transcript = (d.transcript?.entries ?? []).filter((e) => typeof e.text === "string").map((e) => `${e.party ?? "party"}: ${e.text}`).join("\n");
-  return { callId: d.call.id, outcome, transcript, ...(d.call.ended_at ? { endedAt: d.call.ended_at } : {}) };
+  return {
+    callId: d.call.id, outcome, transcript, ...(d.call.ended_at ? { endedAt: d.call.ended_at } : {}),
+    ...(d.transcript?.abridged ? { abridged: true } : {}),
+    ...(d.call.direction === "inbound" || d.call.direction === "outbound" ? { direction: d.call.direction } : {}),
+    ...(d.call.remote_phone_number ? { remoteNumber: d.call.remote_phone_number } : {}),
+  };
 }
+
+/** The authoritative full transcript (the webhook's inline one may be abridged in the middle). */
+export async function fullCallTranscript(identity: { listTranscripts(callId: string): Promise<{ seq: number; party: string; text: string }[]> }, callId: string): Promise<string> {
+  const turns = await withRetry(() => identity.listTranscripts(callId));
+  return [...turns].sort((a, b) => a.seq - b.seq).filter((t) => t.text).map((t) => `${t.party === "local" ? "haggle (AI assistant)" : t.party}: ${t.text}`).join("\n");
+}
+
+/** Where a buyer call originates: its own number, or Inkbox's shared iMessage line (no number needed). */
+export type CallOriginChoice = "dedicated_number" | "shared_imessage_number";
 
 /**
  * PhonePort over Inkbox Voice AI (hosted agent). NOT wired by default: live calls need explicit
  * approval (HAGGLE_ENABLE_CALLS=true) and may only go to simulated businesses or people who agreed.
+ * `503 hosted_agent_at_capacity` and other 5xx are retried (bounded) with backoff.
  */
-export function inkboxPhone(identity: { placeCall(o: { toNumber: string; mode?: CallMode; reason?: string }): Promise<{ id: string }> }): PhonePort {
+export function inkboxPhone(identity: { placeCall(o: { toNumber: string; origination?: CallOrigin; mode?: CallMode; reason?: string }): Promise<{ id: string }> }, origin: CallOriginChoice = "dedicated_number", sleep?: (ms: number) => Promise<void>): PhonePort {
   return {
     async placeCall(req: PhoneCallRequest) {
-      const call = await withRetry(() => identity.placeCall({ toNumber: req.toNumber, mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000) }));
+      const call = await withRetry(() => identity.placeCall({
+        toNumber: req.toNumber, origination: origin === "shared_imessage_number" ? CallOrigin.SHARED_IMESSAGE_NUMBER : CallOrigin.DEDICATED_NUMBER,
+        mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000),
+      }), sleep);
       return { callId: call.id };
+    },
+  };
+}
+
+/** "ROLE_AGENT" / "agent" -> the seller's side. */
+const isAgent = (role: unknown) => typeof role === "string" && /agent/i.test(role);
+
+function toAgentMessage(m: A2AWireMessage): A2AAgentMessage {
+  const parts = (m.parts ?? []) as { text?: unknown; data?: unknown }[];
+  return {
+    messageId: String(m.messageId),
+    text: parts.flatMap((p) => (typeof p.text === "string" ? [p.text] : [])).join("\n"),
+    data: parts.flatMap((p) => (p.data && typeof p.data === "object" && !Array.isArray(p.data) ? [p.data as Record<string, unknown>] : [])),
+  };
+}
+
+/** A2A wire task -> engine view: agent messages from history + the final status message, deduped. */
+export function a2aTaskView(t: A2AWireTask): A2ATaskView {
+  const seen = new Set<string>();
+  const msgs: A2AAgentMessage[] = [];
+  const status = t.status as { state?: string; message?: A2AWireMessage };
+  for (const m of [...(t.history ?? []), ...(status.message ? [status.message] : [])]) {
+    if (!isAgent(m.role) || seen.has(String(m.messageId))) continue;
+    seen.add(String(m.messageId));
+    msgs.push(toAgentMessage(m));
+  }
+  const state = String(status.state ?? "").replace(/^TASK_STATE_/, "").toLowerCase() || "unknown";
+  return { taskId: t.id, contextId: t.contextId, state: state === "input_required" ? "input_required" : state, agentMessages: msgs };
+}
+
+/**
+ * A2APort over the buyer identity's agent-scoped A2A client. Cards are resolved once and only for
+ * URLs the engine passes (the business's pinned card). Sends are retried with the SAME messageId.
+ */
+export function inkboxA2A(identity: { a2aClient(): Promise<A2AClient> }, sleep?: (ms: number) => Promise<void>): A2APort {
+  let client: Promise<A2AClient> | null = null;
+  const targets = new Map<string, Promise<A2AResolvedTarget>>();
+  const target = async (cardUrl: string) => {
+    if (!/^https:\/\//.test(cardUrl)) throw new Error("Agent Card URL must be https");
+    const c = await (client ??= identity.a2aClient());
+    if (!targets.has(cardUrl)) targets.set(cardUrl, c.fetchCard(cardUrl).catch((e) => { targets.delete(cardUrl); throw e; }));
+    return { c, t: await targets.get(cardUrl)! };
+  };
+  return {
+    async send(req) {
+      const { c, t } = await target(req.cardUrl);
+      const r = await withRetry(() => c.send(t, { parts: [{ text: req.text }, { data: req.data }], messageId: req.messageId, ...(req.contextId ? { contextId: req.contextId } : {}), ...(req.taskId ? { taskId: req.taskId } : {}) }), sleep);
+      if (r.kind === "task") return { taskId: r.task.id, contextId: r.task.contextId, state: a2aTaskView(r.task).state };
+      const m = r.message as A2AWireMessage & { taskId?: string; contextId?: string };
+      if (!m.taskId) throw new Error("A2A agent answered without a task; Haggle needs a task to track the quote");
+      return { taskId: m.taskId, contextId: m.contextId ?? "", state: "working" };
+    },
+    async getTask(req) {
+      const { c, t } = await target(req.cardUrl);
+      return a2aTaskView(await withRetry(() => c.getTask(t, req.taskId, { historyLength: 50 }), sleep));
+    },
+  };
+}
+
+/** One inbound iMessage, from the `imessage.received` webhook. */
+export type IMessageReceived = { messageId: string; from: string; text: string; isGroup: boolean; conversationId: string; inbound: boolean };
+
+export function inkboxIMessageReceived(payload: { data: Record<string, unknown> }): IMessageReceived | null {
+  const m = (payload.data as { message?: { id?: string; direction?: string; sender_number?: string | null; remote_number?: string | null; content?: string | null; is_group?: boolean; conversation_id?: string } }).message;
+  if (!m?.id) return null;
+  return { messageId: m.id, from: (m.sender_number ?? m.remote_number ?? "").replace(/[\s().-]/g, ""), text: m.content ?? "", isGroup: m.is_group === true, conversationId: m.conversation_id ?? "", inbound: m.direction === "inbound" };
+}
+
+/** iMessage approval requests from the buyer identity (Inkbox router). NOT wired unless HAGGLE_ENABLE_IMESSAGE=true. */
+export function inkboxIMessage(identity: { sendIMessage(o: { to: string; text: string; idempotencyKey?: string }): Promise<{ id: string }> }, sleep?: (ms: number) => Promise<void>): IMessagePort {
+  return {
+    async send(req) {
+      const m = await withRetry(() => identity.sendIMessage({ to: req.to, text: req.text, idempotencyKey: req.idempotencyKey }), sleep);
+      return { messageId: m.id };
     },
   };
 }
@@ -259,5 +362,13 @@ export async function connectInkboxBuyer(opts: { apiKey: string; handle: string 
   const identity = await inkbox.getIdentity(opts.handle);
   const buyerMailbox = identity.emailAddress?.toLowerCase();
   if (!buyerMailbox) throw new Error(`Inkbox identity "${identity.agentHandle}" has no mailbox`);
-  return { api: inkboxMailApi(inkbox), buyerMailbox, phone: () => inkboxPhone(identity as never) };
+  // Calls need a number: the identity's own, else Inkbox's shared iMessage line when iMessage is on.
+  const callOrigin: CallOriginChoice | null = identity.phoneNumber ? "dedicated_number" : identity.imessageEnabled ? "shared_imessage_number" : null;
+  return {
+    api: inkboxMailApi(inkbox), buyerMailbox, callOrigin, imessageEnabled: identity.imessageEnabled,
+    phone: () => (callOrigin ? inkboxPhone(identity as never, callOrigin) : null),
+    a2a: () => inkboxA2A(identity as never),
+    imessage: () => (identity.imessageEnabled ? inkboxIMessage(identity as never) : null),
+    transcript: (callId: string) => fullCallTranscript(identity as never, callId),
+  };
 }
