@@ -10,5 +10,8 @@
 | Supabase migration + DB-level payment invariants | Locally verified | `scripts/verify-migrations.sh`: 17 negative assertions rejected for the intended reason, Postgres 17 |
 | `apps/mcp` scaffold (mcp-use 2.10.0) + `/health` | Locally verified | build OK; `/health` and `tools/list` answered over HTTP |
 | CONTRACTS.md, CLAUDE.md, .env.example, plan | Done | — |
+| Buyer fixtures: 15 emails (6 benchmark traps + 9 edge cases), 2 PDFs, scenario | Locally verified | fixture-integrity tests: 6 passed |
+| Integration handoff draft | Done | `docs/integration-handoff.md` |
+| Primitive round-trip spike script | Implemented, **not run** (no credentials) | refuses without key; typechecks |
 | Primitive / Anthropic / Supabase / Manufact real calls | **Blocked** — no credentials in environment | — |
-| Parsing, negotiation, tools, deal board, approval/payment, demo | **Not started** — held pending the rules decision | — |
+| Parsing, negotiation, tools, deal board, approval/payment, demo | **Not started** — user chose to hold until organizers confirm pre-event work is allowed | — |
