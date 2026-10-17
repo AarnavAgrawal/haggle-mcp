@@ -26,7 +26,8 @@ export interface Ranking {
   rejected: { quoteId: string; businessId: string; reason: RejectReason }[];
 }
 
-function rejectReason(q: RankableQuote, budgetCents: number | null): RejectReason | null {
+/** Why a quote can't rank (or be cited in negotiation); null = eligible. Shared by ranking and negotiation. */
+export function rejectReason(q: RankableQuote, budgetCents: number | null): RejectReason | null {
   if (q.status !== "current") return "not_current";
   if (!q.available) return "unavailable";
   if (!q.senderTrusted) return "unverified_sender";

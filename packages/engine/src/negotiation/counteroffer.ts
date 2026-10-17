@@ -6,7 +6,10 @@
 // Adapted from quote-broker@8a68559 src/negotiator/counteroffer.ts (Partner). Changes for Haggle
 // v3: cites order totals (not per-head), only quotes that are compliant AND from a trusted
 // sender can be cited or countered, every plan carries the cited quote's id for the audit trail
-// (a counter can't exist without a real basis quote), and rounds are capped.
+// (a counter can't exist without a real basis quote), and rounds are capped. Eligibility is the
+// ranker's own `rejectReason`, so a quote that can't win (scam link, injection, unverified, over
+// budget, superseded) can never be cited either.
+import { rejectReason, type RankableQuote } from "../ranking/rank.ts";
 
 export interface CounterQuote {
   quoteId: string;
@@ -17,6 +20,9 @@ export interface CounterQuote {
   compliant: boolean; // every hard requirement met === true
   senderTrusted: boolean;
   round: number; // this business's current quote round (1 = first quote)
+  status: RankableQuote["status"];
+  confidence: number;
+  flags: string[];
 }
 
 export interface PlannedCounter {
@@ -48,14 +54,12 @@ export function counterofferText(businessName: string, theirCents: number, bestC
 
 /**
  * Who gets a counteroffer, and which real quote it cites.
- * - Only available, compliant, trusted, priced quotes count, as basis or as target.
+ * - Only quotes the ranker would accept count, as basis or as target.
  * - Skip entirely with fewer than 2 such quotes.
  * - Cite the single best total; counter only businesses priced above it with rounds left.
  */
-export function planCounteroffers(quotes: CounterQuote[], deadline: Date, maxRounds = 2): PlannedCounter[] {
-  const eligible = quotes.filter(
-    (q): q is CounterQuote & { totalCents: number } => q.available && q.compliant && q.senderTrusted && q.totalCents !== null,
-  );
+export function planCounteroffers(quotes: CounterQuote[], deadline: Date, maxRounds = 2, budgetCents: number | null = null): PlannedCounter[] {
+  const eligible = quotes.filter((q): q is CounterQuote & { totalCents: number } => rejectReason(q, budgetCents) === null);
   if (eligible.length < 2) return [];
 
   const best = eligible.reduce((a, b) => (b.totalCents < a.totalCents ? b : a));

@@ -5,7 +5,7 @@ import { planCounteroffers, type CounterQuote } from "../src/negotiation/counter
 
 const DEADLINE = new Date("2026-10-17T21:30:00Z");
 const q = (over: Partial<CounterQuote> & Pick<CounterQuote, "quoteId" | "businessId" | "businessName">): CounterQuote => ({
-  totalCents: null, available: true, compliant: true, senderTrusted: true, round: 1, ...over,
+  totalCents: null, available: true, compliant: true, senderTrusted: true, round: 1, status: "current", confidence: 0.9, flags: [], ...over,
 });
 const round1: CounterQuote[] = [
   q({ quoteId: "q-bay-1", businessId: "b-bay", businessName: "Bay Catering", totalCents: 115000 }),
@@ -57,6 +57,19 @@ describe("planCounteroffers", () => {
     const round2 = round1.map((x) => (x.businessId === "b-bay" ? { ...x, quoteId: "q-bay-2", totalCents: 99500, round: 2 } : x));
     const harbor = planCounteroffers(round2, DEADLINE).find((p) => p.businessId === "b-harbor")!;
     expect(harbor).toMatchObject({ targetTotalCents: 99500, basisQuoteId: "q-bay-2", theirTotalCents: 112000 });
+  });
+
+  it("never cites a flagged scam or injection quote, even when it is cheapest and authenticated", () => {
+    const withScam = [...round1, q({ quoteId: "q-scam", businessId: "b-scam", businessName: "Scam Co", totalCents: 50000, flags: ["external_payment_link"] })];
+    for (const p of planCounteroffers(withScam, DEADLINE)) expect(p.basisQuoteId).toBe("q-harbor-1");
+    const withInjection = [...round1, q({ quoteId: "q-inj", businessId: "b-inj", businessName: "Inj Co", totalCents: 50000, flags: ["prompt_injection"] })];
+    for (const p of planCounteroffers(withInjection, DEADLINE)) expect(p.basisQuoteId).toBe("q-harbor-1");
+  });
+
+  it("never cites a superseded revision or an over-budget quote", () => {
+    const stale = [...round1, q({ quoteId: "q-old", businessId: "b-old", businessName: "Old", totalCents: 50000, status: "superseded" })];
+    for (const p of planCounteroffers(stale, DEADLINE)) expect(p.basisQuoteId).toBe("q-harbor-1");
+    expect(planCounteroffers(round1, DEADLINE, 2, 111000)).toEqual([]);
   });
 
   it("stops at the round cap", () => {
