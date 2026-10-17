@@ -19,7 +19,7 @@ import "./src/live.ts";
 const server = new MCPServer({
   name: "haggle",
   title: "Haggle",
-  version: "0.5.0",
+  version: `0.5.0${process.env.HAGGLE_BUILD_SHA ? `+${process.env.HAGGLE_BUILD_SHA}` : ""}`,
   description: "Lets AI agents buy from businesses the way businesses work: email, phone and agent-to-agent. Quotes, negotiation, human approval, payment.",
   instructions: [
     "Haggle turns businesses' email and phones into an API. Cold path: deal -> wait_for_update (repeat, pass the cursor) -> get_quotes -> approve -> pay.",
@@ -401,7 +401,11 @@ export const ask = server.tool(
     run(async (rt) => {
       const area = await areaOr(rt, req.area);
       const request = { what: req.what, quantity: req.quantity, date: req.date, area, ...(req.unit ? { unit: req.unit } : {}) };
-      const v = { ...toEstimatesView(request, await rt.brain.core.estimate(request)), mode: rt.mode };
+      const base = toEstimatesView(request, await rt.brain.core.estimate(request));
+      // The brain's own hint passes bare business ids to deal, which deal rejects: point at discover instead.
+      const v = { ...base, mode: rt.mode, next: base.estimates.length
+        ? `These are estimates, not quotes. For confirmed prices call deal(request={what:'${request.what}', quantity:${request.quantity}, date:'${request.date}', area:'${request.area}'}, discover:true): Haggle contacts the learned businesses it may contact, each on its own channel.`
+        : base.next };
       const text = v.estimates.length
         ? `${v.estimates.length} estimates (not quotes): ${v.estimates.map((e) => `${e.business} ~${usd(e.total_usd)} (${Math.round(e.confidence * 100)}%, ${e.n_quotes} quotes)`).join("; ")}. next: ${v.next}`
         : `No estimates. next: ${v.next}`;
@@ -471,7 +475,7 @@ export const businessProfile = server.tool(
     run(async ({ brain, mode }) => {
       const p = (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business)));
       if (!p) return fail(mode, "NOT_LEARNED", `Haggle hasn't learned ${business} yet.`, "Run a deal with this business; every reply teaches Haggle.", "deal");
-      const v = { ...toBusinessProfileView(p), mode };
+      const v = { ...toBusinessProfileView(p), mode, next: `For a real quote call deal(request=..., discover:true) or pass this business with its contact (email / phone / a2a_card_url); for an instant estimate call ask(what, quantity, date, area).` };
       return ok(v, `${p.name}: ${p.n_quotes} real quotes, confidence ${Math.round(p.confidence * 100)}%. next: ${v.next}`);
     }),
 );
