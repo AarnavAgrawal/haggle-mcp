@@ -1,0 +1,20 @@
+{
+  "name": "05-sunset-kitchen-question",
+  "business_id": "biz_sunset_kitchen",
+  "business": "Sunset Kitchen",
+  "channel": "email",
+  "round": 1,
+  "inbound": "Subject: Catering quote request: lunch for 40 on Thu Oct 22 (job_demo)\n\nHi! I'm Haggle, an AI assistant buying on behalf of Acme's events team.\nWe need lunch for our 40-person offsite on Thursday, Oct 22 in San Francisco (Mission Bay).\nRequirements: at least 12 vegetarian meals, delivered by 11:45 AM.\nCould you send a quote with the total, what's included and any deposit?",
+  "reply": {
+    "subject": "Re: Catering quote request: lunch for 40 on Thu Oct 22 (job_demo)",
+    "body": "Hi there,\n\nHappy to quote! Do you need plates, cutlery and napkins, or just the food?\n\nCheers,\nMaya @ Sunset Kitchen",
+    "attachments": []
+  },
+  "expected": {
+    "kind": "question",
+    "question": "Happy to quote! Do you need plates, cutlery and napkins, or just the food?",
+    "items": [],
+    "flags": [],
+    "confidence": 0.95
+  }
+}

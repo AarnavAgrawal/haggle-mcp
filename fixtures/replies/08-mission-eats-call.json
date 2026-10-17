@@ -1,0 +1,48 @@
+{
+  "name": "08-mission-eats-call",
+  "business_id": "biz_mission_eats",
+  "business": "Mission Eats",
+  "channel": "phone",
+  "round": 1,
+  "inbound": "Voice AI call brief: request a catering quote for 40 people, Thu Oct 22, 12 vegetarian, delivered by 11:45 AM in SF.",
+  "transcript": [
+    {
+      "party": "business",
+      "text": "Mission Eats, how can I help?"
+    },
+    {
+      "party": "haggle",
+      "text": "Hi, I'm an AI assistant calling for Acme's events team. Could I get a catering quote for 40 people this Thursday, October 22nd, with at least 12 vegetarian meals, delivered by 11:45?"
+    },
+    {
+      "party": "business",
+      "text": "Sure. We do a taco bar, carnitas and rajas con crema, and veggie plates. It's $27 a person, delivery included, no deposit."
+    },
+    {
+      "party": "haggle",
+      "text": "So for 40 people, what's the total?"
+    },
+    {
+      "party": "business",
+      "text": "For forty people with twelve veggie plates, that's $1,080 delivered, no deposit. Good for seven days."
+    },
+    {
+      "party": "haggle",
+      "text": "Great, thank you. We'll confirm by email or call back."
+    }
+  ],
+  "expected": {
+    "kind": "quote",
+    "total_usd": 1080,
+    "per_unit_usd": 27,
+    "quantity": 40,
+    "delivery_usd": 0,
+    "items": [
+      "Taco bar and Carnitas for 40",
+      "12 veggie plates",
+      "Delivery included"
+    ],
+    "flags": [],
+    "confidence": 0.82
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "04-golden-grill-requirement-unmet",
+  "business_id": "biz_golden_grill",
+  "business": "Golden Grill",
+  "channel": "email",
+  "round": 1,
+  "inbound": "Subject: Catering quote request: lunch for 40 on Thu Oct 22 (job_demo)\n\nHi! I'm Haggle, an AI assistant buying on behalf of Acme's events team.\nWe need lunch for our 40-person offsite on Thursday, Oct 22 in San Francisco (Mission Bay).\nRequirements: at least 12 vegetarian meals, delivered by 11:45 AM.\nCould you send a quote with the total, what's included and any deposit?",
+  "reply": {
+    "subject": "Re: Catering quote request: lunch for 40 on Thu Oct 22 (job_demo)",
+    "body": "Hi there,\n\nHere's our quote for 40 people on Thu Oct 22: $880 total ($22 per person).\n\n- BBQ brisket and Pulled pork for 40\n- 6 veggie burger plates\n- Delivery included\nHeads up: we can only do 6 vegetarian meals.\n\n- Ray, Golden Grill",
+    "attachments": []
+  },
+  "expected": {
+    "kind": "quote",
+    "total_usd": 880,
+    "per_unit_usd": 22,
+    "quantity": 40,
+    "delivery_usd": 0,
+    "items": [
+      "BBQ brisket and Pulled pork for 40",
+      "6 veggie burger plates",
+      "Delivery included"
+    ],
+    "flags": [
+      "requirement_unmet"
+    ],
+    "confidence": 0.93
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "06-sunset-kitchen-quote",
+  "business_id": "biz_sunset_kitchen",
+  "business": "Sunset Kitchen",
+  "channel": "email",
+  "round": 1,
+  "inbound": "Yes please, include plates, cutlery and napkins.",
+  "reply": {
+    "subject": "Re: Catering quote request: lunch for 40 on Thu Oct 22 (job_demo)",
+    "body": "Hi there,\n\nHere's our quote for 40 people on Thu Oct 22: $1,180 total ($29.50 per person).\n\n- Pasta bar and Caesar salad for 40\n- 12 pesto pasta (vegetarian)\n- Delivery included\n- Plates, cutlery and napkins\n\nCheers,\nMaya @ Sunset Kitchen",
+    "attachments": []
+  },
+  "expected": {
+    "kind": "quote",
+    "total_usd": 1180,
+    "per_unit_usd": 29.5,
+    "quantity": 40,
+    "delivery_usd": 0,
+    "items": [
+      "Pasta bar and Caesar salad for 40",
+      "12 pesto pasta (vegetarian)",
+      "Delivery included",
+      "Plates, cutlery and napkins"
+    ],
+    "flags": [],
+    "confidence": 0.9
+  }
+}
