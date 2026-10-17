@@ -1,0 +1,28 @@
+{
+  "id": "12-duplicate-delivery",
+  "description": "Same provider message id as fixture 01: must not create a second quote.",
+  "provider_message_id": "prov_01-clean-agent-quote",
+  "from": "baycatering@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "baycatering@sellers.example",
+  "text": "(duplicate webhook delivery of fixture 01)",
+  "html": null,
+  "attachments": [],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "duplicate",
+    "creates_quote": false
+  }
+}

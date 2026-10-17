@@ -1,0 +1,35 @@
+{
+  "id": "13-missing-delivery-terms",
+  "description": "No delivery terms at all; delivery requirement must be 'unknown', not assumed.",
+  "provider_message_id": "prov_13-missing-delivery-terms",
+  "from": "hayesvalley@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "hayesvalley@sellers.example",
+  "text": "Hayes Valley Kitchen: 40 grain bowls (16 vegetarian) for $1,000 including tax.",
+  "html": null,
+  "attachments": [],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "total_cents": 100000,
+    "meets_requirements": "unknown",
+    "unknown_requirement_ids": [
+      "req_delivery"
+    ],
+    "flags_include": [
+      "missing_delivery_terms"
+    ]
+  }
+}

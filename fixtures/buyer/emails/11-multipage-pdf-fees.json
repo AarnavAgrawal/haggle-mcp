@@ -1,0 +1,44 @@
+{
+  "id": "11-multipage-pdf-fees",
+  "description": "Fees on page 2, tax excluded on page 3: $900 food + $60 delivery + $72 service + $76.50 tax.",
+  "provider_message_id": "prov_11-multipage-pdf-fees",
+  "from": "sunsetbistro@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "sunsetbistro@sellers.example",
+  "text": "Our proposal is attached (3 pages).",
+  "html": null,
+  "attachments": [
+    {
+      "filename": "sunset-bistro-multipage-fees.pdf",
+      "content_type": "application/pdf",
+      "path": "attachments/sunset-bistro-multipage-fees.pdf"
+    }
+  ],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "source": "pdf_attachment",
+    "total_cents": 110850,
+    "fees_cents": [
+      6000,
+      7200
+    ],
+    "tax_cents": 7650,
+    "flags_include": [
+      "tax_excluded"
+    ],
+    "max_pages_read": 3
+  }
+}

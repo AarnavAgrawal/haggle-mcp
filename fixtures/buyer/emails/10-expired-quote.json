@@ -1,0 +1,38 @@
+{
+  "id": "10-expired-quote",
+  "description": "valid_until is in the past relative to the scenario clock.",
+  "provider_message_id": "prov_10-expired-quote",
+  "from": "embarcadero@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "embarcadero@sellers.example",
+  "text": "Embarcadero Eats: 40 lunches incl. 12 veg, delivered, $1,010.",
+  "html": null,
+  "attachments": [
+    {
+      "filename": "quote.json",
+      "content_type": "application/json",
+      "inline": "{\n  \"protocol\": \"haggle.v0\",\n  \"type\": \"quote\",\n  \"job_id\": \"job_offsite01\",\n  \"seller\": \"Embarcadero Eats\",\n  \"seller_kind\": \"agent\",\n  \"items\": [\n    {\n      \"description\": \"Lunches\",\n      \"quantity\": 28\n    },\n    {\n      \"description\": \"Veg lunches\",\n      \"quantity\": 12,\n      \"tags\": [\n        \"vegetarian\"\n      ]\n    }\n  ],\n  \"delivery_included\": true,\n  \"tax_included\": true,\n  \"total_usd\": 1010,\n  \"valid_until\": \"2026-10-10T17:00:00-07:00\"\n}"
+    }
+  ],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "total_cents": 101000,
+    "flags_include": [
+      "expired"
+    ],
+    "excluded_from_recommendation": true
+  }
+}

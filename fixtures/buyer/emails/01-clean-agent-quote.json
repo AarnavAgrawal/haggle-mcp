@@ -1,0 +1,43 @@
+{
+  "id": "01-clean-agent-quote",
+  "description": "Benchmark seller 1 (control): clean, compliant agent quote with quote.json.",
+  "provider_message_id": "prov_01-clean-agent-quote",
+  "from": "baycatering@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "baycatering@sellers.example",
+  "text": "Hi! Bay Catering can do this: 28 chicken mains and 12 vegetarian mains, delivered in SF at 11:45. Total $1,150.00 including delivery and tax. A $5 deposit holds the date. Structured quote attached.",
+  "html": null,
+  "attachments": [
+    {
+      "filename": "quote.json",
+      "content_type": "application/json",
+      "inline": "{\n  \"protocol\": \"haggle.v0\",\n  \"type\": \"quote\",\n  \"job_id\": \"job_offsite01\",\n  \"seller\": \"Bay Catering\",\n  \"seller_kind\": \"agent\",\n  \"items\": [\n    {\n      \"description\": \"Chicken mains\",\n      \"quantity\": 28,\n      \"unit_price_usd\": 27.5,\n      \"total_usd\": 770,\n      \"tags\": []\n    },\n    {\n      \"description\": \"Vegetarian mains\",\n      \"quantity\": 12,\n      \"unit_price_usd\": 26,\n      \"total_usd\": 312,\n      \"tags\": [\n        \"vegetarian\"\n      ]\n    }\n  ],\n  \"subtotal_usd\": 1082,\n  \"delivery_usd\": 0,\n  \"delivery_included\": true,\n  \"tax_usd\": 68,\n  \"tax_included\": true,\n  \"total_usd\": 1150,\n  \"per_head_usd\": 28.75,\n  \"deposit_usd\": 5,\n  \"fulfillment_date\": \"2026-10-22\",\n  \"meets\": {\n    \"req_headcount\": true,\n    \"req_veg\": true,\n    \"req_delivery\": true,\n    \"req_date\": true\n  },\n  \"valid_until\": \"2026-10-20T23:59:00-07:00\",\n  \"revision\": 1\n}"
+    }
+  ],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "source": "quote_json",
+    "total_cents": 115000,
+    "deposit_cents": 500,
+    "meets_requirements": "yes",
+    "flags_include": [],
+    "flags_exclude": [
+      "requirement_unmet",
+      "suspicious_payment_request"
+    ],
+    "min_confidence": 0.9
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "id": "02-vague-pricing",
+  "description": "Benchmark trap: vague pricing. No itemization, approximate total, no delivery or veg info.",
+  "provider_message_id": "prov_02-vague-pricing",
+  "from": "missioneats@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "missioneats@sellers.example",
+  "text": "hey we can def do lunch for 40, ~900ish lmk",
+  "html": null,
+  "attachments": [],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "source": "email_text",
+    "total_cents": null,
+    "total_candidates_cents": [
+      90000
+    ],
+    "meets_requirements": "unknown",
+    "flags_include": [
+      "vague_pricing",
+      "requirement_unknown"
+    ],
+    "needs_clarification": true,
+    "max_confidence": 0.69
+  }
+}

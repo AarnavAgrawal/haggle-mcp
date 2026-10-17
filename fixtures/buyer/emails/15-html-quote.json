@@ -1,0 +1,29 @@
+{
+  "id": "15-html-quote",
+  "description": "HTML table quote with an equivalent text part.",
+  "provider_message_id": "prov_15-html-quote",
+  "from": "marinamarket@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "marinamarket@sellers.example",
+  "text": "Marina Market quote: 40 lunches (12 vegetarian), delivered Thursday, $1,090 total including tax.",
+  "html": "<p><b>Marina Market</b> quote</p><table><tr><td>Lunches</td><td>28</td></tr><tr><td>Vegetarian lunches</td><td>12</td></tr><tr><td>Delivery</td><td>Included</td></tr><tr><td><b>Total (incl. tax)</b></td><td>$1,090.00</td></tr></table>",
+  "attachments": [],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "total_cents": 109000,
+    "meets_requirements": "yes"
+  }
+}

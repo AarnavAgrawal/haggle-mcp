@@ -1,0 +1,36 @@
+{
+  "id": "08-conflicting-numbers",
+  "description": "Itemized sum ($1,120) disagrees with stated total ($1,050).",
+  "provider_message_id": "prov_08-conflicting-numbers",
+  "from": "presidiogrill@sellers.example",
+  "to": [
+    "job-offsite01@buyer.example"
+  ],
+  "subject": "Re: Lunch for 40 on Thu Oct 22 (Haggle RFQ)",
+  "in_reply_to_rfq_of": "presidiogrill@sellers.example",
+  "text": "Presidio Grill quote:\n40 lunches x $26.00 = $1,040.00\nVegetarian: 12 of the 40\nDelivery: $80.00\nTotal: $1,050.00 (tax included)",
+  "html": null,
+  "attachments": [],
+  "auth": {
+    "sender_authenticated": true,
+    "basis": "dmarc_aligned",
+    "spf": "pass",
+    "dmarc": "pass",
+    "dkim_aligned_domains": [
+      "sellers.example"
+    ],
+    "reasons": []
+  },
+  "expect": {
+    "kind": "quote",
+    "flags_include": [
+      "conflicting_numbers"
+    ],
+    "total_cents": null,
+    "total_candidates_cents": [
+      105000,
+      112000
+    ],
+    "needs_clarification": true
+  }
+}
