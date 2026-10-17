@@ -1,0 +1,5 @@
+[
+  { "category": "catering", "area": "san francisco", "low": 18, "typical": 26, "high": 38 },
+  { "category": "catering", "area": "new york", "low": 20, "typical": 28, "high": 42 },
+  { "category": "catering", "low": 15, "typical": 24, "high": 35 }
+]

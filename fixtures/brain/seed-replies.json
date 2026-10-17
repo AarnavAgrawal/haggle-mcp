@@ -1,0 +1,57 @@
+[
+  {
+    "business_id": "biz_bay_catering",
+    "parsed": { "kind": "quote", "total_usd": 735, "quantity": 30, "deposit_usd": 200, "items": ["Mediterranean buffet", "Vegetarian bowls", "Delivery and setup"], "confidence": 0.97 },
+    "meta": { "job_id": "job_seed_01", "business_name": "Bay Catering", "channel": "a2a", "contacted_at": "2026-10-02T10:59:58-07:00", "received_at": "2026-10-02T11:00:00-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 30, "area": "San Francisco" } }
+  },
+  {
+    "business_id": "biz_quickquote_deli",
+    "parsed": { "kind": "quote", "total_usd": 450, "quantity": 30, "items": ["Sandwich platters"], "flags": ["payment_link", "prompt_injection"], "confidence": 0.4 },
+    "meta": { "job_id": "job_seed_01", "business_name": "QuickQuote Deli", "channel": "email", "contacted_at": "2026-10-02T11:00:00-07:00", "received_at": "2026-10-02T11:03:00-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 30, "area": "San Francisco" } }
+  },
+  {
+    "business_id": "biz_sunset_kitchen",
+    "parsed": { "kind": "question", "question": "Do you need plates and cutlery?", "confidence": 0.95 },
+    "meta": { "job_id": "job_seed_02", "business_name": "Sunset Kitchen", "channel": "email", "contacted_at": "2026-10-07T09:00:00-07:00", "received_at": "2026-10-07T11:10:00-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 30, "area": "San Francisco" } }
+  },
+  {
+    "business_id": "biz_sunset_kitchen",
+    "parsed": { "kind": "quote", "total_usd": 840, "quantity": 30, "items": ["Pasta bar", "Caesar salad", "Plates and cutlery"], "confidence": 0.9 },
+    "meta": { "job_id": "job_seed_02", "business_name": "Sunset Kitchen", "channel": "email", "contacted_at": "2026-10-07T11:30:00-07:00", "received_at": "2026-10-07T14:40:00-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 30, "area": "San Francisco" } }
+  },
+  {
+    "business_id": "biz_bay_catering",
+    "parsed": { "kind": "quote", "total_usd": 520, "quantity": 20, "deposit_usd": 150, "items": ["Mediterranean buffet", "Vegetarian bowls"], "confidence": 0.97 },
+    "meta": { "job_id": "job_seed_03", "business_name": "Bay Catering", "channel": "a2a", "contacted_at": "2026-10-08T12:00:00-07:00", "received_at": "2026-10-08T12:00:03-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 20, "area": "San Francisco" } }
+  },
+  {
+    "business_id": "biz_harbor_table",
+    "parsed": { "kind": "quote", "total_usd": 580, "quantity": 20, "deposit_usd": 174, "minimum_order_usd": 400, "items": ["Family-style lunch", "Grilled salmon", "Mushroom risotto (vegetarian)"], "flags": ["hidden_deposit"], "confidence": 0.88 },
+    "meta": { "job_id": "job_seed_03", "business_name": "Harbor Table", "channel": "email", "contacted_at": "2026-10-08T12:00:00-07:00", "received_at": "2026-10-08T12:22:00-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 20, "area": "San Francisco" } }
+  },
+  {
+    "business_id": "biz_golden_grill",
+    "parsed": { "kind": "quote", "total_usd": 660, "quantity": 30, "items": ["BBQ lunch", "4 vegetarian plates"], "flags": ["requirement_unmet"], "confidence": 0.93 },
+    "meta": { "job_id": "job_seed_04", "business_name": "Golden Grill", "channel": "email", "contacted_at": "2026-10-10T09:00:00-07:00", "received_at": "2026-10-10T09:14:00-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 30, "area": "San Francisco", "requirements": ["8 vegetarian meals"] } }
+  },
+  {
+    "business_id": "biz_mission_eats",
+    "parsed": { "kind": "quote", "total_usd": 675, "quantity": 25, "items": ["Taco bar", "Vegetarian plates", "Delivery included"], "confidence": 0.8 },
+    "meta": { "job_id": "job_seed_05", "business_name": "Mission Eats", "channel": "phone", "contacted_at": "2026-10-11T10:00:00-07:00", "received_at": "2026-10-11T10:03:00-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 25, "area": "San Francisco" } }
+  },
+  {
+    "business_id": "biz_harbor_table",
+    "parsed": { "kind": "quote", "total_usd": 870, "quantity": 30, "deposit_usd": 261, "items": ["Family-style lunch", "Seasonal salad (vegetarian)"], "flags": ["hidden_deposit"], "confidence": 0.88 },
+    "meta": { "job_id": "job_seed_06", "business_name": "Harbor Table", "channel": "email", "contacted_at": "2026-10-12T09:00:00-07:00", "received_at": "2026-10-12T09:28:00-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 30, "area": "San Francisco" } }
+  },
+  {
+    "business_id": "biz_harbor_table",
+    "parsed": { "kind": "quote", "total_usd": 783, "quantity": 30, "deposit_usd": 234.9, "items": ["Family-style lunch", "Seasonal salad (vegetarian)"], "confidence": 0.9 },
+    "meta": { "job_id": "job_seed_06", "business_name": "Harbor Table", "channel": "email", "contacted_at": "2026-10-12T10:00:00-07:00", "received_at": "2026-10-12T10:11:00-07:00", "round": 2, "negotiated_from": 870, "cited_competing_quote": true, "request": { "what": "Lunch catering", "quantity": 30, "area": "San Francisco" } }
+  },
+  {
+    "business_id": "biz_bay_catering",
+    "parsed": { "kind": "quote", "total_usd": 1225, "quantity": 50, "deposit_usd": 250, "items": ["Mediterranean buffet", "Vegetarian bowls", "Delivery and setup", "Plates and cutlery"], "confidence": 0.97 },
+    "meta": { "job_id": "job_seed_07", "business_name": "Bay Catering", "channel": "a2a", "contacted_at": "2026-10-14T13:00:00-07:00", "received_at": "2026-10-14T13:00:02-07:00", "round": 1, "request": { "what": "Lunch catering", "quantity": 50, "area": "San Francisco" } }
+  }
+]
