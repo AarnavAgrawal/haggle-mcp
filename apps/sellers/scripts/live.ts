@@ -15,6 +15,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Inkbox } from "@inkbox/sdk";
+// Setup-only: the same read-only Stripe test-mode check the engine ships (no charge).
+import { verifyStripeTestSetup } from "../../../packages/engine/src/payments/stripe.ts";
 import { PERSONAS } from "../src/personas.ts";
 import { DATA_DIR, loadRegistry } from "../src/store.ts";
 
@@ -92,6 +94,17 @@ async function cmdEnv() {
     console.log("  buyer signing key created (stored in .haggle-data/live.json)");
   }
 
+  // Stripe TEST mode (optional): only a verified sk_test_ key + test customer + attached test card.
+  let stripe: Record<string, string> = {};
+  if (env.STRIPE_SECRET_KEY?.trim()) {
+    const cfg = { secretKey: env.STRIPE_SECRET_KEY.trim(), customerId: need("STRIPE_CUSTOMER_ID"), paymentMethodId: need("STRIPE_PAYMENT_METHOD_ID") };
+    if (!cfg.secretKey.startsWith("sk_test_")) throw new Error("STRIPE_SECRET_KEY must be a test key (sk_test_...)");
+    const check = await verifyStripeTestSetup(cfg);
+    for (const c of check.checks) console.log(`  stripe [${c.ok ? "PASS" : "FAIL"}] ${c.check}`);
+    if (!check.ok) throw new Error("Stripe test setup failed; run node packages/engine/scripts/stripe-setup.ts .env --confirm");
+    stripe = { HAGGLE_ENABLE_PAYMENTS: "true", STRIPE_SECRET_KEY: cfg.secretKey, STRIPE_CUSTOMER_ID: cfg.customerId, STRIPE_PAYMENT_METHOD_ID: cfg.paymentMethodId };
+  }
+
   const { fleet, directory, phone } = fleetConfig();
   const supabase = env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY;
   const vars: Record<string, string> = {
@@ -109,10 +122,11 @@ async function cmdEnv() {
     SUPABASE_DB_URL: need("SUPABASE_DB_URL"),
     ...(env.HAGGLE_DB_SCHEMA ? { HAGGLE_DB_SCHEMA: env.HAGGLE_DB_SCHEMA } : {}),
     ...(supabase ? { SUPABASE_URL: env.SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY! } : { HAGGLE_BRAIN_STORE: "memory" }),
+    ...stripe,
     HOST: "0.0.0.0",
   };
   writeFileSync(ENV_FILE, Object.entries(vars).map(([k, v]) => `${k}=${v}`).join("\n") + "\n");
-  console.log(`wrote ${ENV_FILE} (${Object.keys(vars).length} variables; calls ${vars.HAGGLE_ENABLE_CALLS === "true" ? `ON to ${phone} only` : "off"})`);
+  console.log(`wrote ${ENV_FILE} (${Object.keys(vars).length} variables; calls ${vars.HAGGLE_ENABLE_CALLS === "true" ? `ON to ${phone} only` : "off"}; payments ${vars.HAGGLE_ENABLE_PAYMENTS === "true" ? "Stripe TEST mode" : "off"})`);
 }
 
 async function cmdWebhook(mcpUrl: string | undefined) {
