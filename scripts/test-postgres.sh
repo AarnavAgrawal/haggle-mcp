@@ -14,4 +14,6 @@ psql <<'SQL'
 create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
 SQL
 for f in "$ROOT"/supabase/migrations/*.sql; do psql < "$f"; done
-HAGGLE_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:$PORT/postgres" corepack pnpm --filter @haggle/engine exec vitest run "$@"
+# npm workspaces: run the engine suite from its package (vitest is hoisted to the repo root).
+cd "$ROOT/packages/engine"
+HAGGLE_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:$PORT/postgres" "$ROOT/node_modules/.bin/vitest" run "$@"
