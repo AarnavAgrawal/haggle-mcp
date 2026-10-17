@@ -1,0 +1,32 @@
+{
+  "name": "@haggle/mcp",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "version": "0.1.0",
+  "description": "Haggle MCP server and MCP App views (mcp-use)",
+  "scripts": {
+    "build": "mcp-use build",
+    "dev": "mcp-use dev",
+    "start": "mcp-use start",
+    "deploy": "mcp-use deploy",
+    "typecheck": "mcp-use typecheck"
+  },
+  "dependencies": {
+    "@haggle/brain": "*",
+    "@haggle/core": "*",
+    "mcp-use": "2.10.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@mcp-use/client": "^2.4.3",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^7.0.2"
+  }
+}

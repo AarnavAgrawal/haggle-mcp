@@ -101,7 +101,8 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
 
       const quantity = req.quantity ?? median(p.history.flatMap((h) => (h.quantity ? [h.quantity] : []))) ?? 1;
       const perUnit = p.per_unit_usd.typical;
-      const total = Math.max(round2(perUnit * quantity), p.minimum_order_usd ?? 0);
+      // Estimates are rough by nature: whole dollars, never below the business's minimum order.
+      const total = Math.max(Math.round(perUnit * quantity), p.minimum_order_usd ?? 0);
       const spread = (p.per_unit_usd.high - p.per_unit_usd.low) / perUnit;
 
       const basis = [`based on ${p.n_quotes} real quote${p.n_quotes === 1 ? "" : "s"}`];
@@ -177,7 +178,7 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
     const pct = Math.round(Math.abs(delta) * 100);
     const summary =
       pct < 3
-        ? `About typical for ${where} (${moneyRange(typical, typical)}/${unit})`
+        ? `About typical for ${where} (~$${Math.round(typical)}/${unit})`
         : `${pct}% ${delta > 0 ? "above" : "below"} typical for ${where}`;
 
     return {

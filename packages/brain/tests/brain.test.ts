@@ -29,7 +29,7 @@ describe("brain (seeded from fixtures/brain/seed-replies.json)", () => {
     expect(estimates.map((e) => e.business)).not.toContain("QuickQuote Deli");
     expect(estimates[0]).toMatchObject({ business: "Golden Grill" });
     const bay = estimates.find((e) => e.business === "Bay Catering")!;
-    expect(bay).toMatchObject({ n_quotes: 3, best_channel: "a2a", per_unit_usd: 24.5, total_usd: 612.5 });
+    expect(bay).toMatchObject({ n_quotes: 3, best_channel: "a2a", per_unit_usd: 24.5, total_usd: 613 });
     expect(bay.basis).toMatch(/^based on 3 real quotes/);
     const totals = estimates.map((e) => e.total_usd);
     expect(totals).toEqual([...totals].sort((a, b) => a - b));

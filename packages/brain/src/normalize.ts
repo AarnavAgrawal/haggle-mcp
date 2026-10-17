@@ -68,10 +68,10 @@ export function money(n: number): string {
   return `$${n.toLocaleString("en-US", { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 })}`;
 }
 
-/** "$24–28" (whole dollars) or "$27" when the range is a single price. */
+/** "$24–28" (whole dollars, widened outward so $24.50 stays inside) or "$27" for a single price. */
 export function moneyRange(low: number, high: number): string {
-  const lo = Math.round(low);
-  const hi = Math.round(high);
+  const lo = Math.floor(low);
+  const hi = Math.ceil(high);
   return lo === hi ? `$${lo}` : `$${lo}–${hi}`;
 }
 
