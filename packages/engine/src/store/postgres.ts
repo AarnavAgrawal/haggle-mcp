@@ -26,8 +26,13 @@ const settingsRow = (s: SettingsRow | null): SettingsRow | null => (s ? { ...s, 
 export class PostgresRepository implements Repository {
   private readonly sql: Sql;
 
-  constructor(url: string, opts: { max?: number } = {}) {
-    this.sql = postgres(url, { max: opts.max ?? 5, idle_timeout: 20, connect_timeout: 15, prepare: false, onnotice: () => {} }) as unknown as Sql;
+  /** `schema`: where the migrations were applied when not `public` (a database shared with another app). */
+  constructor(url: string, opts: { max?: number; schema?: string } = {}) {
+    if (opts.schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(opts.schema)) throw new Error(`invalid database schema name: ${opts.schema}`);
+    this.sql = postgres(url, {
+      max: opts.max ?? 5, idle_timeout: 20, connect_timeout: 15, prepare: false, onnotice: () => {},
+      ...(opts.schema ? { connection: { search_path: opts.schema } } : {}),
+    }) as unknown as Sql;
   }
 
   async close() {
