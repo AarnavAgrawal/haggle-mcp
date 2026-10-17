@@ -20,6 +20,8 @@ function row<T>(r: Record<string, unknown> | undefined): T | null {
   return out as T;
 }
 const rows = <T>(rs: readonly Record<string, unknown>[]): T[] => rs.map((r) => row<T>(r)!);
+/** bigint columns come back from postgres.js as strings; cents are always numbers in the engine. */
+const settingsRow = (s: SettingsRow | null): SettingsRow | null => (s ? { ...s, spending_cap_cents: Number(s.spending_cap_cents) } : null);
 
 export class PostgresRepository implements Repository {
   private readonly sql: Sql;
@@ -222,7 +224,7 @@ export class PostgresRepository implements Repository {
     return rows<JobRow>(await this.sql`select * from jobs order by updated_at desc, created_at desc limit ${limit}`);
   }
   async getSettings() {
-    return row<SettingsRow>((await this.sql`select spending_cap_cents, approver_phone, approver_email, default_area, updated_at from engine_settings where id = 1`)[0]);
+    return settingsRow(row<SettingsRow>((await this.sql`select spending_cap_cents, approver_phone, approver_email, default_area, updated_at from engine_settings where id = 1`)[0]));
   }
   async saveSettings(s: Omit<SettingsRow, "updated_at">) {
     const r = await this.sql`
@@ -231,6 +233,6 @@ export class PostgresRepository implements Repository {
       on conflict (id) do update set spending_cap_cents = excluded.spending_cap_cents, approver_phone = excluded.approver_phone,
         approver_email = excluded.approver_email, default_area = excluded.default_area, updated_at = now()
       returning spending_cap_cents, approver_phone, approver_email, default_area, updated_at`;
-    return row<SettingsRow>(r[0])!;
+    return settingsRow(row<SettingsRow>(r[0]))!;
   }
 }

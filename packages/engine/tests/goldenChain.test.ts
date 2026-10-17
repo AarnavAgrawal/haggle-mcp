@@ -32,7 +32,9 @@ import {
 const SECRET = "whsec_chain_test";
 const DOMAIN = "brave-dog.primitive.email";
 const INBOX = jobInboxAddress("7F3K", DOMAIN);
-const NOW = new Date("2026-10-17T21:00:00Z");
+// Relative to the real clock: the x402 SDK checks challenge expiry against wall time.
+const NOW = new Date();
+const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000).toISOString();
 const REQS: EngineRequirement[] = [
   { id: "veg12", kind: "dietary", need: "vegetarian", min_count: 12, text: "At least 12 vegetarian meals", hard: true },
   { id: "delivery", kind: "delivery", text: "Delivery included", hard: true },
@@ -128,7 +130,7 @@ describe("golden scenario through the engine modules", () => {
       quoteId: r.quoteId, businessId: (r.match as { businessId: string }).businessId, businessName: NAMES[(r.match as { businessId: string }).businessId]!,
       totalCents: r.record.total_cents, available: r.record.available, compliant: r.compliant, senderTrusted: r.trust.trusted, round: 1,
       status: "current", confidence: r.record.confidence, flags: r.record.flags,
-    })), new Date("2026-10-17T21:30:00Z"));
+    })), new Date(at(30)));
     expect(counters.map((c) => [c.businessId, c.basisQuoteId, c.targetTotalCents])).toEqual([["b-bay", "q-b-harbor-1", 112000]]);
 
     // Bay replies in-thread with a revision. The revision is a received email, not something the engine computes.
@@ -146,12 +148,12 @@ describe("golden scenario through the engine modules", () => {
   });
 
   it("approval by trusted email, then the x402 guard and a locally built payment step", async () => {
-    const approval = { status: "pending", code: "4821", approver_email: "yash@example.com", expires_at: "2026-10-17T21:30:00Z" };
+    const approval = { status: "pending", code: "4821", approver_email: "yash@example.com", expires_at: at(30) };
     expect(verifyApproval(approval, { from: "yash@example.com", senderTrusted: true, threadMatched: true, bodyText: "APPROVE 4821" }, NOW)).toEqual({ decision: "approve" });
 
     const part = JSON.stringify({
       interaction_version: 1, interaction_id: "5f0c1b9e-2d3a-4c5b-9e8f-7a6b5c4d3e2f@bay-catering.primitive.email", protocol: "x402.payment",
-      protocol_version: 1, step: "challenge", step_id: "0b6d7f2e-1a2b-4c3d-8e9f-0a1b2c3d4e5f", prev_step_id: null, expires_at: "2026-10-17T21:05:00Z",
+      protocol_version: 1, step: "challenge", step_id: "0b6d7f2e-1a2b-4c3d-8e9f-0a1b2c3d4e5f", prev_step_id: null, expires_at: at(5),
       payload: { challenge_nonce: "b".repeat(64), payment_requirements: { scheme: "exact", network: "base-sepolia", maxAmountRequired: "5000000",
         payTo: "0x1111111111111111111111111111111111111111", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", extra: { name: "USDC", version: "2" } } },
     });
