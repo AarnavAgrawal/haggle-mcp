@@ -106,6 +106,10 @@ export interface EngineConfig {
    * transcripts are trusted (can become a quote) only when the operator opts in. Default: false.
    */
   trustInboundCallerId?: boolean;
+  /** Wait this long after deal() before placing Voice AI RFQ calls, so the call can cite the best real competing quote. Default 0. */
+  callDelayMs?: number;
+  /** Call an email business with an allowlisted phone when its email is unanswered this long (needs the phone port). Off when unset. */
+  escalateEmailToCallAfterMs?: number;
 }
 
 export interface EngineDeps {

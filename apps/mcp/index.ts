@@ -110,7 +110,9 @@ const businessInput = z.object({
   email: z.string().email().optional(),
   phone: z.string().regex(/^\+[1-9]\d{6,14}$/).optional().describe("E.164, e.g. +14155550123"),
   a2a_card_url: z.string().url().startsWith("https://").optional().describe("Agent Card URL for agent-ready businesses"),
-}).refine((b) => b.email || b.phone || b.a2a_card_url, { message: "each business needs an email, phone or a2a_card_url" });
+  channel: z.enum(["email", "phone", "a2a", "imessage"]).optional().describe("Preferred channel when several are possible; 'imessage' texts the business at `phone` (it must have texted connect @<buyer> first)"),
+}).refine((b) => b.email || b.phone || b.a2a_card_url, { message: "each business needs an email, phone or a2a_card_url" })
+  .refine((b) => b.channel !== "imessage" || b.phone, { message: "channel 'imessage' needs the business's phone number" });
 
 const jobId = z.string().min(4).max(64).describe("job_id returned by deal");
 const quoteId = z.string().min(3).max(64).describe("quote_id from get_quotes");
@@ -158,15 +160,25 @@ export const deal = server.tool(
       const area = await areaOr(rt, input.request.area);
       let businesses = input.businesses ?? [];
       const discovered = businesses.length === 0 && input.discover;
+      const discoverySkipped: string[] = [];
       if (discovered) {
-        businesses = (await engine.discover(input.request.what, area, DISCOVER_COUNT)).map((b) => ({ name: b.name, ...(b.email ? { email: b.email } : {}), ...((b as { phone?: string }).phone ? { phone: (b as { phone?: string }).phone } : {}) }));
+        const found = (await engine.discover(input.request.what, area, DISCOVER_COUNT)).map((b) => {
+          const x = b as { phone?: string; a2a_card_url?: string };
+          return { name: b.name, ...(b.email ? { email: b.email } : {}), ...(x.phone ? { phone: x.phone } : {}), ...(x.a2a_card_url ? { a2a_card_url: x.a2a_card_url } : {}) };
+        });
+        // Discovery is not permission: only businesses on this server's recipient allowlist are contacted.
+        businesses = found.filter((b) => engine.canContact(b));
+        const skipped = found.filter((b) => !engine.canContact(b)).map((b) => b.name);
+        if (skipped.length) discoverySkipped.push(...skipped);
+        if (!businesses.length) return fail(rt.mode, "no_contactable_businesses", `Discovery found ${found.length} businesses but none is on this server's recipient allowlist.`, "Pass the businesses to contact explicitly, or ask the operator to allow them (HAGGLE_ALLOWED_RECIPIENTS / HAGGLE_DEMO_FLEET).", "discover");
       }
       const reqs = [...input.request.requirements, ...(input.requirements ?? [])].map((r, i) => ({ ...r, id: r.id ?? `r${i + 1}` }));
       const settings = await engine.getSettings();
       const budget = input.budget_usd ?? settings.spending_cap_cents / 100;
       const warnings: string[] = [];
       if (input.budget_usd === undefined) warnings.push(`No budget_usd given: using the settings spending cap ${usd(budget)}.`);
-      if (input.approver_phone) warnings.push("approver_phone ignored: iMessage approval isn't enabled yet. The human approves in the approval card or the client's form.");
+      if (input.approver_phone) warnings.push("approver_phone ignored: the iMessage approver is the human set in settings (an agent can't name its own approver). They approve by iMessage, the approval card or the client's form.");
+      if (discoverySkipped.length) warnings.push(`Not contacted (not on this server's recipient allowlist): ${discoverySkipped.join(", ")}.`);
       const fewer = discovered ? fewerFound(rt.mode, businesses.length, DISCOVER_COUNT) : null;
       if (fewer) warnings.push(fewer);
       const r = await engine.deal({
@@ -535,7 +547,7 @@ server.get("/health", async (c) => {
   const missing = missingLiveConfig();
   try {
     const rt = await getRuntime();
-    return c.json({ ok: true, service: "haggle-mcp", version: "0.5.0", mode: rt.mode, phone: rt.engine.phoneEnabled, a2a: rt.engine.a2aEnabled, imessage: rt.engine.imessageEnabled, payments: rt.engine.paymentsEnabled ? "enabled" : "disabled", brain: rt.engine.brainIsStub ? "stub" : "connected" });
+    return c.json({ ok: true, service: "haggle-mcp", version: "0.5.0", build: process.env.HAGGLE_BUILD_SHA ?? null, mode: rt.mode, phone: rt.engine.phoneEnabled, a2a: rt.engine.a2aEnabled, imessage: rt.engine.imessageEnabled, payments: rt.engine.paymentsEnabled ? "enabled" : "disabled", brain: rt.engine.brainIsStub ? "stub" : "connected" });
   } catch (e) {
     return c.json({ ok: false, service: "haggle-mcp", error: (e as Error).message, missing }, 503);
   }

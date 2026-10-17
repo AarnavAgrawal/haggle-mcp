@@ -4,7 +4,7 @@
 import { InkboxAPIError } from "@inkbox/sdk";
 import { describe, expect, it } from "vitest";
 import {
-  a2aTaskView, createMockEngine, fleetBusinesses, fullCallTranscript, GOLDEN_REQUEST, HaggleEngine, inkboxA2A, inkboxCallEnded, inkboxIMessage, inkboxIMessageReceived, inkboxPhone,
+  a2aTaskView, createMockEngine, disabledPayer, fleetBusinesses, InMemoryRepository, StubBrain, fullCallTranscript, GOLDEN_REQUEST, HaggleEngine, inkboxA2A, inkboxCallEnded, inkboxIMessage, inkboxIMessageReceived, inkboxPhone,
   quotePartToExtraction, type IMessagePort,
 } from "../src/index.ts";
 
@@ -220,5 +220,101 @@ describe("calls a business places to Haggle", () => {
       // Trusted: sent for parsing (the scripted mock extractor has no line for it); untrusted: never parsed.
       expect(board.businesses[0]!.last_event).toMatch(trust ? /low confidence|Quoted|called Haggle/ : /caller ID not verified|unverified sender/);
     }
+  });
+});
+
+describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, fake Inkbox ports)", () => {
+  // Reads the figures out of free text, like the Claude extractor does live (no scripted winner).
+  const textExtractor = {
+    async extract(i: { bodyText: string }) {
+      const t = i.bodyText;
+      const money = (re: RegExp) => { const m = t.match(re); return m ? Number(m[1]!.replace(/,/g, "")) : null; };
+      const total = money(/\$?\s?([\d,]+(?:\.\d{2})?)\s*(?:total|all[- ]in)/i);
+      const deposit = money(/\$\s?([\d,]+(?:\.\d{2})?)\s*deposit|deposit (?:of )?\$\s?([\d,]+)/i);
+      const veg = Number(t.match(/(\d+)\s*(?:vegetarian|veg)/i)?.[1] ?? NaN);
+      return {
+        available: true, price_per_head_usd: null, headcount: 40, subtotal_usd: null, delivery_fee_usd: null, delivery_included: /deliver/i.test(t) ? true : null, tax_usd: null, tax_included: true,
+        total_usd: total, deposit_usd: deposit, menu_items: [], dietary_coverage: Number.isFinite(veg) ? [{ need: "vegetarian", covered: veg >= 12, count_offered: veg }] : [],
+        valid_until: null, questions: [], payment_request: "none" as const, instructions_to_agent: false,
+        sources: total !== null ? [{ field: "total" as const, source: "text", excerpt: `$${total} total` }] : [], missing_fields: total === null ? ["total" as const] : [], confidence: 0.9,
+      };
+    },
+  };
+  function demoEngine(config: Record<string, unknown> = {}) {
+    let t = Date.now();
+    const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
+    const sent: { to: string; subject: string; bodyText: string }[] = [];
+    const texts: { to: string; text: string }[] = [];
+    const calls: { toNumber: string; reason: string }[] = [];
+    const repo = new InMemoryRepository();
+    const engine = new HaggleEngine({
+      repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
+      email: { async send(m) { sent.push(m); return { providerId: `em_${sent.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${sent.length}@haggle.test>` }; } },
+      imessage: { async send(r) { texts.push(r); return { messageId: `im_${texts.length}` }; } },
+      phone: { async placeCall(r) { calls.push(r); return { callId: `call_${calls.length}` }; } },
+      config: { mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: "haggle@inkboxmail.test", collectionWindowMs: 30 * 60_000, negotiationWindowMs: 10 * 60_000, approvalTtlMs: 30 * 60_000, globalPaymentCapCents: 50_000, maxRounds: 2, ...config },
+    });
+    return { engine, repo, clock, sent, texts, calls };
+  }
+  const trusted = (expected: string) => ({ trusted: true as const, address: expected, reason: "trusted" as const, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
+
+  it("collects all three, the call cites the best real competing quote, and ranking picks the best eligible offer", async () => {
+    const { engine, repo, clock, sent, texts, calls } = demoEngine({ callDelayMs: 60_000 });
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, businesses: [
+      { name: "Harbor Table", email: "harbor-table-sf@inkboxmail.test" },
+      { name: "Sunset Kitchen", phone: "+14155550111", channel: "imessage" },
+      { name: "Mission Eats", phone: "+14155550104" },
+    ] });
+    expect(deal.contacted.map((c) => [c.business, c.channel])).toEqual(expect.arrayContaining([["Harbor Table", "email"], ["Sunset Kitchen", "imessage"]]));
+    expect(sent).toHaveLength(1);
+    expect(texts).toEqual([{ to: "+14155550111", text: expect.stringMatching(/^Hi Sunset Kitchen, Haggle AI assistant here\..{0,140}HG-/), idempotencyKey: expect.any(String) }]);
+    expect(texts[0]!.text.length).toBeLessThanOrEqual(159);
+    expect(calls).toHaveLength(0); // scheduled, not yet placed
+
+    // Email vendor replies in thread; the text vendor replies by iMessage.
+    const rfq = (await repo.getBusinesses(deal.job_id)).find((b) => b.name === "Harbor Table")!.rfq_message_id!;
+    await engine.ingest({ providerEventId: "e1", eventType: "message.received", providerEmailId: "in_1", threadId: "t1", messageId: "<in_1@x>", inReplyTo: [rfq], references: [rfq], from: "harbor-table-sf@inkboxmail.test", to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "Happy to help: $1,150 total, 12 vegetarian, delivered. $345 deposit.", attachments: [], attachmentsDownloadUrl: null }, trusted);
+    expect((await engine.ingestIMessage({ messageId: "im_in_1", from: "+14155550111", text: "We can do $1,080 total, 14 vegetarian, delivered, $100 deposit", isGroup: false })).outcome).toBe("stored");
+    await engine.advanceJob(deal.job_id);
+
+    // After the delay the Voice AI call goes out, AI-disclosed, citing the best REAL competing total.
+    clock.advance(61_000);
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.reason).toMatch(/You are an AI assistant/);
+    expect(calls[0]!.reason).toMatch(/another quote of \$1080\.00 total/);
+    expect((await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "haggle: I'm an AI assistant...\nremote: For you, $995 total all-in, 12 vegetarian, delivery included, $150 deposit." })).outcome).toBe("stored");
+    await engine.advanceJob(deal.job_id);
+
+    const board = await engine.getQuotes(deal.job_id);
+    const by = (n: string) => board.quotes.find((q) => q.business === n)!;
+    expect(by("Mission Eats")).toMatchObject({ channel: "phone", total_usd: 995, verdict: "compliant" });
+    expect(by("Sunset Kitchen")).toMatchObject({ channel: "imessage", total_usd: 1080, verdict: "compliant" });
+    expect(by("Harbor Table")).toMatchObject({ channel: "email", total_usd: 1150 });
+    expect(board.recommended_quote_id).toBe(by("Mission Eats").quote_id);
+    // Honest negotiation: counters cite the real $995 phone quote, by email and by iMessage.
+    await engine.advanceJob(deal.job_id);
+    const counterText = texts.find((x) => /another quote/.test(x.text));
+    if (counterText) expect(counterText.text).toMatch(/\$995\.00/);
+  });
+
+  it("an unanswered email escalates to one Voice AI call when the business has an allowlisted phone", async () => {
+    const { engine, clock, calls } = demoEngine({ escalateEmailToCallAfterMs: 5 * 60_000 });
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Quiet Bistro", email: "quiet@inkboxmail.test", phone: "+14155550122" }] });
+    clock.advance(4 * 60_000);
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(0);
+    clock.advance(2 * 60_000);
+    await engine.advanceJob(deal.job_id);
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.reason).toMatch(/follows up on an email/);
+  });
+
+  it("a text from an unknown number, or one never texted, is not a business reply", async () => {
+    const { engine } = demoEngine();
+    expect((await engine.ingestIMessage({ messageId: "x", from: "+14155550999", text: "$1 total!", isGroup: false })).outcome).toBe("not_approver");
   });
 });

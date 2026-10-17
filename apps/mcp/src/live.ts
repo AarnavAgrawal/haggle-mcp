@@ -1,7 +1,8 @@
 // LIVE MODE wiring (HAGGLE_MODE=live), v5: Postgres persistence, the Inkbox buyer identity for
 // email (+ attachments), Claude extraction, and the real brain (@haggle/brain via the engine's
 // adapter; profiles in Supabase when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set). Voice AI calls stay OFF unless HAGGLE_ENABLE_CALLS=true (separate
-// human approval; only simulated businesses or people who agreed). Payments: Stripe TEST MODE only
+// human approval; only simulated businesses or people who agreed). A2A tasks and iMessage (approvals and
+// texting businesses that connected first) are also opt-in. Payments: Stripe TEST MODE only
 // when HAGGLE_ENABLE_PAYMENTS=true and the key is sk_test_ (refuses to start otherwise); without the
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
@@ -61,6 +62,8 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       defaultSpendingCapCents: 150_000, spendingCapCeilingCents: Number.isInteger(ceiling) && ceiling > 0 ? ceiling : 500_000,
       ...(allowAny ? {} : { recipientAllowlist: allowlist }),
       trustInboundCallerId: env.HAGGLE_TRUST_INBOUND_CALLER_ID === "true",
+      ...(Number(env.HAGGLE_CALL_DELAY_S) > 0 ? { callDelayMs: Number(env.HAGGLE_CALL_DELAY_S) * 1000 } : {}),
+      ...(Number(env.HAGGLE_ESCALATE_EMAIL_TO_CALL_S) > 0 ? { escalateEmailToCallAfterMs: Number(env.HAGGLE_ESCALATE_EMAIL_TO_CALL_S) * 1000 } : {}),
     },
     log: (event, data) => console.log(JSON.stringify({ level: "info", event, ...data })),
   });
