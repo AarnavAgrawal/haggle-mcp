@@ -1,6 +1,6 @@
 // Builds the engine for the configured mode. Mock mode (default) needs no credentials and is
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
-import { createMockEngine, type HaggleEngine, type InkboxMailApi } from "@haggle/engine";
+import { createMockEngine, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
 
 export type Runtime = {
   mode: "mock" | "live";
@@ -8,7 +8,7 @@ export type Runtime = {
   /** Mock mode: the simulated fleet's delivery pump (the engine also pumps on every wait). */
   tick?: () => Promise<number>;
   /** Live mode: the Inkbox buyer identity and its webhook signing key. */
-  inkbox?: { api: InkboxMailApi; buyerMailbox: string; webhookSecret: string };
+  inkbox?: { api: InkboxMailApi; buyerMailbox: string; webhookSecret: string; senderTrust: InkboxTrustPolicy };
   missing: string[];
 };
 

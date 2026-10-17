@@ -145,24 +145,42 @@ export function inkboxToInbound(payload: { id: string; event_type: string }, det
 const noEvidence = { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] as string[] };
 
 /**
- * Is this inbound message really from its From address? Trusted only if the sender is an Inkbox
- * agent identity (from-bucket match on the webhook) and its own mailbox holds the same Message-ID
- * as an outbound message. API failures are retryable (the webhook answers 503 so Inkbox redelivers);
- * a 403/404 (key can't see that mailbox) is not.
+ * Sender-trust policy for Inkbox mail.
+ * - "outbound-verified" (default, strongest): the sender is a same-org Inkbox identity AND its own
+ *   mailbox holds the same Message-ID as an outbound message. Needs a key that can read the
+ *   seller's mailbox (admin-scoped); an agent-scoped buyer key gets 403 -> not verifiable.
+ * - "pinned-org-identity" (operator opt-in for an agent-scoped buyer key): the sender is a
+ *   same-org Inkbox identity (webhook from-bucket match) AND on `allowedSenders` (the demo fleet).
+ *   Weaker: the identity match is by address and inkboxmail.com publishes DMARC p=none, so it is
+ *   recorded as "inkbox-org-identity" (outbound not verified), never as fully verified.
  */
-export async function inkboxSenderTrust(api: InkboxMailApi, payload: Pick<MailWebhookPayload, "data">, detail: InkboxMessageDetail, opts: { lookbackMessages?: number } = {}): Promise<TrustVerdict> {
+export type InkboxTrustPolicy = { policy: "outbound-verified"; lookbackMessages?: number } | { policy: "pinned-org-identity"; allowedSenders: string[] };
+
+/**
+ * Is this inbound message really from its From address? See InkboxTrustPolicy. API failures are
+ * retryable (the webhook answers 503 so Inkbox redelivers); a 403/404 (key can't see that mailbox)
+ * is not.
+ */
+export async function inkboxSenderTrust(api: InkboxMailApi, payload: Pick<MailWebhookPayload, "data">, detail: InkboxMessageDetail, opts: { lookbackMessages?: number } | InkboxTrustPolicy = {}): Promise<TrustVerdict> {
   const from = detail.fromAddress ? lower(detail.fromAddress) : "";
   if (!from) return { trusted: false, retryable: false, reason: "no-expected-address", evidence: noEvidence };
   const ids = (payload.data.agent_identities ?? []) as { bucket: string; address: string }[];
   const isIdentity = ids.some((x) => x.bucket === "from" && lower(x.address) === from);
   if (!isIdentity) return { trusted: false, retryable: false, reason: "unverified-external-sender", evidence: noEvidence };
+  if ("policy" in opts && opts.policy === "pinned-org-identity") {
+    const pinned = opts.allowedSenders.some((a) => lower(a) === from);
+    return pinned
+      ? { trusted: true, address: from, reason: "inkbox-org-identity", evidence: { ...noEvidence, dmarc: "inkbox-org-identity (outbound not verified)" } }
+      : { trusted: false, retryable: false, reason: "sender-not-verifiable", evidence: noEvidence };
+  }
+  const lookback = "lookbackMessages" in opts ? opts.lookbackMessages : undefined;
   const want = normalizeMessageId(detail.messageId ?? "");
   if (!want) return { trusted: false, retryable: false, reason: "sender-not-verifiable", evidence: noEvidence };
   try {
     let seen = 0;
     for await (const m of api.list(from, { direction: "outbound", pageSize: 25 })) {
       if (normalizeMessageId(m.messageId ?? "") === want) return { trusted: true, address: from, reason: "trusted", evidence: { ...noEvidence, dmarc: "inkbox-identity-outbound-match" } };
-      if (++seen >= (opts.lookbackMessages ?? 50)) break;
+      if (++seen >= (lookback ?? 50)) break;
     }
     return { trusted: false, retryable: false, reason: "sender-not-verifiable", evidence: noEvidence };
   } catch (e) {

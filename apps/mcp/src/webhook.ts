@@ -22,7 +22,7 @@ export async function handleInkboxWebhook(rt: Runtime, raw: string, headers: Hea
         outcome = "not_for_buyer";
       } else {
         const msg = inkboxToInbound(payload, detail);
-        const trust = await inkboxSenderTrust(rt.inkbox.api, payload as never, detail);
+        const trust = await inkboxSenderTrust(rt.inkbox.api, payload as never, detail, rt.inkbox.senderTrust);
         if (!trust.trusted && trust.retryable) throw new RetryLater("sender verification temporarily unavailable");
         ({ jobId, outcome } = await rt.engine.ingest(msg, trustForSender(trust, msg.from)));
       }

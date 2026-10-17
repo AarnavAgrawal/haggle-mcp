@@ -4,7 +4,7 @@
 // human approval; only simulated businesses or people who agreed). Payments: disabled (every
 // signature refused, never faked) until Stripe test mode, the 9 PM item; no Primitive/x402 keys.
 import {
-  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, StubBrain, slugify,
+  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, StubBrain, slugify,
 } from "@haggle/engine";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
 
@@ -24,6 +24,11 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // Never contact arbitrary businesses: only the simulated fleet and explicitly allowed recipients.
   const allowAny = env.HAGGLE_ALLOW_ANY_RECIPIENT === "true";
   const allowlist = [...fleet.map((b) => b.email), ...(env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
+  // Seller-reply trust (see InkboxTrustPolicy): strict by default; "pinned-org-identity" is the
+  // operator opt-in for an agent-scoped buyer key, limited to the pinned fleet/allowlist addresses.
+  const senderTrust: InkboxTrustPolicy = env.INKBOX_SENDER_TRUST === "pinned-org-identity"
+    ? { policy: "pinned-org-identity", allowedSenders: allowlist.filter((a) => a.includes("@") && !a.startsWith("@")) }
+    : { policy: "outbound-verified" };
   const engine = new HaggleEngine({
     repo,
     email: inkboxEmail(api, buyerMailbox),
@@ -44,6 +49,6 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   setInterval(() => {
     void repo.listOpenJobs().then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
   }, TICK_MS).unref();
-  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, allowed_recipients: allowAny ? "any" : allowlist.length }));
-  return { mode: "live", engine, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET! } };
+  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
+  return { mode: "live", engine, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust } };
 });

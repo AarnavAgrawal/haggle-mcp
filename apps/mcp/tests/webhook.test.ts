@@ -3,7 +3,7 @@
 // deduped redelivery, retryable trust failures, call.ended routing, and mock mode disabled.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createMockEngine, disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, inkboxEmail, type QuoteExtraction } from "@haggle/engine";
+import { createMockEngine, disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, inkboxEmail, type InkboxTrustPolicy, type QuoteExtraction } from "@haggle/engine";
 import { BUYER, FakeInkbox, SECRET, signed } from "../../../packages/engine/tests/helpers/fakeInkbox.ts";
 import { handleInkboxWebhook } from "../src/webhook.ts";
 import type { Runtime } from "../src/runtime.ts";
@@ -18,7 +18,7 @@ const extraction: QuoteExtraction = {
   payment_request: "none", instructions_to_agent: false, sources: [{ field: "total", source: "email body", excerpt: "Total $995" }], missing_fields: [], confidence: 0.9,
 };
 
-async function liveRuntime() {
+async function liveRuntime(senderTrust: InkboxTrustPolicy = { policy: "outbound-verified" }) {
   const api = new FakeInkbox();
   const repo = new InMemoryRepository();
   const engine = new HaggleEngine({
@@ -26,7 +26,7 @@ async function liveRuntime() {
     payer: disabledPayer("Payments are not enabled yet"),
     config: { mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: BUYER, collectionWindowMs: 600_000, negotiationWindowMs: 300_000, approvalTtlMs: 1_800_000, globalPaymentCapCents: 500, maxRounds: 2 },
   });
-  const rt: Runtime = { mode: "live", engine, missing: [], inkbox: { api, buyerMailbox: BUYER, webhookSecret: SECRET } };
+  const rt: Runtime = { mode: "live", engine, missing: [], inkbox: { api, buyerMailbox: BUYER, webhookSecret: SECRET, senderTrust } };
   const { budget_usd, ...request } = GOLDEN_REQUEST;
   const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Bay Catering", email: SELLER }] });
   const rfqId = (await repo.getBusinesses(deal.job_id))[0]!.rfq_message_id!;
@@ -55,6 +55,29 @@ describe("POST /webhooks/inkbox", () => {
     const board = await engine.getQuotes(deal.job_id);
     expect(board.quotes).toHaveLength(1);
     expect(board.quotes[0]).toMatchObject({ business: "Bay Catering", total_usd: 995, channel: "email" });
+  });
+
+  it("pinned-org-identity: a fleet identity's reply is trusted without reading its mailbox, and labelled as such", async () => {
+    const { rt, api, engine, deal, rfqId } = await liveRuntime({ policy: "pinned-org-identity", allowedSenders: [SELLER] });
+    api.listError = Object.assign(new Error("forbidden"), { statusCode: 403 }); // agent-scoped key: can't read the seller's mailbox
+    const detail = api.reply(SELLER, rfqId, sellerText, [], { recordOutbound: false });
+    const raw = event("evt_p1", "message.received", { message: { id: detail.id }, agent_identities: [{ bucket: "from", address: SELLER }] });
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 200, outcome: "stored" });
+    const board = await engine.getQuotes(deal.job_id);
+    expect(board.quotes[0]).toMatchObject({ business: "Bay Catering", total_usd: 995, verdict: "compliant" });
+    const msgs = await (engine as unknown as { d: { repo: InMemoryRepository } }).d.repo.listMessages(deal.job_id);
+    expect(msgs.find((m) => m.direction === "in")).toMatchObject({ sender_trusted: true, trust_reason: "inkbox-org-identity" });
+  });
+
+  it("pinned-org-identity never trusts an outside sender or an identity that isn't pinned", async () => {
+    const { rt, api, engine, deal, rfqId } = await liveRuntime({ policy: "pinned-org-identity", allowedSenders: ["someone-else@inkboxmail.test"] });
+    const detail = api.reply(SELLER, rfqId, sellerText);
+    const raw = event("evt_p2", "message.received", { message: { id: detail.id }, agent_identities: [{ bucket: "from", address: SELLER }] });
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 200, outcome: "stored" });
+    const ext = api.reply(SELLER, rfqId, "spoofed", [], { recordOutbound: false });
+    const raw2 = event("evt_p3", "message.received", { message: { id: ext.id }, agent_identities: [] });
+    expect(await handleInkboxWebhook(rt, raw2, signed(raw2))).toMatchObject({ status: 200 });
+    expect((await engine.getQuotes(deal.job_id)).quotes).toHaveLength(0);
   });
 
   it("answers 503 (so Inkbox retries) when sender verification is temporarily unavailable", async () => {
