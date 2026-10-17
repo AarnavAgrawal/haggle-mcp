@@ -5,6 +5,7 @@ import { z } from "zod";
 import { EngineError, type DealBoardData } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
+import { honestBasis, quoteCounts, seedRows } from "./src/seedLabel.ts";
 import { ApprovalOut, BusinessProfile, DealBoard, DealBoardOrEmpty, emptyBoard, Estimates, toApproval, toDealBoard } from "./src/views.ts";
 import { DISCOVER_COUNT, fewerFound } from "./src/discovery.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
@@ -401,7 +402,9 @@ export const ask = server.tool(
     run(async (rt) => {
       const area = await areaOr(rt, req.area);
       const request = { what: req.what, quantity: req.quantity, area, ...(req.date ? { date: req.date } : {}), ...(req.unit ? { unit: req.unit } : {}) };
-      const base = toEstimatesView(request, await rt.brain.core.estimate(request));
+      const raw = toEstimatesView(request, await rt.brain.core.estimate(request));
+      const profiles = await Promise.all(raw.estimates.map((e) => rt.brain.core.getProfile(e.business_id).catch(() => null)));
+      const base = { ...raw, estimates: raw.estimates.map((e, i) => ({ ...e, basis: honestBasis(e.basis, quoteCounts(profiles[i]?.history ?? [])) })) };
       // The brain's own hint passes bare business ids to deal, which deal rejects: point at discover instead.
       const v = { ...base, mode: rt.mode, next: base.estimates.length
         ? `These are estimates, not quotes. For confirmed prices call deal(request={what:'${request.what}', quantity:${request.quantity}, date:'${request.date ?? "YYYY-MM-DD"}', area:'${request.area}'}, discover:true): Haggle contacts the learned businesses it may contact, each on its own channel.`
@@ -475,8 +478,11 @@ export const businessProfile = server.tool(
     run(async ({ brain, mode }) => {
       const p = (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business)));
       if (!p) return fail(mode, "NOT_LEARNED", `Haggle hasn't learned ${business} yet.`, "Run a deal with this business; every reply teaches Haggle.", "deal");
-      const v = { ...toBusinessProfileView(p), mode, next: `For a real quote call deal(request=..., discover:true) or pass this business with its contact (email / phone / a2a_card_url); for an instant estimate call ask(what, quantity, date, area).` };
-      return ok(v, `${p.name}: ${p.n_quotes} real quotes, confidence ${Math.round(p.confidence * 100)}%. next: ${v.next}`);
+      const counts = quoteCounts(p.history);
+      const seeded = seedRows(p.history);
+      const view = toBusinessProfileView(p);
+      const v = { ...view, history: view.history.map((h, i) => (seeded[i] ? { ...h, note: `${h.note} (seed sample)` } : h)), mode, next: `For a real quote call deal(request=..., discover:true) or pass this business with its contact (email / phone / a2a_card_url); for an instant estimate call ask(what, quantity, date, area).` };
+      return ok(v, `${p.name}: ${honestBasis(`${p.n_quotes} real quotes`, counts)}, confidence ${Math.round(p.confidence * 100)}%. next: ${v.next}`);
     }),
 );
 

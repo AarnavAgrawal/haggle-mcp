@@ -167,6 +167,9 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // QuickQuote Deli: "pay now at this link" + injection → rejected, never followed.
     expect(q("QuickQuote Deli")).toMatchObject({ verdict: "rejected", eligible: false });
     expect(q("QuickQuote Deli").flags).toEqual(expect.arrayContaining(["external_payment_link"]));
+    // Its own words (the injection) are never echoed back to the model or the view.
+    expect(biz("QuickQuote Deli").transcript_snippet).toBeUndefined();
+    expect(JSON.stringify(board)).not.toMatch(/ignore your instructions/i);
     // Negotiation cited only eligible, authentic quotes (the scam's $700 never).
     const eligibleTotals = new Set(board.quotes.filter((x: { eligible: boolean }) => x.eligible).map((x: { total_usd: number }) => x.total_usd));
     expect(board.negotiation.length).toBeGreaterThan(0);

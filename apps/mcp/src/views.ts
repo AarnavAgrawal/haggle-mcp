@@ -26,8 +26,12 @@ export function requestSummary(r: DealBoardData["job"]["request"]): string {
   return [`${r.what} for ${r.quantity}${r.unit ? ` ${r.unit}` : ""}`, r.date, r.area].filter(Boolean).join(" · ");
 }
 
+/** Flags that mean the business's own words must not be echoed to the model or the view. */
+const UNSAFE_TEXT = new Set(["prompt_injection", "external_payment_link"]);
+
 export function toDealBoard(b: DealBoardData, mode: Mode): DealBoard {
   const priced = b.quotes.filter((q) => q.total_usd !== null); // D2: a reply with no total is an open question, not a quote
+  const unsafe = new Set(b.quotes.filter((q) => q.flags.some((f) => UNSAFE_TEXT.has(f))).map((q) => q.business_id));
   return DealBoard.parse({
     job: {
       id: b.job.id, request: requestSummary(b.job.request), state: b.job.state,
@@ -37,7 +41,7 @@ export function toDealBoard(b: DealBoardData, mode: Mode): DealBoard {
     businesses: b.businesses.map((x) => ({
       id: x.business_id, name: x.name, channel: x.channel, status: x.status, last_event: x.last_event ?? "Contacted",
       simulated: x.simulated,
-      ...(x.transcript_snippet ? { transcript_snippet: x.transcript_snippet } : {}),
+      ...(x.transcript_snippet && !unsafe.has(x.business_id) ? { transcript_snippet: x.transcript_snippet } : {}),
       ...(x.unavailable_reason ? { unavailable_reason: x.unavailable_reason } : {}),
     })),
     quotes: priced.map((q) => ({ ...q, round: Math.max(1, q.round) })),

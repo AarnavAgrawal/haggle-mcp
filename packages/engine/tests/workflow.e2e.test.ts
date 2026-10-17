@@ -236,7 +236,13 @@ describe("v5 channels and deal board (mock mode)", { timeout: 60_000 }, () => {
     expect((await engine.updateSettings({ spending_cap_cents: 120_000, default_area: "San Francisco, CA" })).default_area).toBe("San Francisco, CA");
     if (!makeRepo) expect(await engine.latestJob()).toBeNull(); // a fresh memory store has no jobs (Postgres is shared by tests)
     const deal = await startDeal(engine);
-    expect((await engine.latestJob())!.id).toBe(deal.job_id);
+    const latest = (await engine.latestJob())!;
+    if (makeRepo) {
+      // Shared Postgres: other tests' jobs share this fake clock's start, so assert the rule, not the id.
+      const mine = (await engine.loadJob(deal.job_id)) as { created_at: string };
+      expect(Date.parse((latest as { created_at: string }).created_at)).toBeGreaterThanOrEqual(Date.parse(mine.created_at));
+      expect(["paid", "cancelled", "failed"]).not.toContain(latest.state);
+    } else expect(latest.id).toBe(deal.job_id);
     const ready = await runUntil(engine, clock, deal.job_id, (x) => x.ready);
     const bay = ready.quotes.find((x) => x.business === "Bay Catering")!;
     const a = await engine.requestApproval(deal.job_id, bay.quote_id, "view");
