@@ -485,6 +485,13 @@ export class HaggleEngine {
   }
 
   private async storeExtraction(job: JobRow, b: JobBusinessRow, msg: MessageRow, x: Parameters<typeof validateQuote>[0], kind: string) {
+    // Mail that fails sender authentication never becomes a quote or a question: it can't win, and
+    // it must not supersede (knock out) the business's genuine quote either. Kept for audit only.
+    if (msg.sender_trusted !== true) {
+      await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `ignored an unauthenticated email claiming to be ${b.name}` });
+      await this.repo.touchJob(job.id);
+      return;
+    }
     const reqs = this.requirements(job);
     const record = validateQuote(x, job.request.quantity);
     const results = evaluateRequirements(record, reqs, job.request.quantity);
