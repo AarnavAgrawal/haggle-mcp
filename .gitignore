@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.mcp-use/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+.turbo/
+.vite/
+*.tsbuildinfo
+.haggle-data/
+# Planning PDF is kept out of version control (private planning document)
+*.pdf
+!fixtures/**/*.pdf
