@@ -43,11 +43,19 @@ async function main() {
     if (id.emailAddress) rec.email = id.emailAddress;
 
     if (p.channel === "phone") {
-      const number = id.phoneNumber ?? (await id.provisionPhoneNumber());
-      rec.phone = number.number;
-      await id.setIncomingCallAction({ incomingCallAction: IncomingCallAction.HOSTED_AGENT });
+      // Persona first: it's identity-level, so it applies as soon as a number is attached.
       await id.setHostedAgentConfig({ voice, instructions: phoneInstructions(p) });
-      console.log(`  Voice AI answers ${rec.phone} as ${p.name}`);
+      try {
+        const number = id.phoneNumber ?? (await id.provisionPhoneNumber());
+        rec.phone = number.number;
+        await id.setIncomingCallAction({ incomingCallAction: IncomingCallAction.HOSTED_AGENT });
+        console.log(`  Voice AI answers ${rec.phone} as ${p.name}`);
+      } catch (e) {
+        if ((e as { statusCode?: number }).statusCode !== 402) throw e;
+        delete rec.phone;
+        console.warn(`  ! no phone number: ${(e as { detail?: string }).detail ?? (e as Error).message}`);
+        console.warn("    Voice AI persona is configured; attach a number to this identity and re-run setup.");
+      }
     }
 
     if (p.channel === "a2a") {
@@ -70,15 +78,23 @@ async function main() {
     if (p.channel !== "phone") {
       const events = p.channel === "a2a" ? ["message.received", "a2a.task.created", "a2a.task.message"] : ["message.received"];
       const url = `${publicUrl}/webhooks/inkbox/${p.handle}`;
-      const sub = await inkbox.webhooks.subscriptions.create({ agentIdentityId: id.id, url, eventTypes: events });
-      if (sub.signingKey) rec.signingKey = sub.signingKey;
-      console.log(`  webhooks → ${url}`);
+      const existing = await inkbox.webhooks.subscriptions.list({ agentIdentityId: id.id, url, scope: "identity" });
+      if (existing.some((s) => s.url === url)) {
+        console.log(`  webhooks → ${url} (already subscribed)`);
+      } else {
+        const sub = await inkbox.webhooks.subscriptions.create({ agentIdentityId: id.id, url, eventTypes: events });
+        if (sub.signingKey) rec.signingKey = sub.signingKey;
+        console.log(`  webhooks → ${url}`);
+      }
     }
     if (!rec.signingKey && p.channel !== "phone") {
+      // Keys are shown once; if we never stored one, rotate to get a key we know.
       rec.signingKey = (await id.createSigningKey()).signingKey;
+      console.log("  signing key stored");
     }
 
     registry[p.handle] = rec;
+    saveRegistry(registry); // progress survives a later failure
     directory.push({
       id: p.business_id,
       ...(p.channel !== "phone" && rec.email ? { email: rec.email } : {}),
