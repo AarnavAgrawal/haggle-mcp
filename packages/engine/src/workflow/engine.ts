@@ -838,6 +838,31 @@ export class HaggleEngine {
     return p ? paymentStatus(p) : { status: "awaiting_invoice", network: "base-sepolia", simulated: this.d.payer.simulated };
   }
 
+  // ───────────────────────────── brain-backed (Partner's brain via the contract) ─────────────────────────────
+
+  get brainIsStub(): boolean {
+    return (this.d.brain as { stub?: boolean }).stub === true;
+  }
+  async ask(req: Request) {
+    const estimates = await this.d.brain.estimate(req);
+    return { estimates, note: "estimates, not quotes" as const, brain: this.brainIsStub ? "stub (not learning yet)" : "connected" };
+  }
+  async discover(category: string, area: string, count: number) {
+    return this.d.brain.discover(category, area, Math.min(Math.max(count, 1), 12));
+  }
+  async checkPrice(input: Parameters<import("@haggle/core/contracts").Brain["checkPrice"]>[0]) {
+    return this.d.brain.checkPrice(input);
+  }
+  async quoteForCheck(jobId: string, quoteId: string) {
+    const job = await this.loadJob(jobId);
+    const q = await this.repo.getQuote(quoteId);
+    if (!q || q.job_id !== jobId || q.total_cents === null) throw new EngineError("quote_not_found", "No priced quote with that id on this job.", "Use a quote_id from get_quotes.", "get_quotes");
+    return { business_id: q.business_id, request: { what: job.request.what, quantity: job.request.quantity, area: job.request.area, date: job.request.date }, total_usd: centsToUsd(q.total_cents) };
+  }
+  get mode() {
+    return this.d.config.mode;
+  }
+
   async cancel(jobId: string) {
     const job = await this.loadJob(jobId);
     if (job.state === "cancelled") return { ok: true as const, state: job.state };
