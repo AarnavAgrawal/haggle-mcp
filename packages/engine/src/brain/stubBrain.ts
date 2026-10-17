@@ -6,7 +6,10 @@ import type { Brain, Business, Estimate, Hints, PriceVerdict, Profile } from "@h
 
 export class StubBrain implements Brain {
   readonly stub = true;
-  constructor(private readonly fleet: Business[] = []) {}
+  private readonly fleet: Business[];
+  constructor(fleet: Business[] = []) {
+    this.fleet = fleet;
+  }
 
   async learnFromReply(businessId: string): Promise<Profile> {
     const b = this.fleet.find((x) => x.business_id === businessId);

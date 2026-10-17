@@ -12,6 +12,9 @@
     "build": "corepack pnpm -r --if-present build",
     "lint": "corepack pnpm -r --if-present lint",
     "test:pg": "scripts/test-postgres.sh",
-    "verify:db": "scripts/verify-migrations.sh"
+    "verify:db": "scripts/verify-migrations.sh",
+    "demo": "corepack pnpm --filter @haggle/engine demo",
+    "demo:server": "corepack pnpm --filter @haggle/mcp build && cd apps/mcp && HAGGLE_MODE=mock HAGGLE_SIM_DELAY_SCALE=${HAGGLE_SIM_DELAY_SCALE:-0.5} ./node_modules/.bin/mcp-use start --with-inspector",
+    "verify": "corepack pnpm typecheck && corepack pnpm test && corepack pnpm build && scripts/verify-migrations.sh && scripts/test-postgres.sh"
   }
 }

@@ -54,8 +54,12 @@ export interface SenderClient {
 
 export class SendRejected extends Error {
   override name = "SendRejected";
-  constructor(readonly status: string, readonly rejected: string[]) {
+  readonly status: string;
+  readonly rejected: string[];
+  constructor(status: string, rejected: string[]) {
     super(`recipient rejected (${status})`);
+    this.status = status;
+    this.rejected = rejected;
   }
 }
 

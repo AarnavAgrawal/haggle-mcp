@@ -144,7 +144,10 @@ export class SimFleet implements EmailPort, ExtractorPort {
   private readonly prefix = Math.random().toString(36).slice(2, 8);
   private deliver: Deliver | null = null;
 
-  constructor(private readonly opts: { now: () => Date; delayScale?: number; personas?: Persona[] } ) {}
+  private readonly opts: { now: () => Date; delayScale?: number; personas?: Persona[] };
+  constructor(opts: { now: () => Date; delayScale?: number; personas?: Persona[] }) {
+    this.opts = opts;
+  }
 
   connect(deliver: Deliver) {
     this.deliver = deliver;

@@ -33,8 +33,14 @@ import type { EngineDeps } from "./ports.ts";
 
 export class EngineError extends Error {
   override name = "EngineError";
-  constructor(readonly code: string, message: string, readonly fix: string, readonly next: string) {
+  readonly code: string;
+  readonly fix: string;
+  readonly next: string;
+  constructor(code: string, message: string, fix: string, next: string) {
     super(message);
+    this.code = code;
+    this.fix = fix;
+    this.next = next;
   }
 }
 
@@ -52,7 +58,10 @@ const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
 const jsonPart = (filename: string, o: unknown): OutboundAttachment => ({ filename, contentType: "application/json", content: enc(o) });
 
 export class HaggleEngine {
-  constructor(private readonly d: EngineDeps) {}
+  private readonly d: EngineDeps;
+  constructor(d: EngineDeps) {
+    this.d = d;
+  }
 
   private get repo(): Repository {
     return this.d.repo;
