@@ -6,7 +6,7 @@
 // when HAGGLE_ENABLE_PAYMENTS=true and the key is sk_test_ (refuses to start otherwise); without the
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
-  businessIdFor, claudeExtractor, placesReputation, connectInkboxBuyer, disabledPayer, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
+  businessIdFor, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
 } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
@@ -63,6 +63,8 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     brain,
     payer: disabledPayer("Payments are not enabled on this server (HAGGLE_ENABLE_PAYMENTS is off); nothing was charged."),
     ...(stripe ? { stripe } : {}),
+    // Claude chooses among the planner's truthful counter moves; validated, and the rules decide on any failure.
+    strategist: claudeStrategist(createAnthropicClient({ apiKey: env.ANTHROPIC_API_KEY!, ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }), env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5"),
     // Public reviews for real businesses (Google Places), only when a key is configured; never for demo vendors.
     reputation: placesReputation({ ...(env.GOOGLE_PLACES_API_KEY ? { apiKey: env.GOOGLE_PLACES_API_KEY } : {}), log: (event, data) => console.log(JSON.stringify({ level: "info", event, ...data })) }),
     config: {

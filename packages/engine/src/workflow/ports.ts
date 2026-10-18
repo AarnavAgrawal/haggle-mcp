@@ -131,6 +131,8 @@ export interface EngineDeps {
    */
   stripe?: StripePort;
   config: EngineConfig;
+  /** Optional: an LLM that chooses among the planner's truthful counter moves (validated; rules on failure). */
+  strategist?: import("../negotiation/strategist.ts").StrategistPort;
   /** Optional: public reputation for real businesses (non-blocking; never for simulated vendors). */
   reputation?: import("../reputation/places.ts").ReputationPort;
   now?: () => Date;

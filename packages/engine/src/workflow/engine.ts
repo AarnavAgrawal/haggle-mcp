@@ -21,7 +21,8 @@ import { businessIdForContact, newApprovalCode, newId, newShortCode, slugify } f
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, subjectShortCode } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
-import { planCounteroffers } from "../negotiation/counteroffer.ts";
+import { planCounteroffers, type PlannedCounter } from "../negotiation/counteroffer.ts";
+import { applyStrategy, type StrategyContext } from "../negotiation/strategist.ts";
 import { imessageFailureReason } from "../outbound/imessageErrors.ts";
 import { buildRfqEmail, eventPlace, eventWhen, humanTime } from "../outbound/rfq.ts";
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
@@ -914,18 +915,43 @@ export class HaggleEngine {
 
 
 
+  /** The strategist's choice among the truthful plan (validated), or the plan as-is. */
+  private async strategize(job: JobRow, plan: PlannedCounter[], businesses: JobBusinessRow[], quotes: QuoteRow[]) {
+    const names = businesses.map((b) => b.name);
+    if (!this.d.strategist || plan.length === 0) return { ...applyStrategy(plan, null, names), by: "rules" as const };
+    const byId = new Map(businesses.map((b) => [b.business_id, b]));
+    const ctx: StrategyContext = {
+      what: job.request.what, quantity: job.request.quantity, targetUsd: job.budget_cents === null ? null : centsToUsd(job.budget_cents), hardLimit: job.request.budget_kind === "limit",
+      quotes: quotes.filter((q) => q.status === "current" && q.total_cents !== null && q.sender_trusted).map((q) => ({
+        business_id: q.business_id, business: byId.get(q.business_id)?.name ?? q.business_id, total_usd: centsToUsd(q.total_cents!), deposit_usd: q.deposit_cents === null ? null : centsToUsd(q.deposit_cents),
+        round: q.round, channel: byId.get(q.business_id)?.channel ?? "email", notes: [...q.record.flags, ...q.requirement_results.filter((r) => r.met !== true).map((r) => `requirement ${r.requirement_id}: ${r.met === false ? "not met" : "unconfirmed"}`)],
+      })),
+    };
+    try {
+      const decision = await this.d.strategist.decide(plan, ctx);
+      const applied = applyStrategy(plan, decision, names);
+      if (applied.rejectedAsks.length) this.log("strategy_ask_rejected", { job_id: job.id, rejected: applied.rejectedAsks });
+      return { ...applied, by: "llm" as const };
+    } catch (err) {
+      this.log("strategy_failed", { job_id: job.id, error: (err as Error).message });
+      return { ...applyStrategy(plan, null, names), by: "rules" as const };
+    }
+  }
+
   private async sendCounteroffers(job: JobRow, round: number) {
     await this.refreshRounds(job);
     const { rankable, quotes } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
     const byId = new Map(businesses.map((b) => [b.business_id, b]));
     const plan = this.counterPlan(job, rankable, businesses, quotes);
+    const { moves, skipped, by } = await this.strategize(job, plan, businesses, quotes);
+    for (const k of skipped) await this.repo.appendEvent(job.id, "reply", { business_id: k.business_id, summary: `No counter to ${byId.get(k.business_id)?.name ?? "this business"} this round: ${k.reason}` });
     let sent = 0;
-    for (const c of plan) {
+    for (const c of moves) {
       const b = byId.get(c.businessId);
       if (!b) continue;
       const counter = { haggle: "counter/1", protocol: "haggle.v0", type: "counter", job_id: job.id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis: c.basis, ...(c.basis === "competing_quote" ? { basis_quote_total_usd: centsToUsd(c.targetTotalCents) } : { buyer_target_usd: centsToUsd(c.targetTotalCents) }), respond_by: job.collect_until };
-      const why = c.basis === "competing_quote" ? `match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})` : `get closer to the buyer's $${centsToUsd(c.targetTotalCents)} target`;
+      const why = `${c.basis === "competing_quote" ? `match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})` : `get closer to the buyer's $${centsToUsd(c.targetTotalCents)} target`} · ${c.strategy.reason}`;
       if (b.channel === "imessage") {
         const key = sendKeys.counter(job.id, b.business_id, c.round);
         if (await this.repo.findMessageByIdempotencyKey(key)) continue;
@@ -933,7 +959,7 @@ export class HaggleEngine {
           await this.sendIMessageToBusiness(job, b, "counter", key, `${c.shortText} HG-${job.short_code}`, c.round);
           await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
           await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} by iMessage: ${why}`, basis_quote_id: c.basisQuoteId });
-          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis_quote_id: c.basisQuoteId, basis: c.basis });
+          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis_quote_id: c.basisQuoteId, basis: c.basis, strategy: c.strategy });
           sent++;
         } catch (err) {
           this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -949,7 +975,7 @@ export class HaggleEngine {
           await this.recordA2aOutbound(job, b, "counter", key, t.taskId, c.text, c.round);
           await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
           await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} over A2A: ${why}`, basis_quote_id: c.basisQuoteId });
-          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis });
+          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis, strategy: c.strategy });
           sent++;
         } catch (err) {
           this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -962,13 +988,13 @@ export class HaggleEngine {
         });
         await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name}: ${why}`, basis_quote_id: c.basisQuoteId });
-        await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis });
+        await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis, strategy: c.strategy });
         sent++;
       } catch (err) {
         this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
       }
     }
-    await this.repo.appendEvent(job.id, "counteroffers_sent", { round, sent, planned: plan.length });
+    await this.repo.appendEvent(job.id, "counteroffers_sent", { round, sent, planned: plan.length, skipped: skipped.length, strategy: by });
   }
 
   private async sendAccept(job: JobRow) {
