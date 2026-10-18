@@ -290,13 +290,41 @@ export class HaggleEngine {
     return { quotes, rankable, ranking: rankQuotes(rankable, job.budget_cents) };
   }
 
+  /**
+   * Can the human approve this quote, and what must they knowingly accept? Over budget and a hard
+   * requirement the business didn't confirm (met: null) are the human's call, shown as caveats. A
+   * requirement the business failed (met: false), scam links, injected instructions, unverified
+   * senders, unavailability and a missing total stay hard refusals.
+   */
+  private approvability(job: JobRow, q: QuoteRow): { hard: string | null; caveats: string[] } {
+    const hardIds = new Set(this.requirements(job).filter((r) => r.hard).map((r) => r.id));
+    const hardResults = q.requirement_results.filter((r) => hardIds.has(r.requirement_id));
+    const onlyUnconfirmed = !q.compliant && hardResults.every((r) => r.met !== false);
+    const hard = rejectReason({ quoteId: q.id, businessId: q.business_id, totalCents: q.total_cents, available: q.record.available, compliant: q.compliant || onlyUnconfirmed, senderTrusted: q.sender_trusted, status: q.status, confidence: q.record.confidence, flags: q.record.flags }, null);
+    const caveats: string[] = [];
+    const dollars = (c: number) => `$${centsToUsd(c).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+    if (job.budget_cents !== null && q.total_cents !== null && q.total_cents > job.budget_cents) caveats.push(`${dollars(q.total_cents - job.budget_cents)} over the ${dollars(job.budget_cents)} budget`);
+    if (onlyUnconfirmed) {
+      const texts = new Map(job.request.requirements.map((r) => [r.id, r.text]));
+      for (const r of hardResults) if (r.met === null) caveats.push(`Not confirmed by the business: ${texts.get(r.requirement_id) ?? r.requirement_id}`);
+    }
+    return { hard, caveats };
+  }
+
+  /** What the human is knowingly accepting by approving this quote (empty for a clean quote). */
+  async approvalCaveats(jobId: string, quoteId: string): Promise<string[]> {
+    const job = await this.loadJob(jobId);
+    const q = await this.repo.getQuote(quoteId);
+    return q && q.job_id === jobId ? this.approvability(job, q).caveats : [];
+  }
+
   private async context(job: JobRow) {
-    const { rankable, ranking } = await this.rankRows(job);
+    const { quotes, rankable, ranking } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
     const plan = this.counterPlan(job, rankable, businesses);
     const payment = await this.repo.getPaymentForJob(job.id);
     return {
-      now: this.now(), eligibleQuotes: ranking.ranked.length, counterable: plan.length > 0,
+      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => this.approvability(job, q).hard === null).length, counterable: plan.length > 0,
       negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent"].includes(payment.status),
     };
   }
@@ -1323,8 +1351,9 @@ export class HaggleEngine {
     }
     const q = await this.repo.getQuote(quoteId);
     if (!q || q.job_id !== jobId) throw new EngineError("quote_not_found", "No such quote on this job.", "Use a quote_id from get_quotes.", "get_quotes");
-    const reason = rejectReason({ quoteId: q.id, businessId: q.business_id, totalCents: q.total_cents, available: q.record.available, compliant: q.compliant, senderTrusted: q.sender_trusted, status: q.status, confidence: q.record.confidence, flags: q.record.flags }, job.budget_cents);
-    if (reason) throw new EngineError("quote_not_eligible", `That quote can't be approved: ${reason}.`, reason === "over_budget" ? "Raise budget_usd or pick another quote." : "Pick a compliant quote from get_quotes.", "get_quotes");
+    // Over budget / unconfirmed requirements are the human's call (shown on the approval); the rest is refused.
+    const { hard: reason } = this.approvability(job, q);
+    if (reason) throw new EngineError("quote_not_eligible", `That quote can't be approved: ${reason}.`, "Pick another quote from get_quotes.", "get_quotes");
     if (!q.deposit_cents || q.deposit_cents <= 0) throw new EngineError("no_deposit", "This quote has no deposit to pay now.", "Ask the business for deposit terms first.", "get_quotes");
     const cap = Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents);
     if (q.deposit_cents > cap) throw new EngineError("over_cap", `Deposit $${centsToUsd(q.deposit_cents).toFixed(2)} is over the $${centsToUsd(cap).toFixed(2)} payment cap.`, "Lower the deposit with the business or raise the cap.", "get_quotes");

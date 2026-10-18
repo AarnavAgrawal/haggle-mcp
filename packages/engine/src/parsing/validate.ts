@@ -63,6 +63,24 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
     }
   }
 
+  // 2b. A total said only as parts ("$20 a meal, 200 meals, plus $100 delivery"), typical on the
+  // phone: add the stated, sourced parts instead of dropping the quote, and label the total as
+  // computed. Only when no total was said at all (a stated total that failed a check stays null) and
+  // delivery is known (priced or included); tax is added only when stated.
+  if (x.total_usd === null && cents.total === null) {
+    const fromHeads = cents.subtotal === null && cents.price_per_head !== null && quotedHeadcount !== null && quotedHeadcount > 0;
+    const subtotal = cents.subtotal ?? (fromHeads ? cents.price_per_head! * quotedHeadcount! : null);
+    const deliveryKnown = cents.delivery_fee !== null || x.delivery_included === true;
+    if (subtotal !== null && deliveryKnown) {
+      cents.total = subtotal + (cents.delivery_fee ?? 0) + (x.tax_included === false ? (cents.tax ?? 0) : 0);
+      const parts = [fromHeads ? "price per head x headcount" : "subtotal", ...(cents.delivery_fee !== null ? ["delivery fee"] : []), ...(x.tax_included === false && cents.tax !== null ? ["tax"] : [])];
+      const from = sources.subtotal ?? sources.price_per_head;
+      sources.total = { source: `computed from stated ${parts.join(" + ")}${from ? ` (${from.source})` : ""}`, excerpt: (from?.excerpt ?? "").slice(0, 200) };
+      missing.delete("total");
+      missing.delete("total_usd");
+    }
+  }
+
   // 3. Deposit cannot exceed the total. A deposit is part of the total, never added to it.
   if (cents.deposit !== null && cents.total !== null && cents.deposit > cents.total) {
     cents.deposit = null;

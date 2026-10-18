@@ -29,6 +29,35 @@ const good: QuoteExtraction = {
   confidence: 0.9,
 };
 
+describe("totals stated only as parts (phone quotes)", () => {
+  // The Mission Eats call: "$20 a meal, 200 meals is $4,000, $100 deposit, extra $100 for delivery and setup".
+  const call: QuoteExtraction = {
+    ...good, price_per_head_usd: 20, headcount: 200, subtotal_usd: 4000, delivery_fee_usd: 100, delivery_included: false, total_usd: null, deposit_usd: 100,
+    sources: [src("price_per_head", "call transcript"), src("subtotal", "call transcript"), src("delivery_fee", "call transcript"), src("deposit", "call transcript")],
+    missing_fields: ["tax_usd", "total_usd"],
+  };
+
+  it("adds the stated subtotal and delivery fee into a labelled total instead of dropping the quote", () => {
+    const r = validateQuote(call, 200);
+    expect(r.total_cents).toBe(410_000);
+    expect(r.deposit_cents).toBe(10_000);
+    expect(r.sources.total?.source).toMatch(/^computed from stated subtotal \+ delivery fee/);
+    expect(r.missing_fields).not.toContain("total");
+    expect(r.missing_fields).not.toContain("total_usd");
+  });
+
+  it("derives the subtotal from price per head x headcount when only those were said", () => {
+    const r = validateQuote({ ...call, subtotal_usd: null, sources: call.sources.filter((s) => s.field !== "subtotal") }, 200);
+    expect(r.total_cents).toBe(410_000);
+    expect(r.sources.total?.source).toMatch(/price per head x headcount/);
+  });
+
+  it("never computes a total when delivery is unknown or a stated total exists", () => {
+    expect(validateQuote({ ...call, delivery_fee_usd: null, delivery_included: null, sources: call.sources.filter((s) => s.field !== "delivery_fee") }, 200).total_cents).toBeNull();
+    expect(validateQuote({ ...call, total_usd: 4150, sources: [...call.sources, src("total", "call transcript")] }, 200).total_cents).toBe(415_000);
+  });
+});
+
 describe("validateQuote (from quote-broker)", () => {
   it("converts dollars to integer cents and keeps a clean quote intact", () => {
     const r = validateQuote(good, 40);

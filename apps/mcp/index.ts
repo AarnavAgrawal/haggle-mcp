@@ -267,7 +267,8 @@ export const approve = server.tool(
     description:
       "Ask the human to approve one exact quote and its deposit. The decision always comes from the human: the Approve button on the approval card or an approval form shown by the client " +
       "(the model can't fill it). Calling this tool is never an approval by itself. Returns approved, pending_human or refused; NO_HUMAN_CHANNEL means this client can show neither. " +
-      "Only for an eligible quote from get_quotes. Next: pay(job_id, quote_id) once approved.",
+      "Works for any quote that isn't refused for safety: if it's over budget or a requirement wasn't confirmed by the business, the approval shows that to the human, so " +
+      "only use it for such a quote when the user chose it. Next: pay(job_id, quote_id) once approved.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
     outputSchema: ApprovalOut,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -285,7 +286,10 @@ export const approve = server.tool(
       const channel = canForm ? "elicitation" : canIMessage ? "imessage" : canView ? "view" : mode === "mock" ? "simulated" : null;
       if (!channel) return fail(mode, "NO_HUMAN_CHANNEL", "No way to reach a human approver: this client shows neither an approval card nor an approval form, and iMessage approval isn't set up.", "Approve from a client that shows forms (e.g. Claude Code) or the approval card, or set the approver phone in settings with iMessage enabled.", "get_quotes");
       const approval = await engine.requestApproval(job_id, quote_id, channel);
-      const summary = `${usd(approval.quote_total_cents / 100)} total, pay ${usd(approval.payment_cents / 100)} deposit now`;
+      // What the human knowingly accepts (over budget, a requirement the business didn't confirm).
+      const caveats = await engine.approvalCaveats(job_id, quote_id);
+      const note = caveats.length ? `Heads up: ${caveats.join("; ")}.` : "";
+      const summary = `${usd(approval.quote_total_cents / 100)} total, pay ${usd(approval.payment_cents / 100)} deposit now${note ? `. ${note}` : ""}`;
       if (approval.status === "approved") return ok(await approvalView(rt, job_id, quote_id, "approved", { next: "Call pay(job_id, quote_id)." }), `Approved (${summary}). next: pay(job_id, quote_id)`);
       if (channel === "elicitation") {
         const key = `approve_${approval.id}`;
@@ -295,7 +299,7 @@ export const approve = server.tool(
           return inputRequired({
             inputRequests: {
               [key]: inputRequired.elicit({
-                message: `${mode === "mock" ? "[DEMO] " : ""}Approve ${q?.business ?? "this business"}'s quote of ${usd(approval.quote_total_cents / 100)} and pay a ${usd(approval.payment_cents / 100)} deposit now? Expires ${approval.expires_at}.`,
+                message: `${mode === "mock" ? "[DEMO] " : ""}Approve ${q?.business ?? "this business"}'s quote of ${usd(approval.quote_total_cents / 100)} and pay a ${usd(approval.payment_cents / 100)} deposit now?${note ? ` ${note}` : ""} Expires ${approval.expires_at}.`,
                 requestedSchema: z.object({ approve: z.boolean().describe("Yes, approve this exact quote and deposit") }),
               }),
             },
@@ -316,12 +320,12 @@ export const approve = server.tool(
         const next = sent
           ? "Waiting for the approver to reply YES on iMessage (or tap Approve on the card). Call wait_for_update."
           : "The iMessage couldn't be sent (has the approver texted `connect @haggle`?). Approve on the card, or fix iMessage and call approve again.";
-        const v = await approvalView(rt, job_id, quote_id, "pending_human", { next, ...(sent ? {} : { reason: "imessage_not_sent" }) });
+        const v = await approvalView(rt, job_id, quote_id, "pending_human", { next, ...(sent ? (note ? { reason: note } : {}) : { reason: ["imessage_not_sent", note].filter(Boolean).join(" · ") }) });
         return ok(v, `${sent ? "Approval request sent to the approver by iMessage" : "iMessage approval request NOT sent"} (${summary}). next: ${next}`, canView ? { "haggle/approval": { approval_id: approval.id, code: approval.code } } : undefined);
       }
       if (channel === "view") {
         // The code goes only to the view (_meta), never to model-visible content. The human taps Approve.
-        const v = await approvalView(rt, job_id, quote_id, "pending_human", { next: "Waiting for the human to tap Approve on the approval card. Call wait_for_update." });
+        const v = await approvalView(rt, job_id, quote_id, "pending_human", { next: "Waiting for the human to tap Approve on the approval card. Call wait_for_update.", ...(note ? { reason: note } : {}) });
         return ok(v, `Waiting for the human to approve on the approval card (${summary}). next: wait_for_update`, { "haggle/approval": { approval_id: approval.id, code: approval.code } });
       }
       return fail(mode, "NO_HUMAN_CHANNEL", "No approval channel available.", "Use a client with forms or the approval card.", "get_quotes");
