@@ -122,4 +122,21 @@ describe("quote revisions and approvals", () => {
     expect(done.ready).toBe(true); // rounds used up: Haggle stops and explains instead of pushing again
     expect(soft.texts.filter((x) => /target/.test(x.text))).toHaveLength(2);
   });
+
+  it("an operator can void an approval whose recorded terms were wrong: reason recorded, job reopened, nothing charged", async () => {
+    const { engine: e, stripe } = engine({ stripe: true });
+    const deal = await e.deal({ request: REQUEST, budget_usd: 5000, businesses: [SUNSET] });
+    await text(e, "im_o", "$4.5k total, $1k deposit, 45 veg, delivery included");
+    await e.advanceJob(deal.job_id);
+    const q = (await e.getQuotes(deal.job_id)).quotes[0]!;
+    const a = await e.requestApproval(deal.job_id, q.quote_id, "view");
+    await e.decideApproval(a.id, "approve", "view", "human");
+    expect(await e.revokeApproval(deal.job_id, a.id, "recorded total omitted the $250 delivery the business disclosed")).toBe(true);
+    const board = await e.getQuotes(deal.job_id);
+    expect(board.approval).toMatchObject({ status: "expired" });
+    expect(board.state).not.toBe("paying");
+    await expect(e.pay(deal.job_id, q.quote_id)).rejects.toBeTruthy();
+    expect(stripe.charges).toHaveLength(0);
+    expect(await e.revokeApproval(deal.job_id, a.id, "again")).toBe(false); // once
+  });
 });

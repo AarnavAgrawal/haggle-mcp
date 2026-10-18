@@ -1868,6 +1868,23 @@ export class HaggleEngine {
   }
 
   /** Record a human decision from a verified channel (email verifier, MCP elicitation, or mock-mode simulation). */
+  /**
+   * Operator correction: void an approval whose recorded terms are no longer right (e.g. an all-in total
+   * the business disclosed but the stored quote missed). Refused once money is moving. Records why,
+   * reopens the job, and never touches the quote's evidence; a fresh human approval is required.
+   */
+  async revokeApproval(jobId: string, approvalId: string, reason: string): Promise<boolean> {
+    const a = await this.repo.getApproval(approvalId);
+    if (!a || a.job_id !== jobId || (a.status !== "approved" && a.status !== "pending")) return false;
+    const pay = await this.repo.getPaymentForJob(jobId);
+    if (pay && ["signed", "sent", "settled", "charging"].includes(pay.status)) throw new EngineError("payment_in_flight", "A payment for this approval is already moving.", "Let it settle or fail first.", "get_quotes");
+    if (!(await this.repo.transitionApproval(a.id, a.status, { status: "expired", decided_at: this.now().toISOString() }))) return false;
+    await this.repo.appendEvent(jobId, "approval_void", { approval_id: a.id, reason: reason.slice(0, 300), by: "operator" });
+    const job = await this.repo.getJob(jobId);
+    if (job && (job.state === "paying" || job.state === "awaiting_approval")) await this.fire(jobId, { type: "approval_void" });
+    return true;
+  }
+
   async decideApproval(approvalId: string, decision: "approve" | "decline", channel: ApprovalRow["channel"], approver: string | null) {
     const a = await this.repo.getApproval(approvalId);
     if (!a) return false;
