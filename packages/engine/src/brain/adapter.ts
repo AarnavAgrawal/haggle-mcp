@@ -86,7 +86,7 @@ export class BrainAdapter implements Brain {
     const email = phone ? undefined : meta.business_email;
     const known = this.engine.get(businessId);
     const brainId = this.brainIdFor(businessId, { ...(email ? { email } : {}), ...(phone ? { phone } : {}), simulated: meta.simulated });
-    const name = known?.name ?? this.directory.find((d) => d.id === brainId)?.name ?? brainId;
+    const name = known?.name ?? this.directory.find((d) => d.id === brainId)?.name ?? meta.business_name ?? brainId;
     let last: CoreProfile | null = null;
     if (meta.sender_trusted) {
       const request = toCoreRequest(meta.request);

@@ -63,6 +63,12 @@ describe("BrainAdapter (engine → real brain)", () => {
     expect(await core.getProfile("biz_unknown")).toMatchObject({ n_quotes: 1 });
   });
 
+  it("a business outside the directory is remembered by the name used on the job, not its id (live regression)", async () => {
+    const { core, brain } = adapter();
+    await brain.learnFromReply("biz_6c811a809659ce8e", quoteAndQuestion, meta({ business_email: "tel:+14155550122", business_name: "Mission Eats (demo)", simulated: false }));
+    expect(await core.getProfile("biz_6c811a809659ce8e")).toMatchObject({ name: "Mission Eats (demo)" });
+  });
+
   it("maps estimates and price checks back to engine shapes", async () => {
     const core = createBrain({ store: new MemoryStore(), seed: true });
     const brain = new BrainAdapter({ brain: core, directory });

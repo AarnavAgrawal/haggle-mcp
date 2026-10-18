@@ -1315,7 +1315,7 @@ export class HaggleEngine {
     try {
       const contractQuote = quoteRow ? toContractQuote(quoteRow, b, { budgetCents: job.budget_cents }) : null;
       await this.d.brain.learnFromReply(b.business_id, toParsedReply(x, contractQuote, questionIds), {
-        job_id: job.id, business_id: b.business_id, business_email: b.email ?? `tel:${b.phone ?? ""}`, message_id: msg.id, thread_id: msg.thread_id ?? "",
+        job_id: job.id, business_id: b.business_id, business_name: b.name, business_email: b.email ?? `tel:${b.phone ?? ""}`, message_id: msg.id, thread_id: msg.thread_id ?? "",
         received_at: msg.created_at, rfq_sent_at: b.contacted_at ?? job.created_at, channel: kind === "quote.json" ? "quote.json" : kind === "pdf" ? "pdf" : kind === "a2a task" ? "a2a" : kind === "call transcript" ? "transcript" : "text", reply_channel: msg.channel,
         sender_trusted: msg.sender_trusted === true, sender_trust_reason: msg.trust_reason ?? "unknown", request: job.request, simulated: b.simulated,
       });

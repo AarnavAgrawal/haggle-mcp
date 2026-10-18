@@ -136,6 +136,8 @@ export interface ParsedReply {
 export interface ReplyMeta {
   job_id: string;
   business_id: string;
+  /** The name the buyer used for this business on the job (businesses outside the directory). */
+  business_name?: string;
   business_email: string;          // snapshot used for this job
   message_id: string;              // Primitive email id
   thread_id: string;
