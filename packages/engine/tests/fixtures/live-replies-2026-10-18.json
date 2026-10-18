@@ -1,0 +1,159 @@
+{
+ "note": "Real Claude extractions (claude-sonnet-5-5, split schema) of the 2026-10-18 live rehearsal replies, job_868e\u2026; texts sanitized/abridged.",
+ "replies": [
+  {
+   "business": "Sunset Kitchen",
+   "channel": "iMessage",
+   "text": "$1500, $250 deposit",
+   "extraction": {
+    "available": true,
+    "price_per_head_usd": null,
+    "headcount": null,
+    "subtotal_usd": null,
+    "delivery_fee_usd": null,
+    "delivery_included": null,
+    "tax_usd": null,
+    "tax_included": null,
+    "total_usd": 1500,
+    "deposit_usd": 250,
+    "menu_items": [],
+    "dietary_coverage": [],
+    "valid_until": null,
+    "questions": [],
+    "payment_request": "none",
+    "instructions_to_agent": false,
+    "sources": [
+     {
+      "field": "total",
+      "source": "email body",
+      "excerpt": "$1500"
+     },
+     {
+      "field": "deposit",
+      "source": "email body",
+      "excerpt": "$250 deposit"
+     }
+    ],
+    "missing_fields": [
+     "price_per_head_usd",
+     "headcount",
+     "subtotal_usd",
+     "delivery_fee_usd",
+     "delivery_included",
+     "tax_usd",
+     "tax_included",
+     "valid_until"
+    ],
+    "confidence": 0.6,
+    "requirement_answers": [],
+    "other_fees": [],
+    "terms": {
+     "deposit_terms": "$250 deposit (timing and refundability not stated)",
+     "cancellation": null,
+     "exclusions": []
+    },
+    "preferred_contact": null
+   }
+  },
+  {
+   "business": "Harbor Table",
+   "channel": "email",
+   "text": "prolly around 1300 total bucks\n\nOn 10/18/2026, 12:08:19 AM, haggle@inkboxmail.com wrote:\n> Hi Harbor Table,\n> Could you quote the following?",
+   "extraction": {
+    "available": true,
+    "price_per_head_usd": null,
+    "headcount": null,
+    "subtotal_usd": null,
+    "delivery_fee_usd": null,
+    "delivery_included": null,
+    "tax_usd": null,
+    "tax_included": null,
+    "total_usd": 1300,
+    "deposit_usd": null,
+    "menu_items": [],
+    "dietary_coverage": [],
+    "valid_until": null,
+    "questions": [],
+    "payment_request": "none",
+    "instructions_to_agent": false,
+    "sources": [
+     {
+      "field": "total",
+      "source": "email body",
+      "excerpt": "prolly around 1300 total bucks"
+     }
+    ],
+    "missing_fields": [
+     "price_per_head_usd",
+     "headcount",
+     "subtotal_usd",
+     "delivery_fee_usd",
+     "delivery_included",
+     "tax_usd",
+     "tax_included",
+     "deposit_usd",
+     "valid_until"
+    ],
+    "confidence": 0.5,
+    "requirement_answers": [],
+    "other_fees": [],
+    "terms": {
+     "deposit_terms": null,
+     "cancellation": null,
+     "exclusions": []
+    },
+    "preferred_contact": null
+   }
+  },
+  {
+   "business": "Mission Eats",
+   "channel": "call",
+   "text": "remote: Hello\nhaggle (AI assistant): Hi, this is Haggle, an AI assistant calling for a customer about a quote for catering. Do you have a minute?\nremote: Yes, I do. What's up\nhaggle (AI assistant): Could you give me the all-in total, including delivery and tax?\nremote: It'll cost approximately twelve hundred dollars",
+   "extraction": {
+    "available": true,
+    "price_per_head_usd": null,
+    "headcount": null,
+    "subtotal_usd": null,
+    "delivery_fee_usd": null,
+    "delivery_included": null,
+    "tax_usd": null,
+    "tax_included": null,
+    "total_usd": 1200,
+    "deposit_usd": null,
+    "menu_items": [],
+    "dietary_coverage": [],
+    "valid_until": null,
+    "questions": [],
+    "payment_request": "none",
+    "instructions_to_agent": false,
+    "sources": [
+     {
+      "field": "total",
+      "source": "call transcript",
+      "excerpt": "It'll cost approximately twelve hundred dollars"
+     }
+    ],
+    "missing_fields": [
+     "price_per_head_usd",
+     "headcount",
+     "subtotal_usd",
+     "delivery_fee_usd",
+     "delivery_included",
+     "tax_usd",
+     "tax_included",
+     "deposit_usd",
+     "valid_until"
+    ],
+    "confidence": 0.6,
+    "requirement_answers": [],
+    "other_fees": [],
+    "terms": {
+     "deposit_terms": null,
+     "cancellation": null,
+     "exclusions": []
+    },
+    "preferred_contact": null
+   }
+  }
+ ]
+}

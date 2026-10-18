@@ -58,6 +58,16 @@ export const QuoteExtraction = z.object({
 
 export type QuoteExtraction = z.infer<typeof QuoteExtraction>;
 
+/**
+ * Claude compiles each structured-output schema into a grammar with a size limit; the whole
+ * QuoteExtraction exceeds it ("compiled grammar is too large", every live parse failed from c1d4516).
+ * So it is asked for in two parts: the core quote (what makes a quote; failure = parse failure) and the
+ * optional details (requirement answers, other fees, terms, stated contact preference; failure = unknown).
+ */
+const DETAILS = { requirement_answers: true, other_fees: true, terms: true, preferred_contact: true } as const;
+export const CoreExtraction = QuoteExtraction.omit(DETAILS);
+export const ExtractionDetails = QuoteExtraction.pick(DETAILS);
+
 /** The cents-based record the engine stores. `null` = not stated (never 0). */
 export interface QuoteRecord {
   available: boolean;

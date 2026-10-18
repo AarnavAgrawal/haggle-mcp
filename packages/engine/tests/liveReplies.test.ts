@@ -1,0 +1,44 @@
+// P0 2026-10-18 rehearsal: three real replies ("$1500, $250 deposit" by text, "prolly around 1300 total
+// bucks" by email, "approximately twelve hundred dollars" on a call) never became quotes: every live
+// parse failed ("compiled grammar is too large"). These are the real Claude extractions of those exact
+// replies with the split schema (scripts/acceptance/extract-eval.mts); the engine must turn them into
+// quotes, show what is missing, and move on to comparison and negotiation by itself (clock only).
+import { describe, expect, it } from "vitest";
+import { createMockEngine, type Persona } from "../src/index.ts";
+import live from "./fixtures/live-replies-2026-10-18.json" with { type: "json" };
+
+const R = Object.fromEntries(live.replies.map((r) => [r.business, r]));
+const PERSONAS: Persona[] = [
+  { name: "Sunset Kitchen", email: "events@sunset.sim.haggle.dev", delayMs: 1_000, reply: (t) => (t === "rfq" ? { text: R["Sunset Kitchen"]!.text, extraction: R["Sunset Kitchen"]!.extraction as never } : null) },
+  { name: "Harbor Table", email: "orders@harbor.sim.haggle.dev", delayMs: 1_000, reply: (t) => (t === "rfq" ? { text: R["Harbor Table"]!.text, extraction: R["Harbor Table"]!.extraction as never } : null) },
+  { name: "Mission Eats", email: "", phone: "+14155550104", delayMs: 1_000, reply: (t) => (t === "call" ? { text: R["Mission Eats"]!.text, extraction: R["Mission Eats"]!.extraction as never } : null) },
+];
+
+describe("the live rehearsal replies become quotes and the deal moves on by itself", { timeout: 60_000 }, () => {
+  it("three quotes from the vendors' own words, missing details shown, counters citing the real $1,200, then a recommendation", async () => {
+    let t = Date.now();
+    const { engine, fleet } = createMockEngine({ now: () => new Date(t), personas: PERSONAS, config: { maxRounds: 2 } });
+    const deal = await engine.deal({ request: { what: "catering", quantity: 50, unit: "people", date: "2030-10-24", area: "San Francisco, CA", requirements: [] }, businesses: PERSONAS.map((p) => ({ name: p.name, ...(p.email ? { email: p.email } : {}), ...(p.phone ? { phone: p.phone } : {}), simulated: true })) });
+    let b = await engine.getQuotes(deal.job_id);
+    for (let i = 0; i < 400 && !b.ready; i++) {
+      t += 15_000;
+      await fleet.deliverDue(); // the vendors' replies arriving (webhooks, live)
+      await engine.advanceJob(deal.job_id); // the live background tick: no buyer tool call
+      b = await engine.getQuotes(deal.job_id);
+    }
+    const q = (n: string) => b.quotes.find((x) => x.business === n)!;
+    // Quotes, exactly as stated: nothing invented (no tax, delivery or deposit that wasn't said).
+    expect(q("Sunset Kitchen")).toMatchObject({ total_usd: 1500, deposit_usd: 250 });
+    expect(q("Harbor Table")).toMatchObject({ total_usd: 1300 });
+    expect(q("Harbor Table").deposit_usd).toBeUndefined();
+    expect(q("Mission Eats")).toMatchObject({ total_usd: 1200 });
+    expect(q("Mission Eats").deposit_usd).toBeUndefined();
+    // What wasn't said is shown, and a vague reply is marked as such.
+    expect(b.quotes.every((x) => x.flags.includes("delivery_unclear"))).toBe(true);
+    expect(q("Harbor Table").flags).toContain("low_confidence");
+    // It moved on by itself: counters to the email/text vendors cite Mission Eats' real $1,200.
+    expect(b.negotiation.map((n) => [n.business, n.target_total_usd]).sort()).toEqual([["Harbor Table", 1200], ["Sunset Kitchen", 1200]]);
+    expect(b.ready).toBe(true);
+    expect(b.recommended_quote_id).toBe(q("Mission Eats").quote_id);
+  });
+});

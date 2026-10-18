@@ -7,7 +7,7 @@
 // header is set by `createAnthropicClient`, and the request describes v3 requirements.
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { QuoteExtraction } from "./extraction.ts";
+import { CoreExtraction, ExtractionDetails, type QuoteExtraction } from "./extraction.ts";
 import type { PdfFile } from "../inbound/attachments.ts";
 
 export const SYSTEM = `You extract quotes for goods or services (catering, contractors, repairs, rentals, anything) from a business's reply into a fixed schema.
@@ -95,15 +95,16 @@ export async function parseReply(
   model: string,
   input: { request: ExtractionRequest; bodyText: string; pdfs?: PdfFile[] },
 ): Promise<QuoteExtraction> {
-  const response = await client.messages.parse({
-    model,
-    max_tokens: 4096,
-    system: SYSTEM,
-    output_config: { effort: "low", format: zodOutputFormat(QuoteExtraction) },
-    messages: [{ role: "user", content: buildContent(input.request, input.bodyText, input.pdfs) }],
-  });
+  // Two structured calls in parallel (one schema is too large for Claude's grammar limit): the core
+  // quote must succeed; the optional details are unknown (absent) if their call fails.
+  const content = buildContent(input.request, input.bodyText, input.pdfs);
+  const ask = <S extends typeof CoreExtraction | typeof ExtractionDetails>(schema: S) =>
+    client.messages.parse({ model, max_tokens: 4096, system: SYSTEM, output_config: { effort: "low", format: zodOutputFormat(schema) }, messages: [{ role: "user", content }] });
+  const [response, details] = await Promise.all([ask(CoreExtraction), ask(ExtractionDetails).catch(() => null)]);
 
   if (response.stop_reason === "refusal") throw new ParseError("model refused to extract");
   if (!response.parsed_output) throw new ParseError(`no structured output (stop_reason=${response.stop_reason})`);
-  return response.parsed_output;
+  const extra = details?.stop_reason !== "refusal" ? (details?.parsed_output ?? {}) : {};
+  const picked = Object.fromEntries(Object.entries(extra).filter(([k, v]) => k in ExtractionDetails.shape && v !== undefined));
+  return { ...(response.parsed_output as QuoteExtraction), ...picked };
 }
