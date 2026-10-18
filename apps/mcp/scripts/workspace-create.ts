@@ -63,7 +63,8 @@ async function main(argv = process.argv.slice(2)) {
     ...(arg(argv, "approver-email") ? { approverEmail: arg(argv, "approver-email")! } : {}), ...(arg(argv, "area") ? { area: arg(argv, "area")! } : {}),
     ...(base ? { baseUrl: base } : {}),
   });
-  const repo = new PostgresRepository(url, { max: 1 });
+  const schema = process.env.HAGGLE_DB_SCHEMA?.trim();
+  const repo = new PostgresRepository(url, { max: 1, ...(schema ? { schema } : {}) });
   try {
     await repo.insertWorkspace(plan.workspace);
     await repo.saveSettings(plan.settings, plan.workspace.id);
