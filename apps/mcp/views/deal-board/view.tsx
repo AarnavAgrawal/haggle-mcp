@@ -533,7 +533,8 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
 /** Why this quote is on top, said truthfully: what it meets or misses, its price among the options, the budget. */
 function whyWinner(q: Quote, board: DealBoard): string {
   // Options = every quote that isn't unsafe or unusable (preferences are soft).
-  const options = board.quotes.filter((x) => !board.rejected?.some((r) => r.quote_id === x.quote_id) && !x.flags.some(isRiskFlag) && knownTotal(x));
+  // (The engine's rejected list is the safety verdict; an over-budget chip is red but not unsafe.)
+  const options = board.quotes.filter((x) => !board.rejected?.some((r) => r.quote_id === x.quote_id) && knownTotal(x));
   // A custom compare_by field ranks the ladder instead of the total.
   const rankBy = board.job.compare_by && board.job.ask?.find((f) => f.key === board.job.compare_by!.field);
   const best = rankBy ? `${board.job.compare_by!.direction === "min" ? "lowest" : "highest"} ${rankBy.label.toLowerCase()}` : "lowest total";

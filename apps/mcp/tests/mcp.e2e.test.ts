@@ -165,9 +165,9 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // Bay Catering wins at $995 after negotiating from $1,150.
     expect(board.recommended_quote_id).toBe(q("Bay Catering").quote_id);
     expect(q("Bay Catering")).toMatchObject({ total_usd: 995, negotiated_from: 1150, deposit_usd: 5, verdict: "compliant", channel: "email" });
-    // Golden Grill: only 6 vegetarian meals → excluded from the ranking, but "incomplete" (a caveat, not a safety stop).
-    expect(q("Golden Grill")).toMatchObject({ verdict: "incomplete", meets_requirements: false });
-    expect(board.rejected.find((r: { business_id: string }) => r.business_id === q("Golden Grill").business_id).reason).toBe("requirement_unmet");
+    // Golden Grill: only 6 vegetarian meals → still an option (preferences are soft), flagged, ranked after the ones that meet everything.
+    expect(q("Golden Grill")).toMatchObject({ verdict: "incomplete", meets_requirements: false, eligible: true });
+    expect(board.rejected.some((r: { business_id: string }) => r.business_id === q("Golden Grill").business_id)).toBe(false);
     // Harbor Table: deposit found on page 2 of the PDF.
     expect(q("Harbor Table").flags).toContain("hidden_deposit");
     expect(q("Harbor Table")).toMatchObject({ deposit_usd: 300 });
