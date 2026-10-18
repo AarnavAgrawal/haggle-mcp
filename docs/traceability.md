@@ -10,6 +10,17 @@ Status key: **DONE** = built, tested, and seen working on the hosted server with
 **BUILT, NOT LIVE** = built and tested (mock/Postgres/real-Claude), not yet witnessed live.
 **BLOCKED** = code done; waiting on a person, an authorization or a credential. **NOT IMPLEMENTED** = no code.
 
+## 0000. P0 2026-10-18: no live deal could be created (regression since c1d4516)
+
+- **Root cause.** The live config set `maxRounds: 3` (fd2e63e), but the jobs table allows 1–2 (`jobs_max_rounds_check`). Every live `deal` failed at the job insert, before any outreach. Hosted checks only dry-ran or were refused before the insert, and tests used 2 rounds, so nothing caught it.
+- **Board.** The generic error said "call get_quotes". `get_quotes()` without a job_id fell back to the newest open deal, showing an unrelated 200-person board.
+- **Fix.**
+  - `MAX_ROUNDS = 2` in the engine clamp, the live config and the deal schema.
+  - A deal error says no deal was created.
+  - `get_quotes()` without a job_id lists deals instead of guessing.
+  - A missing budget stays missing, so no settings value is ever sent as "the client's target".
+- **Tests.** `liveRounds.test.ts` (memory and Postgres; reproduced the production error) and journey e2e for the exact one-sentence request.
+
 ## 000. Demo hardening 2026-10-18
 
 | Check | How | Result |

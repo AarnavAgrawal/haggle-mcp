@@ -122,19 +122,16 @@ describe("quote revisions and approvals", () => {
     const after = await soft.engine.getQuotes(d2.job_id);
     expect(after.quotes.find((q) => q.status === "current")).toMatchObject({ total_usd: 4200, negotiated_from: 4500, deposit_usd: 800, round: 2 });
     expect(after.stages![sid]).toMatchObject({ first_total_usd: 4500, current_total_usd: 4200, quote_version: 2, saved_usd: 300 });
-    // $4,200 is still above the target: one more (and last) bounded round; never past max_rounds.
+    // $4,200 is still above the target, but jobs have two rounds (the first quotes + one negotiation
+    // round; the jobs table stores at most 2): Haggle stops and explains instead of pushing again.
     expect(after.negotiation).toEqual([
       expect.objectContaining({ business: "Sunset Kitchen", round: 2, target_total_usd: 4000, basis_quote_id: "buyer_target", outcome_total_usd: 4200 }),
-      expect.objectContaining({ business: "Sunset Kitchen", round: 3, target_total_usd: 4000, basis_quote_id: "buyer_target", outcome_total_usd: null }),
     ]);
-    await text(soft.engine, "im_s3", "Final: $4.1k total, $800 deposit, 45 veg, delivery included");
-    await soft.engine.advanceJob(d2.job_id);
     soft.clock.advance(11 * 60_000);
     const done = await soft.engine.getQuotes(d2.job_id);
-    expect(done.quotes.find((q) => q.status === "current")).toMatchObject({ total_usd: 4100, round: 3 });
-    expect(done.ready).toBe(true); // rounds used up: Haggle stops and explains instead of pushing again
-    expect(done.stages![sid]).toMatchObject({ stage: "vendor_revised", negotiation: "vendor_revised", first_total_usd: 4500, current_total_usd: 4100, saved_usd: 400 });
-    expect(soft.texts.filter((x) => /target/.test(x.text))).toHaveLength(2);
+    expect(done.ready).toBe(true);
+    expect(done.stages![sid]).toMatchObject({ stage: "vendor_revised", negotiation: "vendor_revised", first_total_usd: 4500, current_total_usd: 4200, saved_usd: 300 });
+    expect(soft.texts.filter((x) => /target/.test(x.text))).toHaveLength(1);
   });
 
   it("an operator can void an approval whose recorded terms were wrong: reason recorded, job reopened, nothing charged", async () => {

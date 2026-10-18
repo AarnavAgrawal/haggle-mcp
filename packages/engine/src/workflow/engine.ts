@@ -95,6 +95,10 @@ export type EngineDealResult = Omit<DealResult, "contacted"> & {
 };
 
 /** Engine-side business status → the deal board's v5 status. */
+/** Quote rounds a job can have: the first quotes plus one negotiation round. The jobs table stores
+ *  1..2 (jobs_max_rounds_check); asking for more must clamp, never fail the insert. */
+export const MAX_ROUNDS = 2;
+
 export type BoardStatus = "contacted" | "ringing" | "on_call" | "quoted" | "negotiating" | "won" | "declined" | "no_reply" | "unavailable";
 
 export interface BoardBusiness {
@@ -277,7 +281,7 @@ export class HaggleEngine {
         job = await this.repo.insertJob({
           id: newId("job"), short_code: code, state: "created", mode, request: input.request, budget_cents: budgetCents,
           payment_cap_cents: paymentCapCents, approver_email: input.approver_email ? normalizeAddress(input.approver_email) : null,
-          inbox: this.d.config.sharedInbox ?? jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.min(input.max_rounds ?? this.d.config.maxRounds, 3),
+          inbox: this.d.config.sharedInbox ?? jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.max(1, Math.min(input.max_rounds ?? this.d.config.maxRounds, MAX_ROUNDS)),
           collect_until: replyBy.toISOString(), ready: false, pay_intent: false, failure_reason: null,
           client_request_id: input.client_request_id ?? null, version: 0, created_at: at, updated_at: at,
         });

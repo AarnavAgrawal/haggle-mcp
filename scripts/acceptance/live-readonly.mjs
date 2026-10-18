@@ -42,8 +42,9 @@ if (knownJob) {
 // Continuity and board state for agents without ids (read-only).
 const deals = await call("list_deals", { limit: 5 });
 check("list_deals finds recent deals without ids", !deals.isError && Array.isArray(deals.structuredContent?.deals), `${deals.structuredContent?.deals?.length ?? 0} deals`);
-const latest = await call("get_quotes", {});
-check("get_quotes() with no job_id opens the most relevant deal", !latest.isError && !!latest.structuredContent?.job_id, latest.structuredContent?.job_id ?? err(latest)?.error?.code);
+const guess = await call("get_quotes", {});
+check("get_quotes() without a job_id never guesses a deal (lists recent ones instead)", guess.isError && err(guess)?.error?.code === "job_id_required" && !guess.structuredContent?.job, err(guess)?.error?.code);
+const latest = await call("get_quotes", { job_id: deals.structuredContent?.deals?.[0]?.job_id });
 check("board carries vendor stages and the payment state", !!latest.structuredContent?.stages && typeof latest.structuredContent?.payments_enabled === "boolean", `payments_enabled=${latest.structuredContent?.payments_enabled}`);
 const roster = await call("discover", {});
 check("discover reports the demo roster with readiness", !roster.isError && typeof roster.structuredContent?.ready === "number", `${roster.structuredContent?.ready}/${roster.structuredContent?.total} ready`);

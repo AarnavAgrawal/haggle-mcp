@@ -136,10 +136,14 @@ describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
     const open = (await call(ready, "open_haggle", {})).structuredContent;
     expect(open.job.id).toBe(v.job_id);
 
-    // A new conversation without ids: list_deals and get_quotes() find it; every vendor has a stage.
+    // A new conversation without ids: list_deals finds it, then get_quotes(job_id); every vendor has a stage.
+    // get_quotes() without an id never guesses: it lists the recent deals and asks.
     const deals = (await call(ready, "list_deals", {})).structuredContent.deals;
     expect(deals[0]).toMatchObject({ job_id: v.job_id, what: "hackathon catering", quantity: 200 });
-    const resumed = (await call(ready, "get_quotes", {})).structuredContent;
+    const guess = await call(ready, "get_quotes", {});
+    expect(guess.isError).toBe(true);
+    expect(JSON.parse(guess.content[0].text).error).toMatchObject({ code: "job_id_required", message: expect.stringContaining(v.job_id) });
+    const resumed = (await call(ready, "get_quotes", { job_id: deals[0].job_id })).structuredContent;
     expect(resumed.job_id).toBe(v.job_id);
     expect(Object.keys(resumed.stages)).toHaveLength(6);
     for (const st of Object.values(resumed.stages) as { stage: string }[]) expect(st.stage).toMatch(/^(waiting|quoted|countered|vendor_revised|held_firm|final|excluded|asked_question|clarifying|responded|no_reply|calling|declined|unreachable)$/);
@@ -152,8 +156,9 @@ describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
     expect(veg.structuredContent.request_details).toMatchObject({ when: `${SAT_WORDS} at 12:00 PM`, requirements: ["40 vegetarian meals"], budget_usd: 5000 });
 
     const noBudget = await call(ready, "deal", hackathon({ budget_usd: undefined }));
-    expect(noBudget.structuredContent.request_details).toMatchObject({ budget_source: "settings_default" });
-    expect(noBudget.structuredContent.warnings.join(" ")).toMatch(/No budget given: using the settings default/);
+    expect(noBudget.structuredContent.request_details).toMatchObject({ budget_usd: null });
+    expect(noBudget.structuredContent.job.budget_usd).toBeUndefined(); // never a settings value posing as the client's target
+    expect(noBudget.structuredContent.warnings.join(" ")).toMatch(/No budget given, so none was assumed/);
 
     const past = await call(ready, "deal", hackathon({ request: { what: "catering", quantity: 200, date: "2020-01-04", area: "San Francisco, CA" } }));
     expect(past.isError).toBe(true);
@@ -248,5 +253,40 @@ describe("named vendors: 'Use Mission Eats ONLY'", () => {
     expect(p.structuredContent.next).toMatch(/businesses=\['Mission Eats'\]\): Haggle already has its contact details/);
     const viaRef = (await call(ready, "deal", missionOnly({ businesses: [p.structuredContent.business_ref], dry_run: true }))).structuredContent;
     expect(viaRef.would_contact.map((w: { name: string }) => w.name)).toEqual(["Mission Eats"]);
+  });
+});
+
+// P0 2026-10-18, fresh Claude.ai: "I need catering for about 50 people in San Francisco next Saturday. Can you
+// find me the best deal?" Claude sent deal({what:"catering", quantity:50, date:<next Saturday>, area:"San
+// Francisco", unit:"people"}). Live: both attempts failed (jobs_max_rounds_check: config 3, schema 1..2; see
+// packages/engine/tests/liveRounds.test.ts), the error told Claude to call get_quotes, and get_quotes() with no
+// job_id fell back to the newest open deal: an unrelated 200-person board with an Approve button.
+describe("the one-sentence request: 'catering for about 50 people in San Francisco next Saturday'", () => {
+  const exact = { request: { what: "catering", quantity: 50, date: SAT, area: "San Francisco", unit: "people" } };
+
+  it("starts exactly that deal: no budget, time or requirement invented, the board is the new job's", async () => {
+    const old = (await call(ready, "deal", hackathon())).structuredContent.job_id; // an unrelated earlier deal exists
+    const r = await call(ready, "deal", exact);
+    expect(r.isError).toBeFalsy();
+    const v = r.structuredContent;
+    expect(v.ok).toBe(true);
+    expect(v.job_id).not.toBe(old);
+    expect(v.job.id).toBe(v.job_id);
+    expect(v.request_details).toMatchObject({ what: "catering", headcount: 50, date: SAT, when: SAT_WORDS, requirements: [], budget_usd: null });
+    expect(v.request_details.time).toBeUndefined();
+    expect(v.job.budget_usd).toBeUndefined();
+    expect(v.next).toContain(v.job_id);
+    // Following the board: always this job, never the 200-person one.
+    const board = (await call(ready, "get_quotes", { job_id: v.job_id })).structuredContent;
+    expect(board).toMatchObject({ job_id: v.job_id, request_details: { headcount: 50 } });
+  });
+
+  it("a failed or unidentified request never surfaces an earlier deal as the answer", async () => {
+    const r = await call(ready, "get_quotes", {});
+    expect(r.isError).toBe(true);
+    expect(r.structuredContent?.job ?? null).toBeNull();
+    expect(JSON.parse(r.content[0].text).error.fix).toMatch(/that's a new deal: call deal, not an earlier one/);
+    const tooMany = await call(ready, "deal", { ...exact, max_rounds: 3 });
+    expect(tooMany.isError).toBe(true); // the schema says at most 2; it never reaches the database
   });
 });
