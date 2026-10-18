@@ -124,3 +124,25 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
     confidence,
   };
 }
+
+const NEED_WORDS: Record<string, RegExp> = {
+  vegetarian: /\b(veg(etarian|gie|gies|an)?|plant[- ]based|meatless|meat[- ]free)\b/i,
+  vegan: /\b(vegan|plant[- ]based|dairy[- ]free)\b/i,
+  "gluten-free": /\b(gluten|gf|celiac|coeliac)\b/i,
+  halal: /\bhalal\b/i,
+  kosher: /\bkosher\b/i,
+};
+
+/**
+ * A business that didn't mention a dietary need hasn't said "no": that is unknown (a follow-up),
+ * never a refusal. The extraction schema asks for an entry per requested need, so a model can turn
+ * silence into covered=false. When the whole reply is plain text (no PDF the text can't show),
+ * drop any "not covered, no count" claim whose need the text never mentions.
+ * Live regression 2026-10-18: "6000 bucks + 200 in delivery/full setup + 500 in tax" became
+ * "vegetarian: can't cover" and the only quote was rejected.
+ */
+export function dropUnstatedDietaryRefusals(x: QuoteExtraction, text: string): QuoteExtraction {
+  const mentions = (need: string) => (NEED_WORDS[need.trim().toLowerCase()] ?? new RegExp(`\\b${need.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")).test(text);
+  const kept = x.dietary_coverage.filter((d) => d.covered || d.count_offered !== null || mentions(d.need));
+  return kept.length === x.dietary_coverage.length ? x : { ...x, dietary_coverage: kept };
+}

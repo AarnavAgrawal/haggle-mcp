@@ -2,6 +2,7 @@
 // (exact cents, sourced figures, dietary counts, untrusted-content flags, requirements).
 import { describe, expect, it } from "vitest";
 import { validateQuote } from "../src/parsing/validate.ts";
+import { dropUnstatedDietaryRefusals } from "../src/parsing/validate.ts";
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../src/parsing/requirements.ts";
 import type { QuoteExtraction } from "../src/parsing/extraction.ts";
 
@@ -151,5 +152,20 @@ describe("evaluateRequirements", () => {
     const res = evaluateRequirements(q, reqs, 40);
     expect(res[0]!.met).toBeNull();
     expect(meetsHardRequirements(res, reqs)).toBe(false);
+  });
+});
+
+describe("dropUnstatedDietaryRefusals (live regression 2026-10-18)", () => {
+  const base = { dietary_coverage: [{ need: "vegetarian", covered: false, count_offered: null }] } as unknown as Parameters<typeof dropUnstatedDietaryRefusals>[0];
+  it("silence about a need is unknown, not a refusal", () => {
+    expect(dropUnstatedDietaryRefusals(base, "6000 bucks + 200 in delivery/full setup + 500 in tax").dietary_coverage).toEqual([]);
+  });
+  it("an explicit no, a count, or a yes is kept", () => {
+    expect(dropUnstatedDietaryRefusals(base, "Sorry, we can't do vegetarian").dietary_coverage).toHaveLength(1);
+    expect(dropUnstatedDietaryRefusals(base, "no veggie options").dietary_coverage).toHaveLength(1);
+    const counted = { dietary_coverage: [{ need: "vegetarian", covered: false, count_offered: 6 }] } as unknown as typeof base;
+    expect(dropUnstatedDietaryRefusals(counted, "$860 total").dietary_coverage).toHaveLength(1);
+    const yes = { dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: null }] } as unknown as typeof base;
+    expect(dropUnstatedDietaryRefusals(yes, "$860 total").dietary_coverage).toHaveLength(1);
   });
 });

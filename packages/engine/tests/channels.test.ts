@@ -357,6 +357,37 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     expect(b.last_event).not.toMatch(/connect @/);
   });
 
+  // Regression (live job_63ffe01e280141ce9e4b, 2026-10-18): the reply "6000 bucks + 200 in delivery/full
+  // setup + 500 in tax" never mentioned vegetarian, the extractor said "vegetarian: not covered", and the
+  // only quote was rejected as "can't cover it". Silence is unknown: ask once by text, then the answer
+  // revises the same quote.
+  it("a text quote that doesn't mention a hard requirement gets one confirming text, and the answer completes the quote", async () => {
+    const { engine, texts } = demoEngine();
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd: 8000, businesses: [{ name: "Sunset Kitchen (demo)", phone: "+14155550111", channel: "imessage" }] });
+    const real = textExtractor.extract.bind(textExtractor);
+    // Like the live model: an entry for every requested need, silence turned into covered=false.
+    textExtractor.extract = async (i) => { const e = await real(i); return { ...e, dietary_coverage: (e.dietary_coverage as unknown[]).length ? e.dietary_coverage : [{ need: "vegetarian", covered: false, count_offered: null }] }; };
+    try {
+      expect((await engine.ingestIMessage({ messageId: "im_q", from: "+14155550111", text: "6,700 total all-in: 6000 bucks + 200 in delivery/full setup + 500 in tax", isGroup: false })).outcome).toBe("stored");
+      await engine.advanceJob(deal.job_id);
+      let board = await engine.getQuotes(deal.job_id);
+      expect(board.quotes[0]).toMatchObject({ total_usd: 6700, verdict: "incomplete", source: "iMessage text" });
+      expect(board.quotes[0]!.flags).not.toContain("requirement_unmet");
+      expect(board.state).toBe("collecting"); // waits for the answer instead of failing
+      expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 12 vegetarian meals\? HG-/);
+
+      expect((await engine.ingestIMessage({ messageId: "im_a", from: "+14155550111", text: "Yes, 45 vegetarian", isGroup: false })).outcome).toBe("stored");
+      await engine.advanceJob(deal.job_id);
+      board = await engine.getQuotes(deal.job_id);
+      const q = board.quotes.find((x) => x.status === "current")!;
+      expect(q).toMatchObject({ total_usd: 6700, verdict: "compliant", eligible: true, round: 2 });
+      expect(texts.filter((t) => /confirm/.test(t.text))).toHaveLength(1); // asked once
+    } finally {
+      textExtractor.extract = real;
+    }
+  });
+
   it("an unanswered call is shown as no reply, makes no quote, and its redelivery changes nothing", async () => {
     const { engine, calls } = demoEngine();
     const { budget_usd, ...request } = GOLDEN_REQUEST;

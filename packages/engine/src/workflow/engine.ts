@@ -27,7 +27,7 @@ import { buildRfqEmail, eventPlace, eventWhen, humanTime } from "../outbound/rfq
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.ts";
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
-import { validateQuote } from "../parsing/validate.ts";
+import { dropUnstatedDietaryRefusals, validateQuote } from "../parsing/validate.ts";
 import { verifyApproval } from "../approvals/verifyApproval.ts";
 import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
 import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
@@ -1018,6 +1018,8 @@ export class HaggleEngine {
             dietary: reqs.filter((r) => r.kind === "dietary" && r.need).map((r) => ({ need: r.need!, count: r.min_count ?? 0 })), requirements: job.request.requirements.map((r) => r.text) },
           bodyText: msg.body_text ?? "", pdfs: files.filter((f): f is typeof f & { kind: "pdf" } => f.kind === "pdf"), message: msg,
         });
+        // Silence about a dietary need is unknown, not a refusal (only checkable when no PDF is involved).
+        if (!qj && !files.some((f) => f.kind === "pdf")) extraction = dropUnstatedDietaryRefusals(extraction, msg.body_text ?? "");
         // The extractor only knows email wording ("email body"); figures from a call or a text say so.
         const channelSource = msg.channel === "a2a" ? "a2a task" : msg.channel === "phone" ? "call transcript" : msg.channel === "imessage" ? "iMessage text" : null;
         if (channelSource) for (const src of extraction.sources) if (msg.channel === "a2a" || !/^pdf\b/i.test(src.source)) src.source = channelSource;
@@ -1040,11 +1042,21 @@ export class HaggleEngine {
       return;
     }
     const reqs = this.requirements(job);
-    const record = validateQuote(x, job.request.quantity);
-    const results = evaluateRequirements(record, reqs, job.request.quantity);
-    const compliant = meetsHardRequirements(results, reqs);
     const prior = (await this.repo.listQuotes(job.id)).filter((q) => q.business_id === b.business_id);
     const priorCurrent = prior.find((q) => q.status === "current");
+    let record = validateQuote(x, job.request.quantity);
+    // An answer to "can you confirm X?" ("yes, 45 vegetarian") carries no price: it revises the
+    // business's current quote with what it now states, keeping that quote's own figures.
+    const statesTerms = Object.keys(record.dietary_coverage).length > 0 || record.delivery_included !== null;
+    if (record.total_cents === null && record.available && statesTerms && priorCurrent?.record.total_cents != null && record.questions.length === 0) {
+      const p = priorCurrent.record;
+      record = {
+        ...p, dietary_coverage: { ...p.dietary_coverage, ...record.dietary_coverage }, delivery_included: record.delivery_included ?? p.delivery_included,
+        flags: [...new Set([...p.flags, ...record.flags])], missing_fields: p.missing_fields.filter((f) => !(f in record.sources)), confidence: Math.min(p.confidence, record.confidence),
+      };
+    }
+    const results = evaluateRequirements(record, reqs, job.request.quantity);
+    const compliant = meetsHardRequirements(results, reqs);
     const questionIds: string[] = [];
     for (const text of record.questions) {
       const q = await this.repo.insertQuestion({ job_id: job.id, business_id: b.business_id, message_id: msg.id, text });
@@ -1062,7 +1074,7 @@ export class HaggleEngine {
         this.roundCache.set(quoteRow.id, quoteRow.round);
         await this.repo.appendEvent(job.id, "quote", { quote_id: quoteRow.id, business_id: b.business_id, total_usd: record.total_cents === null ? null : centsToUsd(record.total_cents), round: quoteRow.round });
         for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
-        if (!compliant) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "requirement_unmet" });
+        if (!compliant) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: results.some((r) => r.met === false) ? "requirement_unmet" : "requirement_unknown" });
         if (priorCurrent) await this.onRevision(job, priorCurrent);
       }
     } else if (record.questions.length === 0) {
@@ -1089,7 +1101,29 @@ export class HaggleEngine {
         }
       }
     }
-    const status = !record.available ? "declined" : quoteRow ? "quoted" : record.questions.length ? "question" : b.followups_sent >= 1 ? "silent" : "replied";
+    // A priced quote that leaves a hard requirement unstated (e.g. no vegetarian count): ask once, on
+    // the same text/email thread, instead of treating silence as a no. Never by a new call.
+    let askedToConfirm = false;
+    const unstated = quoteRow && record.available ? reqs.filter((r) => r.hard && results.find((x) => x.requirement_id === r.id)?.met === null) : [];
+    if (unstated.length && b.followups_sent < 1 && ((b.channel === "imessage" && b.phone) || (b.channel === "email" && b.email))) {
+      const ask = unstated.map((r) => r.text).join("; ");
+      try {
+        if (b.channel === "imessage") {
+          await this.sendIMessageToBusiness(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), `Thanks! Can you confirm: ${ask}? HG-${job.short_code}`, null);
+        } else {
+          await this.sendRecorded(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), {
+            to: b.email!, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
+            bodyText: `Hi ${b.name},\n\nThanks for the quote! Could you confirm: ${ask}?`,
+          });
+        }
+        await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} to confirm: ${ask}`, channel: b.channel });
+        askedToConfirm = true;
+      } catch (err) {
+        this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+      }
+    }
+    const status = !record.available ? "declined" : askedToConfirm ? "replied" : quoteRow ? "quoted" : record.questions.length ? "question" : b.followups_sent >= 1 ? "silent" : "replied";
     await this.repo.updateBusiness(job.id, b.business_id, { status });
     // Partner's brain learns from every parsed reply; a brain failure never blocks the deal.
     try {
