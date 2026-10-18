@@ -3,7 +3,7 @@
 // board that rendered live in Claude.ai keeps rendering through the shared DealBoard schema.
 import { describe, expect, it } from "vitest";
 import type { DealBoardData } from "@haggle/engine";
-import { ApprovalOut, DealBoard, DealBoardOrEmpty, emptyBoard, toApproval, toDealBoard } from "../src/views.ts";
+import { ApprovalOut, DealBoard, DealBoardOrEmpty, DealStarted, emptyBoard, toApproval, toDealBoard, toDealStarted } from "../src/views.ts";
 import { callHoursText, formatField, isLongText, kindLabel, parseToolError, toolErrorText } from "../views/_shared/format.ts";
 
 const request = {
@@ -43,6 +43,28 @@ describe("toDealBoard (live-shaped engine data)", () => {
     expect(b.quotes[0]).toMatchObject({ business: "Haggle Test Seller", channel: "email", total_usd: 1080, eligible: true, verdict: "compliant" });
     expect(b.quotes[0]).not.toHaveProperty("evidence"); // engine-internal fields never reach the view
     expect(b.businesses.find((x) => x.name === "Golden Grill")).toMatchObject({ status: "contacted", last_event: "Contacted" });
+  });
+
+  it("deal renders the live board at once: its output is a DealBoard plus the deal fields", () => {
+    const r = {
+      ok: true, mode: "live" as const, next: "Call wait_for_update with this job_id.", job_id: live.job.id, inbox: "haggle@inkboxmail.com", state: "collecting", eta: "first replies in ~1-5 min",
+      contacted: [{ business_id: "biz_golden", business: "Golden Grill", channel: "email" as const, simulated: true }],
+      not_contacted: [],
+    };
+    const out = toDealStarted(r, live, live.job.request, 1200, "live", ["No budget_usd given."]);
+    expect(DealStarted.safeParse(out).success).toBe(true);
+    expect(DealBoard.safeParse(out).success).toBe(true); // what the deal-board view reads
+    expect(out).toMatchObject({ job_id: live.job.id, job: { id: live.job.id, state: "collecting" }, contacted: [{ business: "Golden Grill" }], warnings: ["No budget_usd given."], next: r.next, mode: "live" });
+    expect(out.quotes[0]).toMatchObject({ total_usd: 1080 });
+    // The board read failed after outreach went out: a minimal board from the deal result, never an error.
+    const fallback = toDealStarted({ ...r, not_contacted: [{ business_id: "biz_x", business: "Far Away Deli", channel: "phone" as const, reason: "outside call hours" }] }, null, live.job.request, 1200, "live", []);
+    expect(DealBoard.safeParse(fallback).success).toBe(true);
+    expect(fallback.job).toMatchObject({ id: live.job.id, request: "lunch catering for 40 people · 2026-10-22 · San Francisco, CA", state: "collecting", budget_usd: 1200 });
+    expect(fallback.businesses).toEqual([
+      expect.objectContaining({ name: "Golden Grill", channel: "email", status: "contacted" }),
+      expect.objectContaining({ name: "Far Away Deli", status: "unavailable", unavailable_reason: "outside call hours" }),
+    ]);
+    expect(fallback.quotes).toEqual([]);
   });
 
   it("open_haggle with no deal is an empty board", () => {

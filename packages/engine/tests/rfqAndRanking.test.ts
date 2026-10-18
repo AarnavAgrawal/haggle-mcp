@@ -15,7 +15,9 @@ describe("buildRfqEmail", () => {
   });
 
   it("discloses that the sender is an AI agent and lists hard requirements and the deadline", () => {
-    expect(out.bodyText).toContain("I'm an AI assistant");
+    expect(out.bodyText).toContain("I'm an AI assistant reaching out on behalf of a customer.");
+    expect(out.bodyText.trim().split("\n").at(-1)).toBe("AI assistant for a customer");
+    expect(out.bodyText).not.toMatch(/Haggle/);
     expect(out.bodyText).toContain("  - At least 12 vegetarian meals");
     expect(out.bodyText).toContain("Saturday October 17 21:30 UTC");
   });

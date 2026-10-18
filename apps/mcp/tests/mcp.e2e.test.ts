@@ -68,6 +68,10 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const byName = Object.fromEntries(tools.map((t: { name: string }) => [t.name, t]));
     expect(JSON.stringify(byName.get_quotes._meta)).toContain("deal-board");
     expect(byName.get_quotes.outputSchema).toBeTruthy();
+    // deal opens the live board the moment outreach starts; wait_for_update stays view-less (a board per poll would flood the chat).
+    expect(byName.deal._meta.ui.resourceUri).toBe("ui://views/deal-live.html");
+    expect(byName.deal.outputSchema).toBeTruthy();
+    expect(byName.wait_for_update._meta?.ui).toBeUndefined();
     expect(byName.approve_in_view._meta.ui.visibility).toEqual(["app"]);
     expect(names).not.toContain("answer_seller"); // views call answer_business now
     expect(byName.open_haggle.inputSchema.required ?? []).toEqual([]);
@@ -132,6 +136,11 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(deal.content[0].text).toMatch(/^\[DEMO\] /);
     const job = deal.structuredContent.job_id;
     expect(deal.structuredContent.contacted.find((c: { business: string }) => c.business === "Mission Eats")).toMatchObject({ channel: "phone" });
+    // The deal result is a full deal board (the view renders it at once) and says which view renders it.
+    expect(DealBoard.safeParse(deal.structuredContent).success).toBe(true);
+    expect(deal.structuredContent.job.id).toBe(job);
+    expect(deal.structuredContent.businesses).toHaveLength(6);
+    expect(deal._meta?.ui?.resourceUri).toBe("ui://views/deal-live.html");
 
     // Duplicate request: same job, nothing re-sent.
     const again = await call("deal", { request: REQUEST, businesses, budget_usd: 1200, client_request_id: "e2e-1" });

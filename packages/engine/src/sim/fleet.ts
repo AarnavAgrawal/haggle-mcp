@@ -202,7 +202,9 @@ export class SimFleet implements EmailPort, ExtractorPort, PhonePort {
     const n = ++this.seq;
     const taskId = `sim-task-${this.prefix}-${n}`;
     const contextId = req.contextId ?? `sim-ctx-${this.prefix}-${n}`;
-    const trigger: Trigger | null = req.data.type === "counter" || req.data.haggle === "counter/1" ? "counter" : req.data.type === "rfq" || req.data.haggle === "rfq/1" ? "rfq" : null;
+    // Follow-ups and answers stay on A2A for an A2A business, so the persona answers them here too.
+    const trigger: Trigger | null = req.data.type === "counter" || req.data.haggle === "counter/1" ? "counter" : req.data.type === "rfq" || req.data.haggle === "rfq/1" ? "rfq"
+      : req.data.type === "answer" ? "answer" : req.data.type === "followup" ? "followup" : null;
     const jobId = String(req.data.job_id ?? "");
     const r = p && trigger ? p.reply(trigger, { jobId, inbox: "", msg: { from: "", to: req.cardUrl, subject: "", bodyText: req.text, idempotencyKey: req.messageId }, nowMs: this.opts.now().getTime(), count: 1 }) : null;
     const quote = r?.attachments?.find((a) => a.filename === "quote.json");

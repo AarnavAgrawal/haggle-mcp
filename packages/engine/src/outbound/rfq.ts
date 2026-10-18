@@ -1,4 +1,5 @@
-// PURE: the RFQ email text. The opening line discloses that the sender is an AI agent; keep it.
+// PURE: the RFQ email text. The opening line discloses that the sender is an AI assistant acting on
+// behalf of the customer (never a brand); keep it. The sign-off says the same.
 // The machine-readable `rfq.json` part is added once its fields are frozen (contract D8).
 //
 // Adapted from quote-broker@8a68559 src/channels/outreach.ts (Partner). Changes for Haggle v3:
@@ -32,6 +33,8 @@ export interface RfqInput {
   details?: { label: string; value: string }[];
   /** Custom answers to ask for, by label; replaces the catering default ask (total, delivery, deposit). */
   askLabels?: { label: string; required: boolean }[];
+  /** Who the AI assistant acts for: the customer's name, or "a customer" (default). */
+  customer?: string;
 }
 
 /** "40 people" (people is the default unit), "3 rooms", or null when nothing is counted. */
@@ -44,10 +47,11 @@ export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string 
   const subject = [`[HG-${i.shortCode}] Quote request: ${i.what}`, qty, i.date ? humanDate(i.date) : null].filter(Boolean).join(", ");
   const replyBy = `${humanDate(i.replyBy.toISOString().slice(0, 10))} ${String(i.replyBy.getUTCHours()).padStart(2, "0")}:${String(i.replyBy.getUTCMinutes()).padStart(2, "0")} UTC`;
   const people = i.unit === undefined || i.unit === "people";
+  const customer = i.customer?.trim() || "a customer";
   const lines = [
     `Hi ${i.businessName},`,
     "",
-    "I'm an AI assistant arranging this order for a client. Could you quote the following?",
+    `I'm an AI assistant reaching out on behalf of ${customer}. Could you quote the following?`,
     "",
     `- What: ${i.what}`,
     ...(i.date ? [`- Date: ${humanDate(i.date)}${i.time ? ` at ${i.time}` : ""}`] : []),
@@ -62,6 +66,6 @@ export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string 
   } else {
     lines.push("", `Please reply by ${replyBy} with your total price, what it includes (delivery, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.`);
   }
-  lines.push("", "Thank you!");
+  lines.push("", "Thank you!", `AI assistant for ${customer}`);
   return { subject, bodyText: lines.join("\n") };
 }

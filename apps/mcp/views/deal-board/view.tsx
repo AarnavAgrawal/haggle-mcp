@@ -1,5 +1,5 @@
 /**
- * Deal board (get_quotes, open_haggle): who Haggle contacted on which channel, what each business
+ * Deal board (deal, get_quotes, open_haggle): who Haggle contacted on which channel, what each business
  * said, the quotes as a ranked ladder against the budget, why the winner wins, and the human's
  * approve → pay → receipt steps. Renders only DealBoard fields; every action is an MCP tool call.
  */

@@ -104,6 +104,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-17 23:10 · Aarnav · Every message to a business stays on its first-contact channel unless the agent passes one (follow-ups, answers, counteroffers, confirmations, cancel notes, send_message): a phone business gets a follow-up/counter/answer Voice AI call (scheduled around call hours and cooldown), never an SMS; a text business is never emailed or phoned. Email→call escalation stays (operator config). Outbound wording: "I'm an AI assistant … on behalf of <customer>" (request "Customer" detail, HAGGLE_CUSTOMER_NAME, else "a customer"), never "Haggle"; HG ref code kept. Not committed
+
 - 2026-10-17 22:25 · Aarnav · Preferences are soft: budget, requirements and required answers rank and caveat a quote but never exclude it; only unsafe (scam link, injection, unverified, superseded) or unpriced quotes are rejected. Negotiation counters every safe quote above the cited one. Per-head price without headcount, tax rate on food, texted reply read with its question. Payment ceiling raised to $10k (Stripe test). Claude.ai connector shows the old 13-tool list: reconnect to refresh. 401 tests; deployed
 
 - 2026-10-17 22:30 · Aarnav · Demo outreach mix live on haggle-aarnav: deal(discover:true) emails Harbor Table, Bay Catering, Sunset Kitchen, QuickQuote Deli; texts Golden Grill by SMS (TEXT_VENDOR_PHONE, the text channel falls back to SMS when iMessage is off); calls Mission Eats (MISSION_EATS_PHONE); update texts to HAGGLE_NOTIFY_PHONE. 396 tests; live discover verified, read-only 17/18

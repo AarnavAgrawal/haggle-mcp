@@ -96,6 +96,11 @@ export interface IMessagePort {
  */
 export interface SmsPort {
   send(req: { to: string; text: string; idempotencyKey: string }): Promise<{ messageId: string }>;
+  /**
+   * Optional: texts sent to this number since it last texted back (Inkbox refuses more than 10).
+   * Lets a restarted server keep the remaining texts for questions and approvals.
+   */
+  unanswered?(to: string): Promise<number>;
 }
 
 export interface ExtractorPort {
@@ -159,8 +164,21 @@ export interface EngineConfig {
   notifyPhone?: string;
   /** Wrong approval codes before an approval locks. Default 5. */
   maxApprovalAttempts?: number;
+  /**
+   * Email approval from an approver whose mail Inkbox can't authenticate (any non-Inkbox address):
+   * accept a reply only when it comes from the approver's exact address, in the approval's thread,
+   * and its first line carries this approval's one-time code (APPROVE <code> / NO <code>). The code
+   * goes only to the human's inbox, phone and approval card, never to the model. Wrong codes count
+   * toward the lockout. Off: only authenticated senders can approve by email.
+   */
+  emailApprovalByCode?: boolean;
   /** The buyer identity as businesses see it (get_identity; Voice AI instructions). */
   identity?: { name: string; phone?: string | null };
+  /**
+   * Who the AI assistant acts for when the request doesn't say (a detail like "Customer: Acme Labs"
+   * wins): messages to businesses say "I'm an AI assistant ... on behalf of <name>". Default "a customer".
+   */
+  customerName?: string;
 }
 
 export interface EngineDeps {

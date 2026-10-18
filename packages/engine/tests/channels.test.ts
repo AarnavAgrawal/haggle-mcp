@@ -269,7 +269,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     ] });
     expect(deal.contacted.map((c) => [c.business, c.channel])).toEqual(expect.arrayContaining([["Harbor Table", "email"], ["Sunset Kitchen", "imessage"]]));
     expect(sent).toHaveLength(1);
-    expect(texts).toEqual([{ to: "+14155550111", text: expect.stringMatching(/^Hi Sunset Kitchen, Haggle AI assistant here\..{0,140}HG-/), idempotencyKey: expect.any(String) }]);
+    expect(texts).toEqual([{ to: "+14155550111", text: expect.stringMatching(/^Hi Sunset Kitchen, I'm an AI assistant for a customer\..{0,140}HG-/), idempotencyKey: expect.any(String) }]);
     expect(texts[0]!.text.length).toBeLessThanOrEqual(159);
     expect(calls).toHaveLength(0); // scheduled, not yet placed
 
@@ -283,7 +283,8 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     clock.advance(61_000);
     await engine.advanceJob(deal.job_id);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.reason).toMatch(/this is Haggle, an AI assistant/);
+    expect(calls[0]!.reason).toMatch(/Hi, I'm an AI assistant calling on behalf of a customer/);
+    expect(calls[0]!.reason).not.toMatch(/Haggle/);
     expect(calls[0]!.reason).toMatch(/real quote of \$1,080 total/);
     expect((await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "haggle: I'm an AI assistant...\nremote: For you, $995 total all-in, 12 vegetarian, delivery included, $150 deposit." })).outcome).toBe("stored");
     await engine.advanceJob(deal.job_id);

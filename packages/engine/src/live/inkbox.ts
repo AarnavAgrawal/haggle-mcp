@@ -425,12 +425,34 @@ export function inkboxTextReceived(payload: { data: Record<string, unknown> }): 
 }
 
 /** SMS from the buyer identity's own number. NOT wired unless HAGGLE_ENABLE_SMS=true (and the number is SMS-ready). */
-export function inkboxSms(identity: { sendText(o: { to: string; text: string; idempotencyKey?: string }): Promise<{ id: string }> }, sleep?: (ms: number) => Promise<void>): SmsPort {
+export function inkboxSms(
+  identity: {
+    sendText(o: { to: string; text: string; idempotencyKey?: string }): Promise<{ id: string }>;
+    listTexts?(o?: { limit?: number }): Promise<{ direction: string; remotePhoneNumber: string | null; deliveryStatus: string | null; createdAt: Date | string }[]>;
+  },
+  sleep?: (ms: number) => Promise<void>,
+): SmsPort {
   return {
     async send(req) {
       const m = await withRetry(() => identity.sendText({ to: req.to, text: req.text, idempotencyKey: req.idempotencyKey }), sleep);
       return { messageId: m.id };
     },
+    // Inkbox's spam filter refuses an 11th text to a number that hasn't replied: count the recent
+    // outbound texts to it since its last inbound one (refused texts don't count).
+    ...(identity.listTexts
+      ? {
+          async unanswered(to: string) {
+            const norm = (n: string | null) => (n ?? "").replace(/[\s().-]/g, "");
+            const mine = (await identity.listTexts!({ limit: 100 })).filter((t) => norm(t.remotePhoneNumber) === to).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            let n = 0;
+            for (const t of mine) {
+              if (t.direction === "inbound") break;
+              if (!/blocked/i.test(String(t.deliveryStatus ?? ""))) n++;
+            }
+            return n;
+          },
+        }
+      : {}),
   };
 }
 

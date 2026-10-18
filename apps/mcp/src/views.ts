@@ -62,6 +62,51 @@ export function toDealBoard(b: DealBoardData, mode: Mode): DealBoard {
   });
 }
 
+/**
+ * deal's output: the live deal board (so the host renders it the moment outreach starts) plus the
+ * deal result fields the model and existing clients read (job_id, contacted, not_contacted, ...).
+ * Loose: the board's own fields are validated by DealBoard; deal-only fields pass through.
+ */
+export const DealStarted = z.looseObject({
+  ...DealBoard.shape,
+  ok: z.boolean(),
+  mode: z.enum(["mock", "live"]),
+  next: z.string(),
+  job_id: z.string(),
+  inbox: z.string(),
+  state: z.string(),
+  contacted: z.array(z.looseObject({ business_id: z.string(), business: z.string(), channel: z.string() })),
+  not_contacted: z.array(z.looseObject({ business: z.string(), channel: z.string(), reason: z.string() })),
+  eta: z.string(),
+  warnings: z.array(z.string()),
+});
+export type DealStarted = z.infer<typeof DealStarted>;
+
+type DealOut = {
+  ok: boolean; mode: Mode; next: string; job_id: string; inbox: string; state: string; eta: string;
+  contacted: { business_id: string; business: string; channel: Channel }[];
+  not_contacted: { business_id?: string; business: string; channel: Channel; reason: string }[];
+};
+
+/**
+ * The board shown right after deal. `board` is the engine's read of the new job; when that read
+ * failed (the outreach already went out, so deal must not fail), a minimal board is built from the
+ * deal result: every contacted business as "contacted", no quotes yet. The view re-reads at once.
+ */
+export function toDealStarted(r: DealOut, board: DealBoardData | null, request: DealBoardData["job"]["request"], budget_usd: number, mode: Mode, warnings: string[]): DealStarted {
+  const b: DealBoard = board
+    ? toDealBoard(board, mode)
+    : DealBoard.parse({
+      job: { id: r.job_id, request: requestSummary(request), state: r.state, budget_usd, requirements: request.requirements.map(requirementText) },
+      businesses: [
+        ...r.contacted.map((c) => ({ id: c.business_id, name: c.business, channel: c.channel, status: "contacted", last_event: `Contacted by ${c.channel}` })),
+        ...r.not_contacted.filter((c) => c.business_id).map((c) => ({ id: c.business_id!, name: c.business, channel: c.channel, status: "unavailable", last_event: "Not contacted", unavailable_reason: c.reason })),
+      ],
+      quotes: [], open_questions: [], next: r.next, mode,
+    });
+  return DealStarted.parse({ ...b, ok: r.ok, mode, next: r.next, job_id: r.job_id, inbox: r.inbox, state: r.state, contacted: r.contacted, not_contacted: r.not_contacted, eta: r.eta, warnings });
+}
+
 export function emptyBoard(mode: Mode): DealBoardOrEmpty {
   return DealBoardOrEmpty.parse({ job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode, next: "No deals yet. Call deal with what to buy, or ask for an instant estimate." });
 }

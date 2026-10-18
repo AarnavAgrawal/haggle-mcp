@@ -113,15 +113,17 @@ describe("brain start-up never crashes the server", () => {
   });
 
   it("text.received: the human's reply to a question text is sent to the business; other numbers are ignored", async () => {
-    const { rt, engine, repo, texts } = liveRuntime();
+    const { rt, engine, repo, texts, imsgs } = liveRuntime();
     const { budget_usd, ...request } = GOLDEN_REQUEST;
-    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Mission Eats", phone: "+14155550104" }] });
+    // A text business: the answer goes back on its own channel (iMessage here), never as SMS or email.
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: "+14155550104", channel: "imessage" }] });
     const q = await repo.insertQuestion({ job_id: deal.job_id, business_id: (await repo.getBusinesses(deal.job_id))[0]!.business_id, message_id: null, text: "Drop-off or set up?" });
     const stranger = event("evt_t0", "text.received", { text_message: { id: "tx_0", direction: "inbound", remote_phone_number: "+14155550000", text: "hi" } });
     expect((await handleInkboxWebhook(rt, stranger, signed(stranger))).outcome).toBe("unknown_sender");
     const raw = event("evt_t1", "text.received", { text_message: { id: "tx_1", direction: "inbound", remote_phone_number: HUMAN, text: "Drop-off is fine." } });
     expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 200, jobId: deal.job_id, outcome: "answered" });
     expect((await repo.getQuestion(q.id))?.status).toBe("answered");
-    expect(texts.at(-1)).toMatchObject({ to: "+14155550104", text: expect.stringContaining("Drop-off is fine.") });
+    expect(imsgs.at(-1)).toMatchObject({ to: "+14155550104", text: expect.stringContaining("Drop-off is fine.") });
+    expect(texts.some((t) => t.to === "+14155550104")).toBe(false);
   });
 });

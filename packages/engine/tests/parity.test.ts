@@ -140,12 +140,16 @@ describe("call policy", () => {
   it("voice instructions list open requests, keep the safety rules and fit the limit", () => {
     const req = { what: "lunch catering", quantity: 40, date: "2026-10-22", area: "SF", requirements: [], details: [{ label: "Notes", value: "x".repeat(400) }] } as Request;
     const jobs = Array.from({ length: 40 }, (_, i) => ({ shortCode: `AB${i}`, request: req, businesses: [{ name: `Biz ${i}`, phone: "+14155550100" }] }));
-    const text = buildVoiceInstructions("Haggle", jobs);
+    const text = buildVoiceInstructions("a customer", jobs);
     expect(text.length).toBeLessThanOrEqual(MAX_VOICE_INSTRUCTIONS);
     expect(text).toMatch(/AI assistant/);
     expect(text).toMatch(/Never agree to buy/);
     expect(text).toMatch(/\[HG-AB0\]/);
-    expect(buildVoiceInstructions("Haggle", [])).toMatch(/no open requests/);
+    expect(buildVoiceInstructions("a customer", [])).toMatch(/no open requests/);
+    // The customer's AI assistant, never a brand.
+    expect(text).toMatch(/Hi, I'm an AI assistant working on behalf of a customer/);
+    expect(text).not.toMatch(/Haggle/);
+    expect(buildVoiceInstructions("Acme Labs", [])).toMatch(/on behalf of Acme Labs/);
   });
 });
 

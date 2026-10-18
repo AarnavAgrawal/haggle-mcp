@@ -7,7 +7,9 @@ const job = { short_code: "AB12", request: { what: "lunch catering", quantity: 4
 describe("HaggleEngine.callBrief", () => {
   it("discloses AI first, says the date as people do, and stays under Inkbox's limit", () => {
     const b = HaggleEngine.callBrief("Mission Eats", job, ["At least 12 vegetarian meals", "Delivery included"]);
-    expect(b.split("\n")[1]).toMatch(/this is Haggle, an AI assistant/);
+    expect(b.split("\n")[0]).toMatch(/^You are an AI assistant phoning Mission Eats on behalf of a customer/);
+    expect(b.split("\n")[1]).toMatch(/Open with: "Hi, I'm an AI assistant calling on behalf of a customer about a quote for lunch catering/);
+    expect(b).not.toMatch(/Haggle/); // the customer's AI assistant, never a brand
     expect(b).toContain("Thursday, October 22");
     expect(b).toContain("Must have: At least 12 vegetarian meals; Delivery included.");
     expect(b).toContain("Do not mention other businesses or prices.");
@@ -23,5 +25,10 @@ describe("HaggleEngine.callBrief", () => {
     expect(b).toContain("real quote of $1,080 total");
     expect(b).toMatch(/Never invent, round down or exaggerate/);
     expect(b).toMatch(/emailed earlier/);
+  });
+  it("names the customer it calls for: a request detail, else the given name, else 'a customer'", () => {
+    const named = { short_code: "AB12", request: { what: "lunch catering", quantity: 40, unit: null, date: "2026-10-22", area: "San Francisco, CA", requirements: [], details: [{ label: "Company", value: "Acme Labs" }] } } as never;
+    expect(HaggleEngine.callBrief("Mission Eats", named, [])).toMatch(/Hi, I'm an AI assistant calling on behalf of Acme Labs about/);
+    expect(HaggleEngine.callBrief("Mission Eats", job, [], { customer: "Priya" })).toMatch(/on behalf of Priya about/);
   });
 });
