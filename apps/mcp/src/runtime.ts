@@ -1,6 +1,6 @@
 // Builds the engine for the configured mode. Mock mode (default) needs no credentials and is
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
-import { createMockEngine, fleetBusinesses, type BrainAdapter, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
+import { createMockEngine, fleetBusinesses, PostgresRepository, type BrainAdapter, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { buildRoster, type RosterEntry } from "./vendors.ts";
 
@@ -53,8 +53,13 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   // Mock mode never writes simulated profiles to a real database (the brain stays in memory), and
   // discover offers only the simulated fleet, which the mock email/phone ports can play.
   const fleet = fleetBusinesses();
-  const brain = makeBrain(fleet, { HAGGLE_BRAIN_STORE: "memory" }, { discovery: fleet });
-  const m = createMockEngine({ delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain });
+  // Rehearsals of restarts: HAGGLE_MOCK_DATABASE_URL (a throwaway Postgres) and HAGGLE_MOCK_BRAIN_FILE keep
+  // simulated state across a restart. Never point these at the live database: mock data is DEMO only.
+  const brain = makeBrain(fleet, env.HAGGLE_MOCK_BRAIN_FILE ? { HAGGLE_BRAIN_FILE: env.HAGGLE_MOCK_BRAIN_FILE } : { HAGGLE_BRAIN_STORE: "memory" }, { discovery: fleet });
+  const m = createMockEngine({
+    delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain,
+    ...(env.HAGGLE_MOCK_DATABASE_URL ? { repo: new PostgresRepository(env.HAGGLE_MOCK_DATABASE_URL) } : {}),
+  });
   // Mock: the simulated fleet plays all six demo vendors; every one is reachable (DEMO).
   // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board).
   const roster = env.HAGGLE_MOCK_VENDORS === "none" ? buildRoster({}, { email: true, imessage: false, phone: false, a2a: false, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false }) : fleet.map((b): RosterEntry => ({
