@@ -113,6 +113,13 @@ const CALL_RETRY_MS = 60_000;
 const CALL_MAX_ATTEMPTS = 3;
 /** A counteroffer call still on the line when the negotiation window ends may finish within this long. */
 const COUNTER_CALL_GRACE_MS = 4 * 60_000;
+/**
+ * A negotiation round whose counteroffers were never recorded (the advance sending them died
+ * mid-send) closes this long after its window ends; until then it waits for them (dueEvent).
+ */
+const COUNTERS_LOST_AFTER_MS = 4 * 60_000;
+/** fire's refusal when the job is no longer in the state the event was decided for. */
+const STALE_EVENT = "stale: the job changed since this event was decided";
 /** A just-asked business holds the collection window at most this long by default (followUpHoldMs). */
 const DEFAULT_FOLLOW_UP_HOLD_MS = 3 * 60_000;
 /** The per-job advance queue, one per process (see advanceJob). */
@@ -889,10 +896,18 @@ export class HaggleEngine {
     return updated;
   }
 
-  async fire(jobId: string, event: JobEvent, cause = event.type): Promise<{ ok: boolean; reason?: string; job?: JobRow }> {
+  /**
+   * `seen`: the job as the caller saw it when it decided on this event (advanceJobOnce's dueEvent).
+   * The event is applied only to that same state, round and ready flag, never to whatever the job
+   * moved to meanwhile: live HG-YUFU, a "collection closed" decided by one advance landed, through
+   * the CAS retry, on the negotiation round another advance had just opened (round 2 = max_rounds),
+   * so it closed that round as "ready" before a single counteroffer went out.
+   */
+  async fire(jobId: string, event: JobEvent, cause = event.type, seen?: Pick<JobRow, "state" | "round" | "ready">): Promise<{ ok: boolean; reason?: string; job?: JobRow }> {
     for (let attempt = 0; attempt < 4; attempt++) {
       const job = await this.repo.getJob(jobId);
       if (!job) return { ok: false, reason: "job not found" };
+      if (seen && (job.state !== seen.state || job.round !== seen.round || job.ready !== seen.ready)) return { ok: false, reason: STALE_EVENT, job };
       const r = transition(this.machine(job), event, await this.context(job, event));
       if (!r.ok) return { ok: false, reason: r.reason };
       const committed = await this.commit(job, r.next, r.effects, cause);
@@ -1708,6 +1723,13 @@ export class HaggleEngine {
       if (from !== (await this.notifyTarget(job))) continue;
       const a = await this.repo.getLatestApproval(job.id);
       if (a && (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`))) texted.push(a);
+      // Haggle's earlier texted suggestions that a better quote replaced (reviseSuggestion): their code
+      // is answered "replaced", never taken as a wrong code against the new suggestion (lockout).
+      if (!parsed[2]) continue;
+      for (const e of (await this.repo.listEvents(job.id)).filter((x) => x.type === "approval_superseded" && x.data.approval_id !== a?.id)) {
+        const old = await this.repo.getApproval(String(e.data.approval_id));
+        if (old && old.code === parsed[2] && !texted.some((x) => x.id === old.id)) texted.push(old);
+      }
     }
     const last = this.lastSms.get(from);
     // The approval texted last may belong to a deal that has since closed (approved on the card and paid).
@@ -2723,7 +2745,10 @@ export class HaggleEngine {
           continue;
         }
       }
-      const r = await this.fire(jobId, event);
+      // Applied only to the state it was decided for: if another advance (another process) moved the
+      // job meanwhile, decide again from the new state instead.
+      const r = await this.fire(jobId, event, event.type, job);
+      if (!r.ok && r.reason === STALE_EVENT) continue;
       if (!r.ok) break;
     }
     await this.offerReady(jobId);
@@ -2742,13 +2767,17 @@ export class HaggleEngine {
         if (businesses.length > 0 && (await this.collectionWaiting(job, businesses)).length === 0) return { type: "window_closed" };
       } else {
         const events = await this.repo.listEvents(job.id);
-        const sent = events.some((e) => e.type === "counteroffers_sent" && e.data.round === job.round);
-        if (sent) {
-          const outstanding = await this.awaitingCounterAnswers(job, businesses, events);
-          if (outstanding.waiting.length === 0) return { type: "window_closed" };
-          // A counteroffer call already ringing when the window ends gets a short grace to finish.
-          if (deadlinePassed && outstanding.onCall && now - Date.parse(job.collect_until) < COUNTER_CALL_GRACE_MS) return null;
-        }
+        const sent = events.some((e) => e.type === "counteroffers_sent" && Number(e.data.round) === job.round);
+        // The round can't close before its counteroffers are planned and sent (counteroffers_sent,
+        // recorded by the advance that opened the round once every counter went out; zero planned
+        // closes it at once). Until then it waits, even past the window: the sender may be another
+        // process, or a strategist call that outlasted a short window. Only a send that evidently
+        // died lets the round close without them.
+        if (!sent) return now > Date.parse(job.collect_until) + COUNTERS_LOST_AFTER_MS ? { type: "window_closed" } : null;
+        const outstanding = await this.awaitingCounterAnswers(job, businesses, events);
+        if (outstanding.waiting.length === 0) return { type: "window_closed" };
+        // A counteroffer call already ringing when the window ends gets a short grace to finish.
+        if (deadlinePassed && outstanding.onCall && now - Date.parse(job.collect_until) < COUNTER_CALL_GRACE_MS) return null;
       }
       return deadlinePassed ? { type: "window_closed" } : null;
     }
@@ -2803,8 +2832,10 @@ export class HaggleEngine {
         continue;
       }
       // Answered: the business replied (any parsed reply: a new total, a "can't do better", the
-      // counter call's transcript) after the counteroffer actually went out.
-      const replied = msgs.some((m) => m.direction === "in" && m.business_id === b.business_id && m.kind === "reply" && m.created_at > out.created_at && (m.parse_status === "done" || m.parse_status === "failed"))
+      // counter call's transcript) after the counteroffer actually went out. A counter call that
+      // ended without anything to read (no answer, declined, failed: stored with nothing to parse)
+      // is over too; only a reply still being read keeps the round open.
+      const replied = msgs.some((m) => m.direction === "in" && m.business_id === b.business_id && m.kind === "reply" && m.created_at > out.created_at && m.parse_status !== "pending")
         || quotes.some((q) => q.business_id === b.business_id && q.round >= b.countered_round && q.created_at > out.created_at);
       if (replied) continue;
       waiting.push(b);
