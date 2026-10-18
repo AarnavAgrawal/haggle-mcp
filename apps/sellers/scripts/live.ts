@@ -146,8 +146,14 @@ async function cmdWebhook(mcpUrl: string | undefined) {
   const url = `${new URL(mcpUrl).origin}/webhooks/inkbox`;
   const buyer = await admin.getIdentity(buyerHandle);
   const existing = await admin.webhooks.subscriptions.list({ agentIdentityId: buyer.id, scope: "identity" });
-  if (existing.some((s) => s.url === url)) {
-    console.log(`buyer webhooks → ${url} (already subscribed)`);
+  const mine = existing.find((s) => s.url === url);
+  if (mine) {
+    // Subscribed before a new event type was added (e.g. text.received for SMS): add the missing ones.
+    const missing = BUYER_EVENTS.filter((e) => !(mine.eventTypes ?? []).includes(e));
+    if (missing.length) {
+      await admin.webhooks.subscriptions.update(mine.id, { scope: "identity", eventTypes: [...new Set([...(mine.eventTypes ?? []), ...BUYER_EVENTS])] });
+      console.log(`buyer webhooks → ${url} (added ${missing.join(", ")})`);
+    } else console.log(`buyer webhooks → ${url} (already subscribed)`);
   } else {
     await admin.webhooks.subscriptions.create({ agentIdentityId: buyer.id, url, eventTypes: BUYER_EVENTS });
     console.log(`buyer webhooks → ${url} [${BUYER_EVENTS.join(", ")}]`);
