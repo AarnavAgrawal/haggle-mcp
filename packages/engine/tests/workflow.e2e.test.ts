@@ -280,6 +280,7 @@ describe("recipient allowlist (live safety)", () => {
     const board = await engine.getQuotes(deal.job_id);
     expect(board.payment).toBeNull();
     expect(board.payments_enabled).toBe(false);
+    expect(board.next).toMatch(/^Approved\. Payments are off on this server/);
     expect(await repo.getPaymentForJob(deal.job_id)).toBeNull();
     expect((await repo.getJob(deal.job_id))!.state).toBe("paying");
     expect((await repo.listEvents(deal.job_id)).filter((e) => e.type === "payment" && e.data.reason === "Payments are not enabled yet")).toHaveLength(1); // said once

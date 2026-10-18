@@ -1583,6 +1583,7 @@ export class HaggleEngine {
     if (TERMINAL.has(job.state)) return job.state === "paid" ? "Done. get_quotes shows the receipt." : `Job ${job.state}${job.failure_reason ? ` (${job.failure_reason})` : ""}.`;
     if (pending.length) return `A business asked a question: answer with answer_business(job_id, question_id='${pending[0]!.id}', answer) or ask the user.`;
     if (job.state === "awaiting_approval") return "Waiting for the human to approve. Call wait_for_update.";
+    if (job.state === "paying" && !this.d.stripe && this.d.payer.disabledReason) return "Approved. Payments are off on this server, so nothing can be charged yet; tell the user. The approval stays valid until it expires.";
     if (job.state === "paying") return job.pay_intent ? "Payment in progress. Call wait_for_update." : "Approved. Call pay(job_id, quote_id) to pay the deposit.";
     if (job.ready) return "Quotes are final. Call get_quotes, then approve(job_id, quote_id) for the recommended quote.";
     return "Still collecting. Call wait_for_update again (cursor from this response).";
