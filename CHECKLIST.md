@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: first witnessed live purchase on calm-spark 6cb7312: waiting on roster activation, Stripe secrets + enable, and Aarnav's RCS inbound check · Aarnav: live Haggle in the Claude app (`haggle-aarnav` on Manufact, branch `aarnav-live-e2e`), then the first live call to Mission Eats
+**Now working on:** Yash: the witnessed Claude.ai purchase on calm-spark 62c7c43 (routes READY, Stripe test mode on); waiting for Yash + Aarnav to say ready · Aarnav: live Haggle in the Claude app (`haggle-aarnav` on Manufact, branch `aarnav-live-e2e`), then the first live call to Mission Eats
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -40,10 +40,10 @@ _MVP audit (2026-10-17, main 54b2d47, deployed as calm-spark 0.5.0+54b2d47). PAS
   - Status: **BLOCKED (live 403).** Built + tested (task to the pinned card, result by webhook or polling, `haggle.quote.v1` → Quote, counter in the same context). Live attempt job_9a5f8491d69c498782fd: Inkbox A2A RPC 403, because `haggle`'s A2A filter is a whitelist with 0 rules (admin-only). Unblocked by moving to `haggle-buyer` (same org as Bay) or an admin allow rule.
 - [ ] **Conversation handling:** follow-ups (email, then call), answering business questions, one negotiation round
   - Done when: unanswered email triggers a call; `answer_business` replies in-thread; a counter cites a real competing quote
-  - Status: **PASS (tests + live iMessage follow-up).** Live: one confirming text for an unstated hard requirement (job_e8ab806d016e41468b2e); a reply with nothing new keeps the vendor "quoted". Tested: email→call escalation, answer_business in thread (email + iMessage), counters citing only real eligible quotes, human-authorized phone callback. Not yet live: a negotiated price change on calm-spark (Aarnav saw $1,100 → $1,023 by email on haggle-aarnav).
+  - Status: **LIVE PASS for clarification, tests for negotiation.** Live: RCS confirm-once, email + Voice AI + RCS replies matched and persisted. Budget is a target by default (over-target quotes stay comparable and negotiable); Claude strategist chooses among truthful counters (real cheaper quote or the buyer's target + the vendor's own fees), validated, bounded to 3 rounds; phone callbacks need a human tap. Not yet live: an accepted counter.
 - [ ] **Approval and payment:** iMessage or in-view approval, then capped Stripe payment
   - Done when: `pay` refuses without a stored approval for that exact quote, over the cap, or to a non-quoting payee; a test-mode charge returns a `receipt_url`
-  - Status: **Guards PASS, live charge BLOCKED (needs authorization).** Per-payment ceiling is one operator value ($5,000 on calm-spark, was an x402 $5 fallback); budget and settings cap are approval caveats; approval for the exact quote by form / card / iMessage; duplicate pay returns the same payment (mock). Live calm-spark has no `STRIPE_*` and `HAGGLE_ENABLE_PAYMENTS` unset → every payment refused.
+  - Status: **LIVE: approval PASS, charge pending (human).** Claude.ai approval card approved a live quote (job_dec51a570667400eae64); that approval was later revoked because its recorded total omitted a disclosed $250 delivery (never reused). Stripe TEST mode is live on calm-spark (`payments: stripe-test`, secrets staged as write-only, test customer + Visa 4242 verified, 0 prior PaymentIntents), $5,000 per-payment ceiling. Revisions void stale approvals; quotes without a known all-in total can't be approved; replayed pay returns the same charge; hosted receipt URL from the read-back (tests). Left: one witnessed test charge after a fresh approval.
 - [ ] **ChatGPT app features:** launcher entrypoint, settings (cap, approver, area), mentions
   - Status: **FAIL (not verified in ChatGPT).** Registered and verified over MCP (launcher global + thread entrypoints, settings.read, approve_in_view app-only). Needs a human to add the app in ChatGPT developer mode.
 - [ ] **Agent polish:** helpful errors, Skill, `llms.txt`, publishing checks, works across clients
@@ -110,6 +110,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 03:40 · Yash · calm-spark 62c7c43: quote integrity (all-in gate, versioned revisions void stale approvals, live Sunset approval revoked), target-vs-limit budgets, Claude negotiation strategist (validated), Stripe test mode enabled (secrets staged write-only), no premature winner on the board; yashnil-mvp deleted (tag backup/yashnil-mvp); Aarnav's feat/live-demo (7k lines, own Supabase) not merged pending a decision; 352 tests + 233 on Postgres
 
 - 19:10 · Yash · Production pass, calm-spark 6cb7312: stale default fleet routes removed (two Claude.ai deals had defaulted to haggle-test-seller + golden-grill-sf), HG-code iMessage routing across open jobs, Stripe hosted receipt link, restart/resumption + isolation regressions (342 tests); Claude.ai evidence: model called deal; the embedded board polled wait_for_update/get_quotes 53×; Aarnav (Android, RCS) connected to @haggle but no inbound reached @haggle yet
 
