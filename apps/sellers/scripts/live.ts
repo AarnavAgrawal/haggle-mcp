@@ -106,7 +106,8 @@ async function cmdEnv() {
       HAGGLE_ENABLE_PAYMENTS: "true", STRIPE_SECRET_KEY: cfg.secretKey, STRIPE_CUSTOMER_ID: cfg.customerId, STRIPE_PAYMENT_METHOD_ID: cfg.paymentMethodId,
       // Test money, but sized for real orders: a 200-person deposit is $500–1,750. Every charge still
       // needs the human's approval of that exact quote and amount, under the deal's own cap.
-      HAGGLE_GLOBAL_PAYMENT_CAP_CENTS: env.HAGGLE_GLOBAL_PAYMENT_CAP_CENTS ?? "500000",
+      // Per-payment safety ceiling: the Stripe rail's $10,000 maximum (a no-deposit quote is paid in full).
+      HAGGLE_GLOBAL_PAYMENT_CAP_CENTS: env.HAGGLE_GLOBAL_PAYMENT_CAP_CENTS ?? "1000000",
       HAGGLE_SPENDING_CAP_CEILING_CENTS: env.HAGGLE_SPENDING_CAP_CEILING_CENTS ?? "1000000",
     };
   }

@@ -52,8 +52,11 @@ describe("totals stated only as parts (phone quotes)", () => {
     expect(r.sources.total?.source).toMatch(/price per head x headcount/);
   });
 
-  it("never computes a total when delivery is unknown or a stated total exists", () => {
-    expect(validateQuote({ ...call, delivery_fee_usd: null, delivery_included: null, sources: call.sources.filter((s) => s.field !== "delivery_fee") }, 200).total_cents).toBeNull();
+  it("with delivery unknown, infers the food total and says delivery isn't in it; a stated total always wins", () => {
+    const r = validateQuote({ ...call, delivery_fee_usd: null, delivery_included: null, sources: call.sources.filter((s) => s.field !== "delivery_fee") }, 200);
+    expect(r.total_cents).toBe(400_000);
+    expect(r.sources.total?.source).toMatch(/delivery not stated/);
+    expect(r.flags).toContain("delivery_unclear");
     expect(validateQuote({ ...call, total_usd: 4150, sources: [...call.sources, src("total", "call transcript")] }, 200).total_cents).toBe(415_000);
   });
 });

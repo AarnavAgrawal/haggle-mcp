@@ -191,17 +191,12 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`en
   });
 
   it("refuses safely: over the settings cap at approval, a revised quote, and a final decline (no retry)", async () => {
-    // Settings cap $100 → Harbor's $300 deposit can't even be sent for approval.
-    const s1 = setup(scriptedStripe());
-    const before = await s1.engine.getSettings();
-    await s1.engine.updateSettings({ spending_cap_cents: 10_000 });
-    try {
-      const r1 = await ready(s1.engine, s1.clock);
-      const harbor = r1.board.quotes.find((q) => q.business === "Harbor Table")!;
-      await expect(s1.engine.requestApproval(r1.deal.job_id, harbor.quote_id, "simulated")).rejects.toMatchObject({ code: "over_cap" });
-    } finally {
-      await s1.engine.updateSettings({ spending_cap_cents: before.spending_cap_cents }); // settings are a shared row on Postgres
-    }
+    // Operator per-payment ceiling $100 → Harbor's $300 deposit can't even be sent for approval.
+    // (The settings spending cap is the human's preference: a caveat, see approvalCaveats.test.ts.)
+    const s1 = setup(scriptedStripe(), { globalPaymentCapCents: 10_000 });
+    const r1 = await ready(s1.engine, s1.clock);
+    const harbor = r1.board.quotes.find((q) => q.business === "Harbor Table")!;
+    await expect(s1.engine.requestApproval(r1.deal.job_id, harbor.quote_id, "simulated")).rejects.toMatchObject({ code: "over_cap" });
 
     // A decline is final: payment failed with the code, job failed, exactly one attempt.
     const stripe = scriptedStripe([{ ok: false, reason: "card_declined", retryable: false }]);

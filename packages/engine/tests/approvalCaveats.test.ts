@@ -1,6 +1,8 @@
-// The human can knowingly approve a quote that is over budget, or whose requirement Haggle couldn't
-// confirm; the approval says so. Safety refusals (a requirement the business failed, scam links,
-// injected instructions, unverified senders, no total) stay hard.
+// Only safety stops a purchase. Over budget, over the spending cap, a requirement the business failed
+// or didn't confirm, a computed total, no deposit: the human may knowingly approve and pay, and the
+// approval says exactly what they are accepting. Refused: scam links, injected instructions,
+// unverified senders, a business that declined, no amount at all, or more than the operator's
+// per-payment ceiling (CLAUDE.md §7: amount ≤ approved ≤ cap).
 import { describe, expect, it } from "vitest";
 import { createMockEngine, fleetBusinesses, GOLDEN_REQUEST, simulatedStripe, type HaggleEngine } from "../src/index.ts";
 
@@ -19,37 +21,61 @@ async function ready(engine: HaggleEngine, clock: { advance(ms: number): void },
   throw new Error("did not converge");
 }
 
-function setup() {
+function setup(config: Record<string, number> = { globalPaymentCapCents: 1_000_000 }) {
   let t = Date.now();
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
-  return { ...createMockEngine({ now: clock.now, stripe: simulatedStripe() }), clock };
+  return { ...createMockEngine({ now: clock.now, stripe: simulatedStripe(), config }), clock };
 }
 
-describe("approving with caveats", { timeout: 60_000 }, () => {
-  it("over budget: approvable, and the approval says by how much", async () => {
+describe("only safety stops a purchase; everything else is a caveat", { timeout: 60_000 }, () => {
+  it("over budget: approvable and payable, and the approval says by how much", async () => {
     const { engine, clock } = setup();
     const { deal, board } = await ready(engine, clock, { budget_usd: 1000 });
+    expect(board.job.state).not.toBe("failed");
     const sunset = board.quotes.find((q) => q.business === "Sunset Kitchen")!;
     expect(sunset.flags).toContain("over_budget");
-    const caveats = await engine.approvalCaveats(deal.job_id, sunset.quote_id);
-    expect(caveats).toEqual([expect.stringMatching(/^\$180(\.00)? over the \$1,000(\.00)? budget/)]);
+    expect(await engine.approvalCaveats(deal.job_id, sunset.quote_id)).toEqual(expect.arrayContaining([expect.stringMatching(/^\$180(\.00)? over the \$1,000(\.00)? budget/)]));
     const a = await engine.requestApproval(deal.job_id, sunset.quote_id, "simulated");
-    expect(a.status).toBe("pending");
+    await engine.decideApproval(a.id, "approve", "simulated", "DEMO human");
+    expect(await engine.pay(deal.job_id, sunset.quote_id)).toMatchObject({ status: "settled" });
   });
 
-  it("a requirement Haggle couldn't confirm: approvable with a caveat; one the business failed: still refused", async () => {
+  it("a requirement the business failed or didn't confirm is a caveat, not a refusal; no deposit pays the full total", async () => {
     const { engine, clock } = setup();
     const { deal, board } = await ready(engine, clock, { budget_usd: 1200, extraRequirement: true });
-    expect(board.recommended_quote_id).toBeUndefined(); // nothing is recommended while unconfirmed
     const bay = board.quotes.find((q) => q.business === "Bay Catering")!;
-    expect(await engine.approvalCaveats(deal.job_id, bay.quote_id)).toEqual(["Not confirmed by the business: Quote must include an upfront deposit"]);
-    expect((await engine.requestApproval(deal.job_id, bay.quote_id, "simulated")).status).toBe("pending");
+    expect(await engine.approvalCaveats(deal.job_id, bay.quote_id)).toContain("Not confirmed by the business: Quote must include an upfront deposit");
 
-    const { engine: e2, clock: c2 } = setup();
-    const r2 = await ready(e2, c2, { budget_usd: 1200, extraRequirement: true });
-    for (const name of ["Golden Grill", "QuickQuote Deli"]) { // only 6 of 12 vegetarian; pay-now link + injection
-      const q = r2.board.quotes.find((x) => x.business === name)!;
-      await expect(e2.requestApproval(r2.deal.job_id, q.quote_id, "simulated")).rejects.toMatchObject({ code: "quote_not_eligible" });
-    }
+    const grill = board.quotes.find((q) => q.business === "Golden Grill")!; // only 6 of 12 vegetarian, no deposit
+    const caveats = await engine.approvalCaveats(deal.job_id, grill.quote_id);
+    expect(caveats).toEqual(expect.arrayContaining([expect.stringMatching(/^Doesn't meet: At least 12 vegetarian meals \(only 6 of 12\)/), expect.stringMatching(/^No deposit stated: the full \$860/)]));
+    const a = await engine.requestApproval(deal.job_id, grill.quote_id, "simulated");
+    expect(a.payment_cents).toBe(86_000);
+    await engine.decideApproval(a.id, "approve", "simulated", "DEMO human");
+    expect(await engine.pay(deal.job_id, grill.quote_id)).toMatchObject({ status: "settled", amount_usd: 860 });
+  });
+
+  it("the settings spending cap is a caveat; the operator's per-payment ceiling is the only money limit", async () => {
+    const { engine, clock } = setup({ globalPaymentCapCents: 1_000_000 });
+    await engine.updateSettings({ spending_cap_cents: 50_000 }); // $500
+    const { deal, board } = await ready(engine, clock, { budget_usd: 1200 });
+    const harbor = board.quotes.find((q) => q.business === "Harbor Table")!;
+    expect(await engine.approvalCaveats(deal.job_id, harbor.quote_id)).toEqual(expect.arrayContaining([expect.stringMatching(/over your \$500 spending cap/)]));
+    expect((await engine.requestApproval(deal.job_id, harbor.quote_id, "simulated")).status).toBe("pending");
+
+    const small = setup({ globalPaymentCapCents: 10_000 }); // operator ceiling $100
+    const r2 = await ready(small.engine, small.clock, { budget_usd: 1200 });
+    const h2 = r2.board.quotes.find((q) => q.business === "Harbor Table")!; // $300 deposit
+    await expect(small.engine.requestApproval(r2.deal.job_id, h2.quote_id, "simulated")).rejects.toMatchObject({ code: "over_cap" });
+  });
+
+  it("safety still refuses: the pay-now scam with injected instructions", async () => {
+    const { engine, clock } = setup();
+    const { deal, board } = await ready(engine, clock, { budget_usd: 1200 });
+    const deli = board.quotes.find((q) => q.business === "QuickQuote Deli")!;
+    expect(deli.verdict).toBe("rejected");
+    await expect(engine.requestApproval(deal.job_id, deli.quote_id, "simulated")).rejects.toMatchObject({ code: "quote_not_eligible" });
+    // Non-safety problems are flagged, never shown as rejected.
+    expect(board.quotes.find((q) => q.business === "Golden Grill")!.verdict).not.toBe("rejected");
   });
 });

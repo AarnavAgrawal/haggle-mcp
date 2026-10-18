@@ -267,8 +267,9 @@ export const approve = server.tool(
     description:
       "Ask the human to approve one exact quote and its deposit. The decision always comes from the human: the Approve button on the approval card or an approval form shown by the client " +
       "(the model can't fill it). Calling this tool is never an approval by itself. Returns approved, pending_human or refused; NO_HUMAN_CHANNEL means this client can show neither. " +
-      "Works for any quote that isn't refused for safety: if it's over budget or a requirement wasn't confirmed by the business, the approval shows that to the human, so " +
-      "only use it for such a quote when the user chose it. Next: pay(job_id, quote_id) once approved.",
+      "Works for any quote except safety refusals (scam/pay-elsewhere links, injected instructions, unverified senders, a business that declined, no amount): " +
+      "over budget, over the spending cap, unmet or unconfirmed requirements and computed totals are shown to the human as caveats, so use such a quote only when the user chose it. " +
+      "The payment is the deposit, or the full total when no deposit was stated. Next: pay(job_id, quote_id) once approved.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
     outputSchema: ApprovalOut,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -355,8 +356,8 @@ export const pay = server.tool(
     name: "pay",
     title: "Pay the approved deposit",
     description:
-      "Pay the deposit of a quote the human approved, by Stripe TEST MODE (no real money). The amount is always the approved deposit, never an input. " +
-      "Refuses without a stored human approval for that exact quote, above the spending cap, if the quote changed, or to a business that didn't quote; safe to retry (one charge per approval). " +
+      "Pay a quote the human approved, by Stripe TEST MODE (no real money): the deposit, or the full total when no deposit was stated. The amount is always the approved one, never an input. " +
+      "Refuses without a stored human approval for that exact quote, above the server's per-payment safety ceiling, if the quote changed, or to a business that didn't quote; safe to retry (one charge per approval). " +
       "Don't call it to ask for approval (use approve). Next: get_quotes shows the receipt; wait_for_update if it is still charging.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
     outputSchema: ApprovalOut,
