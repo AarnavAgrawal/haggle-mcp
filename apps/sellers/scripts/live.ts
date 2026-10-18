@@ -121,6 +121,8 @@ async function cmdEnv() {
     INKBOX_SENDER_TRUST: "pinned-org-identity",
     INKBOX_WEBHOOK_SECRET: live.buyerSigningKey,
     HAGGLE_ENABLE_CALLS: phone ? "true" : "false",
+    // Local hours "start-end" when calls may go out (server default 9-20); "0-24" for a demo callee who agreed.
+    ...(env.HAGGLE_CALL_HOURS?.trim() ? { HAGGLE_CALL_HOURS: env.HAGGLE_CALL_HOURS.trim() } : {}),
     HAGGLE_DEMO_FLEET: fleet,
     HAGGLE_ALLOWED_RECIPIENTS: phone ?? "",
     HAGGLE_DIRECTORY_JSON: JSON.stringify(directory),
