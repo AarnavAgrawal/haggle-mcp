@@ -93,7 +93,7 @@ describe(`release acceptance${DB ? " (Postgres)" : " (memory)"}`, { timeout: 120
     expect(r.content[0]!.text).toMatch(/^\[DEMO\]/);
   });
 
-  defect("the text summary for a no-budget deal doesn't print a placeholder budget", async () => {
+  it("the text summary for a no-budget deal doesn't print a placeholder budget", async () => {
     // Observed: "…San Francisco; budget ?." (index.ts deal text, usd(null)): a model may relay the '?'.
     expect(dealText).not.toMatch(/budget \?/);
   });
@@ -135,7 +135,7 @@ describe(`release acceptance${DB ? " (Postgres)" : " (memory)"}`, { timeout: 120
     expect(rec.flags).not.toContain("prompt_injection");
   });
 
-  defect("the model-visible text names the business for every quote (wait_for_update) and lists every current total (get_quotes)", async () => {
+  it("the model-visible text names the business for every quote (wait_for_update) and lists every current total (get_quotes)", async () => {
     // Real Claude (scripts/acceptance/local-journey.mjs) reported "Harbor Table $1,070" (that was Mission Eats)
     // and "Bay Catering $1,070 or $1,120 … my update feed didn't label which is which": index.ts:315 renders a
     // quote update as "quote q_…: $1,070 (round 1)" without the business, and index.ts:89 only names the best quote.
@@ -226,7 +226,7 @@ describe(`release acceptance${DB ? " (Postgres)" : " (memory)"}`, { timeout: 120
   });
 
   for (const what of ["post-event cleaning crew for our catered dinner", "repair of a commercial pizza oven", "photographer for a dinner party"]) {
-    defect(`non-catering work that mentions food ("${what}") doesn't contact the demo caterers`, async () => {
+    it(`non-catering work that mentions food ("${what}") doesn't contact the demo caterers`, async () => {
       // apps/mcp/src/businesses.ts:17 — first regex match wins and "catered|pizza|dinner" match catering.
       const r = await call("deal", { request: { what, quantity: 1, date: SAT, area: "San Francisco" }, dry_run: true });
       expect(r.structuredContent?.would_contact ?? []).toHaveLength(0);

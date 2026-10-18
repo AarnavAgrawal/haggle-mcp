@@ -13,6 +13,7 @@ import "./view.css";
 type Approval = Omit<SharedApproval, "channel"> & {
   channel: SharedApproval["channel"] | "simulated";
   order_total_usd?: number;
+  pay_now_basis?: "deposit" | "full_total";
   demo?: string;
   payment?: { status: string; simulated: boolean };
 };
@@ -98,7 +99,8 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
   // What is paid now. amount_usd is the server's pay-now figure; it equals the order total only when
   // the business stated no deposit, and then the card says "full total", never "deposit".
   const total = card.order_total_usd;
-  const fullTotal = total !== undefined && card.amount_usd === total;
+  // The server says what amount_usd is (pay_now_basis); older servers: infer from the amounts.
+  const fullTotal = card.pay_now_basis ? card.pay_now_basis === "full_total" : total !== undefined && card.amount_usd === total;
   // A refusal before any approval record can carry a placeholder $0: never present that as a deposit.
   const unknownAmount = card.amount_usd === 0 && (total ?? 0) > 0 && card.status === "refused";
   const payNowWords = unknownAmount ? "amount not set" : `${usd(card.amount_usd)} ${fullTotal ? "full total" : "deposit"}`;
