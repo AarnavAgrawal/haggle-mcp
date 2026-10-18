@@ -166,6 +166,10 @@ export interface EngineConfig {
    * call). Default min(callCooldownMs, 60 s), never under 30 s (0 when callCooldownMs is 0).
    */
   counterCallGapMs?: number;
+  /** The floor under counterCallGapMs. Default 30 s (demo speed lowers it); a 0 cooldown still means no spacing. */
+  minCallGapMs?: number;
+  /** A scheduled call whose placement failed (e.g. 503 hosted_agent_at_capacity) is retried after this long. Default 60 s. */
+  callRetryMs?: number;
   /** A business message keeps the window open at least this long, so a half-answered business can finish. */
   replyGraceMs?: number;
   /**

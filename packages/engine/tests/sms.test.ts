@@ -6,6 +6,9 @@
 import { describe, expect, it } from "vitest";
 import { inkboxSms } from "../src/live/inkbox.ts";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type EngineConfig, type SmsPort } from "../src/index.ts";
+import { pickTextDeal } from "../src/workflow/engine.ts";
+import { PostgresRepository } from "../src/store/postgres.ts";
+import type { Repository } from "../src/store/types.ts";
 import { simulatedStripe, type StripePort } from "../src/payments/stripe.ts";
 
 const HUMAN = "+14155550199";
@@ -13,7 +16,8 @@ const HUMAN = "+14155550199";
 // Reads figures and questions out of free text, like the Claude extractor does live.
 const textExtractor = {
   async extract(i: { bodyText: string }) {
-    const t = i.bodyText.split("\n").filter((l) => !/^\s*(local|haggle)\s*:/i.test(l)).join("\n");
+    // A text reply is read with Haggle's last text for context: only the business's own words count here.
+    const t = (i.bodyText.split("[The business's reply]:")[1] ?? i.bodyText).split("\n").filter((l) => !/^\s*(local|haggle)\s*:/i.test(l)).join("\n");
     const money = (re: RegExp) => { const m = t.match(re); return m ? Number(m[1]!.replace(/,/g, "")) : null; };
     const total = money(/\$\s?([\d,]+(?:\.\d{2})?)\s*(?:total|all[- ]in)/i);
     const perHead = money(/\$\s?([\d,]+(?:\.\d{2})?)\s*(?:a|per) (?:head|person)/i);
@@ -26,14 +30,14 @@ const textExtractor = {
     ];
     return {
       available: true, price_per_head_usd: perHead, headcount: perHead !== null ? 40 : null, subtotal_usd: null, delivery_fee_usd: null, delivery_included: /deliver/i.test(t) ? true : null,
-      tax_usd: null, tax_included: true, total_usd: total, deposit_usd: deposit, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }],
+      tax_usd: null, tax_included: !/plus tax/i.test(t), total_usd: total, deposit_usd: deposit, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }],
       valid_until: null, questions: total === null && perHead === null ? questions : [], payment_request: "none" as const, instructions_to_agent: false,
       sources, missing_fields: total === null ? ["total"] : [], confidence: 0.9,
     };
   },
 };
 
-function demoEngine(opts: { sms?: boolean; notifyPhone?: string | null; smsPort?: SmsPort; config?: Partial<EngineConfig>; stripe?: StripePort } = {}) {
+function demoEngine(opts: { sms?: boolean; notifyPhone?: string | null; smsPort?: SmsPort; config?: Partial<EngineConfig>; stripe?: StripePort; repo?: Repository } = {}) {
   let t = Date.now();
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const emails: { to: string; subject: string; bodyText: string }[] = [];
@@ -41,7 +45,8 @@ function demoEngine(opts: { sms?: boolean; notifyPhone?: string | null; smsPort?
   const calls: { toNumber: string }[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const sms: SmsPort = opts.smsPort ?? { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } };
-  const repo = new InMemoryRepository();
+  // Postgres for the database variant (same port surface; typed as the memory store for the helpers).
+  const repo = (opts.repo ?? new InMemoryRepository()) as InMemoryRepository;
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },
@@ -211,8 +216,9 @@ describe("texting a business over SMS (no iMessage port)", () => {
     const ME = "+14155550104";
     const { engine, texts, calls } = demoEngine({ notifyPhone: ME });
     const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: ME, channel: "imessage" }] });
-    // A per-person price, no stated total: a follow-up text to the business (no "quoted" update to the human).
-    expect((await engine.ingestText({ messageId: "sms_in_me1", from: ME, text: "We'd do $22 per person, delivered", inbound: true })).outcome).toBe("stored");
+    // A per-person price plus tax at no stated rate (the all-in total can't be worked out, decision 47):
+    // a follow-up text to the business (no "quoted" update to the human).
+    expect((await engine.ingestText({ messageId: "sms_in_me1", from: ME, text: "We'd do $22 per person plus tax, delivered", inbound: true })).outcome).toBe("stored");
     await engine.advanceJob(deal.job_id);
     const toMe = texts.filter((x) => x.to === ME).map((x) => x.text);
     expect(toMe.some((t) => /^Thanks! AI assistant for a customer again\..*exact all-in total/.test(t))).toBe(true);
@@ -635,6 +641,22 @@ describe("all quotes are in: the texted recommendation, approvable by reply, nev
     expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(/^Haggle: Paid \$200 to Sunset Kitchen \(/) });
   });
 
+  // Decision 48: with a payment rail on, the text says PAY follows YES; then YES and PAY charge it by text.
+  it("payments on: the text says reply YES, then PAY; both by text charge the deposit once", async () => {
+    const stripe = simulatedStripe();
+    const { engine, repo, texts, jobId, ready } = await finalQuotes({ stripe });
+    const a = (await repo.getLatestApproval(jobId))!;
+    const short = (await repo.getJob(jobId))!.short_code;
+    const [text] = ready().map((x) => x.text);
+    expect(text).toBe(`Haggle: All quotes are in for lunch catering (2 quotes). Recommended: Sunset Kitchen $1,100 (deposit $200). See every option in Claude, or reply YES ${a.code} to approve the $200 deposit to Sunset Kitchen, then PAY ${a.code} to charge it. (HG-${short})`);
+    expect(text!.length).toBeLessThanOrEqual(320);
+    expect((await engine.ingestText({ messageId: "yes_r", from: HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
+    expect(texts.at(-1)!.text).toBe(`Haggle: approved: Sunset Kitchen $200 deposit. Reply PAY ${a.code} to charge it now. (HG-${short})`);
+    expect((await engine.ingestText({ messageId: "pay_r", from: HUMAN, text: `PAY ${a.code}`, inbound: true })).outcome).toBe("paid");
+    expect(stripe.charges.map((c) => c.amountCents)).toEqual([20_000]);
+    expect(texts.at(-1)!.text).toMatch(/^Haggle: Paid \$200 to Sunset Kitchen/);
+  });
+
   it("choosing another quote on the board replaces the suggestion (one pending approval); a late YES for the old code pays nothing", async () => {
     const stripe = simulatedStripe();
     const { engine, repo, texts, jobId, by } = await finalQuotes({ stripe });
@@ -723,6 +745,178 @@ describe("all quotes are in: the texted recommendation, approvable by reply, nev
       const { repo, jobId } = await finalQuotes(opts);
       expect(await repo.getLatestApproval(jobId)).toBeNull();
       expect((await repo.getJob(jobId))!.state).toBe("negotiating");
+    }
+  });
+});
+
+// Decision 46: one vendor phone in two live deals. A text without a deal code goes to the deal that
+// is waiting on that vendor (an unanswered RFQ, question, counteroffer or follow-up; newest ask
+// first), not just the deal that texted it last. Live: Golden Grill's "1370 total and 100 deposit"
+// went to the old deal and the new deal's exact-total follow-up was never answered.
+describe("text replies when one vendor is in two live deals", () => {
+  const GRILL = "+14085550123";
+  const grillOf = async (repo: InMemoryRepository, jobId: string) => (await repo.getBusinesses(jobId)).find((b) => b.name === "Golden Grill")!;
+  const quotesOf = async (repo: InMemoryRepository, jobId: string) => (await repo.listQuotes(jobId)).filter((q) => q.status === "current").map((q) => q.total_cents);
+
+  it("a code-less reply lands in the deal with the open follow-up, even when the other deal texted the vendor last; a deal code always wins", async () => {
+    const { engine, repo, texts } = demoEngine();
+    // Old deal: Golden Grill quotes (nothing left to ask), then asks the customer a question.
+    const old = await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: GRILL, channel: "imessage" }] });
+    expect((await engine.ingestText({ messageId: "g1", from: GRILL, text: "$1,020 total all-in, delivered, $100 deposit", inbound: true })).jobId).toBe(old.job_id);
+    await engine.advanceJob(old.job_id);
+    expect((await engine.ingestText({ messageId: "g2", from: GRILL, text: "Do you need plates and cutlery?", inbound: true })).jobId).toBe(old.job_id);
+    await engine.advanceJob(old.job_id);
+    expect((await repo.listQuestions(old.job_id)).filter((q) => q.status === "pending")).toHaveLength(1);
+
+    // New deal: its RFQ is the open ask, so the per-person reply is the new deal's; Haggle can't work
+    // out the all-in total (plus tax, no rate) and texts one exact-total follow-up.
+    const fresh = await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: GRILL, channel: "imessage" }] });
+    expect((await engine.ingestText({ messageId: "g3", from: GRILL, text: "We'd do $22 per person plus tax, delivered", inbound: true })).jobId).toBe(fresh.job_id);
+    await engine.advanceJob(fresh.job_id);
+    expect(texts.filter((x) => x.to === GRILL).at(-1)!.text).toMatch(/exact all-in total/);
+
+    // The human answers the old deal's question: the old deal now texted Golden Grill last (an answer, not an ask).
+    await engine.ingestText({ messageId: "h1", from: HUMAN, text: "Just the food, no plates needed.", inbound: true });
+    const lastToGrill = (await repo.listMessages(old.job_id)).filter((m) => m.direction === "out" && m.to_address === GRILL).at(-1)!;
+    expect(lastToGrill).toMatchObject({ kind: "answer" });
+
+    // A reply quoting the old deal's code goes there, even though the new deal is the one waiting.
+    const oldCode = (await repo.getJob(old.job_id))!.short_code;
+    const coded = await engine.ingestText({ messageId: "g4", from: GRILL, text: `HG-${oldCode} we can also do $990 total all-in, delivered, $100 deposit`, inbound: true });
+    expect(coded).toMatchObject({ jobId: old.job_id, outcome: "stored" });
+    expect(await repo.findMessageByProviderId("sms-in:g4")).toMatchObject({ job_id: old.job_id, matched_via: "sms_number+code" });
+
+    // No code: the new deal's follow-up is the unanswered ask (the old rule picked the old deal, texted last).
+    const r = await engine.ingestText({ messageId: "g5", from: GRILL, text: "$1,370 total all-in and $100 deposit. can go down to $1,200", inbound: true });
+    expect(r).toMatchObject({ jobId: fresh.job_id, outcome: "stored" });
+    expect(await repo.findMessageByProviderId("sms-in:g5")).toMatchObject({ job_id: fresh.job_id, business_id: (await grillOf(repo, fresh.job_id)).business_id, matched_via: "sms_number+open_ask" });
+    await engine.advanceJob(fresh.job_id);
+    await engine.advanceJob(old.job_id);
+    expect(await quotesOf(repo, fresh.job_id)).toEqual([137_000]);
+    expect(await quotesOf(repo, old.job_id)).toEqual([99_000]);
+
+    // The new deal's $1,370 is over the $1,200 budget: Haggle texts a counteroffer, the open ask now, so
+    // the next code-less text is the counter's answer (the old deal waits for nothing).
+    expect((await repo.listMessages(fresh.job_id)).filter((m) => m.direction === "out" && m.to_address === GRILL).at(-1)).toMatchObject({ kind: "counter" });
+    expect(await engine.ingestText({ messageId: "g6", from: GRILL, text: "best I can do is $1,250 total all-in", inbound: true })).toMatchObject({ jobId: fresh.job_id, outcome: "stored" });
+    expect(await repo.findMessageByProviderId("sms-in:g6")).toMatchObject({ matched_via: "sms_number+open_ask" });
+  });
+
+  it("pickTextDeal: code first, then the newest unanswered ask, then the most recent text", () => {
+    const job = (id: string, short_code: string) => ({ id, short_code }) as never;
+    const b = { business_id: "biz_g" } as never;
+    const msg = (direction: "in" | "out", kind: string, created_at: string, extra: Record<string, unknown> = {}) => ({ direction, kind, created_at, business_id: "biz_g", provider_email_id: null, parse_status: "done", ...extra }) as never;
+    const A = { job: job("A", "AAAA"), b, at: Date.parse("2026-10-18T10:05:00Z"), msgs: [msg("out", "rfq", "2026-10-18T10:00:00.000Z"), msg("in", "reply", "2026-10-18T10:01:00.000Z"), msg("out", "answer", "2026-10-18T10:05:00.000Z")] };
+    const B = { job: job("B", "BBBB"), b, at: Date.parse("2026-10-18T10:04:00Z"), msgs: [msg("out", "rfq", "2026-10-18T10:02:00.000Z"), msg("in", "reply", "2026-10-18T10:03:00.000Z"), msg("out", "followup", "2026-10-18T10:04:00.000Z")] };
+    expect(pickTextDeal([A, B], "1370 total")).toMatchObject({ hit: { job: { id: "B" } }, via: "open_ask" });
+    expect(pickTextDeal([A, B], "hg-aaaa 1370 total")).toMatchObject({ hit: { job: { id: "A" } }, via: "code" });
+    // A call that reached no one doesn't answer the ask.
+    const C = { ...B, msgs: [...B.msgs, msg("in", "reply", "2026-10-18T10:06:00.000Z", { provider_email_id: "call-ended:x", parse_status: "none" })] };
+    expect(pickTextDeal([A, C], "ok")).toMatchObject({ hit: { job: { id: "B" } }, via: "open_ask" });
+    // Answered everywhere: the most recent text wins.
+    const D = { ...B, msgs: [...B.msgs, msg("in", "reply", "2026-10-18T10:06:00.000Z")] };
+    expect(pickTextDeal([A, D], "ok")).toMatchObject({ hit: { job: { id: "A" } }, via: "latest" });
+  });
+});
+
+// Decision 48: paying from the phone. A texted YES approves and is answered "Reply PAY <code> to
+// charge it now"; PAY <code> from the approver's phone runs the same guarded pay() as the tool.
+describe("pay by text: YES, then PAY", () => {
+  it("YES texts the PAY instruction; PAY charges once and texts the result; a second PAY says it's paid", async () => {
+    const stripe = simulatedStripe();
+    const { engine, repo, texts, jobId, quoteId } = await quoted({ stripe });
+    const short = (await repo.getJob(jobId))!.short_code;
+    const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
+    expect(await engine.ingestText({ messageId: "y1", from: HUMAN, text: `YES ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "approved" });
+    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: `Haggle: approved: Harbor Table $345 deposit. Reply PAY ${a.code} to charge it now. (HG-${short})` });
+    expect(stripe.charges).toHaveLength(0); // YES alone charges nothing
+    expect(await engine.ingestText({ messageId: "p1", from: HUMAN, text: `PAY ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "paid" });
+    expect(stripe.charges.map((c) => c.amountCents)).toEqual([34_500]);
+    expect(stripe.charges[0]!.idempotencyKey).toBe(`haggle-pay-${a.id}`);
+    expect((await repo.getJob(jobId))!.state).toBe("paid");
+    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(/^Haggle: Paid \$345 to Harbor Table \(/) });
+    expect(await repo.findMessageByProviderId("sms-in:p1")).toMatchObject({ job_id: jobId, approval_id: a.id, sender_trusted: true, matched_via: "pay_code" });
+    expect((await engine.ingestText({ messageId: "p1", from: HUMAN, text: `PAY ${a.code}`, inbound: true })).outcome).toBe("duplicate");
+    expect(await engine.ingestText({ messageId: "p2", from: HUMAN, text: `pay ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "already_paid" });
+    expect(texts.at(-1)!.text).toMatch(/already paid \$345 to Harbor Table/);
+    // The agent's pay afterwards changes nothing: one charge per approval.
+    expect(await engine.pay(jobId, quoteId)).toMatchObject({ status: "settled" });
+    expect(stripe.charges).toHaveLength(1);
+  });
+
+  it("PAY from another number is ignored and recorded; PAY before YES says to approve first; a wrong or missing code says what to do", async () => {
+    const stripe = simulatedStripe();
+    const { engine, repo, texts, jobId, quoteId } = await quoted({ stripe });
+    const OTHER = "+14155550999";
+    const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
+    expect(await engine.ingestText({ messageId: "o1", from: OTHER, text: `PAY ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "pay_ignored_not_approver" });
+    expect(await repo.findMessageByProviderId("sms-in:o1")).toMatchObject({ job_id: jobId, sender_trusted: false, quarantine_reason: "pay_not_from_approver" });
+    expect((await repo.listEvents(jobId)).some((e) => e.type === "reply" && e.data.kind === "pay_ignored")).toBe(true);
+
+    expect(await engine.ingestText({ messageId: "p0", from: HUMAN, text: `PAY ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "pay_needs_approval" });
+    expect(texts.at(-1)!.text).toMatch(new RegExp(`reply YES ${a.code} first to approve \\$345 to Harbor Table, then PAY ${a.code} to charge it`));
+    expect((await repo.getApproval(a.id))!.status).toBe("pending");
+
+    expect((await engine.ingestText({ messageId: "y1", from: HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
+    const wrong = a.code === "0000" ? "1111" : "0000";
+    expect((await engine.ingestText({ messageId: "p1", from: HUMAN, text: `PAY ${wrong}`, inbound: true })).outcome).toBe("pay_no_matching_approval");
+    expect(texts.at(-1)!.text).toMatch(new RegExp(`no approved payment has code ${wrong}, so nothing was charged\\. Use the code in Haggle's latest approval text`));
+    expect((await engine.ingestText({ messageId: "p2", from: HUMAN, text: "PAY", inbound: true })).outcome).toBe("pay_code_required");
+    expect(texts.at(-1)!.text).toMatch(/reply PAY with its code/);
+    // Approved now, but still never from another number.
+    expect((await engine.ingestText({ messageId: "o2", from: OTHER, text: `PAY ${a.code}`, inbound: true })).outcome).toBe("pay_ignored_not_approver");
+    expect(texts.filter((x) => x.to === OTHER)).toEqual([]);
+    expect(stripe.charges).toHaveLength(0);
+    expect((await repo.getJob(jobId))!.state).toBe("paying");
+  });
+
+  it("a confirm-only approval can't be paid by text", async () => {
+    const stripe = simulatedStripe();
+    const { engine, texts, jobId, quoteId } = await quoted({ stripe });
+    const a = await engine.requestApproval(jobId, quoteId, "view", "confirm", { text: true });
+    expect((await engine.ingestText({ messageId: "y1", from: HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
+    expect(texts.at(-1)!.text).not.toMatch(/PAY/);
+    expect(await engine.ingestText({ messageId: "p1", from: HUMAN, text: `PAY ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "pay_confirm_only" });
+    expect(texts.at(-1)!.text).toMatch(/only confirms the order with Harbor Table; there is nothing to pay/);
+    expect(stripe.charges).toHaveLength(0);
+  });
+
+  it("payments off: YES keeps today's wording and PAY says why nothing was charged", async () => {
+    const { engine, texts, jobId, quoteId } = await quoted();
+    const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
+    await engine.ingestText({ messageId: "y1", from: HUMAN, text: `YES ${a.code}`, inbound: true });
+    expect(texts.at(-1)!.text).toMatch(/Nothing is charged until your assistant completes the payment/);
+    expect(await engine.ingestText({ messageId: "p1", from: HUMAN, text: `PAY ${a.code}`, inbound: true })).toMatchObject({ outcome: "pay_refused" });
+    expect(texts.at(-1)!.text).toMatch(/couldn't charge \$345 to Harbor Table: .*Nothing was charged\./);
+  });
+});
+
+// The same YES-then-PAY flow on Postgres (scripts/test-postgres.sh), so the PAY record and the charge
+// go through the real repository.
+const PG_URL = process.env.HAGGLE_TEST_DATABASE_URL;
+describe.skipIf(!PG_URL)("pay by text on Postgres", { timeout: 60_000 }, () => {
+  it("a text business quotes; YES then PAY charges once; a second PAY says it's paid", async () => {
+    const pg = new PostgresRepository(PG_URL!);
+    try {
+      const run = Math.random().toString(36).slice(2, 10);
+      const GRILL = "+14085550177";
+      const stripe = simulatedStripe();
+      const { engine, repo, texts } = demoEngine({ stripe, repo: pg });
+      const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: GRILL, channel: "imessage" }] });
+      expect((await engine.ingestText({ messageId: `pg_q_${run}`, from: GRILL, text: "$1,020 total all-in, delivered, $100 deposit", inbound: true })).jobId).toBe(deal.job_id);
+      await engine.advanceJob(deal.job_id);
+      const q = (await engine.getQuotes(deal.job_id)).quotes.find((x) => x.business === "Golden Grill")!;
+      const a = (await repo.getLatestApproval(deal.job_id))?.status === "pending" ? (await repo.getLatestApproval(deal.job_id))! : await engine.requestApproval(deal.job_id, q.quote_id, "view", undefined, { text: true });
+      expect((await engine.ingestText({ messageId: `pg_y_${run}`, from: HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
+      expect(texts.at(-1)!.text).toMatch(new RegExp(`Reply PAY ${a.code} to charge it now`));
+      expect(await engine.ingestText({ messageId: `pg_p_${run}`, from: HUMAN, text: `PAY ${a.code}`, inbound: true })).toMatchObject({ jobId: deal.job_id, outcome: "paid" });
+      expect(stripe.charges.map((c) => c.amountCents)).toEqual([10_000]);
+      expect((await repo.getJob(deal.job_id))!.state).toBe("paid");
+      expect(await repo.findMessageByProviderId(`sms-in:pg_p_${run}`)).toMatchObject({ job_id: deal.job_id, approval_id: a.id, matched_via: "pay_code" });
+      expect((await engine.ingestText({ messageId: `pg_p2_${run}`, from: HUMAN, text: `PAY ${a.code}`, inbound: true })).outcome).toBe("already_paid");
+      expect(stripe.charges).toHaveLength(1);
+    } finally {
+      await pg.close();
     }
   });
 });

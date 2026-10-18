@@ -50,6 +50,10 @@ Branch `merged-working-demo` is `main` (0672d36, Yash's rc1) merged with `feat/l
 | 43 | "Back to the deal board" link on the approval card | **Removed** (strictly one board per deal). |
 | 44 | `views/deal-started` | **Deleted** (no tool binds it; `deal` uses `deal-live`). |
 | 45 | Missed-webhook seller emails (backup sweep) | **Trust listed sellers.** Under `pinned-org-identity`, an email in the buyer's mailbox from a pinned roster/allowlist address counts as a same-org identity (same address check as the webhook path), even though an agent-scoped buyer key lists only the buyer. Other senders stay untrusted. |
+| 46 | Text reply with no deal code, vendor in two live deals | Route it to the deal that has an unanswered question, counter or follow-up out to that vendor (newest ask first). If no deal is waiting, use the most recently texted deal. |
+| 47 | Total computed by Haggle from stated parts | **No confirmation ask.** A total computed from stated parts (per-person × headcount + stated delivery/fees + stated tax rate) is trusted as firm. It doesn't hold collection, and nothing is sent to confirm it. Wording like "about $X" stays approximate. |
+| 48 | Paying from the phone | **YES, then PAY.** A texted `YES <code>` approves. Haggle then texts "Approved. Reply PAY <code> to charge $X", and a texted `PAY <code>` from the approver's phone charges it. Board and card stay approve-then-pay. |
+| 49 | Demo speed | A demo-speed switch (env, off by default) shortens Haggle's waits for a short video. Normal timings are unchanged when it's off. |
 | 32 | Tests on the losing side | **Updated to the chosen behavior**, keeping each scenario's coverage. |
 
 ## Non-negotiable technical fixes (both owners already agree)

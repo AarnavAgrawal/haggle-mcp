@@ -24,7 +24,7 @@ const textExtractor = {
     ];
     return {
       available: true, price_per_head_usd: perHead, headcount: perHead !== null ? 40 : null, subtotal_usd: null, delivery_fee_usd: null, delivery_included: true,
-      tax_usd: null, tax_included: true, total_usd: total, deposit_usd: deposit, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }],
+      tax_usd: null, tax_included: !/plus tax/i.test(t), total_usd: total, deposit_usd: deposit, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }],
       valid_until: null, questions: [], payment_request: "none" as const, instructions_to_agent: false,
       sources, missing_fields: total === null ? ["total"] : [], confidence: 0.9,
     };
@@ -96,8 +96,9 @@ describe("negotiation on every channel (live job 7JF6)", () => {
     });
     await engine.advanceJob(deal.job_id);
     expect(calls).toHaveLength(1);
-    // Golden Grill texts a per-person price; Haggle asks once (by text) for the exact all-in total; it answers.
-    await text(engine, deal.job_id, GRILL, "$30 per person and $50 delivery, $100 deposit");
+    // Golden Grill texts a per-person price plus tax at no stated rate (so Haggle can't work out the
+    // all-in total, decision 47); Haggle asks once (by text) for the exact all-in total; it answers.
+    await text(engine, deal.job_id, GRILL, "$30 per person plus tax and $50 delivery, $100 deposit");
     expect(texts.some((x) => x.to === GRILL && /exact all-in total/.test(x.text))).toBe(true);
     await text(engine, deal.job_id, GRILL, "yes $3,350 total all-in, $500 deposit");
     const grillQuote = (await repo.listQuotes(deal.job_id)).find((q) => q.status === "current" && q.total_cents === 335_000)!;

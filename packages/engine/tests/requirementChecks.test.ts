@@ -191,7 +191,7 @@ describe("engine: follow-ups ask only for what is really missing", () => {
 
   it("a call transcript then a follow-up call: Claude sees the earlier call, and the vegetarian yes survives the second call", async () => {
     const c = FX.cases.find((x) => x.name === "mission-eats-call-all-veg-then-confirms-date")!;
-    const { engine, repo, seen } = engineWith([c]);
+    const { engine, repo, seen, calls } = engineWith([c]);
     const deal = await engine.deal({ request: requestOf(c), budget_usd: 5000, businesses: [{ name: "Mission Eats", phone: "+14155550104" }] });
     await engine.advanceJob(deal.job_id);
     expect((await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: c.body })).outcome).toBe("stored");
@@ -199,7 +199,13 @@ describe("engine: follow-ups ask only for what is really missing", () => {
     let q = (await repo.listQuotes(deal.job_id)).find((x) => x.status === "current")!;
     expect(q.compliant).toBe(true);
     expect(await askedFor(repo, deal.job_id)).toEqual([]);
-    // Haggle calls back for the exact total (the call only gave parts); that call's transcript doesn't mention vegetarian.
+    // $17 x 40 + $100 delivery + 10% tax, all stated: Haggle trusts the total it worked out and places
+    // no confirmation call (decision 47; live, Mission Eats got one).
+    expect(q.total_cents).toBe(84_800); // $680 + $68 tax on the food + $100 delivery
+    expect(calls).toHaveLength(1);
+    // A second call (the agent's message by phone); its transcript doesn't mention vegetarian.
+    await engine.sendMessage(deal.job_id, q.business_id, { text: "Could you confirm lunch delivery on October 30th?" });
+    expect(calls).toHaveLength(2);
     expect((await engine.ingestCall({ callId: "call_2", outcome: "completed", transcript: c.later!.body })).outcome).toBe("stored");
     await engine.advanceJob(deal.job_id);
     const last = seen.at(-1)!;

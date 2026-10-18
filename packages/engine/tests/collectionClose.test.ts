@@ -220,13 +220,27 @@ describe("one follow-up per business", () => {
     const e = env();
     const deal = await e.engine.deal({ request, budget_usd, businesses: [HARBOR, SUNSET] });
     const before = e.emails.length;
-    await reply(e, deal.job_id, "Harbor Table", "We charge $28 per person, delivered."); // no total, no vegetarian count
+    await reply(e, deal.job_id, "Harbor Table", "We charge $28 per person."); // no total (delivery unstated), no vegetarian count
     const toHarbor = e.emails.slice(before).filter((m) => m.to === HARBOR.email);
     expect(toHarbor).toHaveLength(1);
     expect(toHarbor[0]!.bodyText).toMatch(/exact all-in total/);
     expect(toHarbor[0]!.bodyText).toMatch(/At least 12 vegetarian meals/);
     const harbor = (await e.repo.getBusinesses(deal.job_id)).find((x) => x.name === "Harbor Table")!;
     expect(harbor.followups_sent).toBe(1);
+  });
+
+  // Decision 47: per person x headcount with delivery and tax stated is a total Haggle trusts; only the missing requirement is asked.
+  it("a total worked out from stated parts is trusted: the one follow-up asks only for the missing requirement", async () => {
+    const e = env();
+    const deal = await e.engine.deal({ request, budget_usd, businesses: [HARBOR, SUNSET] });
+    const before = e.emails.length;
+    await reply(e, deal.job_id, "Harbor Table", "We charge $28 per person, delivered."); // $1,120 for 40, tax included; no vegetarian count
+    const toHarbor = e.emails.slice(before).filter((m) => m.to === HARBOR.email);
+    expect(toHarbor).toHaveLength(1);
+    expect(toHarbor[0]!.bodyText).toMatch(/At least 12 vegetarian meals/);
+    expect(toHarbor[0]!.bodyText).not.toMatch(/all-in total|worked it out|read your quote/);
+    const q = (await e.engine.getQuotes(deal.job_id)).quotes.find((x) => x.business === "Harbor Table")!;
+    expect(q).toMatchObject({ total_usd: 1120, approvable: true });
   });
 
   it("the quote call asks to confirm each must-have in its read-back (so it needn't call back), under 2,000 chars", () => {

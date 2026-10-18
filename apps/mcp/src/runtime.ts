@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { createMockEngine, fleetBusinesses, PostgresRepository, type BrainAdapter, type HaggleEngine, type InboundReconciler, type InkboxMailApi, type InkboxTrustPolicy, type Persona, type QuoteExtraction } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { fixtureFetchers, type PlacesFetch, type WebFetch } from "./fixtures.ts";
+import { mockDemoConfig } from "./timings.ts";
 import { buildRoster, type ChannelStatus, type RosterEntry } from "./vendors.ts";
 
 export type Runtime = {
@@ -77,7 +78,8 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   const m = createMockEngine({
     delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain, ...(personas ? { personas } : {}),
     ...(env.HAGGLE_MOCK_DATABASE_URL ? { repo: new PostgresRepository(env.HAGGLE_MOCK_DATABASE_URL) } : {}),
-    ...(allow ? { config: { recipientAllowlist: allow } } : {}),
+    // HAGGLE_DEMO_SPEED=true: the same shorter windows as live (decision 49).
+    config: { ...mockDemoConfig(env), ...(allow ? { recipientAllowlist: allow } : {}) },
   });
   // Mock: the simulated fleet plays all six demo vendors; every one is reachable (DEMO).
   // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board).

@@ -26,7 +26,19 @@ const MISSION_CALL = [
   "Haggle (AI assistant): Thank you, goodbye.",
 ].join("\n");
 
+// $22 a person for 50 + $100 delivery + 10% tax on the food = $1,310 all in, worked out by Haggle (decision 47).
+const PARTS_CALL = ["Haggle (AI assistant): Hi, I'm an AI assistant calling for a customer about catering.", "Mission Eats: It's $22 a person for the fifty, $100 delivery, plus 10% tax. $200 deposit."].join("\n");
+const PARTS_TEXT = "$22 a person, $100 delivery, plus 10% tax, $200 deposit";
+const ABOUT_PARTS = "about $22 a person, $100 delivery, plus 10% tax";
+const parts = (pp: string, deposit: number | null = 200): QuoteExtraction => ({
+  ...base, price_per_head_usd: 22, headcount: 50, delivery_fee_usd: 100, tax_included: false, tax_rate_percent: 10, deposit_usd: deposit,
+  sources: [{ field: "price_per_head", source: "email body", excerpt: pp }, { field: "delivery_fee", source: "email body", excerpt: "$100 delivery" }, ...(deposit !== null ? [{ field: "deposit" as const, source: "email body", excerpt: "$200 deposit" }] : [])],
+});
+
 const EXTRACTIONS = new Map<string, QuoteExtraction>([
+  [PARTS_CALL, parts("$22 a person")],
+  [PARTS_TEXT, parts("$22 a person")],
+  [ABOUT_PARTS, parts("about $22 a person", null)],
   ["$1500, $250 deposit", priced(1500, "$1500", 250, "$250 deposit")],
   [HARBOR_TEXT, priced(1300, "1300 total bucks")],
   [MISSION_CALL, priced(1200, "twelve hundred dollars")],
@@ -208,6 +220,45 @@ describe("approximate totals in a deal", () => {
     const text = HaggleEngine.confirmIMessageText(["At least 40 vegetarian meals", "Total must include delivery and all fees, setup, staffing and cleanup by 5pm", "your firm all-in total (you said about $4,500) and the deposit"], "AB12CD");
     expect(text.length).toBeLessThanOrEqual(159);
     expect(text).toMatch(/your firm all-in total \(you said about \$4,500\) and the deposit\? HG-AB12CD$/);
+  });
+});
+
+// Decision 47: a total Haggle worked out from stated parts is trusted as firm (no "we worked it out as
+// $X, please confirm" text or call); the business's own "about" keeps it approximate.
+describe("totals Haggle computed from stated parts", () => {
+  it("a call with per-person price, delivery and tax rate: no confirmation call, approvable, and collection closes", async () => {
+    const { engine: e, repo, clock, calls, texts } = engine();
+    const deal = await e.deal({ request: REQUEST, businesses: [MISSION] });
+    expect(calls).toHaveLength(1);
+    expect((await e.ingestCall({ callId: "call_1", outcome: "completed", transcript: PARTS_CALL })).outcome).toBe("stored");
+    await e.advanceJob(deal.job_id);
+    clock.advance(5 * 60_000); // past the call cooldown: a confirmation call would be placed now
+    await e.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(1);
+    expect(texts).toHaveLength(0);
+    const board = await e.getQuotes(deal.job_id);
+    const q = board.quotes.find((x) => x.business === "Mission Eats")!;
+    expect(q).toMatchObject({ total_usd: 1310, deposit_usd: 200, approvable: true });
+    expect(q.total_approximate).toBeUndefined();
+    expect(board.ready).toBe(true); // nothing held collection open
+    expect((await repo.listEvents(deal.job_id)).some((x) => x.type === "reply" && /exact total|Asked Mission Eats/.test(String(x.data.summary)))).toBe(false);
+    expect(await e.requestApproval(deal.job_id, q.quote_id, "view")).toMatchObject({ quote_total_cents: 131_000, payment_cents: 20_000 });
+  });
+
+  it("by text the same parts send nothing back; 'about $22 a person' by email stays approximate and is asked once", async () => {
+    const { engine: e, repo, sent, texts } = engine();
+    const deal = await e.deal({ request: REQUEST, businesses: [SUNSET, HARBOR] });
+    await e.ingestIMessage({ messageId: "im_p1", from: SUNSET.phone, text: PARTS_TEXT, isGroup: false });
+    await email(e, repo, deal.job_id, "in_about", ABOUT_PARTS);
+    await e.advanceJob(deal.job_id);
+    expect(texts.filter((t) => t.to === SUNSET.phone)).toHaveLength(1); // the RFQ only
+    const board = await e.getQuotes(deal.job_id);
+    expect(board.quotes.find((x) => x.business === "Sunset Kitchen")).toMatchObject({ total_usd: 1310, approvable: true });
+    const harbor = board.quotes.find((x) => x.business === "Harbor Table")!;
+    expect(harbor).toMatchObject({ total_approximate: true, approvable: false, approval_block: { code: "total_not_firm" } });
+    const toHarbor = sent.filter((m) => m.to === HARBOR.email);
+    expect(toHarbor).toHaveLength(2); // the RFQ and one ask
+    expect(toHarbor[1]!.bodyText).toMatch(/exact all-in total/);
   });
 });
 

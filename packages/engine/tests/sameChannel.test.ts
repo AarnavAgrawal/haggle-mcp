@@ -67,8 +67,9 @@ describe("follow-ups stay on the channel the business was first contacted on", (
     const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: GRILL, email: "grill@inkboxmail.test", channel: "imessage" }] });
     expect(deal.contacted).toEqual([expect.objectContaining({ business: "Golden Grill", channel: "imessage" })]);
     expect(texts.filter((x) => x.to === GRILL)).toHaveLength(1);
-    // Per-person price with no stated total (missing "delivered"): ask for the exact total AND the missing requirement, both by text.
-    expect((await engine.ingestText({ messageId: "in_g1", from: GRILL, text: "can do $13 per person + $50 delivery fee + 8% tax", inbound: true })).outcome).toBe("stored");
+    // Per-person price with no stated total and delivery unstated (so Haggle can't work out the all-in
+    // total, decision 47): ask for the exact total AND the missing requirement, both by text.
+    expect((await engine.ingestText({ messageId: "in_g1", from: GRILL, text: "can do $13 per person, 8% tax on top", inbound: true })).outcome).toBe("stored");
     await engine.advanceJob(deal.job_id);
     const toGrill = texts.filter((x) => x.to === GRILL);
     expect(toGrill.length).toBeGreaterThanOrEqual(2);
@@ -128,7 +129,7 @@ describe("follow-ups stay on the channel the business was first contacted on", (
   it("an email business is followed up by email even when it also has a phone", async () => {
     const { engine, repo, emails, texts, calls } = demoEngine();
     const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test", phone: "+14155550177" }] });
-    await emailReply(engine, repo, deal.job_id, "Harbor Table", 1, "We'd do $26 per person, 12 vegetarian, delivered.");
+    await emailReply(engine, repo, deal.job_id, "Harbor Table", 1, "We'd do $26 per person, 12 vegetarian."); // delivery unstated: the total can't be worked out
     expect(emails).toHaveLength(2);
     expect(emails[1]!.bodyText).toMatch(/exact all-in total/);
     expect(texts).toHaveLength(0);
@@ -217,6 +218,20 @@ describe("negotiation stays on the business's channel", () => {
     await mock.engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "agent: Hi.\nremote: $1,150 total all-in, 12 vegetarian, delivered, $150 deposit." });
     await mock.engine.advanceJob(d2.job_id);
     expect(mock.calls).toHaveLength(2); // placed at once
+  });
+
+  it("demo speed (decision 49): minCallGapMs lowers the floor, so a counter call goes 5 s after the quote call", async () => {
+    const { engine, repo, clock, calls } = demoEngine({ callCooldownMs: 5_000, counterCallGapMs: 5_000, minCallGapMs: 5_000 });
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Mission Eats", phone: MISSION }] });
+    await engine.advanceJob(deal.job_id);
+    await emailReply(engine, repo, deal.job_id, "Harbor Table", 1, "$1,000 total all-in, 12 vegetarian, delivered, $100 deposit.");
+    await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "agent: Hi.\nremote: $1,150 total all-in, 12 vegetarian, delivered, $150 deposit." });
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(1);
+    clock.advance(6_000);
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.idempotencyKey).toMatch(/^counter:/);
   });
 
   it("a counteroffer to a text business goes by text", async () => {

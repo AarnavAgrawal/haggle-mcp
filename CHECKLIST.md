@@ -104,6 +104,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-18 07:25 · Aarnav · Decisions 46-49 on `merged-working-demo`: code-less vendor texts go to the deal waiting on that vendor; totals computed from stated parts trusted (no confirm ask); pay by text (YES, then PAY <code>, approver only, guarded pay); HAGGLE_DEMO_SPEED; faster reads (list_deals without per-deal boards, parallel board reads, read-index migration 104)
 - 2026-10-18 06:30 · Aarnav · Branch `merged-working-demo`: main (rc1) + feat/live-demo merged; every logic conflict decided by Aarnav (`docs/merge-decisions-working-demo.md`): soft requirements, approve then pay (+ agent-only confirm), main's board + live-demo conversation/negotiation line/choose any safe option, one live board, workspaces (auth open), main's roster + Places discovery, two-part extraction (live extract-eval 11/11), round cap 2. 711 tests + 491 Postgres, typecheck + build green. Not on main; needs Yash's review
 
 - 10:30 · Yash · release/rc1 (local): two-part extraction (grammar limit), approximate totals not approvable until confirmed, parse retries, approvable recommendations, Postgres no-total fix, negotiation measured from firm prices, redesigned board/approval card, category fix, acceptance matrix; 470 tests + 306 Postgres, real-API extraction 11/11, real-Claude scenarios 7/7 ×2

@@ -11,11 +11,13 @@ import {
 } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
+import { liveTimings } from "./timings.ts";
 import { buildRoster, DEMO_VENDORS, parseVendorConfig, rosterRecipients, type ChannelStatus, type VendorContact } from "./vendors.ts";
 
-const TICK_MS = 30_000;
-
 registerLiveFactory(async (env): Promise<Runtime> => {
+  // Haggle's own waits; HAGGLE_DEMO_SPEED=true shortens them for a short demo video (decision 49).
+  const timings = liveTimings(env);
+  const TICK_MS = timings.tickMs;
   const { api, buyerMailbox, phone, a2a, imessage, sms, voice, identityInfo, transcript, callOrigin, connectedNumbers, connectCommand, identityAddresses, listTexts, listCalls } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
 
   // Only the explicitly configured simulated fleet is offered by discover (never arbitrary businesses).
@@ -98,14 +100,13 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     // Public reviews for real businesses (Google Places), only when a key is configured; never for demo vendors.
     reputation: placesReputation({ ...(env.GOOGLE_PLACES_API_KEY ? { apiKey: env.GOOGLE_PLACES_API_KEY } : {}), log: (event, data) => console.log(JSON.stringify({ level: "info", event, ...data })) }),
     config: {
-      mode: "live", inboxDomain: buyerMailbox.split("@")[1]!, sharedInbox: buyerMailbox, collectionWindowMs: 30 * 60_000, negotiationWindowMs: 5 * 60_000,
+      mode: "live", inboxDomain: buyerMailbox.split("@")[1]!, sharedInbox: buyerMailbox, ...timings.engine,
       approvalTtlMs: 30 * 60_000, globalPaymentCapCents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, maxRounds: MAX_ROUNDS,
       defaultSpendingCapCents: 150_000, spendingCapCeilingCents: Number.isInteger(ceiling) && ceiling > 0 ? ceiling : 500_000,
       ...(allowAny ? {} : { recipientAllowlist: allowlist }),
       trustInboundCallerId: env.HAGGLE_TRUST_INBOUND_CALLER_ID === "true",
-      ...(Number(env.HAGGLE_CALL_DELAY_S) > 0 ? { callDelayMs: Number(env.HAGGLE_CALL_DELAY_S) * 1000 } : {}),
-      ...(Number(env.HAGGLE_ESCALATE_EMAIL_TO_CALL_S) > 0 ? { escalateEmailToCallAfterMs: Number(env.HAGGLE_ESCALATE_EMAIL_TO_CALL_S) * 1000 } : {}),
-      callHours, callCooldownMs: 2 * 60_000,
+      // HAGGLE_CALL_DELAY_S and HAGGLE_ESCALATE_EMAIL_TO_CALL_S are read by liveTimings (timings.engine).
+      callHours,
       ...(notifyPhone && /^\+\d{8,15}$/.test(notifyPhone) ? { notifyPhone } : {}),
       // Who the AI assistant acts for in messages to businesses (a request's "Customer" detail wins; default "a customer").
       ...(env.HAGGLE_CUSTOMER_NAME?.trim() ? { customerName: env.HAGGLE_CUSTOMER_NAME.trim().slice(0, 40) } : {}),
@@ -119,7 +120,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   brain.useAliases((b) => engine.businessAliases(b));
   reconciler = reconcileOn
     ? new InboundReconciler({
-      engine, repo, log,
+      engine, repo, log, jobMinIntervalMs: timings.reconcileJobMinIntervalMs, callGraceMs: timings.reconcileCallGraceMs,
       sources: {
         mail: { api, buyerMailbox, senderTrust, identityAddresses },
         ...(smsPort ? { texts: { list: listTexts } } : {}),
@@ -127,7 +128,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       },
     })
     : null;
-  const sweepEvery = Math.max(1, Math.round((Number(env.HAGGLE_RECONCILE_EVERY_S) > 0 ? Number(env.HAGGLE_RECONCILE_EVERY_S) : 60) * 1000 / TICK_MS));
+  const sweepEvery = Math.max(1, Math.round(timings.reconcileEveryMs / TICK_MS));
   let ticks = 0;
   const sweep = () => (reconciler ? reconciler.sweepAll().then(() => undefined, (e) => console.error(JSON.stringify({ level: "error", event: "reconcile_failed", error: (e as Error).message }))) : Promise.resolve());
   // Backup tick: deadlines advance even when no agent is calling. One per process: a dev hot reload
@@ -146,7 +147,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   }, TICK_MS).unref();
   // Anything that arrived while this server was down or restarting.
   setTimeout(() => void sweep(), 5_000).unref();
-  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: env.HAGGLE_EMAIL_APPROVAL_BY_CODE !== "false" ? "code" : "verified-senders-only", payments: stripe ? "stripe-test" : "disabled", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false }));
+  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: env.HAGGLE_EMAIL_APPROVAL_BY_CODE !== "false" ? "code" : "verified-senders-only", payments: stripe ? "stripe-test" : "disabled", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false }));
   // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
   let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };
   const channels = async (): Promise<ChannelStatus> => {

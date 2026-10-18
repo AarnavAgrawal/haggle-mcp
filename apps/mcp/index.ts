@@ -34,7 +34,7 @@ const server = new MCPServer<never, AppEnv>({
     "When the user wants to buy, cater, book, hire or get quotes (e.g. 'cater a hackathon for 200 next Saturday, budget under 5k'), call deal FIRST with the request and budget_usd (omit budget_usd if the user gave none): it contacts the configured, authorized vendors and opens one live deal board in the chat. Don't call ask, discover or business_profile first.",
     "If the user names vendors ('use Mission Eats only'), pass just their names: deal(businesses=['Mission Eats']); exactly those are contacted. Haggle already holds every configured vendor's contact details and channel; never ask the user for a phone number or email of a vendor Haggle knows. For anything that isn't a catering order (a repair, a rental, a service), pass request.ask[] (the answers you want back), compare_by and payable_field.",
     "Then: wait_for_update (repeat, pass the cursor) until quotes are final -> get_quotes to read them -> approve(job_id, quote_id) to ask the human -> pay(job_id, quote_id) once they approved. The board updates itself and the human can choose any safe option on it, so get_quotes and wait_for_update return data only and draw nothing; call open_haggle only when the user asks to see the board again.",
-    "Approval always comes from a human: the approval card or board, the client's form, or a coded reply to Haggle's text (YES <code>) or email (APPROVE <code>); never from this model, and never ask for the code. Approving charges nothing; pay charges the approved amount (the deposit, or the full total when none was stated). approve(action='confirm') only confirms the order and pays nothing.",
+    "Approval always comes from a human: the approval card or board, the client's form, or a coded reply to Haggle's text (YES <code>) or email (APPROVE <code>); never from this model, and never ask for the code. Approving charges nothing; pay charges the approved amount (the deposit, or the full total when none was stated). After a texted YES the human may also reply PAY <code> to charge it from their phone; one charge either way. approve(action='confirm') only confirms the order and pays nothing.",
     "Along the way: answer_business for a business's question, send_message for anything else (guarded: real amounts only, no other business names, no commitments), negotiate for the counteroffer round if Haggle hasn't run it (2 rounds at most), call_back only for a callback get_quotes offers and the human authorizes, cancel_deal to stop.",
     "In a new conversation about an earlier purchase, call list_deals, then get_quotes(job_id) for the deal the user means; never show an earlier deal as the answer to a new request.",
     "ask is only for a rough price idea from quotes Haggle already collected (estimates are never quotes; nothing is ordered). If deal returns setup blockers, show them to the user verbatim; nothing was sent.",
@@ -462,7 +462,7 @@ export const waitForUpdate = server.tool(
       const until = u ?? "any_change";
       const w = await engine.waitForUpdate(job_id, Number(cursor), timeout_s * 1000, ctx.signal, until);
       // Name whose quote is whose (a bare quote id let the model attribute prices to the wrong business).
-      const names = w.updates.some((x) => x.type === "quote") ? new Map((await engine.getQuotes(job_id)).businesses.map((b) => [b.business_id, b.name])) : new Map<string, string>();
+      const names = w.updates.some((x) => x.type === "quote") ? await engine.businessNames(job_id) : new Map<string, string>();
       const lines = w.updates.slice(-12).map((u) =>
         u.type === "quote" ? `quote ${u.quote_id} from ${names.get(u.business_id) ?? "a business"}: ${usd(u.total_usd)} (round ${u.round})` : u.type === "question" ? `question ${u.question_id}: "${u.text.slice(0, 120)}"` : u.type === "state" ? `state ${u.from} -> ${u.to}` : u.type === "flag" ? `flag ${u.flag}` : u.type === "reply" ? u.summary : `payment ${u.status}`);
       const head = w.timed_out ? `No ${until === "any_change" ? "change" : `"${until}"`} in ${timeout_s}s (${w.state}).` : `${w.updates.length} update(s), state ${w.state}:`;
@@ -872,7 +872,7 @@ export const pay = server.tool(
     title: "Pay the approved amount",
     description:
       "Charge a quote the human approved for payment, by Stripe TEST MODE (no real money): the deposit, or the full total when no deposit was stated. The amount is always the approved one, never an input. " +
-      "Use it once approve (or the board, or the human's YES/APPROVE reply) reports approved. Refuses without a stored human approval for that exact quote, for a confirm-only approval (nothing to pay), above the server's per-payment safety ceiling, if the quote changed, or to a business that didn't quote; safe to retry (one charge per approval). " +
+      "Use it once approve (or the board, or the human's YES/APPROVE reply) reports approved; if the human already paid by texting PAY <code>, it returns that settled payment. Refuses without a stored human approval for that exact quote, for a confirm-only approval (nothing to pay), above the server's per-payment safety ceiling, if the quote changed, or to a business that didn't quote; safe to retry (one charge per approval). " +
       "Don't call it to ask for approval (use approve). Next: get_quotes shows the receipt; wait_for_update if it is still charging.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
     outputSchema: ApprovalOut,
@@ -958,7 +958,8 @@ export const discover = server.tool(
       "Find businesses for a request: real businesses from public listings (Google Places, when configured on this server) ranked by relevance and credible reviews, plus this server's configured demo vendors, each on its channel (email, a text, a Voice AI call, A2A). " +
       "Each comes with how Haggle can reach it: discovered (no contact), contact found (published, but NOT authorized: finding a phone or email is not permission), authorized, or verified responsive. " +
       "Use it when the user wants options or a kind of business Haggle has no vendors for (a plumber, a print shop, a repair), or asks who Haggle would contact. Then business_profile(name) for the evidence, and deal(businesses=['<name>', …], dry_run=true) to check who can actually be contacted. " +
-      "If public discovery isn't configured it says so; it never substitutes demo vendors for real results. Read-only; contacts nobody. Not needed before a deal with the configured vendors.",
+      "If public discovery isn't configured it says so; it never substitutes demo vendors for real results. Read-only; contacts nobody. Not needed before a deal with the configured vendors. " +
+      "Draws one results card listing every business found (rating, reviews, address, website and Maps links, contact state) and the demo vendors, so there is no need to call business_profile for each one just to show the list.",
     inputSchema: z.object({
       category: z.string().min(2).max(100).optional().describe("What kind of business, in the user's words: 'catering', 'plumber', 'print shop', 'office repairs'"),
       area: z.string().min(2).max(200).optional().describe("City or address (defaults to the settings area)"),
@@ -971,6 +972,7 @@ export const discover = server.tool(
       found: z.array(z.looseObject({ name: z.string(), business_ref: z.string(), contact_state: z.string() })),
     }),
     annotations: { readOnlyHint: true, openWorldHint: true },
+    ...viewIf({ name: "business-list", description: "Haggle business list: businesses found in public listings with ratings, reviews, address, links and whether Haggle may contact them, plus the configured vendors" }),
   },
   async ({ count, category, area }, ctx) =>
     run(ctx, async ({ rt, engine, mode }) => {
@@ -1063,7 +1065,7 @@ export const businessProfile = server.tool(
       "Also how Haggle can reach it (discovered / contact found / authorized / verified responsive). Takes the same names deal does: a configured vendor, or a business from discover. Read-only. " +
       "Not needed before deal (deal(businesses=['<name>']) works directly); use it when the user asks about a business or to compare options.",
     inputSchema: z.object({ business: z.string().min(2).max(200).describe("Business name, business_ref ('mission_eats', 'place:…') or id") }),
-    outputSchema: BusinessProfile,
+    outputSchema: BusinessProfile.loose(),
     annotations: { readOnlyHint: true, openWorldHint: true },
     ...viewIf({ name: "business-profile", description: "Haggle business profile: what Haggle learned about a business" }),
   },
@@ -1104,7 +1106,7 @@ export const businessProfile = server.tool(
       ];
       const who = vendor
         ? { business_ref: businessRef(vendor), configured_vendor: true, ready: vendor.ready, channel: vendor.channel }
-        : found ? { business_ref: found.business_ref, configured_vendor: false, public_listing: { source: found.source, attribution: found.attribution, ...(found.maps_url ? { maps_url: found.maps_url } : {}) } }
+        : found ? { business_ref: found.business_ref, configured_vendor: false, public_listing: { source: found.source, attribution: found.attribution, ...(found.maps_url ? { maps_url: found.maps_url } : {}), ...(found.website ? { website: found.website } : {}) } }
         : { configured_vendor: false };
       const next = status.state === "authorized" || status.state === "verified_responsive"
         ? `For a real quote from ${name}, call deal(request, budget_usd, businesses=['${name}']): Haggle already has its contact details; only ${name} is contacted.`
@@ -1175,7 +1177,7 @@ server.settings({
   fields: {
     spending_cap_usd: { schema: z.number().positive().max(1_000_000), title: "Spending cap (USD)", description: "Your ceiling for one deal's order total: a quote above it is shown to the human as a caveat when approving. Never sent to businesses as a budget (a deal without budget_usd has none). Payments also need a human approval." },
     approver_email: { schema: z.string().max(200), title: "Approver email", description: "Gets each approval request by email: a reply APPROVE <code> from this address records the approval (the agent then calls pay). Also gets a receipt when a deal is confirmed or paid (empty = none)." },
-    approver_phone: { schema: z.string().max(20), title: "Approver phone (text)", description: "E.164, e.g. +14155550123 (empty = none). Approvals and updates are texted here (SMS, or iMessage when enabled) unless the server has a notify number: reply YES <code> to approve (nothing is charged until pay). For iMessage the approver must first text connect @<buyer handle>." },
+    approver_phone: { schema: z.string().max(20), title: "Approver phone (text)", description: "E.164, e.g. +14155550123 (empty = none). Approvals and updates are texted here (SMS, or iMessage when enabled) unless the server has a notify number: reply YES <code> to approve, then PAY <code> to charge it (or the agent's pay). For iMessage the approver must first text connect @<buyer handle>." },
     default_area: { schema: z.string().max(200), title: "Default area", description: "City or address used when a request has no area (empty = none)." },
   },
   layout: [{ kind: "group", title: "Spending and approval", items: [{ kind: "property", property: "spending_cap_usd" }, { kind: "property", property: "approver_email" }, { kind: "property", property: "approver_phone" }, { kind: "property", property: "default_area" }] }],
