@@ -273,9 +273,16 @@ describe("recipient allowlist (live safety)", () => {
     expect(await engine.decideApproval(approval.id, "approve", "simulated", "DEMO human")).toBe(true);
     await engine.advanceJob(deal.job_id);
     expect(fleet.sent.filter((s) => s.idempotencyKey.startsWith("accept:"))).toHaveLength(0);
+    // Live regression (job_dec51a570667400eae64): approving with payments off wrote a $1,000 payment row on
+    // the legacy x402 rail and hit its $10 check constraint. Now: no payment row, the approval stays valid
+    // (payments can be enabled afterwards), pay is refused with the reason, and nothing is charged.
+    await engine.advanceJob(deal.job_id);
     const board = await engine.getQuotes(deal.job_id);
-    expect(board.payment).toMatchObject({ status: "failed", simulated: false, reason: "Payments are not enabled yet" });
-    expect((await repo.getJob(deal.job_id))!).toMatchObject({ state: "failed", failure_reason: "payment_failed" });
-    await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: "not_payable" });
+    expect(board.payment).toBeNull();
+    expect(board.payments_enabled).toBe(false);
+    expect(await repo.getPaymentForJob(deal.job_id)).toBeNull();
+    expect((await repo.getJob(deal.job_id))!.state).toBe("paying");
+    expect((await repo.listEvents(deal.job_id)).filter((e) => e.type === "payment" && e.data.reason === "Payments are not enabled yet")).toHaveLength(1); // said once
+    await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: "payments_disabled", message: "Payments are not enabled yet" });
   });
 });

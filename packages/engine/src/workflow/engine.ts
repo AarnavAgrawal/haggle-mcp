@@ -967,6 +967,13 @@ export class HaggleEngine {
     const quote = await this.repo.getQuote(approval.quote_id);
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === approval.business_id);
     if (!quote || !b) return;
+    if (this.d.payer.disabledReason) {
+      // No payment rail on this server: record it once; no payment row (the approval stays usable once
+      // payments are enabled), never ask the seller for an invoice we can't pay.
+      const said = (await this.repo.listEvents(job.id)).some((e) => e.type === "payment" && e.data.reason === this.d.payer.disabledReason && e.data.approval_id === approval.id);
+      if (!said) await this.repo.appendEvent(job.id, "payment", { status: "failed", reason: this.d.payer.disabledReason, approval_id: approval.id });
+      return;
+    }
     await this.repo.insertPayment({
       id: newId("pay"), job_id: job.id, approval_id: approval.id, business_id: b.business_id, status: "awaiting_invoice", rail: "x402", idempotency_key: null, stripe_payment_intent_id: null,
       amount_cents: approval.payment_cents, amount_base_units: centsToUsdcBaseUnits(approval.payment_cents), network: "base-sepolia",
@@ -1869,6 +1876,7 @@ export class HaggleEngine {
     if (approval.status === "pending") return { ...this.noPayment(), reason: "the human hasn't approved yet" };
     if (approval.status === "declined" || approval.status === "expired") throw new EngineError("approval_" + approval.status, `The approval was ${approval.status}.`, "Request a new approval.", "approve");
     if (job.state !== "paying" && job.state !== "paid") throw new EngineError("not_payable", `Job is ${job.state}.`, "Wait for approval.", "wait_for_update");
+    if (!this.d.stripe && this.d.payer.disabledReason) throw new EngineError("payments_disabled", this.d.payer.disabledReason, "Nothing was charged. The operator must enable Stripe test mode (HAGGLE_ENABLE_PAYMENTS=true with STRIPE_* set); the approval stays valid until it expires.", "get_quotes");
     if (!job.pay_intent) await this.repo.touchJob(jobId, { pay_intent: true });
     if (this.d.stripe) {
       const { refused } = await this.processStripePayment(jobId);

@@ -467,6 +467,13 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
     );
   } else if (payment && ["charging", "sent", "signed", "awaiting_invoice", "invoice_received"].includes(payment.status)) {
     body = <span className="db-approve-status">Payment processing…</span>;
+  } else if (approval && (approval.status === "approved" || approval.status === "used") && (board as DealBoard).payments_enabled === false) {
+    body = (
+      <>
+        <span className="db-approved">Approved</span>
+        <span className="hg-muted db-approve-hint">Payments are off on this server, so nothing can be charged yet. The approval stays valid until it expires.</span>
+      </>
+    );
   } else if (approval && (approval.status === "approved" || approval.status === "used")) {
     body = (
       <>
