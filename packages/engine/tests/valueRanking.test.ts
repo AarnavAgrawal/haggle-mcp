@@ -77,3 +77,31 @@ describe("public reputation lookup (Google Places, non-blocking, attributed)", (
     expect(JSON.parse(calls[0]!)).toEqual({ textQuery: "Bay Catering, San Francisco", pageSize: 5 });
   });
 });
+
+describe("public discovery (Google Places): found is not authorized", () => {
+  it("dedupes listings, scores service relevance and area, drops closed businesses; nothing without a key", async () => {
+    const { resolveListings, placesDiscover } = await import("../src/index.ts");
+    const found = resolveListings([
+      { displayName: { text: "Bay Area Roofing Co" }, formattedAddress: "12 Main St, Oakland, CA", internationalPhoneNumber: "+1 510-555-0101", websiteUri: "https://bayroof.example", types: ["roofing_contractor"], rating: 4.6, userRatingCount: 212, businessStatus: "OPERATIONAL" },
+      { displayName: { text: "Bay Area Roofing" }, formattedAddress: "12 Main St, Oakland, CA", nationalPhoneNumber: "(510) 555-0101", types: ["roofing_contractor"], businessStatus: "OPERATIONAL" },
+      { displayName: { text: "Peak Pizza" }, formattedAddress: "9 Elm St, Oakland, CA", types: ["restaurant"], businessStatus: "OPERATIONAL" },
+      { displayName: { text: "Shut Roofing" }, formattedAddress: "Oakland, CA", types: ["roofing_contractor"], businessStatus: "CLOSED_PERMANENTLY" },
+      { displayName: { text: "Far Roofing" }, formattedAddress: "1 Rd, Fresno, CA", types: ["roofing_contractor"], businessStatus: "OPERATIONAL" },
+    ], "roofing contractor", "Oakland, CA");
+    expect(found.map((f) => f.name)).toEqual(["Bay Area Roofing Co", "Far Roofing", "Peak Pizza"]);
+    expect(found[0]).toMatchObject({ merged_listings: 2, in_area: true, rating: 4.6, review_count: 212, source: "Google Places", relevance: 1 });
+    expect(found.find((f) => f.name === "Far Roofing")).toMatchObject({ in_area: false });
+    expect(found.find((f) => f.name === "Peak Pizza")!.relevance).toBeLessThan(found[0]!.relevance);
+    expect(await placesDiscover({}, "roofing", "Oakland, CA")).toBeNull();
+  });
+});
+
+describe("deposit tradeoff", () => {
+  it("at the same price, the lower, safer deposit wins; a much cheaper quote still beats a slightly better deposit", () => {
+    const low = quote({ quoteId: "low_deposit", totalCents: 450_000, depositCents: 45_000 });
+    const high = quote({ quoteId: "high_deposit", totalCents: 450_000, depositCents: 225_000 });
+    expect(scoreQuotes([high, low]).recommendedQuoteId).toBe("low_deposit");
+    const cheap = quote({ quoteId: "cheap", totalCents: 380_000, depositCents: 114_000 }); // 30% deposit, $700 cheaper
+    expect(scoreQuotes([low, cheap]).recommendedQuoteId).toBe("cheap");
+  });
+});

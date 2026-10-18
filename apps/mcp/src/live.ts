@@ -92,5 +92,5 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     return buildRoster(contacts, { email: true, imessage: imessagePort !== null, phone: phonePort !== null, a2a: a2aPort !== null, connectCommand, connected: connected.set, callsViaSharedLine: callOrigin === "shared_imessage_number" });
   };
   if (vendorConfig.errors.length) console.error(JSON.stringify({ level: "warn", event: "demo_vendors_config", errors: vendorConfig.errors }));
-  return { mode: "live", engine, brain, missing: [], roster, configErrors: vendorConfig.errors, inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript } };
+  return { mode: "live", engine, brain, missing: [], roster, configErrors: vendorConfig.errors, ...(env.GOOGLE_PLACES_API_KEY ? { placesKey: env.GOOGLE_PLACES_API_KEY } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript } };
 });

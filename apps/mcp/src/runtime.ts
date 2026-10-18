@@ -16,6 +16,8 @@ export type Runtime = {
   missing: string[];
   /** The demo vendors and whether each can be contacted now (never contacts anyone). */
   roster: () => Promise<RosterEntry[]>;
+  /** Google Places key for public discovery/reputation (absent = off; never invented). */
+  placesKey?: string;
   /** Operator configuration problems worth showing (bad HAGGLE_DEMO_VENDORS entries). */
   configErrors?: string[];
 };

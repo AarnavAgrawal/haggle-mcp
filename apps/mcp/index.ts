@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { inputRequired, inputResponse, MCPServer } from "mcp-use";
 import { z } from "zod";
-import { EngineError, eventWhen, type DealBoardData } from "@haggle/engine";
+import { EngineError, eventWhen, placesDiscover, type DealBoardData } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
@@ -555,7 +555,7 @@ export const discover = server.tool(
     name: "discover",
     title: "Demo vendors and readiness",
     description:
-      "List the demo vendors this server works with (all simulated businesses played by teammates or seller personas, clearly labelled), each with its channel and whether Haggle can contact it right now; " +
+      "List the vendors this server may contact (demo vendors played by teammates or seller personas, clearly labelled), each with its channel and whether Haggle can contact it right now, plus (when public discovery is configured) real businesses found in public listings for the category and area, which are NOT authorized to contact. " +
       "for any that can't, the exact setup blocker and fix. Read-only; contacts nobody. Not needed before deal (deal uses the ready vendors itself); use it when the user asks who Haggle would contact or why a vendor wasn't contacted.",
     inputSchema: z.object({ category: z.string().min(2).max(100).optional(), area: z.string().min(2).max(200).optional(), count: z.number().int().min(1).max(12).default(6) }),
     outputSchema: z.looseObject({
@@ -564,8 +564,19 @@ export const discover = server.tool(
     }),
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
-  async ({ count }) =>
+  async ({ count, category, area }) =>
     run(async (rt) => {
+      // Real businesses from a public listing (when configured): FOUND is not AUTHORIZED. A published
+      // phone or website never means Haggle may contact it; deal still refuses anything not allowlisted.
+      let publicDiscovery: string = rt.placesKey ? "google-places" : "off (no GOOGLE_PLACES_API_KEY)";
+      let found: Awaited<ReturnType<typeof placesDiscover>> = null;
+      if (rt.placesKey && category) {
+        try { found = await placesDiscover({ apiKey: rt.placesKey }, category, area ?? (await rt.engine.getSettings()).default_area ?? "", count); } catch (e) { publicDiscovery = `error: ${(e as Error).message.slice(0, 80)}`; }
+      }
+      const foundOut = (found ?? []).map((f) => {
+        const allowed = !!f.phone && rt.engine.canContact({ phone: f.phone.replace(/[^\d+]/g, "") });
+        return { ...f, contactable: allowed, status: allowed ? "found and on this server's allowlist" : "found — not authorized to contact (the operator must add it)" };
+      });
       // Every vendor deal could contact is listed (ready first); count only matters for very large rosters.
       const roster = (await rt.roster()).sort((a, b) => Number(b.ready) - Number(a.ready)).slice(0, Math.max(count, 12));
       // Contacts stay server-side (deal uses them); phone numbers are never echoed.
@@ -577,8 +588,10 @@ export const discover = server.tool(
       const ready = roster.filter((r) => r.ready).length;
       const next = ready ? "Call deal(request, budget_usd) without businesses: Haggle contacts the ready vendors and opens the deal board." : "No vendor is ready: show the user the blockers; nothing can be sent until one is fixed.";
       return ok(
-        { ok: true, mode: rt.mode, ready, total: roster.length, businesses, next, ...(rt.configErrors?.length ? { config_errors: rt.configErrors } : {}) },
-        [`${ready} of ${roster.length} demo vendors ready: ${roster.map((r) => `${r.name} [${r.channel}] ${r.ready ? "ready" : "NOT READY"}`).join("; ")}.`, ...blockerLines(roster), `next: ${next}`].join("\n"),
+        { ok: true, mode: rt.mode, ready, total: roster.length, businesses, next, public_discovery: publicDiscovery, ...(found ? { found: foundOut } : {}), ...(rt.configErrors?.length ? { config_errors: rt.configErrors } : {}) },
+        [`${ready} of ${roster.length} demo vendors ready: ${roster.map((r) => `${r.name} [${r.channel}] ${r.ready ? "ready" : "NOT READY"}`).join("; ")}.`, ...blockerLines(roster),
+          ...(found ? [`Public listings (Google Places; found, NOT authorized to contact): ${found.map((f) => `${f.name}${f.rating !== undefined ? ` ${f.rating}★ (${f.review_count ?? 0} reviews)` : ""}${f.in_area ? "" : " [outside area]"}`).join("; ") || "none"}.`] : [`Public discovery: ${publicDiscovery}.`]),
+          `next: ${next}`].join("\n"),
       );
     }),
 );

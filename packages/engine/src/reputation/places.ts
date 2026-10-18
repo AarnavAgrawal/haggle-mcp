@@ -109,3 +109,66 @@ export function placesReputation(opts: { apiKey?: string; fetch?: Fetch; now?: (
     },
   };
 }
+
+// ───────────────────────────── public discovery ─────────────────────────────
+
+/** A real business found in a public listing. Found is NOT contactable: authorization is separate. */
+export interface FoundBusiness {
+  name: string;
+  address?: string;
+  phone?: string;
+  website?: string;
+  maps_url?: string;
+  rating?: number;
+  review_count?: number;
+  types: string[];
+  /** 0..1: how well the listing matches the requested service and area. */
+  relevance: number;
+  in_area: boolean;
+  source: "Google Places";
+  /** Same business listed more than once (merged by phone / website / name). */
+  merged_listings: number;
+}
+
+interface PlaceResult extends PlaceCandidate { formattedAddress?: string; websiteUri?: string; types?: string[]; businessStatus?: string }
+
+const domain = (u?: string) => { try { return u ? new URL(u).hostname.replace(/^www\./, "") : ""; } catch { return ""; } };
+
+/** Pure: listings -> deduplicated, relevance-scored businesses (operational ones only). */
+export function resolveListings(places: PlaceResult[], category: string, area: string): FoundBusiness[] {
+  const want = tokens(category);
+  const city = area.split(",")[0]!.trim().toLowerCase();
+  const out: FoundBusiness[] = [];
+  for (const p of places) {
+    if (p.businessStatus && p.businessStatus !== "OPERATIONAL") continue;
+    const name = p.displayName?.text?.trim();
+    if (!name) continue;
+    const phone = p.internationalPhoneNumber ?? p.nationalPhoneNumber;
+    const dup = out.find((b) => (phone && b.phone && digits(b.phone) === digits(phone)) || (domain(p.websiteUri) && domain(b.website) === domain(p.websiteUri)) || nameSimilarity(b.name, name) >= 0.8);
+    if (dup) { dup.merged_listings++; continue; }
+    const typeWords = new Set((p.types ?? []).flatMap((t) => t.split("_")));
+    const hits = [...want].filter((w) => typeWords.has(w) || tokens(name).has(w)).length;
+    const inArea = !city || (p.formattedAddress ?? "").toLowerCase().includes(city);
+    out.push({
+      name, types: p.types ?? [], source: "Google Places", merged_listings: 1, in_area: inArea,
+      relevance: Math.round(Math.min(1, (want.size ? hits / want.size : 0.5) * 0.7 + (inArea ? 0.3 : 0)) * 100) / 100,
+      ...(p.formattedAddress ? { address: p.formattedAddress } : {}), ...(phone ? { phone } : {}), ...(p.websiteUri ? { website: p.websiteUri } : {}),
+      ...(p.googleMapsUri ? { maps_url: p.googleMapsUri } : {}), ...(p.rating !== undefined ? { rating: p.rating } : {}), ...(p.userRatingCount !== undefined ? { review_count: p.userRatingCount } : {}),
+    });
+  }
+  return out.sort((a, b) => b.relevance - a.relevance || (b.review_count ?? 0) - (a.review_count ?? 0));
+}
+
+/** Google Places Text Search for real businesses; null when no key is configured (never invented). */
+export async function placesDiscover(opts: { apiKey?: string; fetch?: Fetch }, category: string, area: string, count = 8): Promise<FoundBusiness[] | null> {
+  if (!opts.apiKey) return null;
+  const doFetch: Fetch = opts.fetch ?? ((u, i) => fetch(u, i) as never);
+  const res = await doFetch("https://places.googleapis.com/v1/places:searchText", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Goog-Api-Key": opts.apiKey, "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.internationalPhoneNumber,places.nationalPhoneNumber,places.websiteUri,places.googleMapsUri,places.rating,places.userRatingCount,places.types,places.businessStatus" },
+    body: JSON.stringify({ textQuery: `${category} in ${area}`, pageSize: Math.min(Math.max(count, 1), 20) }),
+    signal: AbortSignal.timeout(6000),
+  });
+  if (!res.ok) throw new Error(`places search ${res.status}`);
+  return resolveListings(((await res.json()) as { places?: PlaceResult[] }).places ?? [], category, area).slice(0, count);
+}
