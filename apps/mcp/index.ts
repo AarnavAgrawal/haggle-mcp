@@ -87,6 +87,13 @@ function boardText(b: DealBoardData) {
     `Deal ${b.job_id} · ${b.state}${b.ready ? " (quotes final)" : ""}`,
     `${b.businesses.length} businesses: ${b.businesses.map((x) => { const st = b.stages?.[x.business_id]; return `${x.name} [${x.channel}] ${st ? st.stage.replace(/_/g, " ") : x.status}${st?.saved_usd ? ` (negotiated $${st.first_total_usd} → $${st.current_total_usd})` : ""}`; }).join("; ")}`,
     `${b.quotes.length} quotes, ${eligible.length} eligible${best ? `; best ${best.business} ${usd(best.total_usd)} (quote_id ${best.quote_id})` : ""}`,
+    // Each quote as stated, with what is uncertain: an approximate total is never presented as firm,
+    // and an unstated deposit is "not stated", never $0.
+    ...b.quotes.filter((q) => q.total_usd !== null).map((q) => {
+      const flags = q.flags as string[];
+      const approx = flags.includes("approximate_total");
+      return `- ${q.business}: ${approx ? "≈ " : ""}${usd(q.total_usd)}${approx ? " (approximate: not approvable until the business confirms a firm total)" : ""}, deposit ${q.deposit_usd !== undefined ? usd(q.deposit_usd) : "not stated"}${q.negotiated_from ? `, down from ${usd(q.negotiated_from)}` : ""}${flags.some((f) => f !== "approximate_total") ? ` [${flags.filter((f) => f !== "approximate_total").join(", ")}]` : ""}`;
+    }),
     ...b.rejected.map((r) => `rejected ${b.business_names[r.business_id]}: ${r.detail}`),
     ...(b.value?.explanation ? [`why: ${b.value.explanation.winner}`] : []),
     ...(b.callbacks ?? []).map((c) => `callback available: ${c.business} (${c.why}) → call_back(job_id, business_id='${c.business_id}') only if the user wants it`),
@@ -383,7 +390,7 @@ export const approve = server.tool(
       "(the model can't fill it). Calling this tool is never an approval by itself. Returns approved, pending_human or refused; NO_HUMAN_CHANNEL means this client can show neither. " +
       "Works for any quote except safety refusals (scam/pay-elsewhere links, injected instructions, unverified senders, a business that declined, no amount): " +
       "over budget, over the spending cap, unmet or unconfirmed requirements and computed totals are shown to the human as caveats, so use such a quote only when the user chose it. " +
-      "The payment is the deposit, or the full total when no deposit was stated. Next: pay(job_id, quote_id) once approved.",
+      "The payment is the deposit, or the full total when no deposit was stated. An approximate total ('about $1,300') can't be approved until the business confirms a firm one. Next: pay(job_id, quote_id) once approved.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
     outputSchema: ApprovalOut,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
