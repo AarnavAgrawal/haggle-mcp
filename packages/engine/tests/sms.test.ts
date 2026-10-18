@@ -152,3 +152,38 @@ describe("SMS follow-up to a phone business", () => {
     expect((await repo.listMessages(deal.job_id)).filter((m) => m.provider_email_id?.startsWith("sms:"))).toHaveLength(1);
   });
 });
+
+describe("texting a business over SMS (no iMessage port)", () => {
+  it("the RFQ, the reply and the quote go by SMS on the text channel; email and the call are unaffected", async () => {
+    const { engine, texts, emails } = demoEngine({ notifyPhone: null });
+    const deal = await engine.deal({ request, budget_usd, businesses: [
+      { name: "Harbor Table", email: "harbor@inkboxmail.test" },
+      { name: "Golden Grill", phone: "+14085550123", channel: "imessage" },
+    ] });
+    expect(deal.contacted.map((c) => [c.business, c.channel])).toEqual(expect.arrayContaining([["Harbor Table", "email"], ["Golden Grill", "imessage"]]));
+    expect(emails).toHaveLength(1);
+    const rfq = texts.find((x) => x.to === "+14085550123")!;
+    expect(rfq.text).toMatch(/^Hi Golden Grill, Haggle AI assistant here\..*HG-/);
+
+    const r = await engine.ingestText({ messageId: "sms_in_g1", from: "+14085550123", text: "We can do $1,020 total all-in, delivered, $100 deposit", inbound: true });
+    expect(r).toMatchObject({ jobId: deal.job_id, outcome: "stored" });
+    await engine.advanceJob(deal.job_id);
+    const board = await engine.getQuotes(deal.job_id);
+    expect(board.quotes.find((q) => q.business === "Golden Grill")).toMatchObject({ channel: "imessage", total_usd: 1020 });
+  });
+
+  it("one number as the call business and the update recipient: a reply to the business's follow-up still reaches the business", async () => {
+    const ME = "+14155550104";
+    const { engine, texts } = demoEngine({ notifyPhone: ME });
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Mission Eats", phone: ME }] });
+    await engine.advanceJob(deal.job_id);
+    await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "local: Hi, this is Haggle, an AI assistant.\nremote: We can do it, I'll check the price and get back to you." });
+    await engine.advanceJob(deal.job_id);
+    // Both texts went to the same number: the follow-up (as Mission Eats) and the update (as the human).
+    expect(texts.filter((x) => x.to === ME).map((x) => x.text)).toEqual(expect.arrayContaining([expect.stringMatching(/^Hi Mission Eats/), expect.stringMatching(/^Haggle: /)]));
+    const r = await engine.ingestText({ messageId: "sms_in_me", from: ME, text: "$880 total all-in, delivered, $200 deposit", inbound: true });
+    expect(r.outcome).toBe("stored");
+    await engine.advanceJob(deal.job_id);
+    expect((await engine.getQuotes(deal.job_id)).quotes[0]).toMatchObject({ business: "Mission Eats", total_usd: 880 });
+  });
+});

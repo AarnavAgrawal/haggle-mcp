@@ -281,8 +281,9 @@ export const deal = server.tool(
       const discoverySkipped: string[] = [];
       if (discovered) {
         const found = (await engine.discover(input.request.what, area, DISCOVER_COUNT)).map((b) => {
-          const x = b as { phone?: string; a2a_card_url?: string };
-          return { name: b.name, ...(b.email ? { email: b.email } : {}), ...(x.phone ? { phone: x.phone } : {}), ...(x.a2a_card_url ? { a2a_card_url: x.a2a_card_url } : {}) };
+          const x = b as { phone?: string; a2a_card_url?: string; best_channel?: string };
+          // A business the directory says to text keeps that channel (otherwise phone-only = a call).
+          return { name: b.name, ...(b.email ? { email: b.email } : {}), ...(x.phone ? { phone: x.phone } : {}), ...(x.a2a_card_url ? { a2a_card_url: x.a2a_card_url } : {}), ...(x.best_channel === "imessage" && x.phone ? { channel: "imessage" as const } : {}) };
         });
         // Discovery is not permission: only businesses on this server's recipient allowlist are contacted.
         businesses = found.filter((b) => engine.canContact(b));
@@ -645,7 +646,7 @@ export const discover = server.tool(
       const businesses = found.map((b) => {
         const phone = (b as { phone?: string }).phone;
         const card = (b as { a2a_card_url?: string }).a2a_card_url;
-        return { business_id: b.business_id, name: b.name, ...(b.email ? { email: b.email } : {}), ...(phone ? { phone } : {}), ...(card ? { a2a_card_url: card } : {}), best_channel: card && engine.a2aEnabled ? "a2a" : b.email ? "email" : phone ? "phone" : "a2a", simulated: b.simulated, source: b.source, ...(b.found_at ? { found_at: b.found_at } : {}) };
+        return { business_id: b.business_id, name: b.name, ...(b.email ? { email: b.email } : {}), ...(phone ? { phone } : {}), ...(card ? { a2a_card_url: card } : {}), best_channel: (b as { best_channel?: string }).best_channel === "imessage" && phone ? "imessage" : card && engine.a2aEnabled ? "a2a" : b.email ? "email" : phone ? "phone" : "a2a", simulated: b.simulated, source: b.source, ...(b.found_at ? { found_at: b.found_at } : {}) };
       });
       const fewer = fewerFound(mode, businesses.length, count);
       return ok(

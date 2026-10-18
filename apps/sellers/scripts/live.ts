@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { Inkbox } from "@inkbox/sdk";
 // Setup-only: the same read-only Stripe test-mode check the engine ships (no charge).
 import { verifyStripeTestSetup } from "../../../packages/engine/src/payments/stripe.ts";
-import { PERSONAS } from "../src/personas.ts";
+import { PERSONAS, type Persona } from "../src/personas.ts";
 import { DATA_DIR, loadRegistry } from "../src/store.ts";
 
 const LIVE_FILE = join(DATA_DIR, "live.json");
@@ -51,15 +51,19 @@ function fleetConfig() {
   const missing = PERSONAS.filter((p) => p.channel !== "phone" && !registry[p.handle]?.email).map((p) => p.handle);
   if (missing.length) throw new Error(`No mailbox recorded for ${missing.join(", ")}: run \`npm run setup -w @haggle/sellers\` first`);
   const phone = e164(env.MISSION_EATS_PHONE);
-  const emailers = PERSONAS.filter((p) => p.channel !== "phone");
+  // One email persona can be played by a consenting person over SMS instead (TEXT_VENDOR_PHONE).
+  const textPhone = e164(env.TEXT_VENDOR_PHONE);
+  const textHandle = env.TEXT_VENDOR?.trim() || "golden-grill-sf";
+  const texted = (p: Persona) => !!textPhone && p.handle === textHandle;
+  const emailers = PERSONAS.filter((p) => p.channel !== "phone" && !texted(p));
   const fleet = emailers.map((p) => `${p.name} <${registry[p.handle]!.email}>`).join("; ");
-  const directory = PERSONAS.map((p) => ({
+  const directory = PERSONAS.map((p) => texted(p) ? { id: p.business_id, phone: textPhone!, prefer_channel: "imessage" as const } : ({
     id: p.business_id,
     ...(p.channel !== "phone" ? { email: registry[p.handle]!.email } : {}),
     ...(p.channel === "phone" && phone ? { phone } : {}),
     ...(registry[p.handle]?.cardUrl ? { a2a_card_url: registry[p.handle]!.cardUrl } : {}),
   }));
-  return { fleet, directory, phone };
+  return { fleet, directory, phone, textPhone };
 }
 
 async function cmdEnv() {
@@ -112,7 +116,7 @@ async function cmdEnv() {
     };
   }
 
-  const { fleet, directory, phone } = fleetConfig();
+  const { fleet, directory, phone, textPhone } = fleetConfig();
   const supabase = env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY;
   const vars: Record<string, string> = {
     HAGGLE_MODE: "live",
@@ -127,7 +131,7 @@ async function cmdEnv() {
     ...(env.HAGGLE_ENABLE_SMS === "true" ? { HAGGLE_ENABLE_SMS: "true" } : {}),
     ...(env.HAGGLE_NOTIFY_PHONE?.trim() ? { HAGGLE_NOTIFY_PHONE: env.HAGGLE_NOTIFY_PHONE.trim() } : {}),
     HAGGLE_DEMO_FLEET: fleet,
-    HAGGLE_ALLOWED_RECIPIENTS: phone ?? "",
+    HAGGLE_ALLOWED_RECIPIENTS: [phone, textPhone].filter(Boolean).join(","),
     HAGGLE_DIRECTORY_JSON: JSON.stringify(directory),
     ANTHROPIC_API_KEY: need("ANTHROPIC_API_KEY"),
     ...(env.ANTHROPIC_MODEL ? { ANTHROPIC_MODEL: env.ANTHROPIC_MODEL } : {}),

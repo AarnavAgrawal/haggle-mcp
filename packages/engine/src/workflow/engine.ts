@@ -424,8 +424,9 @@ export class HaggleEngine {
   private route(c: { email: string | null; phone: string | null; card?: string | null; a2a_card_url?: string | null; prefer?: Channel; channel?: Channel }): { channel: Channel; reachable: boolean; reason: string } {
     const card = c.card ?? c.a2a_card_url ?? null;
     const prefer = c.prefer ?? (c.channel === "imessage" ? "imessage" : undefined);
-    // Text a business over iMessage (it must have texted `connect @<buyer>` first; Inkbox reaches humans only).
-    if (prefer === "imessage" && c.phone) return this.d.imessage ? { channel: "imessage", reachable: true, reason: "imessage" } : { channel: "imessage", reachable: false, reason: "iMessage to businesses is not enabled in this deployment" };
+    // Text a business: over iMessage (it must have texted `connect @<buyer>` first) or, with iMessage
+    // off, SMS from the buyer's own number.
+    if (prefer === "imessage" && c.phone) return this.d.imessage || this.d.sms ? { channel: "imessage", reachable: true, reason: this.d.imessage ? "imessage" : "sms" } : { channel: "imessage", reachable: false, reason: "texting businesses is not enabled in this deployment" };
     if (card && this.d.a2a) return { channel: "a2a", reachable: true, reason: "a2a" };
     if (c.email) return { channel: "email", reachable: true, reason: card ? "A2A not enabled; using email" : "email" };
     if (c.phone) return this.d.phone ? { channel: "phone", reachable: true, reason: "phone" } : { channel: "phone", reachable: false, reason: "phone calls are not enabled in this deployment" };
@@ -527,7 +528,7 @@ export class HaggleEngine {
     return planCounteroffers(
       rankable.map((r) => ({ ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: this.quoteRound(r.quoteId) })),
       new Date(manual ? this.now().getTime() + this.d.config.negotiationWindowMs : job.collect_until), manual ? MAX_ROUND : job.max_rounds, job.budget_cents,
-    ).filter((c) => { const b = byId.get(c.businessId); return (!only || only.has(c.businessId)) && (b?.channel === "a2a" ? !!(this.d.a2a && b.thread_id && b.a2a_card_url) : b?.channel === "imessage" ? !!(this.d.imessage && b.phone) : !!b?.email); });
+    ).filter((c) => { const b = byId.get(c.businessId); return (!only || only.has(c.businessId)) && (b?.channel === "a2a" ? !!(this.d.a2a && b.thread_id && b.a2a_card_url) : b?.channel === "imessage" ? !!((this.d.imessage || this.d.sms) && b.phone) : !!b?.email); });
   }
 
   private roundCache = new Map<string, number>();
@@ -803,26 +804,30 @@ export class HaggleEngine {
   private async sendIMessageToBusiness(job: JobRow, b: JobBusinessRow, kind: "rfq" | "answer" | "counter" | "followup", key: string, text: string, round: number | null) {
     const prior = await this.repo.findMessageByIdempotencyKey(key);
     if (prior) return prior;
-    if (!this.d.imessage || !b.phone) {
+    if ((!this.d.imessage && !this.d.sms) || !b.phone) {
       await this.repo.updateBusiness(job.id, b.business_id, { status: "unavailable" });
       return null;
     }
+    // iMessage when it's on; otherwise SMS from the buyer's own number (same text channel).
+    const viaSms = !this.d.imessage;
     try {
-      const sent = await this.d.imessage.send({ to: b.phone, text: text.slice(0, 159), idempotencyKey: key });
+      const body = text.slice(0, viaSms ? SMS_LIMIT : 159);
+      const sent = viaSms ? await this.d.sms!.send({ to: b.phone, text: body, idempotencyKey: key }) : await this.d.imessage!.send({ to: b.phone, text: body, idempotencyKey: key });
+      if (viaSms) this.lastSms.set(b.phone, { kind: "business", jobId: job.id });
       const row = await this.repo.insertMessage({
-        job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind, channel: "imessage", provider_email_id: `imsg:${sent.messageId}`, idempotency_key: key,
-        rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: text.slice(0, 159), attachments: [], attachments_download_url: null,
+        job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind, channel: "imessage", provider_email_id: `${viaSms ? "sms" : "imsg"}:${sent.messageId}`, idempotency_key: key,
+        rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: body, attachments: [], attachments_download_url: null,
         sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null, round, simulated: job.mode === "mock",
       });
       if (kind === "rfq") {
         await this.repo.updateBusiness(job.id, b.business_id, { status: "contacted", contacted_at: this.now().toISOString() });
-        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `RFQ texted to ${b.name} (iMessage)`, channel: "imessage" });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `RFQ texted to ${b.name} (${viaSms ? "SMS" : "iMessage"})`, channel: "imessage" });
       }
       return row;
     } catch (err) {
       if (kind === "rfq") {
         await this.repo.updateBusiness(job.id, b.business_id, { status: "bounced" });
-        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `iMessage to ${b.name} failed (has it texted connect @${job.inbox.split("@")[0]}?)`, channel: "imessage" });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: viaSms ? `Text to ${b.name} failed` : `iMessage to ${b.name} failed (has it texted connect @${job.inbox.split("@")[0]}?)`, channel: "imessage" });
       }
       this.log("imessage_business_failed", { job_id: job.id, business_id: b.business_id, kind, error: (err as Error).message });
       if (kind !== "rfq") throw err;
@@ -849,12 +854,14 @@ export class HaggleEngine {
     });
   }
 
-  /** The one automatic text follow-up to a phone business after its call (AI-disclosed, with the reference code). */
+  /** The one automatic text follow-up to a phone or texting business (AI-disclosed, with the reference code). */
   private async textFollowUp(job: JobRow, b: JobBusinessRow, ask: string) {
     const what = [job.request.what, quantityText(job.request.quantity, job.request.unit)].filter(Boolean).join(" for ");
+    const key = sendKeys.followUp(job.id, b.business_id, 1);
     try {
-      const sent = await this.sendSmsToBusiness(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1),
-        `Hi ${b.name}, this is Haggle, an AI assistant, following up on our call about ${what}.${ask} Ref HG-${job.short_code}`);
+      const sent = b.channel === "imessage"
+        ? await this.sendIMessageToBusiness(job, b, "followup", key, `Hi ${b.name}, Haggle (AI assistant) again about ${what}.${ask} HG-${job.short_code}`, null)
+        : await this.sendSmsToBusiness(job, b, "followup", key, `Hi ${b.name}, this is Haggle, an AI assistant, following up on our call about ${what}.${ask} Ref HG-${job.short_code}`);
       if (!sent) return;
       await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Texted ${b.name} for the exact total`, channel: "phone" });
@@ -897,7 +904,8 @@ export class HaggleEngine {
       if (!to) return;
       this.notified.add(idempotencyKey);
       await this.d.sms!.send({ to, text: `Haggle: ${text} (HG-${job.short_code})`.slice(0, SMS_LIMIT), idempotencyKey });
-      this.lastSms.set(to, { kind: "human", jobId: job.id, ...(questionId ? { questionId } : {}) });
+      // Only a question expects the human's reply; other updates don't change where a reply goes.
+      if (questionId) this.lastSms.set(to, { kind: "human", jobId: job.id, questionId });
     } catch (err) {
       this.log("notify_failed", { job_id: job.id, key, error: (err as Error).message });
     }
@@ -929,7 +937,7 @@ export class HaggleEngine {
     if (businesses.length > 0 && (!human || last?.kind !== "human")) {
       const { job, b } = businesses.sort((x, y) => y.at - x.at)[0]!;
       const stored = await this.repo.insertMessage({
-        job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: "phone", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+        job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: b.channel === "imessage" ? "imessage" : "phone", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
         rfc_message_id: null, thread_id: null, from_address: from, to_address: job.inbox, subject: null, body_text: m.text.slice(0, 5000) || null, attachments: [], attachments_download_url: null,
         // A reply to the follow-up Haggle texted to this business's pinned number.
         sender_trusted: true, trust_reason: "sms-reply-to-pinned-number", matched_via: "sms_number", parse_status: m.text.trim() ? "pending" : "none", quarantine_reason: null,
@@ -937,7 +945,7 @@ export class HaggleEngine {
       });
       if (!stored) return { jobId: job.id, outcome: "duplicate" };
       await this.repo.updateBusiness(job.id, b.business_id, { last_reply_at: this.now().toISOString(), ...(b.status === "contacted" || b.status === "question" || b.status === "silent" || b.status === "replied" ? { status: "replied" as const } : {}) });
-      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Text from ${b.name}`, channel: "phone", ...snippet(messageSnippet(m.text)) });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Text from ${b.name}`, channel: b.channel === "imessage" ? "imessage" : "phone", ...snippet(messageSnippet(m.text)) });
       await this.repo.touchJob(job.id);
       return { jobId: job.id, outcome: "stored" };
     }
@@ -1208,7 +1216,7 @@ export class HaggleEngine {
         try {
           await this.sendIMessageToBusiness(job, b, "counter", key, `Thanks! We have another quote of $${centsToUsd(c.targetTotalCents).toFixed(2)} total for the same order. Can you match or beat it? HG-${job.short_code}`, c.round);
           await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
-          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} by iMessage: match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})`, basis_quote_id: c.basisQuoteId });
+          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} by text: match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})`, basis_quote_id: c.basisQuoteId });
           await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis_quote_id: c.basisQuoteId });
           sent++;
         } catch (err) {
@@ -1660,8 +1668,8 @@ export class HaggleEngine {
           } catch (err) {
             this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
           }
-        } else if (record.available && !stated && record.questions.length === 0 && b.followups_sent < 1 && b.channel === "phone" && b.phone && this.d.sms) {
-          // A phone business (no email): confirm the worked-out total by text instead.
+        } else if (record.available && !stated && record.questions.length === 0 && b.followups_sent < 1 && (b.channel === "phone" || b.channel === "imessage") && b.phone && (this.d.sms || (b.channel === "imessage" && this.d.imessage))) {
+          // A phone or texting business (no email): confirm the worked-out total by text instead.
           const read = record.total_cents !== null ? ` We worked it out as ${usdText(record.total_cents)} all in.` : "";
           await this.textFollowUp(job, b, `${read} Could you text back your exact all-in total, incl. delivery and tax, and the deposit?`);
         }
