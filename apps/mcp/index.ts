@@ -184,7 +184,7 @@ export const deal = server.tool(
       const budget = input.budget_usd ?? settings.spending_cap_cents / 100;
       if (input.budget_usd === undefined) warnings.push(`No budget given: using the settings default ${usd(budget)} as the order budget. Pass budget_usd if the user named one.`);
       if (input.approver_phone) warnings.push("approver_phone ignored: the iMessage approver is the human set in settings (an agent can't name its own approver). They approve by iMessage, the approval card or the client's form.");
-      if (blockers.length) warnings.push(`${blockers.length} of ${roster.length} demo vendors not contacted (setup needed): ${blockers.map((x) => `${x.vendor} [${x.channel}]`).join(", ")}.`);
+      if (fromRoster && blockers.length) warnings.push(`${blockers.length} of ${roster.length} demo vendors not contacted (setup needed): ${blockers.map((x) => `${x.vendor} [${x.channel}]`).join(", ")}.`);
       const { time: _t, venue: _v, ...base } = input.request;
       const r = await engine.deal({
         request: { ...base, area, ...(input.request.time ? { time: input.request.time } : {}), ...(input.request.venue ? { venue: input.request.venue } : {}), requirements: reqs },
