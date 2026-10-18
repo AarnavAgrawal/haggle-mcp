@@ -374,6 +374,8 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
       let board = await engine.getQuotes(deal.job_id);
       expect(board.quotes[0]).toMatchObject({ total_usd: 6700, verdict: "incomplete", source: "iMessage text" });
       expect(board.quotes[0]!.flags).not.toContain("requirement_unmet");
+      expect(board.quotes[0]!.excluded_reason).toBe("a hard requirement isn't confirmed yet");
+      expect(board.rejected[0]).toMatchObject({ reason: "requirement_unknown", detail: "a hard requirement isn't confirmed yet" });
       expect(board.state).toBe("collecting"); // waits for the answer instead of failing
       expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 12 vegetarian meals\? HG-/);
 

@@ -1389,6 +1389,7 @@ export class HaggleEngine {
     const payment = await this.repo.getPaymentForJob(jobId);
     const events = await this.repo.listEvents(jobId);
     const out: BoardQuote[] = [];
+    const unknownOnly = new Map<string, { met: boolean | null }[]>();
     for (const q of sorted) {
       const b = byId.get(q.business_id)!;
       const prev = all.filter((x) => x.business_id === q.business_id && x.id !== q.id && x.total_cents !== null).sort((x, y) => y.round - x.round)[0];
@@ -1405,8 +1406,9 @@ export class HaggleEngine {
       out.push({
         ...cq, total_usd: q.total_cents === null ? null : cq.total_usd, channel: b.channel, eligible: order.has(q.id),
         verdict: order.has(q.id) ? "compliant" : incomplete && reason !== "external_payment_link" && reason !== "prompt_injection" && reason !== "unverified_sender" ? "incomplete" : "rejected",
-        ...(reason ? { excluded_reason: REJECT_TEXT[reason] } : {}),
+        ...(reason ? { excluded_reason: excludedText(reason, cq.requirement_results) } : {}),
       });
+      if (reason) unknownOnly.set(q.id, cq.requirement_results);
     }
     const questions = (await this.repo.listQuestions(jobId)).filter((q) => q.status === "pending");
     const lastEvent = new Map<string, string>();
@@ -1440,7 +1442,11 @@ export class HaggleEngine {
       job: { id: job.id, request: job.request, state: job.state, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents), created_at: job.created_at, updated_at: job.updated_at },
       quotes: out,
       ...(ranking.recommendedQuoteId ? { recommended_quote_id: ranking.recommendedQuoteId } : {}),
-      rejected: ranking.rejected.map((r) => ({ business_id: r.businessId, quote_id: r.quoteId, reason: rejectToFlag(r.reason), detail: REJECT_TEXT[r.reason] })),
+      rejected: ranking.rejected.map((r) => {
+        const res = unknownOnly.get(r.quoteId) ?? [];
+        const unconfirmed = r.reason === "requirement_unmet" && res.some((x) => x.met === null) && !res.some((x) => x.met === false);
+        return { business_id: r.businessId, quote_id: r.quoteId, reason: unconfirmed ? "requirement_unknown" as const : rejectToFlag(r.reason), detail: excludedText(r.reason, res) };
+      }),
       open_questions: openQuestions,
       pending_questions: openQuestions,
       negotiation,
@@ -1812,6 +1818,12 @@ const STRIPE_REFUSALS: Record<StripeGuardCode, [string, string, string]> = {
 function stripeRefusal(code: StripeGuardCode): EngineError {
   const [message, fix, next] = STRIPE_REFUSALS[code];
   return new EngineError(`payment_refused_${code.toLowerCase()}`, message, fix, next);
+}
+
+/** Why a quote can't win, in words: an unconfirmed requirement is "not confirmed yet", never "not met". */
+function excludedText(reason: import("../ranking/rank.ts").RejectReason, results: { met: boolean | null }[]): string {
+  if (reason === "requirement_unmet" && results.some((x) => x.met === null) && !results.some((x) => x.met === false)) return "a hard requirement isn't confirmed yet";
+  return REJECT_TEXT[reason];
 }
 
 function rejectToFlag(r: string) {
