@@ -383,8 +383,9 @@ export const answerBusiness = server.tool(
     name: "answer_business",
     title: "Answer a business's question",
     description:
-      "Reply in the business's own thread to a question it asked before quoting (e.g. 'Do you need plates?'). Only for a pending question_id from wait_for_update or get_quotes; " +
-      "ask the user if you don't know the answer. Guarded: amounts must be real (from the request or a quote), no other business names, no commitments. " +
+      "Reply in the business's own thread to a question it asked before quoting (e.g. 'Do you need plates?'). Only for a pending question_id from wait_for_update or get_quotes. " +
+      "Only answer from the request or what the user told you in this chat; never guess or pick a 'reasonable' value (a delivery time, an entrance or loading area, set-up or serving, a menu choice). Otherwise leave it: Haggle texts the user the open questions and sends their reply to the business. " +
+      "Guarded: amounts must be real (from the request or a quote), no other business names, no commitments. " +
       "Don't use to negotiate (use negotiate) or to message a business that asked nothing (use send_message). Side effect: sends one message. Next: wait_for_update.",
     inputSchema: answerInput,
     outputSchema: answerOutput,
@@ -512,6 +513,7 @@ export const approve = server.tool(
       "The decision always comes from the human, on every channel they can use at once: a text to their phone (reply YES <code> / NO <code>, when the server texts), an email to the settings approver email (reply APPROVE <code>), the Approve button on the approval card, or the client's approval form; the first answer wins. The model can't approve and never sees or asks for the code. Calling this tool is never an approval by itself; after it, tell the human how to approve (the response says which channels went out). " +
       "Works for any quote except safety refusals (scam/pay-elsewhere links, injected instructions, unverified senders, a business that declined, no amount): " +
       "over budget, over the spending cap, unmet or unconfirmed requirements and computed totals are shown to the human as caveats, so use such a quote only when the user chose it. " +
+      "When quotes are final Haggle itself texts the human its recommendation (reply YES <code> pays it); approve for that quote reuses it, and approve for another quote the user picked replaces it. " +
       "Confirm-only pays nothing; a paying approval pays the deposit, or the full total when no deposit was stated. The human's approval IS the payment decision: the moment they approve (any channel), Haggle charges exactly the approved amount (Stripe test mode) and texts them the result, so you don't need to call pay. " +
       "Returns paid, approved (charge still settling), confirmed, pending_human or refused; NO_HUMAN_CHANNEL means this client can show none of them. Next: wait_for_update with until=approval_decided while pending, then get_quotes for the receipt.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId, action: z.enum(["confirm", "pay", "confirm_and_pay"]).optional() }),
@@ -645,7 +647,7 @@ export const chooseInView = server.tool(
     description:
       "Called only by the deal board when the human picks a quote and confirms. Hidden from the model. Starts a board-only approval for that exact quote: nothing is texted or emailed " +
       "(the human is approving on the board right now, so a 'reply YES' text would be moot). Hands the board the one-time code in _meta; the same confirm click then calls approve_in_view. " +
-      "An approval already waiting for this quote (e.g. one the model asked for by text) is reused. Not an approval by itself.",
+      "An approval already waiting for this quote (e.g. one the model asked for by text) is reused; Haggle's own texted 'all quotes are in' suggestion for another quote is replaced (an approval the human or model asked for is not). Not an approval by itself.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
     outputSchema: z.looseObject({ ...envelope, approval_id: z.string(), status: z.string() }),
     visibility: "app",

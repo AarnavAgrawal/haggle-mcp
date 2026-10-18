@@ -168,6 +168,57 @@ describe("negotiation stays on the business's channel", () => {
     expect(board.quotes.find((q) => q.business === "Mission Eats")).toMatchObject({ total_usd: 980 });
   });
 
+  // Live 2026-10-18 (job_f067a617c25b4adf8a80): the counter call to Mission Eats was scheduled 2 min after
+  // its quote call ended; the human chose on the board before it was placed and never knew it was pending.
+  it("a counteroffer call right after the quote call waits 60 s (not the 2-minute cooldown), never under 30 s; the board shows when", async () => {
+    const { engine, repo, clock, calls } = demoEngine({ callCooldownMs: 2 * 60_000 });
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Mission Eats", phone: MISSION }] });
+    await engine.advanceJob(deal.job_id);
+    await emailReply(engine, repo, deal.job_id, "Harbor Table", 1, "$1,000 total all-in, 12 vegetarian, delivered, $100 deposit.");
+    await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "agent: Hi.\nremote: $1,150 total all-in, 12 vegetarian, delivered, $150 deposit." });
+    const ended = Date.now();
+    await engine.advanceJob(deal.job_id);
+    let board = await engine.getQuotes(deal.job_id);
+    expect(board.state).toBe("negotiating");
+    const step = board.negotiation.find((n) => n.business === "Mission Eats")!;
+    expect(step).toMatchObject({ channel: "phone", target_total_usd: 1000, from_total_usd: 1150, outcome_total_usd: null });
+    const wait = Date.parse(step.scheduled_for!) - ended;
+    expect(wait).toBeGreaterThanOrEqual(55_000);
+    expect(wait).toBeLessThanOrEqual(65_000);
+    clock.advance(30_000);
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(1);
+    clock.advance(35_000);
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.idempotencyKey).toMatch(/^counter:/);
+    board = await engine.getQuotes(deal.job_id);
+    expect(board.negotiation.find((n) => n.business === "Mission Eats")!.scheduled_for).toBeUndefined(); // placed: no longer "scheduled"
+  });
+
+  it("the counter-call gap never drops under 30 s, and spacing stays off when the cooldown is 0 (mock fleet)", async () => {
+    const { engine, repo, clock, calls } = demoEngine({ callCooldownMs: 2 * 60_000, counterCallGapMs: 5_000 });
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Mission Eats", phone: MISSION }] });
+    await engine.advanceJob(deal.job_id);
+    await emailReply(engine, repo, deal.job_id, "Harbor Table", 1, "$1,000 total all-in, 12 vegetarian, delivered, $100 deposit.");
+    await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "agent: Hi.\nremote: $1,150 total all-in, 12 vegetarian, delivered, $150 deposit." });
+    await engine.advanceJob(deal.job_id);
+    clock.advance(10_000);
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(1);
+    clock.advance(25_000);
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(2);
+
+    const mock = demoEngine({ callCooldownMs: 0 });
+    const d2 = await mock.engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Mission Eats", phone: MISSION }] });
+    await mock.engine.advanceJob(d2.job_id);
+    await emailReply(mock.engine, mock.repo, d2.job_id, "Harbor Table", 1, "$1,000 total all-in, 12 vegetarian, delivered, $100 deposit.");
+    await mock.engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "agent: Hi.\nremote: $1,150 total all-in, 12 vegetarian, delivered, $150 deposit." });
+    await mock.engine.advanceJob(d2.job_id);
+    expect(mock.calls).toHaveLength(2); // placed at once
+  });
+
   it("a counteroffer to a text business goes by text", async () => {
     const { engine, repo, emails, texts } = demoEngine();
     const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Golden Grill", phone: GRILL, email: "grill@inkboxmail.test", channel: "imessage" }] });

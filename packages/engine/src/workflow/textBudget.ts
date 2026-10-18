@@ -1,13 +1,12 @@
 // Inkbox's SMS spam filter: after 10 texts to one number with no reply, sendText is refused
 // (422 message_blocked_spam_filter, rule unanswered_limit) until that number texts back. Seen live
 // on 2026-10-18: one text per quote used the allowance in five minutes and every later update to
-// the human (questions, "quotes are in") was refused and only logged.
+// the human (questions, "quotes are in") was refused and only logged. Since then the human is texted
+// only when they must act or money moved, and a text refused here is held and re-sent on their reply.
 import { ChannelSendError, type SmsPort } from "./ports.ts";
 
 /** Texts Inkbox lets through to a number that hasn't replied. */
 export const INKBOX_UNANSWERED_LIMIT = 10;
-/** Routine updates (a new quote, a finished call) stop here, keeping the rest for what needs the human. */
-export const ROUTINE_TEXT_LIMIT = 5;
 
 /** True for Inkbox's "too many texts without a reply" refusal (raw SDK error or a mapped one). */
 export function isUnansweredLimitError(err: unknown): boolean {

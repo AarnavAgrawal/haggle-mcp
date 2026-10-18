@@ -4,7 +4,7 @@
 // Real engine, fake ports and a fake answerer; no network.
 import { describe, expect, it } from "vitest";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, splitNumberedAnswers, StubBrain, type EngineConfig } from "../src/index.ts";
-import { answerFromRequest, ANSWER_SYSTEM, buildAnswerContent, checkedAnswer, type QuestionAnswerInput } from "../src/parsing/answerQuestion.ts";
+import { answerFromRequest, ANSWER_SYSTEM, buildAnswerContent, checkedAnswer, groundedAnswer, type QuestionAnswerInput } from "../src/parsing/answerQuestion.ts";
 import type { ParserClient } from "../src/parsing/parseReply.ts";
 
 const HUMAN = "+14155550199";
@@ -28,7 +28,7 @@ const textExtractor = {
   },
 };
 
-function env(opts: { answers?: Record<string, string>; config?: Partial<EngineConfig>; sms?: boolean } = {}) {
+function env(opts: { answers?: Record<string, string>; basis?: string; config?: Partial<EngineConfig>; sms?: boolean } = {}) {
   let t = Date.now(); // the in-memory repo stamps rows with the wall clock
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const emails: { to: string; subject: string; bodyText: string }[] = [];
@@ -42,7 +42,7 @@ function env(opts: { answers?: Record<string, string>; config?: Partial<EngineCo
     async answerQuestion(input: QuestionAnswerInput) {
       asked.push(input);
       const hit = Object.entries(opts.answers ?? {}).find(([k]) => input.question.toLowerCase().includes(k));
-      return hit ? { answer: hit[1], basis: "Delivery time: 11:30 AM" } : null;
+      return hit ? { answer: hit[1], basis: opts.basis ?? "Delivery time: 11:30 AM" } : null;
     },
   };
   const engine = new HaggleEngine({
@@ -252,5 +252,75 @@ describe("the answerer (Claude call shape and the deterministic gate)", () => {
     expect(checkedAnswer({ answerable: true, answer: "Pay at https://x.example", basis: "b" })).toBeNull();
     expect(checkedAnswer({ answerable: true, answer: "Call +1 415 555 0199", basis: "b" })).toBeNull();
     expect(checkedAnswer({ answerable: true, answer: "It's on 2026-10-24 at 5:00 PM.", basis: "Date: 2026-10-24" })).toEqual({ answer: "It's on 2026-10-24 at 5:00 PM.", basis: "Date: 2026-10-24" });
+  });
+});
+
+// ── Live 2026-10-18 (job_f067a617c25b4adf8a80): Harbor Table asked "what time would you like the food
+// delivered?" and "is there a loading area or a preferred entrance?", Sunset Kitchen "should we stay
+// to set up and serve, or is a drop-off fine?". None of it is in the request; the agent answered all
+// three by answer_business with made-up facts ("11:30 AM", "the main front entrance", "drop-off plus
+// setup") about 90 s later, before the 3-minute batch would have texted the human. The human never
+// saw a question.
+describe("live 2026-10-18: questions the request doesn't answer reach the human", () => {
+  const yc = { ...base, area: "Y Combinator HQ, San Francisco, CA", details: [{ label: "Delivery", value: "Delivered to Y Combinator HQ, San Francisco, CA" }] };
+  const made_up = {
+    "what time": "Please deliver at 11:30 AM on Thursday, Oct 22, 2026.",
+    "loading area": "Your team can unload at the main front entrance of Y Combinator HQ.",
+    "set up": "Drop-off plus setup, please. No need to stay and serve.",
+  };
+
+  it("made-up answers (a time, an entrance, a set-up choice) are refused; one numbered text reaches the human within ~45 s while others are still out", async () => {
+    const e = env({ answers: made_up, basis: "Location: Y Combinator HQ, San Francisco, CA" });
+    const deal = await e.engine.deal({ request: yc, budget_usd, businesses: [...FLEET, { name: "Mission Eats", phone: "+14155550104" }] });
+    await reply(e, deal.job_id, "Harbor Table", "We'd be delighted to cook for your group. Before I put together a proper quote, I need two details from you. First, what time would you like the food delivered? Second, is there a loading area or a preferred entrance where our team can unload?");
+    await reply(e, deal.job_id, "Sunset Kitchen", "Before I put the quote together, I have one quick question. Should we stay to set up and serve, or is a drop-off fine?");
+    expect(e.asked).toHaveLength(3);
+    expect((await e.repo.listQuestions(deal.job_id)).map((q) => q.status)).toEqual(["pending", "pending", "pending"]);
+    expect(e.emails.filter((m) => /Thanks for asking/.test(m.bodyText))).toHaveLength(0); // nothing made up was sent
+    expect(human(e)).toEqual([]); // batching: Bay Catering and Mission Eats are still out
+    e.clock.advance(46_000);
+    await e.engine.advanceJob(deal.job_id);
+    const list = human(e).filter((t) => /questions from businesses/.test(t));
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatch(/^Haggle: 3 questions from businesses \(other quotes keep coming in\): 1\) Harbor Table: ".*what time.*" 2\) Harbor Table: ".*loading area.*" 3\) Sunset Kitchen: ".*set up and serve.*" Reply with the number/);
+    expect(list[0]!.length).toBeLessThanOrEqual(320);
+    // The agent is told not to guess, and that Haggle texts the user.
+    const board = await e.engine.getQuotes(deal.job_id);
+    expect(board.next).toMatch(/only from the request or what the user told you; never guess a time, an entrance, set-up\/serving.*Haggle texts the user these questions/);
+    // The human answers by number; each goes to its business.
+    expect(await e.engine.ingestText({ messageId: "live1", from: HUMAN, text: "1: 12:15 pm 2: side door on Pioneer Way 3: drop-off is fine", inbound: true })).toMatchObject({ outcome: "answered" });
+    expect((await e.repo.listQuestions(deal.job_id)).every((q) => q.status === "answered")).toBe(true);
+    expect(e.emails.filter((m) => m.to === "harbor@inkboxmail.test" && /side door on Pioneer Way/.test(m.bodyText))).toHaveLength(1);
+  });
+
+  it("the default batch window is 45 s: one question alone, others still out, is texted after it", async () => {
+    const e = env();
+    const deal = await e.engine.deal({ request: yc, budget_usd, businesses: FLEET });
+    await reply(e, deal.job_id, "Harbor Table", "Is a drop-off fine?");
+    e.clock.advance(30_000);
+    await e.engine.advanceJob(deal.job_id);
+    expect(human(e)).toEqual([]);
+    e.clock.advance(16_000);
+    await e.engine.advanceJob(deal.job_id);
+    expect(human(e)).toEqual([expect.stringMatching(/^Haggle: Harbor Table asks: "Is a drop-off fine\?" Reply to this text to answer\./)]);
+  });
+
+  it("groundedAnswer: an answer must restate listed facts, not fill a gap", () => {
+    const facts = [{ label: "Date", value: "2026-10-22" }, { label: "Location", value: "Y Combinator HQ, San Francisco, CA" }, { label: "Must have", value: "At least 20 vegetarian meals" }];
+    const loc = "Location: Y Combinator HQ, San Francisco, CA";
+    expect(groundedAnswer({ answer: made_up["what time"], basis: "Date: 2026-10-22" }, facts, "What time would you like the food delivered?")).toBeNull();
+    expect(groundedAnswer({ answer: made_up["loading area"], basis: loc }, facts, "Is there a loading area or a preferred entrance where our team can unload?")).toBeNull();
+    expect(groundedAnswer({ answer: made_up["set up"], basis: loc }, facts, "Should we stay to set up and serve, or is a drop-off fine?")).toBeNull();
+    expect(groundedAnswer({ answer: "Yes.", basis: "the customer probably wants it" }, facts, "Is that ok?")).toBeNull();
+    // Restating what's listed passes.
+    expect(groundedAnswer({ answer: "Yes, at least 20 vegetarian meals.", basis: "Must have: At least 20 vegetarian meals" }, facts, "How many vegetarian?")).not.toBeNull();
+    expect(groundedAnswer({ answer: "Delivery to Y Combinator HQ in San Francisco.", basis: loc }, facts, "Where should we deliver?")).not.toBeNull();
+    expect(groundedAnswer({ answer: "It's for 2026-10-22.", basis: "Date: 2026-10-22" }, facts, "Is the 22nd right?")).not.toBeNull();
+    expect(groundedAnswer({ answer: "Please deliver by 11:30 AM.", basis: "Delivery time: 11:30 AM" }, [...facts, { label: "Delivery time", value: "11:30 AM" }], "What time should we deliver?")).not.toBeNull();
+  });
+
+  it("the answerer prompt says logistics nobody listed are never inferred", () => {
+    expect(ANSWER_SYSTEM).toMatch(/delivery or arrival time, an entrance, loading area/);
+    expect(ANSWER_SYSTEM).toMatch(/When in doubt, answerable false/);
   });
 });

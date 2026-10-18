@@ -41,9 +41,11 @@ describe("approval by text (SMS) through the webhook", () => {
     await engine.advanceJob(deal.job_id);
     const q = (await engine.getQuotes(deal.job_id)).quotes[0]!;
     expect(await engine.approvalReach(deal.job_id)).toEqual({ text: true, email: false });
-    // What the approve tool does when the client shows the card: the card plus a text.
+    // The only business quoted, so quotes are final: Haggle texts "all quotes are in" with the code
+    // itself; the approve tool (card plus a text) reuses that same approval, so no second text.
     const a = await engine.requestApproval(deal.job_id, q.quote_id, "view", undefined, { text: true });
-    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(new RegExp(`^Haggle: Approve \\$50 deposit to Mission Eats for lunch catering \\(total \\$1,070\\)\\? Reply YES ${a.code} or NO ${a.code}\\.`)) });
+    expect(texts.filter((x) => x.to === HUMAN)).toHaveLength(1);
+    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(new RegExp(`^Haggle: All quotes are in for lunch catering \\(1 quote\\)\\. Recommended: Mission Eats \\$1,070 \\(deposit \\$50\\)\\. See every option in Claude, or reply YES ${a.code} to pay the \\$50 deposit to Mission Eats now\\.`)) });
 
     const stranger = textFrom("tx_s", "+14155550000", `YES ${a.code}`);
     expect((await handleInkboxWebhook(rt, stranger, signed(stranger))).outcome).toBe("unknown_sender");

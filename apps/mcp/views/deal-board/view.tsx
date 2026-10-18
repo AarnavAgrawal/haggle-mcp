@@ -13,7 +13,7 @@ import type { Conversation, ConversationEntry, DealBoard, DealBoardBusiness, Dea
 import { ChannelBadge, ErrorNote, FlagChip, Meter, ModeBadge, Shell, Skeleton, VerdictChip, relativeTime, usd, viewTicket } from "../_shared/ui.tsx";
 import { formatField, parseToolError, toolErrorText } from "../_shared/format.ts";
 import { EntryList, Reply, mergeEntries } from "../conversation/thread.tsx";
-import { activeApproval, boardContext, choiceFor, isUnsafe, type Choice } from "./options.ts";
+import { boardContext, choiceFor, chosenApproval, isUnsafe, negotiationLine, negotiationWarning, replaceableApproval, type Choice } from "./options.ts";
 import "./view.css";
 
 const TERMINAL = new Set(["paid", "confirmed", "cancelled", "failed"]);
@@ -177,7 +177,8 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
   const { displayMode, availableDisplayModes, requestDisplayMode } = useDisplayMode();
   const fullscreen = displayMode === "fullscreen";
   const canFullscreen = availableDisplayModes.includes("fullscreen");
-  const held = activeApproval(board);
+  // Haggle's texted suggestion isn't a choice yet: the recommendation stays highlighted, every option choosable.
+  const held = chosenApproval(board);
   const chosenId = held?.quote_id ?? (board.payment?.status === "settled" ? board.approval?.quote_id : undefined);
   const chosen = board.quotes.find((q) => q.quote_id === chosenId);
   const rankBy = board.job.compare_by && board.job.ask?.find((f) => f.key === board.job.compare_by!.field);
@@ -214,6 +215,7 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
       </header>
 
       <Progress board={board} />
+      <NegotiationNow board={board} />
 
       <div className="db-body">
         <section className="db-ladder" aria-label="Quotes, best first">
@@ -264,6 +266,17 @@ function Progress({ board }: { board: DealBoard }) {
   );
 }
 
+/** The live negotiation round: who will be called back when, who lowered, who matched. */
+function NegotiationNow({ board }: { board: DealBoard }) {
+  const line = negotiationLine(board, (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+  if (!line) return null;
+  return (
+    <p className="db-neg-live" aria-live="polite">
+      {line}
+    </p>
+  );
+}
+
 function Ladder({ board, chosenId, onChanged }: { board: DealBoard; chosenId?: string; onChanged: () => Promise<void> }) {
   if (board.quotes.length === 0) {
     return (
@@ -292,7 +305,7 @@ function QuoteRow({ quote: q, rank, scale, board, chosen, onChanged }: { quote: 
   const rejected = board.rejected?.find((r) => r.quote_id === q.quote_id);
   const out = isUnsafe(board, q);
   const recommended = q.quote_id === board.recommended_quote_id;
-  const highlight = chosen || (recommended && !board.quotes.some((x) => x.quote_id === activeApproval(board)?.quote_id));
+  const highlight = chosen || (recommended && !board.quotes.some((x) => x.quote_id === chosenApproval(board)?.quote_id));
   const known = knownTotal(q);
   const overBudget = known && board.job.budget_usd !== undefined && q.total_usd > board.job.budget_usd;
   const flash = useFlashOnChange(q.total_usd);
@@ -448,6 +461,7 @@ function Blocked({ choice }: { choice: Extract<Choice, { kind: "blocked" }> }) {
 function ChooseAction({ board, quote: q, choice, recommended, onChanged }: { board: DealBoard; quote: Quote; choice: Extract<Choice, { kind: "choose" }>; recommended: boolean; onChanged: () => Promise<void> }) {
   const flow = useChooseFlow(board, q, onChanged);
   const [confirming, setConfirming] = useState(false);
+  const warning = negotiationWarning(board);
   const caveats = [
     knownTotal(q) && board.job.budget_usd !== undefined && q.total_usd > board.job.budget_usd ? `${usd(q.total_usd - board.job.budget_usd)} over budget` : null,
     !q.meets_requirements ? "not every requirement confirmed" : null,
@@ -466,7 +480,9 @@ function ChooseAction({ board, quote: q, choice, recommended, onChanged }: { boa
             {knownTotal(q) ? `${usd(q.total_usd)} order total. ` : ""}
             {choice.pays ? "Stripe test mode. " : "Nothing is paid now. "}
             {caveats.length ? `Heads up: ${caveats.join(", ")}.` : ""}
+            {choice.replaces && choice.replaces !== q.business ? ` Replaces the ${choice.replaces} suggestion Haggle texted you.` : ""}
           </span>
+          {warning && <span className="db-approve-hint db-warn-hint">{warning}</span>}
         </>
       ) : (
         <>
@@ -531,7 +547,11 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
   } else if (approval && approval.status.startsWith("pending")) {
     body = (
       <>
-        <span className="db-approve-status">Waiting for your approval (text, email or this board)</span>
+        <span className="db-approve-status">
+          {replaceableApproval(board)?.quote_id === q.quote_id
+            ? "Haggle texted you this recommendation: reply YES to that text, approve here, or choose another option"
+            : "Waiting for your approval (text, email or this board)"}
+        </span>
         <button className="hg-btn hg-btn-primary" disabled={flow.busy} onClick={() => void flow.choose()}>
           {flow.approving ? "Approving…" : flow.paying ? "Paying…" : "Approve here"}
         </button>

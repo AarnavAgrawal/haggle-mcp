@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DealBoard } from "@haggle/core";
 import fixture from "../../../fixtures/views/deal-board.json" with { type: "json" };
-import { activeApproval, boardContext, chooseLabel, choiceFor, choosableCount, isUnsafe, payNow } from "../views/deal-board/options.ts";
+import { activeApproval, boardContext, chooseLabel, choiceFor, choosableCount, chosenApproval, isUnsafe, negotiationLine, negotiationWarning, payNow, replaceableApproval } from "../views/deal-board/options.ts";
 
 const base = DealBoard.parse(fixture);
 const quote = (id: string) => base.quotes.find((q) => q.quote_id === id)!;
@@ -120,5 +120,70 @@ describe("the board never posts into the chat by itself", () => {
   it("opens conversations inline with get_conversation instead of asking the chat", () => {
     expect(src).toContain('useCallTool("get_conversation")');
     expect(src).not.toMatch(/Show me the Haggle conversation/);
+  });
+});
+
+// Live 2026-10-18 (job_f067a617c25b4adf8a80): Haggle now texts its recommendation once quotes are final
+// (a pending approval, "reply YES <code>"). On the board that suggestion must not lock the other options.
+describe("Haggle's texted recommendation never locks the board", () => {
+  const suggested = withState("awaiting_approval", { approval: { approval_id: "ap_auto", quote_id: "q_bay_1", status: "pending", channel: "imessage", replaceable: true } });
+
+  it("every other safe option stays choosable and says it replaces the suggestion; the recommended one shows its approve step", () => {
+    expect(replaceableApproval(suggested)).toMatchObject({ approval_id: "ap_auto" });
+    expect(chosenApproval(suggested)).toBeNull(); // not a choice yet: no "Chosen" label
+    expect(choiceFor(suggested, quote("q_bay_1"))).toEqual({ kind: "held" });
+    expect(choiceFor(suggested, quote("q_harbor_2"))).toMatchObject({ kind: "choose", pays: true, amount: 310.5, replaces: "Bay Catering" });
+    expect(choiceFor(suggested, quote("q_mission_1"))).toMatchObject({ kind: "choose", replaces: "Bay Catering" });
+    expect(choiceFor(suggested, quote("q_quickquote_1")).kind).toBe("none"); // unsafe stays unsafe
+    expect(choosableCount(suggested)).toBe(3);
+    expect(boardContext(suggested, "q_bay_1")).toMatch(/approval for Bay Catering: pending \(Haggle's texted recommendation; choosing another option replaces it\)/);
+  });
+
+  it("an approval the human or agent asked for (not replaceable) still holds the job", () => {
+    const asked = withState("awaiting_approval", { approval: { approval_id: "ap_1", quote_id: "q_bay_1", status: "pending", channel: "imessage" } });
+    expect(replaceableApproval(asked)).toBeNull();
+    expect(chosenApproval(asked)).toMatchObject({ approval_id: "ap_1" });
+    expect(choiceFor(asked, quote("q_harbor_2")).kind).toBe("blocked");
+  });
+});
+
+describe("negotiation in progress is visible, and choosing warns that it cancels it", () => {
+  const time = (iso: string) => iso.slice(11, 16);
+  const negotiating = withState("negotiating", {
+    negotiation: [
+      { business_id: "biz_mission_eats", business: "Mission Eats", round: 2, target_total_usd: 1150, basis_quote_id: "q_golden_1", outcome_total_usd: null, channel: "phone", scheduled_for: "2026-10-18T07:25:41.653Z", from_total_usd: 2860 },
+      { business_id: "biz_sunset", business: "Sunset Kitchen", round: 2, target_total_usd: 1150, basis_quote_id: "q_golden_1", outcome_total_usd: 2302, channel: "email", from_total_usd: 2475 },
+    ],
+  });
+
+  it("one line: who will be called back when, who lowered", () => {
+    expect(negotiationLine(negotiating, time)).toBe("Negotiating: Mission Eats will be called back at 07:25 to match $1,150 · Sunset Kitchen lowered to $2,302");
+  });
+
+  it("matched, stayed, being called, waiting on a text", () => {
+    const b = withState("negotiating", {
+      negotiation: [
+        { business_id: "a", business: "A", round: 2, target_total_usd: 1000, basis_quote_id: "q", outcome_total_usd: 990, from_total_usd: 1200 },
+        { business_id: "b", business: "B", round: 2, target_total_usd: 1000, basis_quote_id: "q", outcome_total_usd: 1300, from_total_usd: 1300 },
+        { business_id: "c", business: "C", round: 2, target_total_usd: 1000, basis_quote_id: "q", outcome_total_usd: null, channel: "phone" },
+        { business_id: "d", business: "D", round: 2, target_total_usd: 1000, basis_quote_id: "q", outcome_total_usd: null, channel: "imessage" },
+        { business_id: "e", business: "E", round: 1, target_total_usd: 1000, basis_quote_id: "q", outcome_total_usd: null },
+      ],
+    });
+    expect(negotiationLine(b, time)).toBe("Negotiating: A matched at $990 · B stayed at $1,300 · calling C back to match $1,000 · D asked to match $1,000 by text, waiting");
+  });
+
+  it("the choose confirm warns while counteroffers are out; nothing once negotiation is over", () => {
+    expect(negotiationWarning(negotiating)).toBe("Negotiation still running (Mission Eats still to answer): choosing now cancels pending counteroffers.");
+    expect(negotiationLine(withState("collecting", { negotiation: negotiating.negotiation }), time)).toBeNull();
+    expect(negotiationWarning(withState("collecting", { negotiation: negotiating.negotiation }))).toBeNull();
+    const answered = withState("negotiating", { negotiation: negotiating.negotiation!.map((n) => ({ ...n, outcome_total_usd: n.outcome_total_usd ?? 1150 })) });
+    expect(negotiationWarning(answered)).toBeNull();
+    expect(boardContext(negotiating, undefined)).toMatch(/negotiation round still running/);
+  });
+
+  it("the shared schema accepts the new optional fields", () => {
+    expect(() => DealBoard.parse(negotiating)).not.toThrow();
+    expect(() => DealBoard.parse(withState("awaiting_approval", { approval: { approval_id: "a", quote_id: "q_bay_1", status: "pending", channel: "imessage", replaceable: true } }))).not.toThrow();
   });
 });

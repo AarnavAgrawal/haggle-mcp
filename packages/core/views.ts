@@ -95,10 +95,20 @@ export const DealBoard = z.object({
         target_total_usd: usd,
         basis_quote_id: z.string(),
         outcome_total_usd: usd.nullable(),
+        /** How the counteroffer went (a phone business is called back). */
+        channel: Channel.optional(),
+        /** A counteroffer call not placed yet (cooldown, call hours): when it will be placed (ISO). */
+        scheduled_for: z.string().optional(),
+        /** The business's total before this counteroffer. */
+        from_total_usd: usd.optional(),
       }),
     )
     .optional(),
-  approval: z.object({ approval_id: z.string(), quote_id: z.string(), status: z.string(), channel: z.string() }).nullable().optional(),
+  /**
+   * replaceable: Haggle's own "all quotes are in" suggestion (texted with reply YES); choosing another
+   * quote replaces it instead of waiting for it. Approvals the human or agent asked for never are.
+   */
+  approval: z.object({ approval_id: z.string(), quote_id: z.string(), status: z.string(), channel: z.string(), replaceable: z.boolean().optional() }).nullable().optional(),
   payment: z.object({ status: z.string(), simulated: z.boolean(), receipt_url: z.string().optional() }).nullable().optional(),
   /** True when a quote can be approved now. */
   ready: z.boolean().optional(),

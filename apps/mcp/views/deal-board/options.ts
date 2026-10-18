@@ -27,8 +27,11 @@ const DONE_STATES = new Set(["paid", "confirmed", "cancelled", "failed"]);
 export type Choice =
   /** No button: an unsafe quote, or the deal is over. */
   | { kind: "none" }
-  /** Choose this quote now. `pays` = the approval pays `amount` (the deposit, else the total). */
-  | { kind: "choose"; label: string; pays: boolean; amount?: number }
+  /**
+   * Choose this quote now. `pays` = the approval pays `amount` (the deposit, else the total).
+   * `replaces`: the business whose texted "all quotes are in" suggestion this choice replaces.
+   */
+  | { kind: "choose"; label: string; pays: boolean; amount?: number; replaces?: string }
   /** Another quote holds the job's one approval: say which, and how to free it. */
   | { kind: "blocked"; holder: string; reason: string }
   /** This quote holds the approval: the board shows its approve → pay → receipt steps. */
@@ -46,6 +49,18 @@ export function isUnsafe(board: Pick<DealBoard, "rejected">, q: Quote): boolean 
 export function activeApproval(board: Pick<DealBoard, "approval">) {
   const a = board.approval;
   return a && !RELEASED.has(a.status) ? a : null;
+}
+
+/** Haggle's own pending "all quotes are in" suggestion (texted to the human): it never locks the other options. */
+export function replaceableApproval(board: Pick<DealBoard, "approval">) {
+  const a = activeApproval(board);
+  return a && a.status === "pending" && a.replaceable === true ? a : null;
+}
+
+/** The approval the human (or agent) actually chose: active and not just Haggle's texted suggestion. */
+export function chosenApproval(board: Pick<DealBoard, "approval">) {
+  const a = activeApproval(board);
+  return a && !replaceableApproval(board) ? a : null;
 }
 
 /** What approving this quote pays now (the engine's rule: the deposit, else the full total). */
@@ -66,6 +81,13 @@ export function choiceFor(board: Pick<DealBoard, "job" | "quotes" | "rejected" |
   // A settled payment or confirmed order on this quote is still shown by its own steps.
   if (board.approval?.quote_id === q.quote_id && (board.payment?.status === "settled" || board.job.state === "confirmed")) return { kind: "held" };
   if (isUnsafe(board, q) || DONE_STATES.has(board.job.state)) return { kind: "none" };
+  const suggestion = replaceableApproval(board);
+  if (suggestion) {
+    // Haggle texted its recommendation; choosing another option replaces it (the engine does that).
+    const holder = board.quotes.find((x) => x.quote_id === suggestion.quote_id)?.business ?? "the recommended quote";
+    const amount = payNow(q);
+    return { kind: "choose", label: chooseLabel(q), pays: amount !== undefined, ...(amount !== undefined ? { amount } : {}), replaces: holder };
+  }
   if (held) {
     const holder = board.quotes.find((x) => x.quote_id === held.quote_id)?.business ?? "Another quote";
     const reason = held.status === "pending"
@@ -76,6 +98,45 @@ export function choiceFor(board: Pick<DealBoard, "job" | "quotes" | "rejected" |
   if (!CHOOSABLE_STATES.has(board.job.state)) return { kind: "none" };
   const amount = payNow(q);
   return { kind: "choose", label: chooseLabel(q), pays: amount !== undefined, ...(amount !== undefined ? { amount } : {}) };
+}
+
+type NegotiationBoard = Pick<DealBoard, "job" | "negotiation">;
+
+/** The latest counteroffer round's steps (the one negotiating now, or the last one). */
+function latestRound(board: NegotiationBoard) {
+  const steps = board.negotiation ?? [];
+  const round = Math.max(0, ...steps.map((n) => n.round));
+  return steps.filter((n) => n.round === round);
+}
+
+/**
+ * One line while Haggle negotiates, e.g. "Negotiating: Mission Eats will be called back at 12:25 AM to
+ * match $1,150 · Sunset Kitchen lowered to $2,302". Null when no round is running. `time` formats an
+ * ISO time for the viewer (local clock).
+ */
+export function negotiationLine(board: NegotiationBoard, time: (iso: string) => string): string | null {
+  if (board.job.state !== "negotiating") return null;
+  const steps = latestRound(board);
+  if (!steps.length) return null;
+  const parts = steps.map((n) => {
+    const target = money(n.target_total_usd);
+    if (n.outcome_total_usd === null) {
+      if (n.scheduled_for) return `${n.business} will be called back at ${time(n.scheduled_for)} to match ${target}`;
+      return n.channel === "phone" ? `calling ${n.business} back to match ${target}` : `${n.business} asked to match ${target}${n.channel === "imessage" ? " by text" : ""}, waiting`;
+    }
+    if (n.outcome_total_usd <= n.target_total_usd) return `${n.business} matched at ${money(n.outcome_total_usd)}`;
+    if (n.from_total_usd !== undefined && n.outcome_total_usd < n.from_total_usd) return `${n.business} lowered to ${money(n.outcome_total_usd)}`;
+    return `${n.business} stayed at ${money(n.outcome_total_usd)}`;
+  });
+  return `Negotiating: ${parts.join(" · ")}`;
+}
+
+/** The choose-confirm warning while counteroffers are still out (choosing ends the deal and drops them). */
+export function negotiationWarning(board: NegotiationBoard): string | null {
+  if (board.job.state !== "negotiating") return null;
+  const waiting = latestRound(board).filter((n) => n.outcome_total_usd === null);
+  if (!waiting.length) return null;
+  return `Negotiation still running (${waiting.map((n) => n.business).join(", ")} still to answer): choosing now cancels pending counteroffers.`;
 }
 
 /** Count of quotes the human could choose right now (for the ladder's header line). */
@@ -98,7 +159,8 @@ export function boardContext(board: DealBoard, recommendedId: string | undefined
     `${board.businesses.length} businesses contacted, ${board.quotes.length} quote(s)`,
     opts.length ? `options: ${opts.join("; ")}` : "no options yet",
     board.open_questions.length ? `${board.open_questions.length} open business question(s)` : null,
-    holder ? `approval for ${holder}: ${held!.status}` : null,
+    holder ? `approval for ${holder}: ${held!.status}${replaceableApproval(board) ? " (Haggle's texted recommendation; choosing another option replaces it)" : ""}` : null,
+    board.job.state === "negotiating" && (board.negotiation ?? []).some((n) => n.outcome_total_usd === null) ? "negotiation round still running" : null,
     board.payment?.status === "settled" ? "deposit paid" : null,
     "The human chooses and approves on the board",
   ];

@@ -56,7 +56,7 @@ export function toDealBoard(b: DealBoardData, mode: Mode): DealBoard {
     mode,
     rejected: b.rejected,
     negotiation: b.negotiation,
-    approval: b.approval ? { approval_id: b.approval.approval_id, quote_id: b.approval.quote_id, status: b.approval.status, channel: b.approval.channel } : null,
+    approval: b.approval ? { approval_id: b.approval.approval_id, quote_id: b.approval.quote_id, status: b.approval.status, channel: b.approval.channel, ...(b.approval.replaceable ? { replaceable: true } : {}) } : null,
     payment: b.payment ? { status: b.payment.status, simulated: b.payment.simulated, ...(b.payment.receipt_url ? { receipt_url: b.payment.receipt_url } : b.payment.explorer_url ? { receipt_url: b.payment.explorer_url } : {}) } : null,
     ready: b.ready,
   });

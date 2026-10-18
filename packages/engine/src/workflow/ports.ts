@@ -161,11 +161,16 @@ export interface EngineConfig {
   callHours?: { start: number; end: number };
   /** No new call to a number within this long after the last one (either direction). Default 2 min. */
   callCooldownMs?: number;
+  /**
+   * The gap before a counteroffer call to a number Haggle just called (the business quoted on that
+   * call). Default min(callCooldownMs, 60 s), never under 30 s (0 when callCooldownMs is 0).
+   */
+  counterCallGapMs?: number;
   /** A business message keeps the window open at least this long, so a half-answered business can finish. */
   replyGraceMs?: number;
   /**
    * Business questions Haggle can't answer from the request are texted to the human together: as
-   * soon as no other business is still to reply, or once the oldest has waited this long. Default 3 min.
+   * soon as no other business is still to reply, or once the oldest has waited this long. Default 45 s.
    */
   questionBatchMs?: number;
   /**
@@ -174,8 +179,9 @@ export interface EngineConfig {
    */
   questionHoldMs?: number;
   /**
-   * The human texted on updates (new quote, a business question, a finished call, quotes ready) when
-   * the SMS port is on; their reply answers the open question. Falls back to the settings approver.
+   * The human texted (SMS port on) only when they need to act or money moved: business questions,
+   * "all quotes are in" with the recommendation to approve by text, an approval, the payment result,
+   * a deal that failed. Their reply answers the open question. Falls back to the settings approver.
    */
   notifyPhone?: string;
   /** Wrong approval codes before an approval locks. Default 5. */
