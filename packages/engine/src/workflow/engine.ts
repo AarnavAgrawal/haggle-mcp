@@ -1558,6 +1558,18 @@ export class HaggleEngine {
     return new WorkspaceEngine(this, workspaceId);
   }
 
+  /** The workspace a credential belongs to, by SHA-256 hash of a bearer token or connector secret; null if unknown. */
+  async workspaceByCredential(kind: "token" | "connector_secret", hash: string) {
+    return kind === "token" ? this.repo.findWorkspaceByTokenHash(hash) : this.repo.findWorkspaceBySecretHash(hash);
+  }
+
+  /** Create a workspace (scripts/workspace-create.ts); credentials are stored only as hashes. */
+  async createWorkspace(w: { id: string; name: string; tokenHash: string; connectorSecretHash: string; timezone?: string; settings?: Partial<Omit<SettingsRow, "updated_at">> }) {
+    const row = await this.repo.insertWorkspace({ id: w.id, name: w.name, token_hash: w.tokenHash, connector_secret_hash: w.connectorSecretHash, timezone: w.timezone ?? "America/Los_Angeles" });
+    if (w.settings) await this.updateSettings(w.settings, row.id);
+    return row;
+  }
+
   /** Advance every open job (POST /internal/tick, the live backup timer). Returns how many advanced and failed. */
   async advanceAllOpen(limit = 200): Promise<{ advanced: number; failed: number }> {
     let advanced = 0;
@@ -2302,13 +2314,13 @@ function rejectToFlag(r: string) {
 }
 
 /** Contract ApprovalRecord, except `channel` reports the real human channel (incl. v5 view / iMessage). */
-export type EngineApprovalRecord = Omit<ApprovalRecord, "channel"> & { channel: ApprovalRow["channel"]; status: ApprovalRow["status"] };
+export type EngineApprovalRecord = Omit<ApprovalRecord, "channel"> & { channel: ApprovalRow["channel"]; status: ApprovalRow["status"]; action: ApprovalRow["action"]; attempts: number };
 
 function approvalRecord(a: ApprovalRow, job: JobRow): EngineApprovalRecord {
   return {
     approval_id: a.id, job_id: a.job_id, quote_id: a.quote_id, quote_total_usd: centsToUsd(a.quote_total_cents), payment_usd: centsToUsd(a.payment_cents),
     cap_usd: centsToUsd(a.cap_cents), approver: a.approver ?? (a.channel === "simulated" ? "DEMO simulated human" : job.approver_email ?? "unknown"),
-    channel: a.channel, status: a.status, approved_at: a.decided_at ?? "", expires_at: a.expires_at,
+    channel: a.channel, status: a.status, approved_at: a.decided_at ?? "", expires_at: a.expires_at, action: a.action, attempts: a.attempts,
   };
 }
 

@@ -15,7 +15,9 @@ export type Runtime = {
   missing: string[];
 };
 
-export const LIVE_REQUIRED = ["INKBOX_API_KEY", "INKBOX_WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "SUPABASE_DB_URL"] as const;
+// ANTHROPIC_API_KEY is recommended but no longer required: without it replies are read by the
+// keyword fallback (low confidence, flagged), as in haggle-testing.
+export const LIVE_REQUIRED = ["INKBOX_API_KEY", "INKBOX_WEBHOOK_SECRET", "SUPABASE_DB_URL"] as const;
 
 let runtime: Promise<Runtime> | null = null;
 let liveFactory: ((env: NodeJS.ProcessEnv) => Promise<Runtime>) | null = null;

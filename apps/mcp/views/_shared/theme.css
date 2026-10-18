@@ -224,3 +224,18 @@
     transition: none !important;
   }
 }
+
+/* DEMO label (HAGGLE_MODE=mock) */
+.hg-demo {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 16px;
+  padding: 1px 6px;
+  border-radius: var(--radius-s);
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px dashed var(--warn);
+  white-space: nowrap;
+}

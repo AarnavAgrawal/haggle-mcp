@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: ChatGPT render of the live board (needs a human to add the app), then Stripe test mode · Aarnav: going live on Inkbox (seller setup) and checking views in ChatGPT/Claude
+**Now working on:** Yash: ChatGPT render of the live board (needs a human to add the app), then Stripe test mode · Aarnav: branch `feat/testing-parity` (haggle-testing gaps ported; needs Yash's review before merge), then checking views in ChatGPT/Claude
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -93,10 +93,13 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 - Live `discover` now returns the brain directory (Aarnav's six sellers), but live sends are still limited to HAGGLE_DEMO_FLEET (Golden Grill + the deleted test seller), so a live deal(discover) would reach only Golden Grill, whose replies are unverified across orgs. The six-seller demo runs on a local mock server.
 - Payments: Stripe test mode is on `main` (migration 102 raises the cap ceiling; test card attached to the test customer). Live charges stay off until `HAGGLE_ENABLE_PAYMENTS=true` and `STRIPE_*` are set on Manufact (Yash's call); not yet demonstrated live.
 - Shared, open decision D8: mock mode's `simulated` approval channel (headless client, DEMO only) isn't in `Approval.channel`; `apps/mcp/src/views.ts` extends the schema for it until both agree.
+- Yash (review): branch `feat/testing-parity` ports the haggle-testing gaps and edits Yash's lane (engine, `apps/mcp/index.ts` + `src/`, migration 103) and `packages/core` (additive, contracts v6). Before merge: Yash reviews; apply `103_engine_parity.sql` on the live DB; set `HAGGLE_AUTH=required` on hosted servers once workspaces are created (`npm run workspace:create -w @haggle/mcp`). New views (identity-card, conversation) not yet checked in the Inspector/ChatGPT.
 
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 2026-10-17 · Aarnav · `feat/testing-parity`: haggle-testing gaps ported: any-request asks (custom fields, compare_by, payable_field), missing-info follow-up + carry-over, confirm-only approvals + confirmations/receipts, approval lockout, message guard, email→call escalation with call hours/cooldown/screener handling, classified Inkbox retries, keyword fallback parser, image attachments, workspaces + token/connector auth, tools get_identity/send_message/negotiate/get_conversation/cancel_deal, /internal/tick, identity-card + conversation views, bench eval runner; migration 103; engine tests pass on memory + Postgres
 
 - 16:30 · Yash · Channels on `yashnil-channels`: A2A buyer tasks (live attempt → 403 diagnosed), Voice AI call origin/retry/full transcripts/inbound callers, iMessage approval, quote.json v5 shapes, brain start-up no longer crashes the server; SUPABASE_URL typo fixed locally
 - 3:31 PM · Yash · calm-spark redeployed from `main` (f5d6699), live: start command fixed for npm workspaces; real brain (container-file store; Supabase blocked, see Blockers); live deal job_512a5d0265b144ed9337 ($1,080) renders in the shared deal board (light/dark); ask/business_profile/check_price/discover OK; pay refuses without approval, headless approve → NO_HUMAN_CHANNEL; unsigned webhook → 401; payments and calls off; 263 tests + 168 on Postgres
