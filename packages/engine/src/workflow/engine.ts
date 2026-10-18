@@ -169,7 +169,7 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
 const REJECT_TEXT: Record<import("../ranking/rank.ts").RejectReason, string> = {
   not_current: "superseded by a newer quote", unavailable: "the business declined", unverified_sender: "sender could not be verified",
   external_payment_link: "asked for payment through an external link (blocked)", prompt_injection: "contained instructions aimed at the agent (ignored)",
-  requirement_unmet: "does not meet every hard requirement", no_total: "no exact total yet", over_budget: "over the budget",
+  requirement_unmet: "does not meet every hard requirement", no_total: "no exact total yet", all_in_unknown: "all-in total not confirmed yet (delivery, tax or fees not stated)", over_budget: "over the budget",
 };
 
 const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
@@ -354,6 +354,11 @@ export class HaggleEngine {
     return e ? { ...s, receipt_url: String(e.data.receipt_url) } : s;
   }
 
+  /** Does the buyer's request involve delivery (so an unstated delivery cost leaves the all-in total unknown)? */
+  private needsDelivery(job: JobRow): boolean {
+    return job.request.requirements.some((r) => r.kind === "delivery" || /\bdeliver|\ball[- ]?in\b/i.test(r.text));
+  }
+
   /** An authorized absolute ceiling (budget_kind "limit"), else null. */
   private hardLimitCents(job: JobRow): number | null {
     return job.request.budget_kind === "limit" ? job.budget_cents : null;
@@ -367,7 +372,7 @@ export class HaggleEngine {
     const quotes = (await this.repo.listQuotes(job.id)).filter((q) => q.status === "current");
     const rankable = quotes.map((q): RankableQuote => ({
       quoteId: q.id, businessId: q.business_id, totalCents: q.total_cents, available: q.record.available, compliant: q.compliant,
-      senderTrusted: q.sender_trusted, status: q.status, confidence: q.record.confidence, flags: q.record.flags,
+      senderTrusted: q.sender_trusted, status: q.status, confidence: q.record.confidence, flags: q.record.flags, allInKnown: allInKnown(q.record, this.needsDelivery(job)),
     }));
     return { quotes, rankable, ranking: rankQuotes(rankable, this.hardLimitCents(job)) };
   }
@@ -384,7 +389,8 @@ export class HaggleEngine {
     const hard = q.status !== "current" ? "not_current" : !q.record.available ? "unavailable" : !q.sender_trusted ? "unverified_sender"
       : q.record.flags.includes("external_payment_link") ? "external_payment_link" : q.record.flags.includes("prompt_injection") ? "prompt_injection"
       : q.total_cents === null ? "no_total"
-      : this.hardLimitCents(job) !== null && q.total_cents > this.hardLimitCents(job)! ? "over_limit" : null;
+      : this.hardLimitCents(job) !== null && q.total_cents > this.hardLimitCents(job)! ? "over_limit"
+      : !allInKnown(q.record, this.needsDelivery(job)) ? "all_in_unknown" : null;
     const caveats: string[] = [];
     const dollars = (c: number) => `$${centsToUsd(c).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
     if (q.total_cents !== null) {
@@ -1276,7 +1282,10 @@ export class HaggleEngine {
       const extras = ([["delivery_fee", "delivery_fee_cents", p.delivery_included !== true], ["tax", "tax_cents", p.tax_included !== true]] as const)
         .filter(([, k, notIncluded]) => notIncluded && p[k] === null && record[k] !== null && record[k]! > 0);
       const added = extras.reduce((sum, [, k]) => sum + record[k]!, 0);
-      const flags = [...new Set([...p.flags, ...record.flags])].filter((f) => !(f === "delivery_unclear" && (record.delivery_fee_cents !== null || p.delivery_fee_cents !== null)));
+      // Gap flags are recomputed from the merged facts, never copied from a short answer that simply
+      // didn't repeat them (e.g. "Yes, 45 vegetarian" doesn't make an included delivery unclear again).
+      const deliveryKnown = (record.delivery_included ?? p.delivery_included) !== null || record.delivery_fee_cents !== null || p.delivery_fee_cents !== null;
+      const flags = [...new Set([...p.flags, ...record.flags])].filter((f) => !(f === "delivery_unclear" && deliveryKnown) && f !== "question_pending");
       const statedTotal = p.sources.total;
       record = {
         ...p, dietary_coverage: { ...p.dietary_coverage, ...record.dietary_coverage }, delivery_included: record.delivery_included ?? p.delivery_included,
@@ -1361,8 +1370,9 @@ export class HaggleEngine {
     // the same text/email thread, instead of treating silence as a no. Never by a new call.
     let askedToConfirm = false;
     const unstated = quoteRow && record.available ? reqs.filter((r) => r.hard && results.find((x) => x.requirement_id === r.id)?.met === null) : [];
-    if (unstated.length && b.followups_sent < 1 && ((b.channel === "imessage" && b.phone) || (b.channel === "email" && b.email))) {
-      const ask = unstated.map((r) => r.text).join("; ");
+    const asks = [...unstated.map((r) => r.text), ...(quoteRow && record.available && !allInKnown(record, this.needsDelivery(job)) ? ["the all-in total including delivery, tax and any fees"] : [])];
+    if (asks.length && b.followups_sent < 1 && ((b.channel === "imessage" && b.phone) || (b.channel === "email" && b.email))) {
+      const ask = asks.join("; ");
       try {
         if (b.channel === "imessage") {
           await this.sendIMessageToBusiness(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), `Thanks! Can you confirm: ${ask}? HG-${job.short_code}`, null);
@@ -2129,10 +2139,20 @@ function excludedText(reason: import("../ranking/rank.ts").RejectReason, results
   return REJECT_TEXT[reason];
 }
 
+/** The all-in total is known: delivery stated (included or priced) and tax not excluded without an amount. */
+/**
+ * The all-in total is known: tax isn't excluded without an amount, and, when the buyer's request
+ * involves delivery (a delivery requirement, or one about delivery / an all-in total), delivery is
+ * stated (included or priced). For a roof repair, "delivery not stated" means nothing and doesn't block.
+ */
+function allInKnown(r: import("../parsing/extraction.ts").QuoteRecord, needsDelivery = true): boolean {
+  return !r.flags.includes("tax_excluded") && !(needsDelivery && r.flags.includes("delivery_unclear"));
+}
+
 function rejectToFlag(r: string) {
   const m: Record<string, import("../contract.ts").QuoteFlag> = {
     unavailable: "requirement_unmet", unverified_sender: "unverified_sender", external_payment_link: "external_payment_link", prompt_injection: "prompt_injection",
-    requirement_unmet: "requirement_unmet", no_total: "vague_price", over_budget: "over_budget", not_current: "expired",
+    requirement_unmet: "requirement_unmet", no_total: "vague_price", all_in_unknown: "delivery_unclear", over_budget: "over_budget", not_current: "expired",
   };
   return m[r] ?? "low_confidence";
 }

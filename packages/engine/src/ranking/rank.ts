@@ -16,9 +16,11 @@ export interface RankableQuote {
   status: "current" | "superseded" | "expired" | "withdrawn";
   confidence: number;
   flags: string[];
+  /** False when the all-in total isn't confirmed (delivery not stated, or tax excluded with no amount). */
+  allInKnown?: boolean;
 }
 
-export type RejectReason = "not_current" | "unavailable" | "unverified_sender" | "external_payment_link" | "prompt_injection" | "requirement_unmet" | "no_total" | "over_budget";
+export type RejectReason = "not_current" | "unavailable" | "unverified_sender" | "external_payment_link" | "prompt_injection" | "requirement_unmet" | "no_total" | "all_in_unknown" | "over_budget";
 
 export interface Ranking {
   ranked: RankableQuote[]; // best first
@@ -35,6 +37,7 @@ export function rejectReason(q: RankableQuote, budgetCents: number | null): Reje
   if (q.flags.includes("prompt_injection")) return "prompt_injection";
   if (!q.compliant) return "requirement_unmet";
   if (q.totalCents === null) return "no_total";
+  if (q.allInKnown === false) return "all_in_unknown";
   if (budgetCents !== null && q.totalCents > budgetCents) return "over_budget";
   return null;
 }

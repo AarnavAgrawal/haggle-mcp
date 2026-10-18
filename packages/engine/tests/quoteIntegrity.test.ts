@@ -51,36 +51,45 @@ const SUNSET = { name: "Sunset Kitchen", phone: "+14155550111", channel: "imessa
 const text = (e: HaggleEngine, id: string, body: string) => e.ingestIMessage({ messageId: id, from: SUNSET.phone, text: body, isGroup: false });
 
 describe("quote revisions and approvals", () => {
-  it("the live Sunset Kitchen sequence: $4.5k, then '$250 extra for delivery' → $4,750 all-in, and an approval of the old version is voided", async () => {
-    const { engine: e, stripe } = engine({ stripe: true });
+  it("the live Sunset Kitchen sequence: $4.5k (all-in unknown → not approvable, one confirming text), then '$250 extra for delivery' → $4,750; a later revision voids that approval", async () => {
+    const { engine: e, stripe, texts } = engine({ stripe: true });
     const deal = await e.deal({ request: LIVE_REQUEST, budget_usd: 5000, businesses: [SUNSET] });
     await text(e, "im_1", "$4.5k total, $1k deposit");
     await e.advanceJob(deal.job_id);
     let board = await e.getQuotes(deal.job_id);
     const v1 = board.quotes.find((q) => q.status === "current")!;
-    expect(v1).toMatchObject({ total_usd: 4500, deposit_usd: 1000, verdict: "incomplete" }); // veg not stated yet
+    expect(v1).toMatchObject({ total_usd: 4500, deposit_usd: 1000, eligible: false });
+    expect(board.recommended_quote_id).toBeUndefined(); // never recommended before the all-in total is known
+    expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 40 vegetarian meals; Total must include delivery and all fees; the all-in total including delivery, tax and any fees\? HG-/);
+    await expect(e.requestApproval(deal.job_id, v1.quote_id, "view")).rejects.toBeTruthy(); // the live mistake can't happen any more
 
-    // The human approves the $4,500 version (as happened live), then the business discloses the fee.
-    const a = await e.requestApproval(deal.job_id, v1.quote_id, "view");
-    expect(await e.decideApproval(a.id, "approve", "view", "human")).toBe(true);
     await text(e, "im_2", "yes 40 veggie meals . $250 extra for delivery");
     await e.advanceJob(deal.job_id);
-
     board = await e.getQuotes(deal.job_id);
     const v2 = board.quotes.find((q) => q.status === "current")!;
-    expect(v2).toMatchObject({ total_usd: 4750, deposit_usd: 1000, delivery_usd: 250, round: 2, negotiated_from: 4500, meets_requirements: true });
+    expect(v2).toMatchObject({ total_usd: 4750, deposit_usd: 1000, delivery_usd: 250, round: 2, negotiated_from: 4500, meets_requirements: true, eligible: true });
     expect(v2.source).toMatch(/^computed from stated total \+ delivery fee/);
-    // The approval for the $4,500 version is void, the job is back to choosing, and nothing can be charged on it.
+    expect(board.recommended_quote_id).toBe(v2.quote_id);
+    const a = await e.requestApproval(deal.job_id, v2.quote_id, "view");
+    expect(a).toMatchObject({ quote_total_cents: 475_000, payment_cents: 100_000 });
+    expect(await e.decideApproval(a.id, "approve", "view", "human")).toBe(true);
+
+    // After approval the business changes its price: that approval is void, the job reopens, nothing is charged on it.
+    await text(e, "im_3", "Correction: $4.9k total, $1k deposit, 40 veg, delivery included");
+    await e.advanceJob(deal.job_id);
+    board = await e.getQuotes(deal.job_id);
+    const v3 = board.quotes.find((q) => q.status === "current")!;
+    expect(v3).toMatchObject({ total_usd: 4900, round: 3 });
     expect(board.approval).toMatchObject({ approval_id: a.id, status: "expired" });
     expect(board.state).not.toBe("paying");
-    await expect(e.pay(deal.job_id, v1.quote_id)).rejects.toMatchObject({ code: expect.stringMatching(/approval_expired|not_payable|no_approval/) });
+    await expect(e.pay(deal.job_id, v2.quote_id)).rejects.toBeTruthy();
     expect(stripe.charges).toHaveLength(0);
-    // A fresh, explicit approval of the current version is required and pays exactly its deposit.
-    const a2 = await e.requestApproval(deal.job_id, v2.quote_id, "view");
-    expect(a2).toMatchObject({ quote_total_cents: 475_000, payment_cents: 100_000 });
-    await e.decideApproval(a2.id, "approve", "view", "human");
-    expect(await e.pay(deal.job_id, v2.quote_id)).toMatchObject({ status: "settled", amount_usd: 1000 });
-    expect(stripe.charges).toEqual([expect.objectContaining({ amountCents: 100_000, metadata: expect.objectContaining({ quote_id: v2.quote_id }) })]);
+    // Fresh, explicit consent to the current version pays exactly its deposit, once.
+    const a3 = await e.requestApproval(deal.job_id, v3.quote_id, "view");
+    await e.decideApproval(a3.id, "approve", "view", "human");
+    expect(await e.pay(deal.job_id, v3.quote_id)).toMatchObject({ status: "settled", amount_usd: 1000 });
+    expect(await e.pay(deal.job_id, v3.quote_id)).toMatchObject({ status: "settled", amount_usd: 1000 }); // replay: same payment
+    expect(stripe.charges).toEqual([expect.objectContaining({ amountCents: 100_000, metadata: expect.objectContaining({ quote_id: v3.quote_id, approval_id: a3.id }) })]);
   });
 
   it("a hard spending limit can't be approved past; a target budget stays comparable, negotiable and approvable with a caveat", async () => {
