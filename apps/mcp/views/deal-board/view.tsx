@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import type { DealBoard, DealBoardBusiness, DealBoardOrEmpty, OpenQuestion, Quote } from "@haggle/core";
 import { ChannelBadge, ErrorNote, FlagChip, Meter, ModeBadge, Shell, Skeleton, VerdictChip, isRiskFlag, relativeTime, usd, viewTicket } from "../_shared/ui.tsx";
 import { formatField, toolErrorText } from "../_shared/format.ts";
+import { actedRecently, covered, isReady, markOwnAction, meaningful, readMark, readToggle, shouldSend, summarize, writeMark, writeToggle, type NotifyMark, type WaitUpdate } from "./keepChat.ts";
 import "./view.css";
 
 const TERMINAL = new Set(["paid", "confirmed", "cancelled", "failed"]);
@@ -52,16 +53,71 @@ export default function DealBoardView() {
   const [live, setLive] = useState<DealBoard | null>(null);
   const [sync, setSync] = useState<Sync>({ at: null, trouble: false });
   const cursor = useRef("0");
+  const followUp = useSendFollowUp();
+  const [keepChat, setKeepChat] = useState(true);
+  const keepChatRef = useRef(true);
+  const latest = useRef<DealBoard | null>(null);
+  // Keep-chat bookkeeping: updates waiting to be told, the first poll (history, never told), the
+  // ready state this board first saw, the last notice (memory copy for blocked storage), own clicks.
+  const pending = useRef<{ updates: WaitUpdate[]; cursor: number | null }>({ updates: [], cursor: null });
+  const firstPoll = useRef(true);
+  const readySeen = useRef<boolean | null>(null);
+  const memMark = useRef<NotifyMark | null>(null);
 
   const initial = ctx.status === "ready" ? (ctx.toolOutput as DealBoardOrEmpty) : null;
   const board = live ?? (initial?.job ? (initial as DealBoard) : null);
   const jobId = board?.job.id;
   const active = board ? !TERMINAL.has(board.job.state) : false;
+  latest.current = board;
+
+  useEffect(() => {
+    if (!jobId) return;
+    const on = readToggle(jobId);
+    keepChatRef.current = on;
+    setKeepChat(on);
+  }, [jobId]);
+
+  const toggleKeepChat = (on: boolean) => {
+    keepChatRef.current = on;
+    setKeepChat(on);
+    if (jobId) writeToggle(jobId, on);
+    if (!on) pending.current = { updates: [], cursor: null };
+  };
 
   const reload = useCallback(async (id: string) => {
     const next = await refresh.callTool({ job_id: id });
     setLive(next.structuredContent as DealBoard);
+    latest.current = next.structuredContent as DealBoard;
     setSync({ at: Date.now(), trouble: false });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Wake the chat with one short message when this board has news the model hasn't been told. */
+  const notifyChat = useCallback((id: string) => {
+    const b = latest.current;
+    if (!b || b.job.id !== id || TERMINAL.has(b.job.state) || !keepChatRef.current) {
+      pending.current = { updates: [], cursor: null };
+      return;
+    }
+    const readyNow = isReady(b);
+    if (readySeen.current === null) readySeen.current = readyNow; // ready when first seen: the model knows
+    const newReady = readyNow && !readySeen.current;
+    const mark = readMark(id) ?? memMark.current;
+    const p = pending.current;
+    const now = Date.now();
+    if (covered(p.cursor, newReady, mark)) {
+      pending.current = { updates: [], cursor: null }; // another board for this job already told the chat
+      if (newReady) readySeen.current = true;
+      return;
+    }
+    if (!shouldSend(p.cursor, newReady, mark, now)) return; // rate-limited: keep batching
+    const prompt = summarize(b, p.updates, newReady);
+    pending.current = { updates: [], cursor: null };
+    if (newReady) readySeen.current = true;
+    if (!prompt) return;
+    const next: NotifyMark = { cursor: p.cursor ?? Number(cursor.current), at: now, ready: newReady || mark?.ready === true };
+    memMark.current = next;
+    writeMark(id, next);
+    void followUp({ prompt }).catch(() => {}); // a host that refuses follow-ups still gets the live board
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A re-opened conversation or reconnect shows the stored tool output, which may be old: re-read once.
@@ -69,7 +125,8 @@ export default function DealBoardView() {
     if (jobId) void reload(jobId).catch(() => {}); // the poll below reports lasting trouble
   }, [jobId, reload]);
 
-  // Live updates: wait for a change, then re-read the board. Stops when the job ends.
+  // Live updates: wait for a change, then re-read the board. Runs in every non-terminal state
+  // (awaiting approval included) and keeps retrying after host errors. Stops when the job ends.
   useEffect(() => {
     if (!jobId || !active) return;
     let stopped = false;
@@ -78,10 +135,15 @@ export default function DealBoardView() {
     const tick = async () => {
       try {
         const res = await wait.callTool({ job_id: jobId, cursor: cursor.current, timeout_s: 20 });
-        const w = res.structuredContent as { cursor: string; updates: unknown[]; timed_out: boolean };
+        const w = res.structuredContent as { cursor: string; updates: WaitUpdate[]; timed_out: boolean };
         cursor.current = w.cursor;
+        // The first poll replays history (cursor 0): the board shows it, the chat isn't told again.
+        const fresh = firstPoll.current ? [] : meaningful(w.updates ?? [], actedRecently());
+        firstPoll.current = false;
+        if (fresh.length && keepChatRef.current) pending.current = { updates: [...pending.current.updates, ...fresh], cursor: Number(w.cursor) };
         if (!stopped && !w.timed_out && w.updates.length > 0) await reload(jobId);
         else if (!stopped) setSync((s) => ({ at: s.at ?? Date.now(), trouble: false }));
+        if (!stopped) notifyChat(jobId);
         failures = 0;
       } catch {
         // Host refused or the server hiccupped: say so after two misses, back off, keep trying.
@@ -95,7 +157,13 @@ export default function DealBoardView() {
       stopped = true;
       window.clearTimeout(timer);
     };
-  }, [jobId, active, reload]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [jobId, active, reload, notifyChat]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Changes the human makes on this board (approve, pay, answer) don't wake the chat a second time.
+  const changedHere = () => {
+    markOwnAction();
+    return reload(board!.job.id).catch(() => setSync((s) => ({ ...s, trouble: true })));
+  };
 
   if (!board) {
     return (
@@ -118,7 +186,9 @@ export default function DealBoardView() {
         sync={sync}
         refreshing={refresh.isPending}
         onRefresh={() => void reload(board.job.id).catch(() => setSync((s) => ({ ...s, trouble: true })))}
-        onChanged={() => reload(board.job.id).catch(() => setSync((s) => ({ ...s, trouble: true })))}
+        onChanged={changedHere}
+        keepChat={keepChat}
+        onKeepChat={toggleKeepChat}
       />
     </Shell>
   );
@@ -149,7 +219,9 @@ function Welcome({ mode }: { mode?: "mock" | "live" }) {
   );
 }
 
-function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealBoard; sync: Sync; refreshing: boolean; onRefresh: () => void; onChanged: () => Promise<void> }) {
+function Board({ board, sync, refreshing, onRefresh, onChanged, keepChat, onKeepChat }: {
+  board: DealBoard; sync: Sync; refreshing: boolean; onRefresh: () => void; onChanged: () => Promise<void>; keepChat: boolean; onKeepChat: (on: boolean) => void;
+}) {
   const { displayMode, availableDisplayModes, requestDisplayMode } = useDisplayMode();
   const followUp = useSendFollowUp();
   const fullscreen = displayMode === "fullscreen";
@@ -214,6 +286,12 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
           <button className="db-link" onClick={onRefresh} disabled={refreshing}>
             {refreshing ? "Refreshing…" : "Refresh"}
           </button>
+          {!TERMINAL.has(board.job.state) && (
+            <label className="db-keep" title="When a quote, question or call result arrives, post a short update in the chat so your agent keeps going">
+              <input type="checkbox" checked={keepChat} onChange={(e) => onKeepChat(e.currentTarget.checked)} />
+              Keep chat updated
+            </label>
+          )}
         </p>
         <div className="db-foot-actions">
           {board.quotes.length > 1 && (
@@ -358,6 +436,7 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
   const deposit = q.deposit_usd;
 
   const act = async (fn: () => Promise<string | null>) => {
+    markOwnAction(); // the chat isn't woken for steps the human takes here
     setErr(null);
     try {
       setNote(await fn());
@@ -509,8 +588,9 @@ function Question({ jobId, question, onChanged }: { jobId: string; question: Ope
           className="db-q-form"
           onSubmit={(e) => {
             e.preventDefault();
-            if (draft.trim())
-              void answer
+            if (!draft.trim()) return;
+            markOwnAction();
+            void answer
                 .callTool({ job_id: jobId, question_id: question.question_id, answer: draft.trim() })
                 .then(() => onChanged())
                 .catch(() => {});

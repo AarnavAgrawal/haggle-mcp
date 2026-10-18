@@ -13,7 +13,7 @@ import { normalizeMessageId } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { replySubject, type OutboundEmail, type SendOutcome } from "../outbound/primitiveSender.ts";
 import type { MessageRow } from "../store/types.ts";
-import { ChannelSendError, inlineAttachments, type A2AAgentMessage, type A2APort, type A2ATaskView, type AttachmentPort, type EmailPort, type IMessagePort, type PhoneCallRequest, type PhonePort, type SendFailureReason, type VoiceContextPort } from "../workflow/ports.ts";
+import { ChannelSendError, inlineAttachments, type A2AAgentMessage, type A2APort, type A2ATaskView, type AttachmentPort, type EmailPort, type IMessagePort, type PhoneCallRequest, type PhonePort, type SendFailureReason, type SmsPort, type VoiceContextPort } from "../workflow/ports.ts";
 
 /** The slice of the Inkbox SDK the engine uses (`inkbox.messages`), so tests can fake it. */
 export interface InkboxMailApi {
@@ -417,6 +417,23 @@ export function inkboxIMessage(identity: { sendIMessage(o: { to: string; text: s
   };
 }
 
+/** An inbound SMS to the buyer's number (Inkbox text.received). */
+export function inkboxTextReceived(payload: { data: Record<string, unknown> }): { messageId: string; from: string; text: string; inbound: boolean } | null {
+  const m = (payload.data as { text_message?: { id?: string; direction?: string; remote_phone_number?: string | null; sender_phone_number?: string | null; text?: string | null } }).text_message;
+  if (!m?.id) return null;
+  return { messageId: m.id, from: (m.remote_phone_number ?? m.sender_phone_number ?? "").replace(/[\s().-]/g, ""), text: m.text ?? "", inbound: m.direction === "inbound" };
+}
+
+/** SMS from the buyer identity's own number. NOT wired unless HAGGLE_ENABLE_SMS=true (and the number is SMS-ready). */
+export function inkboxSms(identity: { sendText(o: { to: string; text: string; idempotencyKey?: string }): Promise<{ id: string }> }, sleep?: (ms: number) => Promise<void>): SmsPort {
+  return {
+    async send(req) {
+      const m = await withRetry(() => identity.sendText({ to: req.to, text: req.text, idempotencyKey: req.idempotencyKey }), sleep);
+      return { messageId: m.id };
+    },
+  };
+}
+
 /** Connect the buyer identity (default handle `haggle`). Its mailbox address comes from Inkbox, never derived. */
 export async function connectInkboxBuyer(opts: { apiKey: string; handle: string }) {
   const inkbox = new Inkbox({ apiKey: opts.apiKey });
@@ -430,6 +447,8 @@ export async function connectInkboxBuyer(opts: { apiKey: string; handle: string 
     phone: () => (callOrigin ? inkboxPhone(identity as never, callOrigin) : null),
     a2a: () => inkboxA2A(identity as never),
     imessage: () => (identity.imessageEnabled ? inkboxIMessage(identity as never) : null),
+    // SMS needs the identity's own number with carrier provisioning finished (smsStatus "ready").
+    sms: () => (identity.phoneNumber && String((identity.phoneNumber as { smsStatus?: string }).smsStatus ?? "ready") === "ready" ? inkboxSms(identity as never) : null),
     voice: () => inkboxVoiceContext(identity as never),
     identityInfo: { handle: identity.agentHandle, displayName: identity.displayName, phoneNumber: identity.phoneNumber?.number ?? null, imessageEnabled: identity.imessageEnabled },
     transcript: (callId: string) => fullCallTranscript(identity as never, callId),

@@ -90,6 +90,14 @@ export interface IMessagePort {
   send(req: { to: string; text: string; idempotencyKey: string }): Promise<{ messageId: string }>;
 }
 
+/**
+ * SMS from the buyer identity's own number (Inkbox sendText): update texts to the human
+ * (config.notifyPhone, else the settings approver) and follow-ups to phone businesses.
+ */
+export interface SmsPort {
+  send(req: { to: string; text: string; idempotencyKey: string }): Promise<{ messageId: string }>;
+}
+
 export interface ExtractorPort {
   extract(input: { request: ExtractionRequest; bodyText: string; pdfs: PdfFile[]; images?: ImageFile[]; message: MessageRow }): Promise<QuoteExtraction>;
 }
@@ -144,6 +152,11 @@ export interface EngineConfig {
   callCooldownMs?: number;
   /** A business message keeps the window open at least this long, so a half-answered business can finish. */
   replyGraceMs?: number;
+  /**
+   * The human texted on updates (new quote, a business question, a finished call, quotes ready) when
+   * the SMS port is on; their reply answers the open question. Falls back to the settings approver.
+   */
+  notifyPhone?: string;
   /** Wrong approval codes before an approval locks. Default 5. */
   maxApprovalAttempts?: number;
   /** The buyer identity as businesses see it (get_identity; Voice AI instructions). */
@@ -159,6 +172,8 @@ export interface EngineDeps {
   a2a?: A2APort;
   /** Optional: iMessage approval requests (live: only when enabled). */
   imessage?: IMessagePort;
+  /** Optional: SMS updates to the human and follow-ups to phone businesses (live: only when enabled). */
+  sms?: SmsPort;
   /** Optional: keeps the buyer's Voice AI answering instructions in sync with open requests (inbound callbacks). */
   voice?: VoiceContextPort;
   extractor: ExtractorPort;

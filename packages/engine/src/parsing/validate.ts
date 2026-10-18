@@ -16,6 +16,8 @@ import { MONEY_FIELDS, type FieldValue, type MoneyField, type QuoteExtraction, t
 
 const MAX_MONEY_USD = 50_000;
 const SUBTOTAL_TOLERANCE = 0.02;
+/** A stated sales-tax rate above this is a misreading (US rates top out around 11%), never applied. */
+const MAX_TAX_RATE_PERCENT = 20;
 const CONFIDENCE_PENALTY = 0.25;
 const TEXT_MAX = 300;
 
@@ -137,14 +139,21 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
   // phone: add the stated, sourced parts instead of dropping the quote, and label the total as
   // computed. Only when no total was said at all (a stated total that failed a check stays null and
   // Haggle asks); with delivery unknown the total covers the food only and says so. Tax is added
-  // only when stated.
+  // only when stated: as an amount, or as a plausible rate ("10 percent tax") on food + delivery.
   if (x.total_usd === null && cents.total === null) {
     const fromHeads = cents.subtotal === null && cents.price_per_head !== null && quotedHeadcount !== null && quotedHeadcount > 0;
     const subtotal = cents.subtotal ?? (fromHeads ? cents.price_per_head! * quotedHeadcount! : null);
     const deliveryKnown = cents.delivery_fee !== null || x.delivery_included === true;
     if (subtotal !== null) {
-      cents.total = subtotal + (cents.delivery_fee ?? 0) + (x.tax_included === false ? (cents.tax ?? 0) : 0);
-      const parts = [fromHeads ? "price per head x headcount" : "subtotal", ...(cents.delivery_fee !== null ? ["delivery fee"] : []), ...(x.tax_included === false && cents.tax !== null ? ["tax"] : [])];
+      const rate = x.tax_rate_percent ?? null;
+      let taxFromRate = false;
+      if (cents.tax === null && x.tax_included !== true && rate !== null && rate > 0 && rate <= MAX_TAX_RATE_PERCENT) {
+        cents.tax = Math.round(((subtotal + (cents.delivery_fee ?? 0)) * rate) / 100);
+        taxFromRate = true;
+      }
+      const taxAdded = cents.tax !== null && (x.tax_included === false || taxFromRate);
+      cents.total = subtotal + (cents.delivery_fee ?? 0) + (taxAdded ? cents.tax! : 0);
+      const parts = [fromHeads ? "price per head x headcount" : "subtotal", ...(cents.delivery_fee !== null ? ["delivery fee"] : []), ...(taxAdded ? [taxFromRate ? `${rate}% tax` : "tax"] : [])];
       const from = sources.subtotal ?? sources.price_per_head;
       sources.total = { source: `computed from stated ${parts.join(" + ")}${deliveryKnown ? "" : "; delivery not stated"}${from ? ` (${from.source})` : ""}`, excerpt: (from?.excerpt ?? "").slice(0, 200) };
       missing.delete("total");
@@ -184,7 +193,7 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
     missing.add("delivery");
     flags.add("delivery_unclear");
   }
-  if (x.tax_included === false && cents.tax === null) flags.add("tax_excluded");
+  if ((x.tax_included === false || (x.tax_rate_percent ?? null) !== null) && cents.tax === null) flags.add("tax_excluded");
   // A deposit stated only past the first page of a PDF is the classic hidden-deposit trap.
   const depositPage = Number(sources.deposit?.source.match(/^pdf\s+p\.?\s*(\d+)/i)?.[1] ?? 0);
   if (cents.deposit !== null && depositPage > 1) flags.add("hidden_deposit");

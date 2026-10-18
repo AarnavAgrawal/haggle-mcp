@@ -15,7 +15,7 @@ import { registerLiveFactory, type Runtime } from "./runtime.ts";
 const TICK_MS = 30_000;
 
 registerLiveFactory(async (env): Promise<Runtime> => {
-  const { api, buyerMailbox, phone, a2a, imessage, voice, identityInfo, transcript, callOrigin } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
+  const { api, buyerMailbox, phone, a2a, imessage, sms, voice, identityInfo, transcript, callOrigin } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
 
   // Only the explicitly configured simulated fleet is offered by discover (never arbitrary businesses).
   const fleet = parseFleet(env.HAGGLE_DEMO_FLEET).map((b) => ({
@@ -37,6 +37,11 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   if (env.HAGGLE_ENABLE_CALLS === "true" && !phonePort) console.error(JSON.stringify({ level: "warn", event: "calls_unavailable", reason: "the buyer identity has no phone number and iMessage is off" }));
   const a2aPort = env.HAGGLE_ENABLE_A2A === "true" ? a2a() : null;
   const imessagePort = env.HAGGLE_ENABLE_IMESSAGE === "true" ? imessage() : null;
+  // SMS from the buyer's own number: update texts to HAGGLE_NOTIFY_PHONE (else the settings approver)
+  // and one follow-up text to an allowlisted phone business whose call left the total unclear.
+  const smsPort = env.HAGGLE_ENABLE_SMS === "true" ? sms() : null;
+  if (env.HAGGLE_ENABLE_SMS === "true" && !smsPort) console.error(JSON.stringify({ level: "warn", event: "sms_unavailable", reason: "the buyer identity has no SMS-ready phone number" }));
+  const notifyPhone = env.HAGGLE_NOTIFY_PHONE?.replace(/[\s().-]/g, "");
   // Never contact arbitrary businesses: only the simulated fleet and explicitly allowed recipients.
   const allowAny = env.HAGGLE_ALLOW_ANY_RECIPIENT === "true";
   const allowlist = [...fleet.map((b) => b.email), ...(env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
@@ -62,6 +67,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     ...(phonePort ? { phone: phonePort } : {}),
     ...(a2aPort ? { a2a: a2aPort } : {}),
     ...(imessagePort ? { imessage: imessagePort } : {}),
+    ...(smsPort ? { sms: smsPort } : {}),
     // Inbound callbacks: keep the Voice AI's answering instructions in sync with open requests (calls on only).
     ...(phonePort && env.HAGGLE_SYNC_VOICE_CONTEXT !== "false" ? { voice: voice() } : {}),
     extractor,
@@ -78,6 +84,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       ...(Number(env.HAGGLE_CALL_DELAY_S) > 0 ? { callDelayMs: Number(env.HAGGLE_CALL_DELAY_S) * 1000 } : {}),
       ...(Number(env.HAGGLE_ESCALATE_EMAIL_TO_CALL_S) > 0 ? { escalateEmailToCallAfterMs: Number(env.HAGGLE_ESCALATE_EMAIL_TO_CALL_S) * 1000 } : {}),
       callHours, callCooldownMs: 2 * 60_000,
+      ...(notifyPhone && /^\+\d{8,15}$/.test(notifyPhone) ? { notifyPhone } : {}),
       identity: { name: identityInfo.displayName || "Haggle", phone: identityInfo.phoneNumber },
     },
     log,
@@ -86,6 +93,6 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   setInterval(() => {
     void repo.listOpenJobs().then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
   }, TICK_MS).unref();
-  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, payments: stripe ? "stripe-test" : "disabled", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
+  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), payments: stripe ? "stripe-test" : "disabled", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
   return { mode: "live", engine, brain, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript } };
 });

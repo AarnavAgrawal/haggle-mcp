@@ -1,10 +1,11 @@
 // POST /webhooks/inkbox for the non-email channels (src/webhook.ts): signed imessage.received
 // approves, a2a.sent_task.updated turns the seller's task result into a quote, and an abridged
-// call.ended transcript is replaced by the full one before parsing. Real engine in live
+// call.ended transcript is replaced by the full one before parsing; text.received answers the
+// business question Haggle texted the human about. Real engine in live
 // configuration with fake Inkbox ports (no network, no real call, iMessage or task).
 import { describe, expect, it } from "vitest";
 import {
-  disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, inkboxEmail, type A2APort, type A2ATaskView, type IMessagePort, type PhonePort, type QuoteExtraction,
+  disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, inkboxEmail, type A2APort, type A2ATaskView, type IMessagePort, type PhonePort, type QuoteExtraction, type SmsPort,
 } from "@haggle/engine";
 import { BUYER, FakeInkbox, SECRET, signed } from "../../../packages/engine/tests/helpers/fakeInkbox.ts";
 import { handleInkboxWebhook } from "../src/webhook.ts";
@@ -12,6 +13,7 @@ import type { Runtime } from "../src/runtime.ts";
 
 const CARD = "https://inkbox.ai/a2a/bay-catering-sf/card";
 const APPROVER = "+14155550123";
+const HUMAN = "+14155550188";
 const event = (id: string, type: string, data: Record<string, unknown>) => JSON.stringify({ id, event_type: type, timestamp: new Date().toISOString(), data });
 
 function liveRuntime() {
@@ -25,6 +27,8 @@ function liveRuntime() {
   };
   const imsgs: { to: string; text: string }[] = [];
   const imessage: IMessagePort = { async send(r) { imsgs.push(r); return { messageId: `im_${imsgs.length}` }; } };
+  const texts: { to: string; text: string }[] = [];
+  const sms: SmsPort = { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } };
   const calls: string[] = [];
   const phone: PhonePort = { async placeCall(r) { calls.push(r.toNumber); return { callId: "call_1" }; } };
   const extract = async (i: { bodyText: string }): Promise<QuoteExtraction> => ({
@@ -33,13 +37,13 @@ function liveRuntime() {
     payment_request: "none", instructions_to_agent: false, sources: [{ field: "total", source: "call transcript", excerpt: "$1,070" }], missing_fields: /\$1,070/.test(i.bodyText) ? [] : ["total"], confidence: 0.9,
   });
   const engine = new HaggleEngine({
-    repo, email: inkboxEmail(api, BUYER), a2a, imessage, phone, extractor: { extract }, attachments: { load: async (m) => m.attachments.filter((x) => x.content_base64).map((x) => ({ kind: "json" as const, filename: x.filename ?? "quote.json", data: Buffer.from(x.content_base64!, "base64") })) },
+    repo, email: inkboxEmail(api, BUYER), a2a, imessage, sms, phone, extractor: { extract }, attachments: { load: async (m) => m.attachments.filter((x) => x.content_base64).map((x) => ({ kind: "json" as const, filename: x.filename ?? "quote.json", data: Buffer.from(x.content_base64!, "base64") })) },
     brain: new StubBrain(), payer: disabledPayer("Payments are not enabled yet"),
-    config: { mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: BUYER, collectionWindowMs: 600_000, negotiationWindowMs: 300_000, approvalTtlMs: 1_800_000, globalPaymentCapCents: 500, maxRounds: 2 },
+    config: { mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: BUYER, collectionWindowMs: 600_000, negotiationWindowMs: 300_000, approvalTtlMs: 1_800_000, globalPaymentCapCents: 500, maxRounds: 2, notifyPhone: HUMAN },
   });
   const transcriptCalls: string[] = [];
   const rt: Runtime = { mode: "live", engine, missing: [], inkbox: { api, buyerMailbox: BUYER, webhookSecret: SECRET, senderTrust: { policy: "outbound-verified" }, transcript: async (id) => { transcriptCalls.push(id); return "haggle (AI assistant): I'm an AI assistant calling for a quote.\nremote: For 40 people it's $1,070 total, 14 vegetarian, $50 deposit."; } } };
-  return { rt, engine, repo, a2a, tasks, imsgs, calls, transcriptCalls };
+  return { rt, engine, repo, a2a, tasks, imsgs, texts, calls, transcriptCalls };
 }
 
 describe("POST /webhooks/inkbox: A2A, iMessage, calls", () => {
@@ -106,5 +110,18 @@ describe("brain start-up never crashes the server", () => {
       console.error = orig;
     }
     expect(errors.some((e) => e.includes("brain_start_failed"))).toBe(true);
+  });
+
+  it("text.received: the human's reply to a question text is sent to the business; other numbers are ignored", async () => {
+    const { rt, engine, repo, texts } = liveRuntime();
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Mission Eats", phone: "+14155550104" }] });
+    const q = await repo.insertQuestion({ job_id: deal.job_id, business_id: (await repo.getBusinesses(deal.job_id))[0]!.business_id, message_id: null, text: "Drop-off or set up?" });
+    const stranger = event("evt_t0", "text.received", { text_message: { id: "tx_0", direction: "inbound", remote_phone_number: "+14155550000", text: "hi" } });
+    expect((await handleInkboxWebhook(rt, stranger, signed(stranger))).outcome).toBe("unknown_sender");
+    const raw = event("evt_t1", "text.received", { text_message: { id: "tx_1", direction: "inbound", remote_phone_number: HUMAN, text: "Drop-off is fine." } });
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 200, jobId: deal.job_id, outcome: "answered" });
+    expect((await repo.getQuestion(q.id))?.status).toBe("answered");
+    expect(texts.at(-1)).toMatchObject({ to: "+14155550104", text: expect.stringContaining("Drop-off is fine.") });
   });
 });

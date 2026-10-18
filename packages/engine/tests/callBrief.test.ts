@@ -12,6 +12,10 @@ describe("HaggleEngine.callBrief", () => {
     expect(b).toContain("Must have: At least 12 vegetarian meals; Delivery included.");
     expect(b).toContain("Do not mention other businesses or prices.");
     expect(b).toMatch(/Never agree to buy, book or pay/);
+    // Parts or a tax rate: the agent works out the all-in total and gets it confirmed on the call.
+    expect(b).toMatch(/work out the all-in total yourself/);
+    expect(b).toMatch(/Is that right\?/);
+    expect(b).not.toMatch(/\$\d/); // no example figures it could repeat
     expect(b.length).toBeLessThanOrEqual(2000);
   });
   it("cites only the real competing total it is given, and mentions the email on escalation", () => {

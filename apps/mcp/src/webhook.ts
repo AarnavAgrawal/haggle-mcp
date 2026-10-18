@@ -1,8 +1,8 @@
-// POST /webhooks/inkbox for the buyer identity (mail, call.ended, imessage.received,
+// POST /webhooks/inkbox for the buyer identity (mail, call.ended, imessage.received, text.received,
 // a2a.sent_task.updated): verify the signature on the RAW body first, then one idempotent ingest.
 // Unknown event types are acknowledged and ignored.
 // Kept free of the HTTP framework so the route can be tested with Inkbox fakes.
-import { inkboxCallEnded, inkboxIMessageReceived, inkboxSenderTrust, inkboxToInbound, RetryLater, trustForSender, verifyInkboxWebhook } from "@haggle/engine";
+import { inkboxCallEnded, inkboxIMessageReceived, inkboxSenderTrust, inkboxTextReceived, inkboxToInbound, RetryLater, trustForSender, verifyInkboxWebhook } from "@haggle/engine";
 import type { Runtime } from "./runtime.ts";
 
 export type WebhookResult = { status: 200 | 400 | 401 | 404 | 503; body: Record<string, unknown>; jobId?: string | null; outcome?: string };
@@ -37,6 +37,9 @@ export async function handleInkboxWebhook(rt: Runtime, raw: string, headers: Hea
     } else if (payload.event_type === "imessage.received") {
       const m = inkboxIMessageReceived(payload);
       if (m) ({ jobId, outcome } = await rt.engine.ingestIMessage(m));
+    } else if (payload.event_type === "text.received") {
+      const m = inkboxTextReceived(payload);
+      if (m) ({ jobId, outcome } = await rt.engine.ingestText(m));
     } else if (payload.event_type === "a2a.sent_task.updated") {
       const taskId = (payload.data as { task_id?: string }).task_id;
       if (taskId) ({ jobId, outcome } = await rt.engine.ingestA2aTask(taskId));

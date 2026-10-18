@@ -387,8 +387,17 @@
   font-size: 12px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
+.db-keep {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+.db-keep input { margin: 0; accent-color: var(--ch-email); }
 .db-link {
   background: none;
   border: none;

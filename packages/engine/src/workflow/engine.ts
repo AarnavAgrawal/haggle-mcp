@@ -35,7 +35,7 @@ import { verifyApproval } from "../approvals/verifyApproval.ts";
 import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
 import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
 import { rankQuotes, rejectReason, type RankableQuote } from "../ranking/rank.ts";
-import { DEFAULT_WORKSPACE_ID, type ApprovalRow, type Channel, type JobBusinessRow, type JobRow, type MessageRow, type PaymentRow, type QuoteRow, type Repository, type SettingsRow } from "../store/types.ts";
+import { DEFAULT_WORKSPACE_ID, type ApprovalRow, type Channel, type JobBusinessRow, type JobRow, type MessageRow, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow } from "../store/types.ts";
 import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
 import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
@@ -90,6 +90,9 @@ const DEFAULT_MAX_APPROVAL_ATTEMPTS = 5;
 const CALL_IN_PROGRESS_MS = 15 * 60_000;
 /** Characters an agent-written message may have, per channel (the call brief has its own cap). */
 const MESSAGE_LIMIT: Record<Channel, number> = { email: 5000, a2a: 5000, phone: 1500, imessage: 159 };
+/** Two SMS segments: long enough for a quote update, short enough to read at a glance. */
+const SMS_LIMIT = 320;
+const usdText = (cents: number) => `$${centsToUsd(cents).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
 /** Validate a request's custom ask (keys, compare_by, payable_field). Throws an EngineError. */
 export function validateAsk(r: Request): void {
@@ -539,7 +542,11 @@ export class HaggleEngine {
     });
     if (!updated) return null;
     if (updated.state !== job.state) await this.repo.appendEvent(job.id, "state", { from: job.state, to: updated.state, cause, ...(updated.failure_reason ? { reason: updated.failure_reason } : {}) });
-    if (updated.ready && !job.ready) await this.repo.appendEvent(job.id, "ready", { round: updated.round });
+    if (updated.ready && !job.ready) {
+      await this.repo.appendEvent(job.id, "ready", { round: updated.round });
+      await this.notifyReady(updated);
+    }
+    if (updated.state === "failed" && job.state !== "failed") await this.notifyHuman(updated, "failed", `the deal for ${updated.request.what} ended without a usable quote${updated.failure_reason ? ` (${updated.failure_reason})` : ""}.`);
     for (const e of effects) await this.runEffect(updated, e);
     if (TERMINAL.has(updated.state) && !TERMINAL.has(job.state)) this.syncVoiceContext();
     return updated;
@@ -823,6 +830,134 @@ export class HaggleEngine {
     }
   }
 
+  /** The last SMS to each number: a texted reply answers whatever Haggle texted that number last. */
+  private lastSms = new Map<string, { kind: "business" | "human"; jobId: string; questionId?: string }>();
+  private notified = new Set<string>();
+
+  /** An SMS to a phone business from the buyer identity's own number (a follow-up after its call), recorded on the phone channel. */
+  private async sendSmsToBusiness(job: JobRow, b: JobBusinessRow, kind: "followup" | "answer", key: string, text: string): Promise<MessageRow | null> {
+    const prior = await this.repo.findMessageByIdempotencyKey(key);
+    if (prior) return prior;
+    if (!this.d.sms || !b.phone) return null;
+    const body = text.slice(0, SMS_LIMIT);
+    const sent = await this.d.sms.send({ to: b.phone, text: body, idempotencyKey: key });
+    this.lastSms.set(b.phone, { kind: "business", jobId: job.id });
+    return this.repo.insertMessage({
+      job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind, channel: "phone", provider_email_id: `sms:${sent.messageId}`, idempotency_key: key,
+      rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: body, attachments: [], attachments_download_url: null,
+      sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null, round: null, simulated: job.mode === "mock",
+    });
+  }
+
+  /** The one automatic text follow-up to a phone business after its call (AI-disclosed, with the reference code). */
+  private async textFollowUp(job: JobRow, b: JobBusinessRow, ask: string) {
+    const what = [job.request.what, quantityText(job.request.quantity, job.request.unit)].filter(Boolean).join(" for ");
+    try {
+      const sent = await this.sendSmsToBusiness(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1),
+        `Hi ${b.name}, this is Haggle, an AI assistant, following up on our call about ${what}.${ask} Ref HG-${job.short_code}`);
+      if (!sent) return;
+      await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Texted ${b.name} for the exact total`, channel: "phone" });
+    } catch (err) {
+      this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+    }
+  }
+
+  /** Quotes are final: text the best eligible one (computed by the ranker, never by the model). */
+  private async notifyReady(job: JobRow) {
+    if (!this.d.sms) return;
+    try {
+      const { ranking, quotes } = await this.rankRows(job);
+      const best = ranking.ranked[0];
+      const q = best ? quotes.find((x) => x.id === best.quoteId) : undefined;
+      const name = q ? (await this.repo.getBusinesses(job.id)).find((b) => b.business_id === q.business_id)?.name : undefined;
+      await this.notifyHuman(job, `ready:${job.round}`, q?.total_cents && name
+        ? `quotes for ${job.request.what} are in. Best: ${name} at ${usdText(q.total_cents)}. Approve it on the deal board.`
+        : `quotes for ${job.request.what} are in, but none meets every requirement. See the deal board.`);
+    } catch (err) {
+      this.log("notify_failed", { job_id: job.id, key: "ready", error: (err as Error).message });
+    }
+  }
+
+  /** Who gets update texts for this job: the operator's notify number, else the settings approver. */
+  private async notifyTarget(job: JobRow): Promise<string | null> {
+    if (!this.d.sms) return null;
+    return this.d.config.notifyPhone?.trim() || (await this.getSettings(job.workspace_id)).approver_phone || null;
+  }
+
+  /**
+   * Text the human about an update. Best effort: a failed text never blocks the deal. One text per
+   * key (also Inkbox-idempotent across restarts); the reply comes back through ingestText.
+   */
+  private async notifyHuman(job: JobRow, key: string, text: string, questionId?: string) {
+    const idempotencyKey = `notify:${job.id}:${key}`;
+    if (this.notified.has(idempotencyKey)) return;
+    try {
+      const to = await this.notifyTarget(job);
+      if (!to) return;
+      this.notified.add(idempotencyKey);
+      await this.d.sms!.send({ to, text: `Haggle: ${text} (HG-${job.short_code})`.slice(0, SMS_LIMIT), idempotencyKey });
+      this.lastSms.set(to, { kind: "human", jobId: job.id, ...(questionId ? { questionId } : {}) });
+    } catch (err) {
+      this.log("notify_failed", { job_id: job.id, key, error: (err as Error).message });
+    }
+  }
+
+  /**
+   * A text to the buyer's number (Inkbox text.received). It answers whatever Haggle texted that
+   * number last: from a phone business it is a reply parsed like its call; from the human (the
+   * notify number or a settings approver) it answers the open business question. Anyone else is
+   * ignored. Idempotent per message id.
+   */
+  async ingestText(m: { messageId: string; from: string; text: string; inbound?: boolean }): Promise<{ jobId: string | null; outcome: string }> {
+    if (m.inbound === false) return { jobId: null, outcome: "outbound" };
+    const from = m.from.replace(/[\s().-]/g, "");
+    if (await this.repo.findMessageByProviderId(`sms-in:${m.messageId}`)) return { jobId: null, outcome: "duplicate" };
+    const open = await this.repo.listOpenJobs();
+    const businesses: { job: JobRow; b: JobBusinessRow; at: number }[] = [];
+    for (const job of open) {
+      const texted = (await this.repo.listMessages(job.id)).filter((x) => x.direction === "out" && x.to_address === from && x.provider_email_id?.startsWith("sms:"));
+      for (const x of texted) {
+        const b = (await this.repo.getBusinesses(job.id)).find((y) => y.business_id === x.business_id);
+        if (b) businesses.push({ job, b, at: Date.parse(x.created_at) });
+      }
+    }
+    let human = false;
+    for (const job of open) if (from === (await this.notifyTarget(job))) human = true;
+    // The same number can be both (a teammate playing a business): the last text to it decides.
+    const last = this.lastSms.get(from);
+    if (businesses.length > 0 && (!human || last?.kind !== "human")) {
+      const { job, b } = businesses.sort((x, y) => y.at - x.at)[0]!;
+      const stored = await this.repo.insertMessage({
+        job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: "phone", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+        rfc_message_id: null, thread_id: null, from_address: from, to_address: job.inbox, subject: null, body_text: m.text.slice(0, 5000) || null, attachments: [], attachments_download_url: null,
+        // A reply to the follow-up Haggle texted to this business's pinned number.
+        sender_trusted: true, trust_reason: "sms-reply-to-pinned-number", matched_via: "sms_number", parse_status: m.text.trim() ? "pending" : "none", quarantine_reason: null,
+        round: null, simulated: false,
+      });
+      if (!stored) return { jobId: job.id, outcome: "duplicate" };
+      await this.repo.updateBusiness(job.id, b.business_id, { last_reply_at: this.now().toISOString(), ...(b.status === "contacted" || b.status === "question" || b.status === "silent" || b.status === "replied" ? { status: "replied" as const } : {}) });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Text from ${b.name}`, channel: "phone", ...snippet(messageSnippet(m.text)) });
+      await this.repo.touchJob(job.id);
+      return { jobId: job.id, outcome: "stored" };
+    }
+    if (!human) return { jobId: null, outcome: "unknown_sender" };
+    // The human: answer the question Haggle texted them about, else the newest open one.
+    const pending: QuestionRow[] = [];
+    for (const job of open) if (from === (await this.notifyTarget(job))) pending.push(...(await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending"));
+    const target = pending.find((q) => q.id === last?.questionId) ?? pending.sort((x, y) => Date.parse(y.created_at) - Date.parse(x.created_at))[0];
+    const jobId = target?.job_id ?? last?.jobId ?? null;
+    const stored = jobId ? await this.repo.insertMessage({
+      job_id: jobId, business_id: null, approval_id: null, direction: "in", kind: "answer", channel: "phone", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 2000) || null, attachments: [], attachments_download_url: null,
+      sender_trusted: true, trust_reason: "sms-from-notify-number", matched_via: "sms_number", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+    }) : null;
+    if (jobId && !stored) return { jobId, outcome: "duplicate" };
+    if (!target) return { jobId, outcome: "no_open_question" };
+    await this.answerSeller(target.job_id, target.id, m.text);
+    return { jobId: target.job_id, outcome: "answered" };
+  }
+
   /**
    * A text from a business on the iMessage channel (not the approver): matched by its pinned
    * number to the most recent open job that texted it, stored and parsed like an email body.
@@ -887,7 +1022,7 @@ export class HaggleEngine {
       `2. The order: ${r.what} for ${r.quantity} ${r.unit ?? "people"} on ${when}${r.area ? `, in ${r.area}` : ""}.${reqs.length ? ` Must have: ${reqs.join("; ")}.` : ""}`,
       `3. Ask for: the all-in total including delivery and tax, how each requirement is met (for example how many vegetarian meals), any deposit and when it is due, and what is included.`,
       opts.competingTotalUsd !== undefined ? `4. We have a real quote of ${money(opts.competingTotalUsd)} total for the same order. You may say that figure and ask if they can do better. Never invent, round down or exaggerate it.` : `4. Do not mention other businesses or prices.`,
-      `5. Read the numbers back to confirm, thank them and end the call.`,
+      `5. If they give parts (a price per person, a delivery fee, tax as a percent), work out the all-in total yourself. Before ending, read back every figure they gave plus that total, in the form "Just to confirm: [price] per person for [count], [fee] delivery, [rate] tax, so [total] all in, with a [deposit] deposit. Is that right?" (their numbers only, never these placeholders). Wait for their yes or correction, then thank them and end the call.`,
       `If they ask something you don't know, say you'll pass it on to the customer; never guess. If they can't do it or decline, thank them and end politely. If you reach voicemail, leave one sentence asking for a quote by email and hang up.`,
       `Never agree to buy, book or pay, and never share payment details. Reference HG-${job.short_code}.`,
     ].join("\n").slice(0, 2000);
@@ -1022,6 +1157,8 @@ export class HaggleEngine {
     const how = completed ? call.outcome : reached ? "reached, no answer (screener or voicemail)" : call.outcome;
     await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call with ${b.name} ended: ${how}`, channel: "phone", transcript_snippet: transcriptSnippet(transcript, b.name) });
     await this.repo.touchJob(job.id);
+    // A completed call is texted with its quote (or its missing total) once the transcript is read.
+    if (!completed) await this.notifyHuman(job, `call:${call.callId}`, `the call to ${b.name} ended: ${how.replace(/_/g, " ")}.`);
     return { jobId: job.id, outcome: completed ? "stored" : reached ? "call:no_answer" : `call:${call.outcome}` };
   }
 
@@ -1481,6 +1618,7 @@ export class HaggleEngine {
       const q = await this.repo.insertQuestion({ job_id: job.id, business_id: b.business_id, message_id: msg.id, text });
       questionIds.push(q.id);
       await this.repo.appendEvent(job.id, "question", { question_id: q.id, business_id: b.business_id, text });
+      await this.notifyHuman(job, `question:${q.id}`, `${b.name} asks: "${text.replace(/\s+/g, " ").slice(0, 180)}" Reply to this text to answer.`, q.id);
     }
     let quoteRow: QuoteRow | null = null;
     // Every priced reply is reported as a quote, even without a single stated total (flagged; Haggle
@@ -1496,6 +1634,15 @@ export class HaggleEngine {
       if (quoteRow) {
         this.roundCache.set(quoteRow.id, quoteRow.round);
         await this.repo.appendEvent(job.id, "quote", { quote_id: quoteRow.id, business_id: b.business_id, total_usd: record.total_cents === null ? null : centsToUsd(record.total_cents), round: quoteRow.round });
+        {
+          const how = msg.provider_email_id?.startsWith("call-ended:") ? " on the call" : msg.provider_email_id?.startsWith("sms-in:") ? " by text" : "";
+          const all = await this.repo.getBusinesses(job.id);
+          const quoted = new Set((await this.repo.listQuotes(job.id)).filter((q) => q.status === "current").map((q) => q.business_id)).size;
+          const worked = /^computed/.test(record.sources.total?.source ?? "") ? " (total worked out from their prices)" : "";
+          await this.notifyHuman(job, `quote:${quoteRow.id}`, record.total_cents === null
+            ? `${b.name} replied${how} without one clear total. ${quoted} of ${all.length} quotes in.`
+            : `${b.name} quoted ${usdText(record.total_cents)}${how} for ${job.request.what}${worked}. ${quoted} of ${all.length} quotes in.`);
+        }
         for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
         if (!compliant) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "requirement_unmet" });
         if (priorCurrent) await this.onRevision(job, priorCurrent);
@@ -1513,12 +1660,20 @@ export class HaggleEngine {
           } catch (err) {
             this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
           }
+        } else if (record.available && !stated && record.questions.length === 0 && b.followups_sent < 1 && b.channel === "phone" && b.phone && this.d.sms) {
+          // A phone business (no email): confirm the worked-out total by text instead.
+          const read = record.total_cents !== null ? ` We worked it out as ${usdText(record.total_cents)} all in.` : "";
+          await this.textFollowUp(job, b, `${read} Could you text back your exact all-in total, incl. delivery and tax, and the deposit?`);
         }
       }
     } else if (record.questions.length === 0) {
       for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
       // Vague reply ("~900ish"): ask once for an itemised total instead of guessing a number.
-      if (record.available && b.followups_sent < 1 && b.channel === "imessage" && b.phone) {
+      if (record.available && b.followups_sent < 1 && b.channel === "phone" && b.phone && this.d.sms) {
+        // A call that ended without a price: one text asking for it, so the outreach is still tracked.
+        await this.textFollowUp(job, b, ` Could you text back one all-in total, incl. delivery and tax, and any deposit?`);
+        await this.notifyHuman(job, `unpriced:${msg.id}`, `${b.name} gave no clear total${msg.provider_email_id?.startsWith("call-ended:") ? " on the call" : ""}; Haggle texted them to ask.`);
+      } else if (record.available && b.followups_sent < 1 && b.channel === "imessage" && b.phone) {
         try {
           await this.sendIMessageToBusiness(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), `Thanks! Could you confirm one exact total for ${job.request.quantity}, incl. delivery, and any deposit? HG-${job.short_code}`, null);
           await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
@@ -1996,6 +2151,8 @@ export class HaggleEngine {
     try {
       m = b.channel === "imessage"
         ? await this.sendIMessageToBusiness(job, b, "answer", key, `${text.slice(0, 120)} Could you send your full total and deposit?`, null)
+        : b.channel === "phone" && !b.email && this.d.sms
+        ? await this.sendSmsToBusiness(job, b, "answer", key, `Hi ${b.name}, Haggle (AI assistant) here with the customer's answer: ${text.slice(0, 200)} Could you text back your full total and deposit? Ref HG-${job.short_code}`)
         : await this.sendRecorded(job, b, "answer", key, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\nThanks for asking. ${text}\n\nCould you send your full quote (total, deposit, delivery) when ready?` });
     } catch (err) {
       const detail = (err as Error).message;

@@ -21,6 +21,7 @@ export const QuoteExtraction = z.object({
   delivery_included: z.boolean().nullable().describe("True only if the business said delivery is included in the total"),
   tax_usd: z.number().nullable(),
   tax_included: z.boolean().nullable(),
+  tax_rate_percent: z.number().nullable().describe("Tax as a percentage when the business gave a rate instead of an amount (\"10 percent tax\" -> 10)"),
   total_usd: z.number().nullable(),
   deposit_usd: z.number().nullable(),
   menu_items: z.array(z.string()).describe("Up to 20 menu items the business named"),
@@ -45,8 +46,11 @@ export const QuoteExtraction = z.object({
     .describe("One entry per requested custom field (by key): the business's answer as text, or null if it didn't say. source is 'email body', 'pdf p.N', 'image' or 'call transcript'"),
 });
 
-/** `answers` is only produced for requests with custom ask fields; older extractions omit it. */
-export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers"> & { answers?: z.infer<typeof QuoteExtraction>["answers"] };
+/** `answers` is only produced for requests with custom ask fields; older extractions (and the heuristic) omit it and `tax_rate_percent`. */
+export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers" | "tax_rate_percent"> & {
+  answers?: z.infer<typeof QuoteExtraction>["answers"];
+  tax_rate_percent?: number | null;
+};
 
 /** A validated custom answer: money in cents, dates YYYY-MM-DD, times HH:MM. */
 export type FieldValue = number | string | boolean | null;

@@ -22,7 +22,7 @@ import { DATA_DIR, loadRegistry } from "../src/store.ts";
 
 const LIVE_FILE = join(DATA_DIR, "live.json");
 const ENV_FILE = join(DATA_DIR, "manufact.env");
-const BUYER_EVENTS = ["message.received", "call.ended"];
+const BUYER_EVENTS = ["message.received", "call.ended", "text.received"];
 
 const env = process.env;
 const buyerHandle = env.BUYER_HANDLE ?? "haggle-buyer";
@@ -123,6 +123,9 @@ async function cmdEnv() {
     HAGGLE_ENABLE_CALLS: phone ? "true" : "false",
     // Local hours "start-end" when calls may go out (server default 9-20); "0-24" for a demo callee who agreed.
     ...(env.HAGGLE_CALL_HOURS?.trim() ? { HAGGLE_CALL_HOURS: env.HAGGLE_CALL_HOURS.trim() } : {}),
+    // Update texts to the human (HAGGLE_NOTIFY_PHONE) and SMS follow-ups to the phone vendor.
+    ...(env.HAGGLE_ENABLE_SMS === "true" ? { HAGGLE_ENABLE_SMS: "true" } : {}),
+    ...(env.HAGGLE_NOTIFY_PHONE?.trim() ? { HAGGLE_NOTIFY_PHONE: env.HAGGLE_NOTIFY_PHONE.trim() } : {}),
     HAGGLE_DEMO_FLEET: fleet,
     HAGGLE_ALLOWED_RECIPIENTS: phone ?? "",
     HAGGLE_DIRECTORY_JSON: JSON.stringify(directory),
