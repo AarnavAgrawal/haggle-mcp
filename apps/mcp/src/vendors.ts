@@ -96,6 +96,10 @@ export function rosterRecipients(contacts: Record<string, VendorContact>): strin
 
 /** The roster with each vendor's readiness. Pure: callers pass what the runtime knows. */
 export function buildRoster(contacts: Record<string, VendorContact>, ch: ChannelStatus): RosterEntry[] {
+  return dedupeRoster(rosterEntries(contacts, ch));
+}
+
+function rosterEntries(contacts: Record<string, VendorContact>, ch: ChannelStatus): RosterEntry[] {
   const extra = Object.keys(contacts).filter((k) => !DEMO_VENDORS.some((v) => v.key === k) && contacts[k]!.name);
   const base: DemoVendor[] = [
     ...DEMO_VENDORS,
@@ -128,6 +132,19 @@ export function buildRoster(contacts: Record<string, VendorContact>, ch: Channel
         if (!ch.a2a) return block("A2A outreach is off on this server", "Operator: set HAGGLE_ENABLE_A2A=true and allow the card in the buyer's A2A rules.");
         return { ...entry, ready: true };
     }
+  });
+}
+
+/** One phone or mailbox plays one vendor per deal: later duplicates are blocked, never sent twice. */
+export function dedupeRoster(roster: RosterEntry[]): RosterEntry[] {
+  const seen = new Map<string, string>();
+  return roster.map((r) => {
+    if (!r.ready) return r;
+    const key = r.phone ?? r.email ?? r.a2a_card_url ?? r.key;
+    const first = seen.get(key);
+    if (first) return { ...r, ready: false, blocker: `same contact as ${first} (one contact plays one vendor per deal)`, fix: `Operator: give ${r.name} its own contact in HAGGLE_DEMO_VENDORS, or run it in a separate deal with businesses=[...].` };
+    seen.set(key, r.name);
+    return r;
   });
 }
 

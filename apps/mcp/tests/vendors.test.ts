@@ -53,4 +53,11 @@ describe("demo vendor roster", () => {
     expect(r.errors).toEqual(["mission_eats: phone must be E.164", "harbor_table: bad email"]);
     expect(rosterRecipients(r.contacts)).toEqual([]);
   });
+
+  it("one phone playing two vendors (call + text) is contacted once per deal", () => {
+    const { contacts } = parseVendorConfig(JSON.stringify({ mission_eats: { phone: "+14155550122" }, sunset_kitchen: { phone: "+14155550122", channel: "imessage" } }));
+    const r = buildRoster(contacts, ON);
+    expect(r.find((v) => v.key === "sunset_kitchen")!.ready).toBe(true);
+    expect(r.find((v) => v.key === "mission_eats")).toMatchObject({ ready: false, blocker: "same contact as Sunset Kitchen (one contact plays one vendor per deal)" });
+  });
 });
