@@ -64,16 +64,22 @@ The same phone can't play two vendors in one deal (the second is shown as blocke
 Evidence to keep: job id, board screenshots (start, quotes, paid), the email thread, the iMessage thread (numbers
 redacted), the call transcript on the board, the Stripe test PaymentIntent id, and the `ask` output.
 
-## What is live today (calm-spark)
+## Status (calm-spark c1d4516, 2026-10-18)
 
-| Capability | Live evidence |
-|---|---|
-| Voice AI call → transcript → quote | PASS job_8eebfe8012ff43a2bf0a ($6,200) |
-| iMessage RFQ → reply → quote → one confirming follow-up | PASS job_e8ab806d016e41468b2e ($6,700) |
-| Email RFQ → signed reply → quote | PASS job_512a5d0265b144ed9337 (quote.json) |
-| Claude extraction on live replies | PASS (needed `ANTHROPIC_WORKSPACE_ID` on Manufact) |
-| Warm memory (`ask`, `business_profile`) from live quotes | PASS (3 real quotes learned) |
-| NL prompt → `deal` first (real Claude, hosted tools) | PASS (dry run; no outreach) |
-| Human-authorized phone callback | mock + engine tests only |
-| Stripe test deposit + receipt | BLOCKED (authorization) |
-| Board in Claude.ai | BLOCKED (connector not added) |
+LIVE PASS = seen on the hosted server with real channels; AUTOMATED = hosted read-only acceptance script;
+MOCK/TEST = local tests or the mock server; BLOCKED = waiting on a person or an authorization.
+
+| Capability | Status | Evidence |
+|---|---|---|
+| Voice AI call → transcript → quote | LIVE PASS | job_8eebfe8012ff43a2bf0a, job_dec51a570667400eae64 |
+| RCS (Android) two-way + one confirming question | LIVE PASS | job_dec51a570667400eae64 |
+| Email RFQ → signed reply → quote | LIVE PASS | job_dec51a570667400eae64 (Harbor $6,883.57) |
+| Matching/trust by call id, pinned number, thread; Supabase persistence; restarts | LIVE PASS | that job survived 8 deploys/restarts, no duplicate outreach |
+| Claude.ai: deal started, board rendered + polled, approval card tapped | LIVE PASS | deployment logs (claude-ai client) |
+| Stale approval never charged | LIVE PASS | ap_32e2d549… revoked (recorded total omitted disclosed $250 delivery) |
+| Stripe test mode enabled; payment guards | LIVE PASS (config) | live_ready payments=stripe-test; pay w/o approval refused |
+| All-in gate, fee/terms, revisions void approvals, stages | MOCK/TEST | 360 tests + 241 on Postgres |
+| Target vs hard budget, Claude strategist, bounded counters | MOCK/TEST + real-Claude dry run | an accepted live counter not yet witnessed |
+| Stripe test charge + hosted receipt | BLOCKED | one charge, after a fresh human approval |
+| Fresh Claude.ai purchase end to end | BLOCKED | needs Yash + Aarnav |
+
