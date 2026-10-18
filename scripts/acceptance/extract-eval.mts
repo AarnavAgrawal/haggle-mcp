@@ -15,7 +15,7 @@ import {
   type QuoteRecord,
 } from "../../packages/engine/src/index.ts";
 
-const env = Object.fromEntries(fs.readFileSync(process.argv[2] ?? "apps/mcp/.env", "utf8").split("\n").filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+const env = Object.fromEntries(fs.readFileSync(process.argv[2] ?? "apps/mcp/.env", "utf8").split(/\r?\n/).filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
 const client = createAnthropicClient({ apiKey: env.ANTHROPIC_API_KEY!, ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) });
 const model = env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5";
 const request = { what: "catering", date: "2026-10-24", headcount: 50, location: "San Francisco, CA", dietary: [], requirements: [] };

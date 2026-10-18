@@ -17,12 +17,12 @@ import { join } from "node:path";
 import { Inkbox } from "@inkbox/sdk";
 // Setup-only: the same read-only Stripe test-mode check the engine ships (no charge).
 import { verifyStripeTestSetup } from "../../../packages/engine/src/payments/stripe.ts";
-import { PERSONAS } from "../src/personas.ts";
+import { PERSONAS, type Persona } from "../src/personas.ts";
 import { DATA_DIR, loadRegistry } from "../src/store.ts";
 
 const LIVE_FILE = join(DATA_DIR, "live.json");
 const ENV_FILE = join(DATA_DIR, "manufact.env");
-const BUYER_EVENTS = ["message.received", "call.ended"];
+const BUYER_EVENTS = ["message.received", "call.ended", "text.received"];
 
 const env = process.env;
 const buyerHandle = env.BUYER_HANDLE ?? "haggle-buyer";
@@ -51,15 +51,19 @@ function fleetConfig() {
   const missing = PERSONAS.filter((p) => p.channel !== "phone" && !registry[p.handle]?.email).map((p) => p.handle);
   if (missing.length) throw new Error(`No mailbox recorded for ${missing.join(", ")}: run \`npm run setup -w @haggle/sellers\` first`);
   const phone = e164(env.MISSION_EATS_PHONE);
-  const emailers = PERSONAS.filter((p) => p.channel !== "phone");
+  // One email persona can be played by a consenting person over SMS instead (TEXT_VENDOR_PHONE).
+  const textPhone = e164(env.TEXT_VENDOR_PHONE);
+  const textHandle = env.TEXT_VENDOR?.trim() || "golden-grill-sf";
+  const texted = (p: Persona) => !!textPhone && p.handle === textHandle;
+  const emailers = PERSONAS.filter((p) => p.channel !== "phone" && !texted(p));
   const fleet = emailers.map((p) => `${p.name} <${registry[p.handle]!.email}>`).join("; ");
-  const directory = PERSONAS.map((p) => ({
+  const directory = PERSONAS.map((p) => texted(p) ? { id: p.business_id, phone: textPhone!, prefer_channel: "imessage" as const } : ({
     id: p.business_id,
     ...(p.channel !== "phone" ? { email: registry[p.handle]!.email } : {}),
     ...(p.channel === "phone" && phone ? { phone } : {}),
     ...(registry[p.handle]?.cardUrl ? { a2a_card_url: registry[p.handle]!.cardUrl } : {}),
   }));
-  return { fleet, directory, phone };
+  return { fleet, directory, phone, textPhone };
 }
 
 async function cmdEnv() {
@@ -112,7 +116,7 @@ async function cmdEnv() {
     };
   }
 
-  const { fleet, directory, phone } = fleetConfig();
+  const { fleet, directory, phone, textPhone } = fleetConfig();
   const supabase = env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY;
   const vars: Record<string, string> = {
     HAGGLE_MODE: "live",
@@ -121,8 +125,13 @@ async function cmdEnv() {
     INKBOX_SENDER_TRUST: "pinned-org-identity",
     INKBOX_WEBHOOK_SECRET: live.buyerSigningKey,
     HAGGLE_ENABLE_CALLS: phone ? "true" : "false",
+    // Local hours "start-end" when calls may go out (server default 9-20); "0-24" for a demo callee who agreed.
+    ...(env.HAGGLE_CALL_HOURS?.trim() ? { HAGGLE_CALL_HOURS: env.HAGGLE_CALL_HOURS.trim() } : {}),
+    // Update texts to the human (HAGGLE_NOTIFY_PHONE) and SMS follow-ups to the phone vendor.
+    ...(env.HAGGLE_ENABLE_SMS === "true" ? { HAGGLE_ENABLE_SMS: "true" } : {}),
+    ...(env.HAGGLE_NOTIFY_PHONE?.trim() ? { HAGGLE_NOTIFY_PHONE: env.HAGGLE_NOTIFY_PHONE.trim() } : {}),
     HAGGLE_DEMO_FLEET: fleet,
-    HAGGLE_ALLOWED_RECIPIENTS: phone ?? "",
+    HAGGLE_ALLOWED_RECIPIENTS: [phone, textPhone].filter(Boolean).join(","),
     HAGGLE_DIRECTORY_JSON: JSON.stringify(directory),
     ANTHROPIC_API_KEY: need("ANTHROPIC_API_KEY"),
     ...(env.ANTHROPIC_MODEL ? { ANTHROPIC_MODEL: env.ANTHROPIC_MODEL } : {}),
@@ -141,8 +150,14 @@ async function cmdWebhook(mcpUrl: string | undefined) {
   const url = `${new URL(mcpUrl).origin}/webhooks/inkbox`;
   const buyer = await admin.getIdentity(buyerHandle);
   const existing = await admin.webhooks.subscriptions.list({ agentIdentityId: buyer.id, scope: "identity" });
-  if (existing.some((s) => s.url === url)) {
-    console.log(`buyer webhooks → ${url} (already subscribed)`);
+  const mine = existing.find((s) => s.url === url);
+  if (mine) {
+    // Subscribed before a new event type was added (e.g. text.received for SMS): add the missing ones.
+    const missing = BUYER_EVENTS.filter((e) => !(mine.eventTypes ?? []).includes(e));
+    if (missing.length) {
+      await admin.webhooks.subscriptions.update(mine.id, { scope: "identity", eventTypes: [...new Set([...(mine.eventTypes ?? []), ...BUYER_EVENTS])] });
+      console.log(`buyer webhooks → ${url} (added ${missing.join(", ")})`);
+    } else console.log(`buyer webhooks → ${url} (already subscribed)`);
   } else {
     await admin.webhooks.subscriptions.create({ agentIdentityId: buyer.id, url, eventTypes: BUYER_EVENTS });
     console.log(`buyer webhooks → ${url} [${BUYER_EVENTS.join(", ")}]`);

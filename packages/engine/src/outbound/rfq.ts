@@ -1,4 +1,5 @@
-// PURE: the RFQ email text. The opening line discloses that the sender is an AI agent; keep it.
+// PURE: the RFQ email text. The opening line discloses that the sender is an AI assistant acting on
+// behalf of the customer (never a brand); keep it. The sign-off says the same.
 // The machine-readable `rfq.json` part is added once its fields are frozen (contract D8).
 //
 // Adapted from quote-broker@8a68559 src/channels/outreach.ts (Partner). Changes for Haggle v3:
@@ -50,38 +51,55 @@ export interface RfqInput {
   shortCode: string;
   businessName: string;
   what: string;
-  quantity: number;
-  date: string; // YYYY-MM-DD
-  date_until?: string; // flexible through this date
-  time?: string; // "12:00" (24h, local)
+  quantity?: number; // absent for requests that aren't counted ("fix a leak")
   unit?: string; // "people" (default), "jobs", "hours", "items"
-  location: string;
+  date?: string; // YYYY-MM-DD; absent = not dated
+  date_until?: string; // flexible through this date (YYYY-MM-DD)
+  time?: string; // "12:00" (24h, local)
+  location: string; // the area ("San Francisco, CA"), or a full place when no venue is given
+  /** Delivery address or place; shown first (eventPlace), with the area appended when it doesn't name it. */
+  venue?: string;
   requirements: string[]; // hard requirements, human-readable
   replyBy: Date;
   /** Only when the buyer's policy allows revealing it. */
   budgetHintCents?: number;
+  /** Facts the business should know (any kind of request). */
+  details?: { label: string; value: string }[];
+  /** Custom answers to ask for, by label; replaces the catering default ask (total, delivery, deposit). */
+  askLabels?: { label: string; required: boolean }[];
+  /** Who the AI assistant acts for: the customer's name, or "a customer" (default). */
+  customer?: string;
+}
+
+/** "40 people" (people is the default unit), "3 rooms", or null when nothing is counted. */
+export function quantityText(quantity: number | undefined, unit: string | undefined): string | null {
+  return quantity === undefined ? null : `${quantity} ${unit ?? "people"}`;
 }
 
 export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string } {
-  const subject = `[HG-${i.shortCode}] Quote request: ${i.what}, ${i.quantity} ${i.unit ?? "people"}, ${humanDate(i.date)}`;
+  const qty = quantityText(i.quantity, i.unit);
+  const subject = [`[HG-${i.shortCode}] Quote request: ${i.what}`, qty, i.date ? humanDate(i.date) : null].filter(Boolean).join(", ");
   const replyBy = `${humanDate(i.replyBy.toISOString().slice(0, 10))} ${String(i.replyBy.getUTCHours()).padStart(2, "0")}:${String(i.replyBy.getUTCMinutes()).padStart(2, "0")} UTC`;
+  const people = i.unit === undefined || i.unit === "people";
+  const customer = i.customer?.trim() || "a customer";
   const lines = [
     `Hi ${i.businessName},`,
     "",
-    "I'm an AI assistant arranging this order for a client. Could you quote the following?",
+    `I'm an AI assistant reaching out on behalf of ${customer}. Could you quote the following?`,
     "",
     `- What: ${i.what}`,
-    `- When: ${eventWhen(i.date, i.time, i.date_until)}${i.date_until ? ". Please tell us which of these days you can do" : ""}`,
-    !i.unit || i.unit === "people" ? `- People: ${i.quantity}` : `- Quantity: ${i.quantity} ${i.unit}`,
-    `- Location: ${i.location}`,
+    ...(i.date ? [`- When: ${eventWhen(i.date, i.time, i.date_until)}${i.date_until && i.date_until > i.date ? ". Please tell us which of these days you can do" : ""}`] : []),
+    ...(i.quantity !== undefined ? [people ? `- People: ${i.quantity}` : `- Quantity: ${qty}`] : []),
+    `- Location: ${eventPlace(i.location, i.venue)}`,
+    ...(i.details ?? []).map((d) => `- ${d.label}: ${d.value}`),
     ...(i.requirements.length ? ["- Must have:", ...i.requirements.map((r) => `  - ${r}`)] : []),
   ];
   if (i.budgetHintCents !== undefined) lines.push(`- Budget: up to $${(i.budgetHintCents / 100).toFixed(2)} total`);
-  lines.push(
-    "",
-    `Please reply by ${replyBy} with your total price, what it includes (delivery or travel, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.`,
-    "",
-    "Thank you!",
-  );
+  if (i.askLabels?.length) {
+    lines.push("", `Could you reply by ${replyBy} with:`, ...i.askLabels.map((a) => `- ${a.label}${a.required ? "" : " (if you can)"}`), "", "A PDF or photo is fine.");
+  } else {
+    lines.push("", `Please reply by ${replyBy} with your total price, what it includes (delivery or travel, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.`);
+  }
+  lines.push("", "Thank you!", `AI assistant for ${customer}`);
   return { subject, bodyText: lines.join("\n") };
 }

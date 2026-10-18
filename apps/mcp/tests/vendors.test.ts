@@ -32,7 +32,9 @@ describe("demo vendor roster", () => {
   it("each missing piece gives a precise blocker and fix, never a guess", () => {
     const { contacts } = parseVendorConfig(CONFIG);
     const off = buildRoster(contacts, { ...ON, imessage: false, phone: false, a2a: false });
-    expect(off.find((v) => v.key === "sunset_kitchen")).toMatchObject({ ready: false, blocker: "iMessage outreach is off on this server", fix: expect.stringContaining("HAGGLE_ENABLE_IMESSAGE=true") });
+    expect(off.find((v) => v.key === "sunset_kitchen")).toMatchObject({ ready: false, blocker: "texting businesses is off on this server", fix: expect.stringContaining("HAGGLE_ENABLE_IMESSAGE=true") });
+    // SMS on (iMessage off): the texted vendor is ready by SMS from the buyer's number, no connect step.
+    expect(buildRoster(contacts, { ...ON, imessage: false, sms: true, connected: new Set() }).find((v) => v.key === "sunset_kitchen")).toMatchObject({ ready: true, channel: "imessage" });
     expect(off.find((v) => v.key === "mission_eats")).toMatchObject({ ready: false, fix: expect.stringContaining("HAGGLE_ENABLE_CALLS=true") });
     expect(off.find((v) => v.key === "bay_catering")).toMatchObject({ ready: false, fix: expect.stringContaining("HAGGLE_ENABLE_A2A=true") });
     expect(off.find((v) => v.key === "harbor_table")!.ready).toBe(true);
@@ -45,6 +47,16 @@ describe("demo vendor roster", () => {
     // Couldn't check (Inkbox error) is not "ready".
     expect(buildRoster(contacts, { ...ON, connected: null }).find((v) => v.key === "sunset_kitchen")!.ready).toBe(false);
     expect(blockerLines(off)).toHaveLength(3);
+  });
+
+  it("a texted vendor (live-demo's TEXT_VENDOR) is a roster entry on the text channel: sms / text / imessage", () => {
+    const { contacts, errors } = parseVendorConfig(JSON.stringify({ golden_grill: { phone: "+1 (415) 555-0133", channel: "sms" }, harbor_table: { email: "harbor@inkboxmail.com" } }));
+    expect(errors).toEqual([]);
+    expect(contacts.golden_grill).toMatchObject({ phone: "+14155550133", channel: "imessage" });
+    const smsOnly = { ...ON, imessage: false, sms: true };
+    expect(buildRoster(contacts, smsOnly).find((v) => v.key === "golden_grill")).toMatchObject({ ready: true, channel: "imessage", played_by: expect.stringContaining("SMS") });
+    expect(buildRoster(contacts, { ...smsOnly, sms: false }).find((v) => v.key === "golden_grill")).toMatchObject({ ready: false, fix: expect.stringContaining("HAGGLE_ENABLE_SMS=true") });
+    expect(parseVendorConfig(JSON.stringify({ golden_grill: { phone: "+14155550133", channel: "fax" } })).errors).toEqual([expect.stringContaining("golden_grill: channel")]);
   });
 
   it("bad config is reported, not guessed", () => {

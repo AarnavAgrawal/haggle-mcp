@@ -81,6 +81,12 @@
 .db-headline-done { background: var(--win-soft); color: var(--win); }
 .db-headline-risk { background: var(--risk-soft); color: var(--risk); }
 .db-note { font-size: 12px; color: var(--warn); }
+.db-state-awaiting_approval,
+.db-state-paying { color: var(--warn); background: var(--warn-soft); }
+.db-state-paid,
+.db-state-confirmed { color: var(--win); background: var(--win-soft); }
+.db-state-failed,
+.db-state-cancelled { color: var(--risk); background: var(--risk-soft); }
 
 /* Body: main column; side column beside it in full screen */
 .db-body,
@@ -243,6 +249,24 @@
 }
 .db-terms { list-style: none; margin: 0; padding: 0; font-size: 12px; color: var(--ink-2); }
 .db-terms li::before { content: "· "; }
+.db-progress {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.db-neg-live {
+  font-size: 12.5px;
+  color: var(--warn);
+  margin-top: -4px;
+}
+.db-warn-hint {
+  color: var(--warn);
+  flex-basis: 100%;
+}
+.db-approve-status {
+  color: var(--warn);
+  font-weight: 600;
+  font-size: 12.5px;
+}
 
 /* Approve / pay */
 .db-approve {
@@ -346,11 +370,81 @@
 .db-tone-out .db-bizrow-name,
 .db-tone-out .db-bizrow-status,
 .db-tone-out .db-bizrow-price { color: var(--ink-3); font-weight: 500; }
+.db-st-quoted .db-dot,
+.db-st-won .db-dot { background: var(--win); color: var(--win); }
+.db-st-negotiating .db-dot { background: var(--warn); color: var(--warn); }
+.db-st-ringing .db-dot,
+.db-st-on_call .db-dot {
+  background: var(--ch-phone);
+  color: var(--ch-phone);
+  animation: hg-pulse 1.1s ease-out infinite;
+}
+.db-st-declined .db-dot,
+.db-st-no_reply .db-dot { background: transparent; border: 1.5px solid var(--ink-3); }
+.db-st-declined .db-bizrow-status { color: var(--risk); }
+.db-st-unavailable .db-dot { background: transparent; border: 1.5px dashed var(--warn); }
+.db-st-unavailable .db-bizrow-status,
+.db-st-unavailable .db-chip-status { color: var(--warn); }
+.db-st-won .db-bizrow-status { color: var(--win); }
 
 /* Notes */
 .db-notes { font-size: 12px; color: var(--ink-2); }
 .db-notes summary { cursor: pointer; font-weight: 600; color: var(--ink-3); }
 .db-notes ul { margin: 4px 0 0; padding-left: 16px; display: grid; gap: 3px; }
+
+/* Custom asks: one labeled cell per answer; the ranking answer stands out */
+.db-total-unknown {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+.db-fields {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 4px 10px;
+}
+.db-fields > div {
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: var(--radius-s);
+}
+.db-fields dt {
+  font-size: 11px;
+  color: var(--ink-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.db-fields dd {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.db-fields .is-rank {
+  background: var(--win-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--win) 40%, transparent);
+}
+.db-fields .is-rank dt { color: var(--win); font-weight: 600; }
+.db-fields .is-missing dd { color: var(--warn); }
+.db-link {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--info);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.db-link:hover { text-decoration: underline; }
+.db-bizrow-event .db-link { margin-left: 8px; }
+.db-bizrow-reason {
+  font-size: 12px;
+  color: var(--warn);
+  padding-left: 14px;
+}
 
 /* Footer */
 .db-foot {
@@ -363,7 +457,8 @@
   border-top: 1px solid var(--rule);
 }
 .db-foot-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.db-sync { font-size: 12px; display: flex; align-items: center; gap: 8px; }
+.db-sync { font-size: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.db-chat-hint { font-size: 12px; align-self: center; }
 .db-link {
   background: none;
   border: none;
@@ -375,6 +470,59 @@
   text-underline-offset: 2px;
 }
 .db-link:disabled { color: var(--ink-3); cursor: default; }
+
+/* Recommendation vs choice */
+.db-rec-label { color: var(--win); }
+.db-ladder-note {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.db-blocked {
+  color: var(--warn);
+  flex-basis: 100%;
+}
+
+/* Inline conversation panel (get_conversation, opened from a quote or a business) */
+.db-convo {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--rule);
+  background: var(--panel);
+  max-height: 460px;
+  overflow-y: auto;
+  min-width: 0;
+}
+.db-full .db-convo { max-height: 640px; }
+.db-convo-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 12.5px;
+}
+.db-convo-head strong { margin-right: auto; }
+.db-convo .cv { gap: 8px; }
+.db-convo .cv-entry.is-in { margin-right: 12px; }
+.db-convo .cv-entry.is-out { margin-left: 12px; }
+.db-waiting .db-convo { margin-bottom: 6px; }
+
+/* Inline businesses: chips + who we're still waiting on */
+.db-biz-inline {
+  display: grid;
+  gap: 6px;
+}
+.db-waiting {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
 
 /* Before a deal: preview, setup, welcome */
 .db-welcome .db-title p { max-width: 60ch; }
@@ -403,3 +551,6 @@
   .db-foot { flex-direction: column; align-items: stretch; }
   .db-q-form { flex-direction: column; }
 }
+.db-approve-hint { font-size: 12px; flex-basis: 100%; }
+.db-focus > .db-link,
+.db-quote > .db-link { justify-self: start; }

@@ -80,7 +80,8 @@ real, tools return those fixtures.
 | `Estimates` | `ask` | `views/estimates/` | request, `estimates[]` (business, total_usd, per_unit_usd, confidence, n_quotes, best_channel) |
 | `BusinessProfile` | `business_profile` | `views/business-profile/` | name, best_channel, menu[], price_model, minimum, deposit_rule, discount_behavior, reply_speed, history[] (date, channel, total), confidence |
 
-- `Approval.status`: `pending_human | approved | paid | refused`.
+- `Approval.status`: `pending_human | approved | paid | refused | confirmed` (v6: `confirmed` = a confirm-only approval went through). v6 `Approval.action`: `confirm | pay | confirm_and_pay`.
+- v6 schemas: `Conversation` (`get_conversation`, `views/conversation/`) and `Identity` (`get_identity`, `views/identity-card/`); `DealBoard.job.ask` / `compare_by` and `Quote.fields` / `missing_fields` / `total_known` for custom asks (section 9).
 - Views render only what is in the schema. If a view needs a new field, add it to `views.ts` and the fixture first (shared change).
 
 ## 3. State machines
@@ -88,8 +89,10 @@ real, tools return those fixtures.
 **Job:**
 ```
 created → contacting → collecting ⇄ negotiating → awaiting_approval → paying → paid
+                                                                    ↘ confirmed   (v6: confirm-only approval)
 side exits from any non-terminal state: cancelled, failed
 ```
+- v6: `negotiate` (manual round, once quotes are final) moves `collecting|negotiating (ready)` → `negotiating` with one round past `max_rounds` at most (round ≤ 3).
 - `paying` is reachable only from `awaiting_approval` with a stored approval (section 6).
 - A job past its deadline with no approval becomes `failed` with reason `deadline_passed`.
 - A revised quote during `awaiting_approval` voids that approval and returns the job to `negotiating`.
@@ -184,3 +187,17 @@ HAGGLE_GLOBAL_PAYMENT_CAP_CENTS=150000
 ```
 
 Aarnav's seller app adds its own Inkbox keys for the six seller identities under a separate block.
+
+v6 adds `HAGGLE_AUTH`, `HAGGLE_TICK_SECRET`, `HAGGLE_CALL_HOURS`, `HAGGLE_ESCALATION_WAIT_MINUTES` and `HAGGLE_SYNC_VOICE_CONTEXT`; `ANTHROPIC_API_KEY` becomes recommended rather than required (see `.env.example`).
+
+## 9. v6 additions (ported from haggle-testing)
+
+Additive: every v5 surface still validates; `CONTRACT_VERSION` is `haggle.contracts/6`.
+
+- **Any kind of request.** `deal`'s request may carry `ask[]` (`{key, label, type: money|number|date|time|text|boolean, required}`), `compare_by` (`{field, direction: min|max}`), `payable_field` (a money ask key paid on approval), `details[]` (`{label, value}` facts) and `auto_follow_up`; `quantity`/`date` are then optional. Answers are validated per type (money in cents, real dates, HH:MM), money answers need a source, and nothing is guessed. A money `compare_by` is the total that ranks and negotiates; a non-money one ranks without totals and is never negotiated. A quote missing a required answer can't be approved (`excluded_reason`: "a required answer is still missing"). `rfq.json` gains `details` and `ask`.
+- **Follow-up and carry-over.** One automatic follow-up per business asks for exactly what its quote lacks (required answers, or hard requirements it didn't address); the collection window stays open until it answers or the deadline passes. A partial reply keeps the business's earlier facts (never across a decline).
+- **Approval actions.** `confirm` (nothing paid; the job ends `confirmed`), `pay`, `confirm_and_pay` (default when there's something to pay now). After a confirm-only approval or a settled payment, the business gets a confirmation (with the payment reference) on its channel and the approver an email receipt. Five wrong approval codes (card or iMessage) lock the approval (`locked`); a fresh `approve` is needed.
+- **Agent messages.** `send_message` and `answer_business` text passes a guard: dollar amounts must come from the request or a stored quote, other businesses on the deal are never named, commitment phrases are refused, channel length limits apply.
+- **Channels.** Email that bounces or gets no reply within `HAGGLE_ESCALATION_WAIT_MINUTES` escalates to a Voice AI call when the business has a phone (calls on). Calls only within call hours in the workspace timezone, never two to one number within 2 minutes, and a screener/voicemail is "reached, no answer" (never a quote). An amount only Haggle's voice agent said is never the business's price. Retryable Inkbox errors (rate limits, capacity) retry with the same idempotency key; hard ones move on. Quoted reply text is stripped from email before parsing; images (PNG/JPEG/GIF/WebP) are read like PDFs. The Voice AI answering instructions list open requests so callbacks match.
+- **Workspaces.** `workspaces` table (migration 103): jobs, settings and `client_request_id` are per workspace; connections authenticate with a bearer token or `/c/<secret>/mcp` (hashes only). Another workspace's ids read as not found.
+- **Tools.** `get_identity`, `send_message`, `negotiate`, `get_conversation`, `cancel_deal`; `wait_for_update(until)`; `approve(action)`; `POST /internal/tick`.

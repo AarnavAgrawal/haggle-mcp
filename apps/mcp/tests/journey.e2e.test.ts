@@ -12,7 +12,7 @@
 // The model's tool choice is checked against real Claude by scripts/acceptance/nl-journey.mjs; this
 // suite pins the server side: tool metadata that steers the model, and what each plausible call
 // returns. Real production build (`mcp-use start`) in MOCK mode, over HTTP. Run `mcp-use build` first.
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -20,7 +20,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DealBoardPlus } from "../src/views.ts";
 
 const APP_DIR = join(import.meta.dirname, "..");
-const MCP_USE_BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].find((p) => existsSync(p)) ?? "mcp-use";
+// On Windows the runnable shim is mcp-use.cmd, which needs a shell (and a quoted path); stop the whole tree.
+const WIN = process.platform === "win32";
+const MCP_USE_BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].map((p) => (WIN ? `${p}.cmd` : p)).find((p) => existsSync(p)) ?? "mcp-use";
+const startServer = (env: NodeJS.ProcessEnv): ChildProcess =>
+  WIN ? spawn(`"${MCP_USE_BIN}"`, ["start"], { cwd: APP_DIR, stdio: "ignore", env, shell: true }) : spawn(MCP_USE_BIN, ["start"], { cwd: APP_DIR, stdio: "ignore", env });
+const stopServer = (proc: ChildProcess | undefined): void => {
+  if (WIN && proc?.pid) spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+  else proc?.kill();
+};
 
 export const HACKATHON_PROMPT =
   "Use Haggle to help me plan a hackathon that I need to cater for that has 200 people next Saturday at the YC HQ in San Francisco. No preference for cuisine, budget under 5k.";
@@ -45,7 +53,7 @@ const freePort = () =>
 type Server = { proc: ChildProcess; base: string; id: number };
 async function start(env: Record<string, string>): Promise<Server> {
   const port = await freePort();
-  const proc = spawn(MCP_USE_BIN, ["start"], { cwd: APP_DIR, env: { ...process.env, PORT: String(port), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0", ...env }, stdio: "ignore" });
+  const proc = startServer({ ...process.env, PORT: String(port), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0", ...env });
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 80; i++) {
     try {
@@ -82,8 +90,8 @@ beforeAll(async () => {
   [ready, blocked] = await Promise.all([start({}), start({ HAGGLE_MOCK_VENDORS: "none" })]);
 }, 40_000);
 afterAll(() => {
-  ready?.proc.kill();
-  blocked?.proc.kill();
+  stopServer(ready?.proc);
+  stopServer(blocked?.proc);
 });
 
 describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
@@ -96,7 +104,7 @@ describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
     expect(t.deal.description).toMatch(/START HERE for any purchase or procurement request: catering, food for an event or hackathon/);
     expect(t.deal.description).toMatch(/'under 5k' = 5000/);
     expect(t.deal.inputSchema.required).toEqual(["request"]); // businesses optional
-    expect(JSON.stringify(t.deal._meta)).toContain("deal-started");
+    expect(JSON.stringify(t.deal._meta)).toContain("deal-live"); // one live board per deal (decision 6)
     expect(t.ask.description).toMatch(/If the user wants to buy, cater, book or plan a purchase, call deal instead/);
     expect(t.discover.description).toMatch(/Not needed before a deal with the configured vendors/);
   });

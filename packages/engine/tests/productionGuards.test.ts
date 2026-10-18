@@ -74,8 +74,14 @@ const schemaBytes = (s: unknown) => {
 };
 
 describe("structured-output schemas stay under Claude's grammar limit", () => {
-  // Budgets ~10% above the sizes at 2026-10-18 (aa688b7). Don't raise them without a live API check.
-  const BUDGET = { CoreExtraction: 3_600, ExtractionDetails: 1_580, StrategyDecision: 850 }; // today: 3,268 · 1,437 · 773
+  // Budgets are sizes verified against the live API. Don't raise them without a live API check
+  // (scripts/acceptance/extract-eval.mts, plus a direct call per schema: parseReply swallows a Details
+  // failure for requests without custom asks).
+  // VERIFIED 2026-10-18 (merged-working-demo, decision 10 moved live-demo's fields into the two-part
+  // schema): claude-sonnet-5-5 compiled and answered both schemas, Core 3,932 bytes and Details 3,754
+  // bytes (tax judgement, custom answers, requirement checks and other fees all filled correctly), and
+  // extract-eval passed 11/11 (3 live replies, 8 adversarial). StrategyDecision unchanged since aa688b7.
+  const BUDGET = { CoreExtraction: 3_932, ExtractionDetails: 3_754, StrategyDecision: 850 }; // was 3,600 · 1,580 before the merge
   it.each([["CoreExtraction", CoreExtraction], ["ExtractionDetails", ExtractionDetails], ["StrategyDecision", StrategyDecision]] as const)("%s", (name, schema) => {
     const bytes = schemaBytes(schema);
     expect(bytes).toBeLessThanOrEqual(BUDGET[name]);

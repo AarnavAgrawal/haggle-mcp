@@ -1,0 +1,179 @@
+.cv {
+  display: grid;
+  gap: 12px;
+  max-width: 720px;
+}
+.cv-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.cv-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.cv-head-side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Timeline: the business on the left, Haggle indented on the right */
+.cv-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.cv-entry {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--rule);
+  min-width: 0;
+}
+.cv-entry.is-in {
+  background: var(--panel);
+  margin-right: 28px;
+  border-left: 3px solid var(--rule-strong);
+}
+.cv-entry.is-out {
+  background: var(--info-soft);
+  border-color: transparent;
+  margin-left: 28px;
+}
+.cv-entry.is-quarantined {
+  border-left-color: var(--warn);
+  background: color-mix(in srgb, var(--warn-soft) 45%, var(--panel));
+}
+.cv-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 12px;
+}
+.cv-who {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.cv-kind { color: var(--ink-2); }
+.cv-time {
+  margin-left: auto;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+.cv-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cv-subject {
+  font-weight: 600;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.cv-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.cv-entry.is-in .cv-text { color: var(--ink); }
+.cv-more {
+  justify-self: start;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--info);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.cv-more:hover { text-decoration: underline; }
+.cv-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cv-file {
+  font-size: 11.5px;
+  padding: 1px 6px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-2);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cv-empty {
+  color: var(--ink-2);
+  padding: 10px 0;
+}
+
+/* Reply box */
+.cv-reply {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+.cv-reply-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.cv-reply textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+.cv-reply-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cv-reply-bar .hg-btn { margin-left: auto; flex-shrink: 0; }
+.cv-count {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+.cv-count.is-near { color: var(--warn); }
+.cv-note {
+  font-size: 12px;
+  color: var(--ink-2);
+  min-width: 0;
+}
+.cv-err {
+  display: grid;
+  gap: 2px;
+  color: var(--risk);
+  background: var(--risk-soft);
+  padding: 8px 10px;
+  border-radius: var(--radius-s);
+  font-size: 12.5px;
+}
+.cv-err span { color: var(--ink-2); }
+.cv-hint {
+  font-size: 12.5px;
+  color: var(--info);
+  background: var(--info-soft);
+  padding: 8px 10px;
+  border-radius: var(--radius-s);
+}
+
+@media (max-width: 420px) {
+  .cv-entry.is-in { margin-right: 12px; }
+  .cv-entry.is-out { margin-left: 12px; }
+}

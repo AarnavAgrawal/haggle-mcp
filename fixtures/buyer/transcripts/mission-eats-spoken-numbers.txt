@@ -1,0 +1,21 @@
+local: Hi, this is Haggle, an AI assistant calling for a customer about a quote for lunch catering. Do you have a minute?
+remote: Yeah
+local: Great, thanks. I'm looking for a quote for lunch catering for 40 people on Thursday, October 22nd in San Francisco, delivered to the event location. We need at least 12 vegetarian meals. Could you share your all-in total including delivery and tax, how you would meet those
+remote: Yeah
+local: requirements, any deposit and due date, and what's included?
+remote: Yeah, um, so can you tell me again what you're looking for? like give me a little more
+local: Sure. Lunch for 40 people on Thursday, October 22nd in San Francisco, delivered to the event site, with at least 12 vegetarian meals. What's your total including delivery and tax?
+remote: Yeah, so it's- you can do fifty- uh- Seventeen dollars per person, and then Yeah, we'll do twelve vegetarian meals, the rest non-vegetarian Um, and so Yeah, and then in terms of delivery fee, it'll be a hundred
+local: Okay.
+local: Great.
+remote: dollars for delivery. And it'll be ten percent tax
+local: Okay. So that's 17 dollars per person for 40 people, plus a hundred dollars delivery and 10 percent tax. So, the food total would be 680 dollars, plus the delivery fee, then tax.
+local: Great. And what about a deposit and what's included with the catering?
+remote: Correct
+remote: Catering. With full set and everything, whatever you need um, Deposit, two fifty bucks
+local: Okay, just to confirm, you can do lunch for 40 people that day, including at least 12 vegetarian meals, delivered in San Francisco. Pricing is 17 dollars per person, plus a hundred dollar delivery fee, plus 10 percent tax. And there's a 250 dollar deposit. Is
+local: that right?
+local: Great. Thanks so much. I'll pass that on to the customer.
+remote: Yeah
+local: Yeah, take care.
+remote: Okay, thank you

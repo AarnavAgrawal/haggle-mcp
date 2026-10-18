@@ -52,6 +52,8 @@ export interface RosterEntry extends DemoVendor {
 export interface ChannelStatus {
   email: boolean;
   imessage: boolean;
+  /** Texts can go by SMS from the buyer's own number (HAGGLE_ENABLE_SMS): the text channel falls back to SMS when iMessage is off. */
+  sms?: boolean;
   phone: boolean;
   a2a: boolean;
   /** iMessage handles people must text to connect, e.g. "connect @haggle". */
@@ -69,6 +71,9 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * HAGGLE_DEMO_VENDORS: JSON object keyed by vendor key, e.g.
  * {"harbor_table":{"email":"harbor@inkboxmail.com"},"mission_eats":{"phone":"+14155550123"}}.
  * Unknown keys become extra vendors (name required). Bad entries are reported, never guessed.
+ * A texted vendor (live-demo's TEXT_VENDOR / TEXT_VENDOR_PHONE) is an entry on the text channel:
+ * {"golden_grill":{"phone":"+1…","channel":"sms"}} ("sms", "text" and "imessage" all mean the text
+ * channel; it goes by iMessage when enabled, else by SMS from the buyer's number).
  */
 export function parseVendorConfig(raw: string | undefined): { contacts: Record<string, VendorContact>; errors: string[] } {
   if (!raw?.trim()) return { contacts: {}, errors: [] };
@@ -86,7 +91,12 @@ export function parseVendorConfig(raw: string | undefined): { contacts: Record<s
     if (typeof v?.email === "string") EMAIL.test(v.email.trim()) ? (c.email = v.email.trim().toLowerCase()) : errors.push(`${key}: bad email`);
     if (typeof v?.phone === "string") E164.test(v.phone.replace(/[\s().-]/g, "")) ? (c.phone = v.phone.replace(/[\s().-]/g, "")) : errors.push(`${key}: phone must be E.164`);
     if (typeof v?.a2a_card_url === "string") /^https:\/\//.test(v.a2a_card_url) ? (c.a2a_card_url = v.a2a_card_url) : errors.push(`${key}: a2a_card_url must be https`);
-    if (typeof v?.channel === "string" && ["email", "phone", "imessage", "a2a"].includes(v.channel)) c.channel = v.channel as Channel;
+    if (typeof v?.channel === "string") {
+      const ch = v.channel.trim().toLowerCase();
+      if (["email", "phone", "imessage", "a2a"].includes(ch)) c.channel = ch as Channel;
+      else if (ch === "sms" || ch === "text") c.channel = "imessage"; // the engine's text channel (iMessage, else SMS)
+      else errors.push(`${key}: channel must be email, phone, sms (text), imessage or a2a`);
+    }
     if (typeof v?.name === "string" && v.name.trim()) c.name = v.name.trim().slice(0, 120);
     if (typeof v?.category === "string" && v.category.trim()) c.category = v.category.trim().toLowerCase().slice(0, 40);
     contacts[key] = c;
@@ -121,8 +131,10 @@ function rosterEntries(contacts: Record<string, VendorContact>, ch: ChannelStatu
         if (!ch.email) return block("email outreach is off", "Operator: check the Inkbox buyer identity.");
         return { ...entry, ready: true };
       case "imessage":
-        if (!c.phone) return block("no iPhone number configured for this demo vendor", `Operator: add "${v.key}":{"phone":"+1…","channel":"imessage"} to HAGGLE_DEMO_VENDORS and redeploy.`);
-        if (!ch.imessage) return block("iMessage outreach is off on this server", "Operator: set HAGGLE_ENABLE_IMESSAGE=true and redeploy.");
+        if (!c.phone) return block("no phone number configured for this texted demo vendor", `Operator: add "${v.key}":{"phone":"+1…","channel":"sms"} to HAGGLE_DEMO_VENDORS and redeploy (only someone who agreed to get texts).`);
+        // With iMessage off, texts go by SMS from the buyer's own number: no "connect" step needed.
+        if (!ch.imessage && ch.sms) return { ...entry, ready: true, played_by: entry.played_by.includes("SMS") ? entry.played_by : `${entry.played_by} (texted by SMS)` };
+        if (!ch.imessage) return block("texting businesses is off on this server", "Operator: set HAGGLE_ENABLE_SMS=true (SMS from the buyer's number) or HAGGLE_ENABLE_IMESSAGE=true, and redeploy.");
         if (!ch.connected) return block("couldn't confirm this number's iMessage connection (Inkbox check failed)", "Retry in a minute; if it persists, check the Inkbox API key.");
         if (!ch.connected.has(c.phone)) return block(`this number hasn't connected over iMessage yet`, `Vendor: text "${ch.connectCommand}" to the Inkbox iMessage line from that iPhone.`);
         return { ...entry, ready: true };

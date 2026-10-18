@@ -175,7 +175,7 @@ describe("evaluateRequirements", () => {
   it("rejects 6 of 12 vegetarian (Golden Grill trap)", () => {
     const q = validateQuote({ ...good, dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 6 }] }, 40);
     const res = evaluateRequirements(q, reqs, 40);
-    expect(res[0]).toEqual({ requirement_id: "veg12", met: false, reason: "only 6 of 12" });
+    expect(res[0]).toMatchObject({ requirement_id: "veg12", met: false, reason: "only 6 of 12", basis: "arithmetic" });
     expect(meetsHardRequirements(res, reqs)).toBe(false);
   });
 

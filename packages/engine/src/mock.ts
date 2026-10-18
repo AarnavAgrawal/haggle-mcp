@@ -8,7 +8,7 @@ import { StubBrain } from "./brain/stubBrain.ts";
 import { fleetBusinesses, SimFleet, type Persona } from "./sim/fleet.ts";
 import { InMemoryRepository } from "./store/memory.ts";
 import { HaggleEngine } from "./workflow/engine.ts";
-import { inlineAttachments, type EngineConfig, type IMessagePort, type PayerPort } from "./workflow/ports.ts";
+import { inlineAttachments, type EngineConfig, type IMessagePort, type PayerPort, type VoiceContextPort } from "./workflow/ports.ts";
 import type { Brain } from "./contract.ts";
 import type { PayerClient } from "./payments/x402Challenge.ts";
 import { simulatedStripe, type StripePort } from "./payments/stripe.ts";
@@ -17,7 +17,7 @@ import type { Repository } from "./store/types.ts";
 export const MOCK_INBOX_DOMAIN = "mock.haggle.dev";
 export const MOCK_BUYER_INBOX = `haggle@${MOCK_INBOX_DOMAIN}`;
 
-export function createMockEngine(opts: { now?: () => Date; delayScale?: number; brain?: Brain; config?: Partial<EngineConfig>; repo?: Repository; phone?: boolean; a2a?: boolean; imessage?: IMessagePort; personas?: Persona[]; payer?: PayerPort; rail?: "stripe" | "x402"; stripe?: StripePort } = {}) {
+export function createMockEngine(opts: { now?: () => Date; delayScale?: number; brain?: Brain; config?: Partial<EngineConfig>; repo?: Repository; phone?: boolean; a2a?: boolean; imessage?: IMessagePort; voice?: VoiceContextPort; personas?: Persona[]; payer?: PayerPort; rail?: "stripe" | "x402"; stripe?: StripePort } = {}) {
   // An explicit payer means the x402 rail (e.g. tests of the disabled live payer).
   const rail = opts.rail ?? (opts.payer ? "x402" : "stripe");
   const stripe = rail === "stripe" ? (opts.stripe ?? simulatedStripe()) : undefined;
@@ -31,6 +31,7 @@ export function createMockEngine(opts: { now?: () => Date; delayScale?: number; 
     ...(opts.phone === false ? {} : { phone: fleet }),
     ...(opts.a2a === false ? {} : { a2a: fleet.a2a }),
     ...(opts.imessage ? { imessage: opts.imessage } : {}),
+    ...(opts.voice ? { voice: opts.voice } : {}),
     ...(stripe ? { stripe } : {}),
     extractor: fleet,
     attachments: inlineAttachments,
@@ -41,8 +42,11 @@ export function createMockEngine(opts: { now?: () => Date; delayScale?: number; 
       simulated: true,
     },
     config: {
-      mode: "mock", inboxDomain: MOCK_INBOX_DOMAIN, sharedInbox: MOCK_BUYER_INBOX, collectionWindowMs: 10 * 60_000, negotiationWindowMs: 5 * 60_000,
-      approvalTtlMs: 30 * 60_000, globalPaymentCapCents: rail === "stripe" ? 50_000 : 500, maxRounds: 2, defaultSpendingCapCents: 150_000, spendingCapCeilingCents: 500_000, ...opts.config,
+      mode: "mock", inboxDomain: MOCK_INBOX_DOMAIN, sharedInbox: MOCK_BUYER_INBOX, collectionWindowMs: 10 * 60_000, negotiationWindowMs: 5 * 60_000, followUpHoldMs: 60_000,
+      approvalTtlMs: 30 * 60_000, globalPaymentCapCents: rail === "stripe" ? 50_000 : 500, maxRounds: 2, defaultSpendingCapCents: 150_000, spendingCapCeilingCents: 500_000,
+      // Simulated businesses only: no call spacing, no call hours (live sets both), DEMO identity.
+      callCooldownMs: 0, identity: { name: "Haggle (DEMO)", phone: null },
+      ...opts.config,
     },
     now,
     onTick: async () => {

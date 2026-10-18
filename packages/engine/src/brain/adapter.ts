@@ -202,7 +202,7 @@ export class BrainAdapter implements Brain {
     return d ? this.engineIdFor(d) : brainId;
   }
 
-  private toEngineBusiness(b: CoreBusiness): Business & { phone?: string; a2a_card_url?: string } {
+  private toEngineBusiness(b: CoreBusiness): Business & { phone?: string; a2a_card_url?: string; best_channel?: CoreBusiness["best_channel"] } {
     const id = this.engineIdFor(b);
     const simulated = b.simulated ?? b.source === "haggle-directory";
     this.engine.set(id, { business_id: id, name: b.name, ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), simulated });
@@ -210,6 +210,8 @@ export class BrainAdapter implements Brain {
       business_id: id, slug: slugify(b.name), name: b.name, email: b.email ?? "", source: "agent", simulated,
       ...(b.found_at ? { found_at: b.found_at } : { found_at: b.source }), ...(b.phone ? { phone: b.phone } : {}),
       ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}),
+      // The brain's channel (e.g. "imessage" for a business the operator set to be texted) reaches deal().
+      best_channel: b.best_channel,
     };
   }
 }

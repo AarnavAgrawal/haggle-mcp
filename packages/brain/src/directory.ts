@@ -5,12 +5,14 @@
  */
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { Business, type Channel } from "@haggle/core";
+import { Business, Channel } from "@haggle/core";
 import defaults from "../../../fixtures/brain/directory.json" with { type: "json" };
 
 export const DirectoryEntry = Business.omit({ best_channel: true }).extend({
   category: z.string(),
   area: z.string(),
+  /** Operator override: reach this business on this channel (e.g. "imessage" = text its phone) when it has that contact. */
+  prefer_channel: Channel.optional(),
 });
 export type DirectoryEntry = z.infer<typeof DirectoryEntry>;
 

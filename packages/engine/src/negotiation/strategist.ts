@@ -27,7 +27,8 @@ export type StrategyDecision = z.infer<typeof StrategyDecision>;
 
 export interface StrategyContext {
   what: string;
-  quantity: number;
+  /** Absent for requests that aren't counted ("fix a leak"). */
+  quantity?: number;
   targetUsd: number | null;
   hardLimit: boolean;
   quotes: { business_id: string; business: string; total_usd: number; deposit_usd: number | null; round: number; channel: string; value_score?: number; notes: string[] }[];
@@ -96,7 +97,7 @@ export function claudeStrategist(client: { messages: { parse: Anthropic["message
   return {
     async decide(plan, ctx) {
       const body = JSON.stringify({
-        order: { what: ctx.what, quantity: ctx.quantity, buyer_target_usd: ctx.targetUsd, target_is_hard_limit: ctx.hardLimit },
+        order: { what: ctx.what, quantity: ctx.quantity ?? null, buyer_target_usd: ctx.targetUsd, target_is_hard_limit: ctx.hardLimit },
         quotes: ctx.quotes,
         proposed_moves: plan.map((p) => ({ business_id: p.businessId, business: p.businessName, basis: p.basis, their_total_usd: p.theirTotalCents / 100, ask_total_usd: p.targetTotalCents / 100, round: p.round })),
       });

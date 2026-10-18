@@ -24,7 +24,9 @@ const EXTRACTIONS: Record<string, QuoteExtraction> = {
   "$0 total, it's on the house": { ...base, total_usd: 0, sources: [{ field: "total", source: "email body", excerpt: "$0 total" }] },
   "$500 total, $50 deposit": { ...base, total_usd: 500, deposit_usd: 50, sources: [{ field: "total", source: "email body", excerpt: "$500 total" }, { field: "deposit", source: "email body", excerpt: "$50 deposit" }] },
 };
-const extractor = { async extract(i: { bodyText: string }) { const x = EXTRACTIONS[i.bodyText]; if (!x) throw new Error("no extraction"); return structuredClone(x); } };
+// A text reply carries Haggle's last text as context; the extraction is keyed by the business's own words.
+const own = (t: string) => t.replace(/^\[Haggle's last text[^\n]*\n\[The business's reply\]: /, "");
+const extractor = { async extract(i: { bodyText: string }) { const x = EXTRACTIONS[own(i.bodyText)]; if (!x) throw new Error("no extraction"); return structuredClone(x); } };
 
 function engine(repo: Repository) {
   const texts: { to: string; text: string }[] = [];
@@ -42,11 +44,14 @@ const phone = () => `+1415${String(Math.floor(1_000_000 + Math.random() * 8_999_
 describe.each(PG_URL ? ["memory", "postgres"] : ["memory"])("replies without a total, no hard requirements (%s)", (backend) => {
   const repo = (): Repository => (backend === "postgres" ? (repos.push(new PostgresRepository(PG_URL!, { max: 2 })), repos.at(-1)!) : new InMemoryRepository());
 
+  // "$25 per person" for a request of 50: the merged validator works out a total from the stated
+  // parts (labelled computed, decision 11), so it is quoted with that total ("clarifying" while Haggle asks), still not approvable
+  // (delivery and tax unknown), and Haggle asks once for the exact all-in figure.
   it.each([
-    ["Sorry, we're fully booked that day.", "declined", false],
-    ["$25 per person", "responded", true],
-    ["$200 deposit to hold the date", "responded", true],
-  ])("%s → stored and read (stage %s), never 'unreadable'; asks for the total once when priced", async (text, stage, asks) => {
+    ["Sorry, we're fully booked that day.", "declined", false, null],
+    ["$25 per person", "clarifying", true, 1250],
+    ["$200 deposit to hold the date", "responded", true, null],
+  ])("%s → stored and read (stage %s), never 'unreadable'; asks for the total once when priced", async (text, stage, asks, total) => {
     const { engine: e, texts } = engine(repo());
     const biz = { name: "Corner Deli", phone: phone(), channel: "imessage" as const };
     const deal = await e.deal({ request: { what: "catering", quantity: 50, unit: "people", date: "2030-10-24", area: "San Francisco, CA", requirements: [] }, businesses: [biz] });
@@ -59,10 +64,11 @@ describe.each(PG_URL ? ["memory", "postgres"] : ["memory"])("replies without a t
     const msgs = await (e as unknown as { repo: Repository }).repo.listMessages(deal.job_id);
     expect(msgs.find((m) => m.direction === "in")!.parse_status).toBe("done");
     const q = board.quotes[0]!;
-    expect(q.total_usd).toBeNull();
+    expect(q.total_usd).toBe(total);
+    if (total !== null) expect(q.source).toMatch(/^computed/);
     expect(q.approvable).toBe(false);
     if (text.startsWith("$200")) expect(q.deposit_usd).toBe(200);
-    const followups = texts.filter((t) => /exact total|confirm/i.test(t.text));
+    const followups = texts.filter((t) => /exact (all-in )?total|confirm/i.test(t.text));
     expect(followups).toHaveLength(asks ? 1 : 0);
     if (asks) expect(followups[0]!.text.length).toBeLessThanOrEqual(159);
   });

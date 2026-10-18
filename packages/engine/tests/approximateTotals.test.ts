@@ -36,14 +36,19 @@ const EXTRACTIONS = new Map<string, QuoteExtraction>([
 ]);
 const extractor = {
   async extract(i: { bodyText: string }) {
-    const x = EXTRACTIONS.get(i.bodyText);
+    // A text reply carries Haggle's last text as context; the extraction is keyed by the business's own words.
+    const t = i.bodyText.replace(/^\[Haggle's last text[^\n]*\n\[The business's reply\]: /, "");
+    // An email is read without our quoted RFQ (cleanEmailBody): match it by the business's own lines.
+    const x = EXTRACTIONS.get(t) ?? [...EXTRACTIONS].find(([k]) => t.trim().length > 5 && k.startsWith(t.trim()))?.[1];
     if (!x) throw new Error("no extraction for this text");
     return structuredClone(x);
   },
 };
 
 function engine() {
-  let t = Date.parse("2030-01-01T10:00:00Z");
+  // Real time: the memory store stamps messages with the wall clock, and the collection window holds
+  // for a business Haggle just asked (chasedRecently) by comparing those stamps with the engine clock.
+  let t = Date.now();
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const sent: { to: string; bodyText: string }[] = [];
   const texts: { to: string; text: string }[] = [];
@@ -135,7 +140,8 @@ describe("approximate totals in a deal", () => {
 
     // One firm-total ask to Harbor, in its email thread; nothing new to the phone vendor (no call, no text).
     const ask = sent.filter((m) => m.to === HARBOR.email).at(-1)!;
-    expect(ask.bodyText).toMatch(/Could you confirm: your firm all-in total \(you said about \$1,300\) and the deposit\?/);
+    // The one batched follow-up (decision 12), carrying main's firm-total ask.
+    expect(ask.bodyText).toMatch(/Could you also tell us:\n- your firm all-in total \(you said about \$1,300\) and the deposit/);
     expect(calls).toHaveLength(1);
     expect(texts.filter((t) => t.to === MISSION.phone)).toHaveLength(0);
     expect(texts.filter((t) => t.to === SUNSET.phone)).toHaveLength(1); // the RFQ only: Sunset's quote is firm
@@ -146,7 +152,7 @@ describe("approximate totals in a deal", () => {
     await e.advanceJob(deal.job_id);
     board = await e.getQuotes(deal.job_id);
     const h2 = q("Harbor Table");
-    expect(h2).toMatchObject({ total_usd: 1250, deposit_usd: 200, round: 2, approvable: true });
+    expect(h2).toMatchObject({ total_usd: 1250, deposit_usd: 200, round: 1, approvable: true }); // a confirm-once revision stays round 1 (decision 16)
     expect(h2.total_approximate).toBeUndefined();
     expect(h2.flags).not.toContain("approximate_total");
     // An estimate was never a price: no "negotiated from" or savings against it.
@@ -187,7 +193,7 @@ describe("approximate totals in a deal", () => {
     await e.advanceJob(deal.job_id);
     board = await e.getQuotes(deal.job_id);
     const v2 = board.quotes.find((x) => x.status === "current")!;
-    expect(v2).toMatchObject({ total_usd: 900, round: 2, approvable: true });
+    expect(v2).toMatchObject({ total_usd: 900, round: 1, approvable: true });
     expect(v2.total_approximate).toBeUndefined();
     expect(v2.deposit_usd).toBeUndefined(); // still unknown: never 0
     expect(v2.evidence.total_usd?.source).toMatch(/confirmed firm by the business/);
