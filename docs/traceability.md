@@ -1,14 +1,41 @@
-# Haggle MVP: requirement traceability (calm-spark `0.5.0+ac3095a`, 2026-10-18)
+# Haggle MVP: requirement traceability (calm-spark `0.5.0+850b399`, 2026-10-18)
 
-Hosted: https://calm-spark-ck3qm.run.mcp-use.com/mcp (Manufact deployment `3ff49544`; rollback `047e0785` = c1d4516).
-Automated evidence: 372 unit/e2e tests (+1 skipped), 253 on Postgres, simulated purchase over MCP HTTP with two
+Hosted: https://calm-spark-ck3qm.run.mcp-use.com/mcp (Manufact deployment `c2d7a0c4` = 850b399; rollback `3ff49544` = ac3095a).
+Automated evidence: 386 unit/e2e tests (+1 skipped), 254 on Postgres (3 consecutive clean runs), simulated purchase over MCP HTTP with two
 restarts (`scripts/acceptance/sim-journey.sh`) 1/1, real-Claude strategist eval 4/4
-(`scripts/acceptance/strategy-eval.mts`), hosted read-only acceptance 26/26 (`scripts/acceptance/live-readonly.mjs`;
-no outreach, 0 Stripe PaymentIntents, no new calls or texts).
+(`scripts/acceptance/strategy-eval.mts`), real-model agent scenarios 6/6 on the hosted contract
+(`scripts/acceptance/agent-scenarios.mjs`, deal forced to dry_run), hosted read-only acceptance 30/30
+(`scripts/acceptance/live-readonly.mjs`; no outreach, 0 Stripe PaymentIntents, no new jobs, calls or texts).
 
 Status key: **DONE** = built, tested, and seen working on the hosted server with real channels.
 **BUILT, NOT LIVE** = built and tested (mock/Postgres/real-Claude), not yet witnessed live.
 **BLOCKED** = code done; waiting on a person, an authorization or a credential. **NOT IMPLEMENTED** = no code.
+
+## 0. P0 2026-10-18: an agent couldn't buy from a named vendor
+
+Claude.ai prompt: "drop-off catering for 25 people in San Francisco next week, 5 vegetarian, target $500 all-in.
+Use Mission Eats ONLY…". Claude found Mission Eats (LIVE, phone) but couldn't start the deal.
+
+**Root causes.**
+1. `deal.businesses[]` items required `email`, `phone` or `a2a_card_url`. A configured vendor couldn't be named, `discover` masks phones, and `business_profile` said "pass this business with its contact". The only way to start without contacts was to omit `businesses`, which contacts the whole roster. Claude rightly refused that.
+2. `business_profile("Mission Eats")` resolved to the seed-only `biz_mission_eats` (one synthetic Oct 11 $675 quote, 48%). Mission Eats' 4 real call quotes were under the contact-only id `biz_6c811a…` used before 0f1835f. The live brain also replayed seed samples and used them for estimates and price checks, and the seed directory could capture live identities by name.
+3. A related stall: "next week" had no representation. The model either asked the user for a day or invented one (Wed 12:00 in testing).
+
+| Requirement | Fix | Tests | Hosted evidence | Status / gap |
+|---|---|---|---|---|
+| Select a known vendor by name or stable ref; Haggle resolves the route | `businesses: ['Mission Eats']` (also `mission_eats`, slug, business id, legacy id) → `resolveVendors` (`apps/mcp/src/vendors.ts`) uses the configured contact and channel | `vendors.test.ts` (4 new), `journey.e2e.test.ts` (6 new) | live-readonly: dry run resolves exactly Mission Eats | DONE |
+| Strict scoping: one, a subset or the roster; unknown, ambiguous or not-ready names start nothing; no expansion | resolution is all-or-nothing; `unknown_business` / `ambiguous_business` / `vendor_not_ready` with the question to ask; allowlist and sender trust unchanged | same, plus `deal refuses a business outside the allowlist` | real Claude: Golden Grill (not ready) → nothing contacted, no substitution; Taco Palace → unknown | DONE (ambiguity: unit-tested only; the hosted roster has no ambiguous names) |
+| Prove who would be contacted without sending | `deal(dry_run: true)` → `would_contact` (no job, nothing sent) | e2e dry-run test | "dry runs started no deal" | DONE |
+| One identity across discover → business_profile → deal | `business_ref` on discover and profile; profile resolves through the roster; `profileIdFor` reads and extends memory under the older contact-only id when the name matches | `brainObserved.test.ts` (identity), e2e | profile: Mission Eats 4 real quotes, 95% (was 1 seed sample, 48%) | DONE |
+| Synthetic memory never presented as real | live brain `observed: true`: no seed replay, seed rows hidden, counts/prices recomputed from real quotes, seed directory not used for identity; mock keeps labelled samples | `brainObserved.test.ts` | live-readonly: profile has no seed rows; check_price sample 7 (was 16) | DONE |
+| Tools usable from ordinary language | instructions + `deal`, `discover`, `business_profile`, `ask` and llms.txt hints say names are enough and never to ask for a known vendor's contact | metadata asserts in e2e | real Claude 6/6 scenarios on the hosted contract | DONE |
+| "Next week" without stalling or inventing a day | `request.date_until`: email, call brief and iMessage say "any day Mon–Fri (flexible), which days work?"; reversed range refused | `callBrief.test.ts`, e2e | real Claude sends date + date_until, no time invented | DONE |
+| iMessage RFQ keeps its reference code | truncation shortens the description, never `HG-code` | `callBrief.test.ts` | — | DONE |
+
+**Related outstanding items.**
+- **P1:** Harbor Table's one real quote (job_dec51a) sits in a brain profile labelled "Haggle Test Seller", the old HAGGLE_DEMO_FLEET name for the same mailbox. Name matching can't attach it to Harbor Table. Fixing it means relabelling one Supabase row, a production data write that needs approval.
+- **P2:** per-channel contact learning (`learnContact`) reads messages by engine business id, so earlier jobs under contact-only ids aren't counted.
+- **P2:** if a profile ever mixes seed and real rows, its menu and minimum still carry seed text. Its counts and prices are recomputed. No live profile is mixed today.
 
 ## 1. Discovery, identity, channel routing and learning
 

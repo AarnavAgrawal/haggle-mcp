@@ -64,7 +64,7 @@ The same phone can't play two vendors in one deal (the second is shown as blocke
 Evidence to keep: job id, board screenshots (start, quotes, paid), the email thread, the iMessage thread (numbers
 redacted), the call transcript on the board, the Stripe test PaymentIntent id, and the `ask` output.
 
-## Status (calm-spark ac3095a, 2026-10-18)
+## Status (calm-spark 850b399, 2026-10-18)
 
 Full requirement-by-requirement matrix: `docs/traceability.md`.
 
