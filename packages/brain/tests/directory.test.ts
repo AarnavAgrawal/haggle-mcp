@@ -29,6 +29,16 @@ describe("directory overrides", () => {
     expect(normalizeArea("YC HQ, 680 Folsom St, San Francisco, CA")).toBe("san francisco");
   });
 
+  it("a business the operator marks to text is offered by text, without its email; the rest are unchanged", async () => {
+    const directory = loadDirectory(undefined, JSON.stringify([{ id: "biz_golden_grill", phone: "+14085550123", prefer_channel: "imessage" }]));
+    const found = await createBrain({ store: new MemoryStore(), directory }).discover("catering", "San Francisco", 6);
+    const grill = found.find((b) => b.name === "Golden Grill")!;
+    expect(grill).toMatchObject({ best_channel: "imessage", phone: "+14085550123" });
+    expect(grill.email).toBeUndefined();
+    expect(found.find((b) => b.name === "Harbor Table")).toMatchObject({ best_channel: "email", email: "harbor-table-sf@inkboxmail.com" });
+    expect(found.find((b) => b.name === "Mission Eats")?.best_channel).toBe("phone");
+  });
+
   it("refuses a malformed inline directory with a clear error", () => {
     expect(() => loadDirectory(undefined, "{not json")).toThrow(/HAGGLE_DIRECTORY_JSON/);
   });

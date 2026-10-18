@@ -56,7 +56,8 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
     expect(ready.recommended_quote_id).toBe(bay.quote_id);
     expect(bay).toMatchObject({ total_usd: 995, negotiated_from: 1150, round: 2, deposit_usd: 5, meets_requirements: true, source: "quote.json" });
     const names = (id: string) => ready.business_names[id];
-    expect(ready.rejected.map((r) => [names(r.business_id), r.reason])).toEqual(expect.arrayContaining([["Golden Grill", "requirement_unmet"], ["QuickQuote Deli", "external_payment_link"]]));
+    // Only the unsafe quote is rejected; Golden Grill (misses a requirement) is still an option, flagged.
+    expect(ready.rejected.map((r) => [names(r.business_id), r.reason])).toEqual([["QuickQuote Deli", "external_payment_link"]]);
     const harbor = ready.quotes.find((q) => q.business === "Harbor Table")!;
     expect(harbor.flags).toContain("hidden_deposit");
     expect(harbor.total_usd).toBe(1008);
@@ -179,8 +180,9 @@ describe("v5 channels and deal board (mock mode)", { timeout: 60_000 }, () => {
     expect(biz("Bay Catering")).toMatchObject({ channel: "email", status: "quoted" });
     const q = (name: string) => ready.quotes.find((x) => x.business === name)!;
     expect(q("Bay Catering")).toMatchObject({ verdict: "compliant", eligible: true });
-    // Flagged and not recommended, but not "rejected": only safety rejects.
-    expect(q("Golden Grill")).toMatchObject({ verdict: "incomplete", eligible: false, excluded_reason: "does not meet every hard requirement" });
+    // Flagged and not recommended, but still an option: only safety rejects.
+    expect(q("Golden Grill")).toMatchObject({ verdict: "incomplete", eligible: true, meets_requirements: false });
+    expect(q("Golden Grill").excluded_reason).toBeUndefined();
     expect(q("QuickQuote Deli")).toMatchObject({ verdict: "rejected", eligible: false });
     expect(q("QuickQuote Deli").excluded_reason).toMatch(/external link/);
     // Every counteroffer cites a real, eligible, current quote; the phone business is cited, not countered.

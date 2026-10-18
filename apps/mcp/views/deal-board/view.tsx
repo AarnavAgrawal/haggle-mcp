@@ -1,29 +1,41 @@
 /**
- * Deal board (deal, get_quotes, open_haggle): what was asked, who Haggle contacted on which channel
- * and what each said, the quotes with what is and isn't stated, the negotiation step by step, the
- * recommendation and why, and the human's approve → pay → receipt steps.
+ * Deal board (deal draws it once through deal-live; open_haggle re-opens it on request): what was asked,
+ * who Haggle contacted on which channel and what each said (each thread opens inline), the quotes with
+ * what is and isn't stated, the negotiation step by step, the recommendation and why, and the human's
+ * choose → approve → pay → receipt steps on any safe option.
  *
- * Renders only board fields (DealBoard + apps/mcp/src/views.ts DealBoardPlus); every action is an
- * MCP tool call and the server decides. Nothing here infers a price, a winner or a payment.
+ * Renders only board fields (DealBoard + apps/mcp/src/views.ts DealBoardPlus); every action is an MCP
+ * tool call and the server decides. Nothing here infers a price, a winner or a payment. Approving
+ * charges nothing: a separate Pay does (decision 2). One board per deal: it refreshes itself
+ * (wait_for_update long-poll, then get_quotes) and tells the model its state through ModelContext; it
+ * posts into the chat only from buttons labelled "Ask your assistant:".
  */
 import { ModelContext, useCallTool, useDisplayMode, useOpenExternal, useSendFollowUp, useToolContext } from "mcp-use/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { DealBoard as CoreDealBoard, DealBoardBusiness, DealBoardOrEmpty as CoreDealBoardOrEmpty, OpenQuestion, Quote } from "@haggle/core";
+import type {
+  Conversation, ConversationEntry, DealBoard as CoreDealBoard, DealBoardBusiness, DealBoardOrEmpty as CoreDealBoardOrEmpty, OpenQuestion, Quote as CoreQuote,
+} from "@haggle/core";
 import {
   ChannelBadge, FlagChip, ModeBadge, Shell, Skeleton, ToolErrorNote, VerdictChip, isApproximate, isRiskFlag, payNow, payWords, relativeTime, toolErrorText, usd, viewTicket,
 } from "../_shared/ui.tsx";
+import { formatField, parseToolError } from "../_shared/format.ts";
+import { EntryList, Reply, mergeEntries } from "../conversation/thread.tsx";
+import { approvalBlock, boardContext, choiceFor, choosableCount, isUnsafe, negotiationLine, negotiationWarning, replaceableApproval, type Choice } from "./options.ts";
 import "./view.css";
 
-const TERMINAL = new Set(["paid", "cancelled", "failed"]);
+const TERMINAL = new Set(["paid", "confirmed", "cancelled", "failed"]);
 const POLL_MS = 4000;
 const RETRY_MS = 10_000;
 
 type Sync = { at: number | null; trouble: boolean };
 
+/** A board quote: a total the business never stated is null with total_known: false (never $0). */
+type Quote = Omit<CoreQuote, "total_usd"> & { total_usd: number | null };
+
 /** Server additions to the shared board (apps/mcp/src/views.ts DealBoardPlus); all optional. */
 type Stage = { stage: string; negotiation: string; first_total_usd?: number; current_total_usd?: number; quote_version?: number; saved_usd?: number };
 type Extras = {
-  request_details?: { what: string; headcount: number; when: string; place: string; requirements: string[]; budget_usd: number | null; budget_source?: "request" | "settings_default" };
+  request_details?: { what: string; headcount?: number; when: string; place: string; requirements: string[]; budget_usd: number | null; budget_source?: "request" | "settings_default" };
   payment_ceiling_usd?: number;
   payments_enabled?: boolean;
   quote_status?: Record<string, { approvable: boolean; approximate?: boolean; block?: { code: string; reason: string } }>;
@@ -47,11 +59,14 @@ type Extras = {
   contact_learning?: Record<string, { channels: Record<string, { contacted_jobs: number; replied_jobs: number; quotes: number; median_reply_minutes?: number }>; stated_preference?: { channel: string; excerpt: string } }>;
   terms?: Record<string, { fees?: { label: string; amount_usd?: number; included: boolean | null; excerpt: string }[]; deposit_terms?: string | null; cancellation?: string | null; exclusions?: string[] }>;
 };
-type DealBoard = CoreDealBoard & Extras;
-type DealBoardOrEmpty = CoreDealBoardOrEmpty & Extras;
+type DealBoard = Omit<CoreDealBoard, "quotes"> & { quotes: Quote[] } & Extras;
+type DealBoardOrEmpty = Omit<CoreDealBoardOrEmpty, "quotes"> & { quotes: Quote[] } & Extras;
+
+/** The business stated a total (null or total_known: false means unknown: shown as "total not stated", never $0). */
+const hasTotal = (q: Quote): q is Quote & { total_usd: number } => q.total_usd !== null && q.total_known !== false;
 
 export default function DealBoardView() {
-  const ctx = useToolContext<"get_quotes">();
+  const ctx = useToolContext<"open_haggle">();
   const refresh = useCallTool("get_quotes");
   const wait = useCallTool("wait_for_update");
   const [live, setLive] = useState<DealBoard | null>(null);
@@ -74,7 +89,8 @@ export default function DealBoardView() {
     if (jobId) void reload(jobId).catch(() => {}); // the poll below reports lasting trouble
   }, [jobId, reload]);
 
-  // Live updates: wait for a change, then re-read the board. Stops when the job ends.
+  // Live updates: wait for a change, then re-read the board. Runs in every non-terminal state
+  // (awaiting approval included) and keeps retrying after host errors. Stops when the job ends.
   useEffect(() => {
     if (!jobId || !active) return;
     let stopped = false;
@@ -122,15 +138,10 @@ export default function DealBoardView() {
     );
   }
 
+  const changed = () => reload(board.job.id).catch(() => setSync((s) => ({ ...s, trouble: true })));
   return (
     <Shell>
-      <Board
-        board={board}
-        sync={sync}
-        refreshing={refresh.isPending}
-        onRefresh={() => void reload(board.job.id).catch(() => setSync((s) => ({ ...s, trouble: true })))}
-        onChanged={() => reload(board.job.id).catch(() => setSync((s) => ({ ...s, trouble: true })))}
-      />
+      <Board board={board} sync={sync} refreshing={refresh.isPending} onRefresh={() => void changed()} onChanged={changed} />
     </Shell>
   );
 }
@@ -220,26 +231,42 @@ function Blockers({ setup, open = false }: { setup: NonNullable<Extras["setup"]>
   );
 }
 
+/**
+ * A button that sends a message to the assistant in the chat, on the human's click only. Always
+ * labelled as such: the board never posts into the chat by itself.
+ */
+function ChatButton({ prompt, children, primary }: { prompt: string; children: ReactNode; primary?: boolean }) {
+  const followUp = useSendFollowUp();
+  const [failed, setFailed] = useState(false);
+  return (
+    <button
+      className={`hg-btn${primary ? " hg-btn-primary" : ""}`}
+      title={`Sends this message to your assistant: “${prompt}”`}
+      onClick={() => void followUp({ prompt }).then(() => setFailed(false)).catch(() => setFailed(true))}
+    >
+      {children}
+      {failed && <span className="db-err"> (couldn't send; type it in the chat)</span>}
+    </button>
+  );
+}
+
 /** open_haggle before any deal: what Haggle does and two ways to start. */
 function Welcome({ mode, setup }: { mode?: "mock" | "live"; setup?: Extras["setup"] }) {
-  const followUp = useSendFollowUp();
-  const ask = (prompt: string) => void followUp({ prompt }).catch(() => {});
   return (
     <div className="db db-welcome">
       <header className="db-head">
         <div className="db-title">
           <h1>Haggle</h1>
-          <p className="hg-muted">No deals yet. Tell your agent what to buy: Haggle contacts businesses by email, phone, iMessage or A2A, compares real quotes, and pays a deposit only after you approve.</p>
+          <p className="hg-muted">No deals yet. Tell your agent what to buy: Haggle contacts businesses by email, phone, text or A2A, compares real quotes, and pays only after you approve.</p>
         </div>
         <ModeBadge mode={mode} />
       </header>
       <div className="db-welcome-actions">
-        <button className="hg-btn hg-btn-primary" onClick={() => ask("Use Haggle to get catering quotes for 200 people next Saturday at noon at the YC office in San Francisco, 40 vegetarian, budget $5,000.")}>
+        <span className="db-chat-hint hg-muted">Ask your assistant:</span>
+        <ChatButton primary prompt="Use Haggle to get catering quotes for 200 people next Saturday at noon at the YC office in San Francisco, 40 vegetarian, budget $5,000.">
           Start a catering deal
-        </button>
-        <button className="hg-btn" onClick={() => ask("Use Haggle's ask tool for an instant estimate: lunch catering for 40 in San Francisco.")}>
-          Instant estimate
-        </button>
+        </ChatButton>
+        <ChatButton prompt="Use Haggle's ask tool for an instant estimate: lunch catering for 40 in San Francisco.">Instant estimate</ChatButton>
       </div>
       {setup && <Blockers setup={setup} />}
     </div>
@@ -261,10 +288,12 @@ const PHASES: { key: Phase; label: string }[] = [
 
 const NEGOTIATING_STAGES = new Set(["countered", "vendor_revised", "held_firm"]);
 const ACTIVE_APPROVAL = (s?: string) => !!s && (s.startsWith("pending") || s === "approved" || s === "used");
+const PROCESSING = ["charging", "sent", "signed", "awaiting_invoice", "invoice_received"];
 
 function facts(board: DealBoard) {
-  const approval = board.approval && ACTIVE_APPROVAL(board.approval.status) ? board.approval : null;
-  const approved = approval && (approval.status === "approved" || approval.status === "used") ? approval : null;
+  const confirmed = board.job.state === "confirmed" && board.approval ? board.approval : null;
+  const approval = board.approval && (ACTIVE_APPROVAL(board.approval.status) || confirmed) ? board.approval : null;
+  const approved = approval && (approval.status === "approved" || approval.status === "used" || confirmed) ? approval : null;
   const settled = approved && board.payment?.status === "settled" ? board.payment : null;
   const recommended = board.quotes.find((q) => q.quote_id === board.recommended_quote_id);
   const focus = (approval ? board.quotes.find((q) => q.quote_id === approval.quote_id) : undefined) ?? recommended;
@@ -275,55 +304,66 @@ function facts(board: DealBoard) {
 
   // Current step, from real state only.
   let at: number;
-  if (settled) at = PHASES.length; // all done
+  if (settled || confirmed) at = PHASES.length; // all done
   else if (approved) at = 5; // pay
   else if (approval || board.ready) at = 4; // approve (recommendation made)
   else if (negotiated) at = 2;
   else if (board.quotes.length > 0) at = 1;
   else at = 0;
-  return { approval, approved, settled, recommended, focus, negotiated, counterPending, waiting, at };
+  return { approval, approved, confirmed, settled, recommended, focus, negotiated, counterPending, waiting, at };
 }
+type Facts = ReturnType<typeof facts>;
 
 /** One sentence: where the deal is and whose move it is. */
-function headline(board: DealBoard, f: ReturnType<typeof facts>): { text: string; tone: "info" | "you" | "done" | "risk" } {
+function headline(board: DealBoard, f: Facts): { text: string; tone: "info" | "you" | "done" | "risk" } {
   const n = board.businesses.length;
   if (board.job.state === "failed") return { text: "This deal stopped with an error. Nothing was paid.", tone: "risk" };
   if (board.job.state === "cancelled") return { text: "This deal was cancelled. Nothing was paid.", tone: "risk" };
   const q = f.focus;
+  if (f.confirmed && q) return { text: `Confirmed ${q.business}: the business was told to go ahead. Nothing was paid.`, tone: "done" };
   if (f.settled && q) return { text: `Paid ${payWords(payNow(q))} to ${q.business}${board.payment?.simulated ? " (simulated, no money moved)" : ""}.`, tone: "done" };
   if (f.approved && q) {
     if (board.payments_enabled === false) return { text: `You approved ${q.business}. Payments are off on this server, so nothing will be charged.`, tone: "info" };
-    return { text: `You approved ${q.business}. Next: pay the ${payWords(payNow(q))}.`, tone: "you" };
+    return { text: `You approved ${q.business}. Nothing is charged yet: next, pay the ${payWords(payNow(q))}.`, tone: "you" };
   }
-  if (f.approval && q) return { text: `Waiting for your approval of ${q.business}'s ${usd(q.total_usd)} quote.`, tone: "you" };
+  if (f.approval && q) {
+    return replaceableApproval(board)
+      ? { text: `Quotes are final. Haggle texted you its recommendation, ${q.business} at ${usd(q.total_usd)}: approve it, or choose any other safe option.`, tone: "you" }
+      : { text: `Waiting for your approval of ${q.business}'s ${usd(q.total_usd)} quote.`, tone: "you" };
+  }
   if (board.ready && q) {
     const blocked = approveBlocker(q, board);
     return blocked
       ? { text: `Quotes are final. Haggle recommends ${q.business} at ${isApproximate(q) ? `about ${usd(q.total_usd)}` : usd(q.total_usd)}, but it can't be approved yet: ${blocked.short}.`, tone: "you" }
-      : { text: `Quotes are final. Haggle recommends ${q.business} at ${usd(q.total_usd)}; approve to pay the ${payWords(payNow(q))}.`, tone: "you" };
+      : { text: `Quotes are final. Haggle recommends ${q.business} at ${usd(q.total_usd)}: approve it, then pay the ${payWords(payNow(q))}. You can also choose any other safe option.`, tone: "you" };
   }
   if (board.open_questions.length) return { text: `${board.open_questions.length === 1 ? `${board.open_questions[0]!.business} asked a question` : `${board.open_questions.length} businesses asked questions`}: answer below so they can quote.`, tone: "you" };
   if (f.negotiated) {
     return { text: f.counterPending ? `Negotiating: ${f.counterPending} counteroffer${f.counterPending > 1 ? "s" : ""} sent, waiting for the answer${f.counterPending > 1 ? "s" : ""}.` : "Negotiating with the businesses that quoted.", tone: "info" };
   }
-  if (board.quotes.length) return { text: `${board.quotes.length} quote${board.quotes.length > 1 ? "s" : ""} in from ${n} contacted${f.waiting ? `; waiting on ${f.waiting}` : ""}. No recommendation until quotes are final.`, tone: "info" };
+  if (board.quotes.length) return { text: `${board.quotes.length} quote${board.quotes.length > 1 ? "s" : ""} in from ${n} contacted${f.waiting ? `; waiting on ${f.waiting}` : ""}. Haggle recommends once quotes are final.`, tone: "info" };
   if (n) return { text: `Contacted ${n} business${n > 1 ? "es" : ""}. No replies with a price yet.`, tone: "info" };
   return { text: "Starting the deal.", tone: "info" };
 }
 
+const BLOCK_SHORT: Record<string, string> = {
+  total_not_firm: "the total is approximate",
+  over_cap: "it is over the per-payment ceiling",
+  no_total: "it has no total yet",
+  zero_total: "it has no real total",
+  all_in_unknown: "the all-in total isn't confirmed",
+  missing_info: "a required answer is missing",
+};
+
 /**
- * Why the Approve button would certainly be refused, from fields the server sent (a rough total, or a
- * pay-now amount over the per-payment ceiling). The server still decides; this only avoids a dead tap.
+ * Why approving this quote would certainly be refused: the server's decision (quote_status), no total
+ * or an approximate one, or (older servers) a pay-now amount over the per-payment ceiling. The server
+ * still decides; this only avoids a dead tap and says why.
  */
 function approveBlocker(q: Quote, board: DealBoard): { short: string; long: string } | null {
-  // The server's decision when it sent one (approvable + the reason in its words); else the local check.
-  const st = board.quote_status?.[q.quote_id];
-  if (st) {
-    if (st.approvable) return null;
-    const short = st.block?.code === "total_not_firm" ? "the total is approximate" : st.block?.code === "over_cap" ? "it is over the per-payment ceiling" : st.block?.code === "zero_total" ? "it has no real total" : "it can't be approved";
-    return { short, long: st.block?.reason ?? "The server says this quote can't be approved yet." };
-  }
-  if (isApproximate(q)) return { short: "the total is approximate", long: `${q.business} gave an approximate total. It can be approved once they confirm a firm one.` };
+  const block = approvalBlock(board, q);
+  if (block) return { short: BLOCK_SHORT[block.code] ?? "it can't be approved yet", long: block.reason };
+  if (board.quote_status?.[q.quote_id]) return null; // the server checked the ceiling too
   const now = payNow(q);
   const ceiling = board.payment_ceiling_usd;
   if (board.payments_enabled !== false && ceiling !== undefined && now.amount > ceiling) {
@@ -357,6 +397,7 @@ function bizStatus(b: DealBoardBusiness, board: DealBoard): { label: string; ton
     case "final": return priced("Final quote");
     case "excluded": return { label: "Excluded", tone: "out" };
     case "buyer_approved": return priced("You approved", "done");
+    case "confirmed": return priced("Confirmed", "done");
     case "paid": return priced("Paid", "done");
     case "no_reply": return { label: "No reply", tone: "out" };
     case "unreachable": return { label: "Can't reach", tone: "out" };
@@ -381,13 +422,12 @@ function bizStatus(b: DealBoardBusiness, board: DealBoard): { label: string; ton
 
 function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealBoard; sync: Sync; refreshing: boolean; onRefresh: () => void; onChanged: () => Promise<void> }) {
   const { displayMode, availableDisplayModes, requestDisplayMode } = useDisplayMode();
-  const followUp = useSendFollowUp();
   const fullscreen = displayMode === "fullscreen";
   const canFullscreen = availableDisplayModes.includes("fullscreen");
   const f = facts(board);
   const head = headline(board, f);
-  const ask = (prompt: string) => void followUp({ prompt }).catch(() => {});
   const others = board.quotes.filter((q) => q.quote_id !== f.focus?.quote_id);
+  const options = choosableCount(board);
   const notes = [
     ...(board.not_contacted ?? []).map((n) => `Not contacted: ${n.business} (${n.channel}): ${n.reason}`),
     ...(board.warnings ?? []),
@@ -395,15 +435,14 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
 
   return (
     <div className={`db${fullscreen ? " db-full" : ""}`}>
-      <ModelContext
-        content={`Haggle deal board for ${board.job.id}: ${head.text} ${board.quotes.length} quote(s); ${board.open_questions.length} open question(s).`}
-      />
+      <ModelContext content={`${boardContext(board, board.recommended_quote_id)} Now: ${head.text}`} />
       <Header board={board} fullscreen={fullscreen} canFullscreen={canFullscreen} onToggle={() => void requestDisplayMode({ mode: fullscreen ? "inline" : "fullscreen" }).catch(() => {})} />
 
       <Stepper board={board} f={f} />
       <p className={`db-headline db-headline-${head.tone}`} aria-live="polite">
         {head.text}
       </p>
+      <NegotiationNow board={board} />
       {board.recommendation_note && board.ready && !f.approved && <p className="db-note">{board.recommendation_note}</p>}
       {board.payments_enabled === false && !f.approved && <p className="db-note">Payments are off on this server: you can approve, but nothing can be charged.</p>}
       {board.setup && <Blockers setup={board.setup} />}
@@ -424,9 +463,12 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
           {others.length > 0 && (
             <section aria-label="Other quotes">
               <h2 className="db-h2">{f.focus ? "Other quotes" : "Quotes"}</h2>
+              {options > 1 && !TERMINAL.has(board.job.state) && (
+                <p className="db-ladder-note hg-muted">{options} options you can choose. Haggle recommends one; any of them can be chosen.</p>
+              )}
               <ol className="db-quotes">
                 {others.map((q) => (
-                  <QuoteRow key={q.quote_id} quote={q} board={board} />
+                  <QuoteRow key={q.quote_id} quote={q} board={board} onChanged={onChanged} />
                 ))}
               </ol>
             </section>
@@ -456,40 +498,36 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
 
       <footer className="db-foot">
         <p className="db-sync hg-muted" aria-live="polite">
-          {sync.trouble ? "Reconnecting…" : sync.at ? `Updated ${relativeTime(new Date(sync.at).toISOString())}` : TERMINAL.has(board.job.state) ? "" : "Live"}
+          {sync.trouble ? "Reconnecting…" : TERMINAL.has(board.job.state) ? (sync.at ? `Updated ${relativeTime(new Date(sync.at).toISOString())}` : "") : "Live · updates by itself"}
           <button className="db-link" onClick={onRefresh} disabled={refreshing}>
             {refreshing ? "Refreshing…" : "Refresh"}
           </button>
         </p>
         <div className="db-foot-actions">
-          {board.quotes.length > 1 && !f.settled && (
-            <button className="hg-btn" onClick={() => ask(`Compare the quotes on Haggle job ${board.job.id} and tell me which one to approve and why.`)}>
-              Compare quotes
-            </button>
+          <span className="db-chat-hint hg-muted">Ask your assistant:</span>
+          {board.quotes.length > 1 && !TERMINAL.has(board.job.state) && (
+            <ChatButton prompt={`Compare the quotes on Haggle job ${board.job.id} and tell me which one to choose and why.`}>Compare quotes</ChatButton>
           )}
-          {f.focus && f.settled && (
-            <button className="hg-btn" onClick={() => ask(`Show what Haggle learned about ${f.focus!.business} (business_profile).`)}>
-              What Haggle learned
-            </button>
+          {f.focus && (f.settled || f.confirmed) && (
+            <ChatButton prompt={`Show what Haggle learned about ${f.focus.business} (business_profile).`}>What Haggle learned</ChatButton>
           )}
-          <button className="hg-btn" onClick={() => ask("Start another Haggle deal. Ask me what to buy, for how many, when and where.")}>
-            New deal
-          </button>
+          <ChatButton prompt="Start another Haggle deal. Ask me what to buy, for how many, when and where.">New deal</ChatButton>
         </div>
       </footer>
     </div>
   );
 }
 
-/** What was asked, exactly as the businesses were asked it. */
+/** What was asked, exactly as the businesses were asked it, and how the quotes are ranked. */
 function Header({ board, fullscreen, canFullscreen, onToggle }: { board: DealBoard; fullscreen: boolean; canFullscreen: boolean; onToggle: () => void }) {
   const d = board.request_details;
   const budget = d ? d.budget_usd : board.job.budget_usd ?? null;
   const reqs = d ? d.requirements : board.job.requirements;
+  const rankBy = board.job.compare_by && board.job.ask?.find((x) => x.key === board.job.compare_by!.field);
   return (
     <header className="db-head">
       <div className="db-title">
-        <h1>{d ? `${capitalize(d.what)} for ${d.headcount}` : capitalize(board.job.request)}</h1>
+        <h1>{d ? `${capitalize(d.what)}${d.headcount !== undefined ? ` for ${d.headcount}` : ""}` : capitalize(board.job.request)}</h1>
         {d && (
           <p className="db-when">
             {d.when} · {d.place}
@@ -506,12 +544,20 @@ function Header({ board, fullscreen, canFullscreen, onToggle }: { board: DealBoa
               <dd>{reqs.join("; ")}</dd>
             </div>
           )}
+          {rankBy && (
+            <div>
+              <dt>Ranked by</dt>
+              <dd>
+                {rankBy.label}, {board.job.compare_by!.direction === "min" ? "lowest" : "highest"} first
+              </dd>
+            </div>
+          )}
           <div>
             <dt>Payment</dt>
             <dd>
               {board.payments_enabled === false
                 ? "Off on this server"
-                : `Only after you approve${board.payment_ceiling_usd !== undefined ? `, up to ${usd(board.payment_ceiling_usd)} per payment` : ""}`}
+                : `Only after you approve, with Pay${board.payment_ceiling_usd !== undefined ? `, up to ${usd(board.payment_ceiling_usd)} per payment` : ""}`}
             </dd>
           </div>
         </dl>
@@ -529,7 +575,7 @@ function Header({ board, fullscreen, canFullscreen, onToggle }: { board: DealBoa
 }
 
 /** Contact → Quotes → Negotiate → Recommend → Approve → Pay, from board state only. */
-function Stepper({ board, f }: { board: DealBoard; f: ReturnType<typeof facts> }) {
+function Stepper({ board, f }: { board: DealBoard; f: Facts }) {
   const stopped = board.job.state === "failed" || board.job.state === "cancelled";
   const quotedBiz = new Set(board.quotes.map((q) => q.business_id)).size;
   const sub: Record<Phase, string> = {
@@ -538,7 +584,7 @@ function Stepper({ board, f }: { board: DealBoard; f: ReturnType<typeof facts> }
     negotiate: board.negotiation?.length ? `${board.negotiation.length} counter${board.negotiation.length > 1 ? "s" : ""}` : f.at > 2 ? "not needed" : "",
     recommend: f.at > 3 && f.recommended ? f.recommended.business : "",
     approve: f.approved ? "done" : f.approval ? "waiting" : f.at === 4 ? (f.focus && approveBlocker(f.focus, board) ? "blocked" : "your turn") : "",
-    pay: f.settled ? (board.payment?.simulated ? "simulated" : "paid") : f.approved ? "your turn" : "",
+    pay: f.confirmed ? "nothing to pay" : f.settled ? (board.payment?.simulated ? "simulated" : "paid") : f.approved ? "your turn" : "",
   };
   return (
     <ol className={`db-steps${stopped ? " is-stopped" : ""}`} aria-label="Deal progress">
@@ -556,13 +602,25 @@ function Stepper({ board, f }: { board: DealBoard; f: ReturnType<typeof facts> }
   );
 }
 
-// ---------------------------------------------------------------------------
-// The recommended (or approved) quote
+/** The live negotiation round: who will be called back when, who lowered, who matched. */
+function NegotiationNow({ board }: { board: DealBoard }) {
+  const line = negotiationLine(board, (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+  if (!line) return null;
+  return (
+    <p className="db-neg-live" aria-live="polite">
+      {line}
+    </p>
+  );
+}
 
-function Focus({ board, quote: q, f, onChanged }: { board: DealBoard; quote: Quote; f: ReturnType<typeof facts>; onChanged: () => Promise<void> }) {
+// ---------------------------------------------------------------------------
+// The recommended (or chosen) quote
+
+function Focus({ board, quote: q, f, onChanged }: { board: DealBoard; quote: Quote; f: Facts; onChanged: () => Promise<void> }) {
   const flash = useFlashOnChange(q.total_usd);
+  const [talk, setTalk] = useState(false);
   const mine = f.approval?.quote_id === q.quote_id;
-  const label = mine && f.settled ? "Paid" : mine && f.approved ? "Approved by you" : mine ? "Awaiting your approval" : board.ready ? "Recommended" : "Leading so far";
+  const label = mine && f.confirmed ? "Confirmed" : mine && f.settled ? "Paid" : mine && f.approved ? "Approved by you" : mine && replaceableApproval(board) ? "Recommended · texted to you" : mine ? "Awaiting your approval" : board.ready ? "Recommended" : "Leading so far";
   const why = valueWhy(q, board);
   const factors = board.value?.ranked.find((x) => x.quoteId === q.quote_id)?.factors.filter((x) => x.weight > 0) ?? [];
   const isRec = q.quote_id === board.recommended_quote_id;
@@ -575,15 +633,16 @@ function Focus({ board, quote: q, f, onChanged }: { board: DealBoard; quote: Quo
         <Total q={q} board={board} large />
       </div>
       <QuoteFacts q={q} board={board} />
+      {board.job.ask && board.job.ask.length > 0 && <AskFields quote={q} board={board} />}
       <NegTrail board={board} businessId={q.business_id} />
       {mine && !isRec && f.recommended && (
         <p className="db-hint hg-muted">
-          Haggle recommended {f.recommended.business} ({usd(f.recommended.total_usd)}); you approved this quote instead.
+          Haggle recommended {f.recommended.business} ({usd(f.recommended.total_usd)}); you chose this quote instead.
         </p>
       )}
       {isRec && (board.ready || mine) && (why || factors.length > 0) && (
         <div className="db-why-box">
-          <p className="db-why">{why ?? "Best value of the eligible quotes."}</p>
+          <p className="db-why">{why ?? "Best value of the quotes that can be approved."}</p>
           {factors.length > 0 && (
             <ul className="db-factors" aria-label="Why this score">
               {factors.map((x) => (
@@ -599,16 +658,16 @@ function Focus({ board, quote: q, f, onChanged }: { board: DealBoard; quote: Quo
       {q.items.length > 0 && <p className="db-items">Includes: {q.items.join(", ")}</p>}
       <Terms t={board.terms?.[q.quote_id]} />
       <Said board={board} q={q} />
-      {board.ready || mine ? (
-        <DealAction board={board} quote={q} onChanged={onChanged} />
-      ) : (
-        <p className="hg-muted db-hint">You can approve once Haggle has final quotes and makes a recommendation.</p>
-      )}
+      <ConversationToggle open={talk} onToggle={() => setTalk(!talk)} />
+      {talk && <ConversationPanel jobId={board.job.id} biz={board.businesses.find((b) => b.id === q.business_id)} businessId={q.business_id} business={q.business} onClose={() => setTalk(false)} />}
+      <QuoteAction board={board} quote={q} primary={isRec || mine} onChanged={onChanged} />
     </section>
   );
 }
 
+/** The total as stated: struck-through first price after a revision, ≈ when approximate, "total not stated" when unknown. */
 function Total({ q, board, large }: { q: Quote; board: DealBoard; large?: boolean }) {
+  if (!hasTotal(q)) return <span className={`db-total db-total-unknown${large ? " db-total-lg" : ""}`}>total not stated</span>;
   const st = board.stages?.[q.business_id];
   const revised = st?.negotiation === "vendor_revised" && st.first_total_usd !== undefined && st.first_total_usd > q.total_usd;
   const was = revised ? st!.first_total_usd : q.negotiated_from !== undefined && q.negotiated_from > q.total_usd ? q.negotiated_from : undefined;
@@ -624,12 +683,12 @@ function Total({ q, board, large }: { q: Quote; board: DealBoard; large?: boolea
 function QuoteFacts({ q, board }: { q: Quote; board: DealBoard }) {
   // Deposit gets its own words below; tax and delivery are listed when the business didn't say.
   const unknown = [q.tax_usd === undefined ? "tax" : null, q.delivery_usd === undefined ? "delivery" : null].filter(Boolean) as string[];
-  const overBudget = board.job.budget_usd !== undefined && q.total_usd > board.job.budget_usd;
+  const overBudget = hasTotal(q) && board.job.budget_usd !== undefined && q.total_usd > board.job.budget_usd;
   return (
     <>
       <div className="db-quote-meta">
         {q.per_unit_usd !== undefined && <span>{usd(q.per_unit_usd)} per person</span>}
-        {q.deposit_usd !== undefined ? <span>{usd(q.deposit_usd)} deposit</span> : <span className="db-unknown">Deposit not stated</span>}
+        {q.deposit_usd !== undefined && q.deposit_usd > 0 ? <span>{usd(q.deposit_usd)} deposit</span> : <span className="db-unknown">Deposit not stated</span>}
         {q.delivery_usd !== undefined && <span>{q.delivery_usd === 0 ? "Delivery included" : `Delivery ${usd(q.delivery_usd)}`}</span>}
         {q.tax_usd !== undefined && <span>{q.tax_usd === 0 ? "Tax included" : `Tax ${usd(q.tax_usd)}`}</span>}
         {unknown.length > 0 && <span className="hg-muted">{capitalize(unknown.join(" and "))} not stated</span>}
@@ -639,8 +698,9 @@ function QuoteFacts({ q, board }: { q: Quote; board: DealBoard }) {
         {q.flags.map((x) => (
           <FlagChip key={x} flag={x} />
         ))}
+        {q.missing_fields && q.missing_fields.length > 0 && <span className="hg-flag hg-tone-warn">Still owes: {q.missing_fields.join(", ")}</span>}
       </div>
-      {isApproximate(q) && <p className="db-warn-line">Approximate total: not approvable until {q.business} confirms a firm total.</p>}
+      {isApproximate(q) && <p className="db-warn-line">Approximate total: it can be chosen once {q.business} confirms a firm total.</p>}
     </>
   );
 }
@@ -662,7 +722,7 @@ function NegTrail({ board, businessId }: { board: DealBoard; businessId: string 
         const first = st?.first_total_usd;
         const answer =
           n.outcome_total_usd === null
-            ? { k: "Their answer", v: "waiting", cls: "is-wait" }
+            ? { k: "Their answer", v: n.scheduled_for ? "call scheduled" : "waiting", cls: "is-wait" }
             : st?.negotiation === "vendor_revised" && first !== undefined && n.outcome_total_usd < first
               ? { k: "They revised", v: `${usd(n.outcome_total_usd)}${st.saved_usd ? ` (−${usd(st.saved_usd)})` : ""}`, cls: "is-win" }
               : st?.negotiation === "held_firm"
@@ -684,10 +744,10 @@ function NegTrail({ board, businessId }: { board: DealBoard; businessId: string 
   );
 }
 
-/** The business's own words (never shown for flagged, unsafe replies; the server strips those). */
+/** The business's own words (never shown for unsafe replies; the server strips those too). */
 function Said({ board, q }: { board: DealBoard; q: Quote }) {
   const said = board.businesses.find((b) => b.id === q.business_id)?.transcript_snippet;
-  if (!said || q.flags.some(isRiskFlag)) return null;
+  if (!said || isUnsafe(board, q)) return null;
   return (
     <p className={`db-said db-said-${q.channel}`}>
       <span className="db-said-src">{q.channel === "phone" ? "On the call" : q.channel === "imessage" ? "Texted" : q.channel === "a2a" ? "Agent said" : "Wrote"}</span> {said}
@@ -707,23 +767,74 @@ function Terms({ t }: { t?: NonNullable<Extras["terms"]>[string] }) {
   return lines.length ? <ul className="db-terms">{lines.map((l) => <li key={l}>{l}</li>)}</ul> : null;
 }
 
-/** Approve → pay → receipt for the recommended (or approved) quote. The human taps; the model can't. */
-function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Quote; onChanged: () => Promise<void> }) {
-  const approve = useCallTool("approve");
+/** Custom asks: each answer under its ask label; the ranking answer (compare_by) is highlighted. */
+function AskFields({ quote: q, board }: { quote: Quote; board: DealBoard }) {
+  const rankKey = board.job.compare_by?.field;
+  return (
+    <dl className="db-fields">
+      {board.job.ask!.map((x) => {
+        const value = q.fields?.[x.key];
+        const cls = [x.key === rankKey && "is-rank", x.required && (value === null || value === undefined) && "is-missing"].filter(Boolean).join(" ");
+        return (
+          <div key={x.key} className={cls || undefined}>
+            <dt>{x.label}</dt>
+            <dd>{formatField(value, x.type)}</dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Choose → approve → pay (the human taps; the model can't)
+
+/** The action under one quote: choose it (with a confirm step), its approve → pay → receipt steps, or why it must wait. */
+function QuoteAction({ board, quote: q, primary, onChanged }: { board: DealBoard; quote: Quote; primary: boolean; onChanged: () => Promise<void> }) {
+  const choice = choiceFor(board, q);
+  if (choice.kind === "none") return null;
+  if (choice.kind === "held") return <DealAction board={board} quote={q} onChanged={onChanged} />;
+  if (choice.kind === "blocked") return <Blocked choice={choice} />;
+  const blocker = approveBlocker(q, board);
+  if (choice.kind === "unapprovable" || blocker) {
+    return (
+      <div className="db-approve">
+        <span className="db-blocked">Can't be chosen yet. {choice.kind === "unapprovable" ? choice.reason : blocker!.long}</span>
+      </div>
+    );
+  }
+  return <ChooseAction board={board} quote={q} choice={choice} primary={primary} onChanged={onChanged} />;
+}
+
+/** Another quote holds the job's one approval: a quiet button that says how to free it. */
+function Blocked({ choice }: { choice: Extract<Choice, { kind: "blocked" }> }) {
+  const [why, setWhy] = useState(false);
+  return (
+    <div className="db-approve">
+      <button className="hg-btn hg-btn-quiet" aria-expanded={why} onClick={() => setWhy(!why)}>
+        Choose this instead
+      </button>
+      {why && <span className="db-approve-hint db-blocked">{choice.reason}</span>}
+    </div>
+  );
+}
+
+/**
+ * The board's approval flow: choose_in_view starts (or reuses) a board-only approval for this exact
+ * quote (nothing texted or emailed), approve_in_view records the human's yes with the board's one-time
+ * code, and nothing is charged until the human taps Pay (pay charges the approved amount, once).
+ */
+function useApprovalFlow(board: DealBoard, q: Quote, onChanged: () => Promise<void>) {
+  const start = useCallTool("choose_in_view");
   const approveInView = useCallTool("approve_in_view");
   const pay = useCallTool("pay");
-  const openExternal = useOpenExternal();
   const [note, setNote] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const approval = board.approval?.quote_id === q.quote_id && ACTIVE_APPROVAL(board.approval.status) ? board.approval : null;
-  const payment = approval ? board.payment : null;
-  const busy = approve.isPending || approveInView.isPending || pay.isPending;
-  const now = payNow(q);
-  const words = payWords(now);
-  const blocker = approveBlocker(q, board);
+  const busy = start.isPending || approveInView.isPending || pay.isPending;
 
-  const act = async (fn: () => Promise<string | null>) => {
+  const run = async (fn: () => Promise<string | null>) => {
     setErr(null);
+    setNote(null);
     try {
       setNote(await fn());
     } catch (e) {
@@ -732,36 +843,109 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
     await onChanged();
   };
 
-  const onApprove = () =>
-    act(async () => {
-      const res = await approve.callTool({ job_id: board.job.id, quote_id: q.quote_id });
-      const a = res.structuredContent as { status?: string; reason?: string; channel?: string } | undefined;
-      if (!a) throw new Error(resultText(res) ?? "Approval was refused.");
+  // Board approvals are always "pay" approvals (decision 40); confirm-only stays with the agent (approve with action confirm).
+  const approve = () =>
+    run(async () => {
+      const res = await start.callTool({ job_id: board.job.id, quote_id: q.quote_id, action: "pay" });
       const ticket = viewTicket((res as { _meta?: Record<string, unknown> })._meta);
-      if (a.status === "pending_human" && ticket) {
-        const r = (await approveInView.callTool(ticket)).structuredContent as { status: string };
-        return r.status === "approved" ? null : `Approval is ${r.status}.`;
+      if (!ticket) {
+        const s = res.structuredContent as { status?: string } | undefined;
+        if (!s) throw new Error(resultText(res) ?? "The approval couldn't be started.");
+        return `Approval is ${s.status ?? "not available here"}.`;
       }
-      if (a.status === "pending_human") return a.channel === "imessage" ? "Approval texted to the approver: reply YES with the code." : a.reason ?? "Waiting for the approver.";
-      if (a.status === "refused") throw new Error(a.reason ?? "Approval refused.");
-      return null;
+      const r = (await approveInView.callTool(ticket)).structuredContent as { status: string; outcome?: string; reason?: string; next?: string } | undefined;
+      if (!r) throw new Error("The approval wasn't recorded.");
+      if (r.status !== "approved") return `Approval is ${r.status}.`;
+      if (r.outcome === "refused") throw new Error(r.reason ?? r.next ?? "Approved, but the deal can't go ahead; see the board.");
+      return null; // approved (then Pay) or confirmed: the board shows it
     });
 
-  const onPay = () =>
-    act(async () => {
-      const res = await pay.callTool({ job_id: board.job.id, quote_id: q.quote_id });
+  const payNowTap = () =>
+    run(async () => {
+      let res;
+      try {
+        res = await pay.callTool({ job_id: board.job.id, quote_id: q.quote_id });
+      } catch (e) {
+        if (parseToolError(e).code === "payment_refused_payment_in_flight") return "Payment is processing.";
+        throw e;
+      }
       const p = res.structuredContent as { status?: string; reason?: string } | undefined;
       if (!p) throw new Error(resultText(res) ?? "Payment was refused.");
       if (p.status === "refused") throw new Error(`Payment refused: ${p.reason ?? "see the deal board"}`);
       return p.status === "paid" ? null : "Payment is processing.";
     });
 
+  return { approve, pay: payNowTap, busy, approving: start.isPending || approveInView.isPending, paying: pay.isPending, note, err };
+}
+
+/** Choose a safe option: one tap shows its caveats and what happens, a second approves it (nothing is charged until Pay). */
+function ChooseAction({ board, quote: q, choice, primary, onChanged }: { board: DealBoard; quote: Quote; choice: Extract<Choice, { kind: "choose" }>; primary: boolean; onChanged: () => Promise<void> }) {
+  const flow = useApprovalFlow(board, q, onChanged);
+  const [confirming, setConfirming] = useState(false);
+  const warning = negotiationWarning(board);
+  const caveats = [
+    hasTotal(q) && board.job.budget_usd !== undefined && q.total_usd > board.job.budget_usd ? `${usd(q.total_usd - board.job.budget_usd)} over budget` : null,
+    q.flags.includes("requirement_unmet") ? "misses a requirement" : !q.meets_requirements || q.flags.includes("requirement_unknown") ? "not every requirement confirmed" : null,
+    q.missing_fields?.length ? `still owes ${q.missing_fields.join(", ")}` : null,
+    !board.ready && !warning ? "quotes aren't final yet" : null,
+  ].filter(Boolean);
+  return (
+    <div className="db-approve">
+      {confirming ? (
+        <>
+          <button className="hg-btn hg-btn-primary" disabled={flow.busy} onClick={() => void flow.approve().finally(() => setConfirming(false))}>
+            {flow.approving ? "Approving…" : `${choice.confirm} to ${q.business}`}
+          </button>
+          <button className="hg-btn hg-btn-quiet" disabled={flow.busy} onClick={() => setConfirming(false)}>
+            Cancel
+          </button>
+          <span className="hg-muted db-approve-hint">
+            {hasTotal(q) ? `${usd(q.total_usd)} order total. ` : ""}
+            Approving charges nothing: you pay the {payWords({ amount: choice.amount, deposit: choice.deposit })} with Pay next.
+            {caveats.length ? ` Heads up: ${caveats.join(", ")}.` : ""}
+            {choice.replaces && choice.replaces !== q.business ? ` Replaces the ${choice.replaces} suggestion Haggle texted you.` : ""}
+          </span>
+          {warning && <span className="db-approve-hint db-warn-hint">{warning}</span>}
+        </>
+      ) : (
+        <>
+          <button className={`hg-btn${primary ? " hg-btn-primary" : ""}`} disabled={flow.busy} onClick={() => setConfirming(true)}>
+            {flow.busy ? "Working…" : choice.label}
+          </button>
+          {primary && <span className="hg-muted db-approve-hint">Only you can choose; your agent can't.</span>}
+        </>
+      )}
+      {flow.note && <span className="db-status">{flow.note}</span>}
+      {flow.err && (
+        <span className="db-err" role="alert">
+          {flow.err}
+        </span>
+      )}
+    </div>
+  );
+}
+
+const approvedBy = (channel: string) =>
+  channel === "imessage" || channel === "sms" || channel === "text" ? " by text" : channel === "email" ? " by email" : channel === "simulated" ? " (simulated, demo)" : " by you";
+
+/** Approve → pay → receipt for the quote that holds the job's approval. The human taps; the model can't. */
+function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Quote; onChanged: () => Promise<void> }) {
+  const flow = useApprovalFlow(board, q, onChanged);
+  const openExternal = useOpenExternal();
+  const approval = board.approval?.quote_id === q.quote_id ? board.approval : null;
+  const payment = approval ? board.payment : null;
+  const now = payNow(q);
+  const words = payWords(now);
+
   let body: ReactNode;
-  if (payment?.status === "settled") {
+  if (approval && board.job.state === "confirmed") {
+    // A confirm-only approval: the order went ahead, nothing was paid.
+    body = <span className="db-approved">Confirmed: the business was told to go ahead (nothing paid)</span>;
+  } else if (payment?.status === "settled") {
     body = (
       <>
         <span className="db-paid">
-          {words} paid{now.deposit ? ` of the ${usd(q.total_usd)} total` : ""} · {payment.simulated ? "simulated (demo), no money moved" : "Stripe test mode"}
+          {words} paid{now.deposit && hasTotal(q) ? ` of the ${usd(q.total_usd)} total` : ""} · {payment.simulated ? "simulated (demo), no money moved" : "Stripe test mode"}
         </span>
         {payment.receipt_url && (
           <button className="hg-btn" onClick={() => void openExternal({ url: payment.receipt_url! }).catch(() => {})}>
@@ -770,12 +954,12 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
         )}
       </>
     );
-  } else if (payment && ["charging", "sent", "signed", "awaiting_invoice", "invoice_received"].includes(payment.status)) {
+  } else if (payment && PROCESSING.includes(payment.status)) {
     body = <span className="db-status">Paying the {words}…</span>;
   } else if (approval && (approval.status === "approved" || approval.status === "used") && board.payments_enabled === false) {
     body = (
       <>
-        <span className="db-approved">Approved</span>
+        <span className="db-approved">Approved{approvedBy(approval.channel)}</span>
         <span className="hg-muted db-hint">Payments are off on this server, so nothing can be charged. The approval stays valid until it expires.</span>
       </>
     );
@@ -783,61 +967,66 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
     const failed = payment && ["failed", "rejected", "expired"].includes(payment.status);
     body = (
       <>
-        <span className="db-approved">Approved{approval.channel === "imessage" ? " by iMessage" : approval.channel === "simulated" ? " (simulated, demo)" : ""}</span>
-        <button className="hg-btn hg-btn-primary" disabled={busy} onClick={() => void onPay()}>
-          {pay.isPending ? "Paying…" : failed ? `Retry: pay ${words}` : `Pay ${words}`}
+        <span className="db-approved">Approved{approvedBy(approval.channel)}</span>
+        <button className="hg-btn hg-btn-primary" disabled={flow.busy} onClick={() => void flow.pay()}>
+          {flow.paying ? "Paying…" : failed ? `Retry: pay ${words}` : `Pay ${words}`}
         </button>
-        {failed && <span className="db-err">Last payment attempt {payment!.status}.</span>}
+        {failed ? <span className="db-err">Last payment attempt {payment!.status}. Nothing was charged.</span> : <span className="hg-muted db-hint">Nothing is charged until you tap Pay.</span>}
       </>
     );
-  } else if (approval) {
+  } else if (approval && ACTIVE_APPROVAL(approval.status)) {
+    const texted = approval.channel === "imessage" || approval.channel === "sms" || approval.channel === "text";
+    const status = replaceableApproval(board)?.quote_id === q.quote_id
+      ? "Haggle texted you this recommendation: reply YES with the code in that text to approve, approve here, or choose another option."
+      : texted
+        ? "Waiting for your approval: reply YES with the code Haggle texted you, or approve here."
+        : approval.channel === "email"
+          ? "Waiting for your approval: reply APPROVE with the code in Haggle's email, or approve here."
+          : "Waiting for your approval.";
     body = (
       <>
-        <span className="db-status">{approval.channel === "imessage" ? "Waiting for the approver's iMessage (YES + code)" : "Waiting for your approval"}</span>
-        <button className="hg-btn" disabled={busy} onClick={() => void onApprove()}>
-          {approve.isPending || approveInView.isPending ? "Approving…" : "Approve here"}
+        <span className="db-approve-status">{status}</span>
+        <button className="hg-btn hg-btn-primary" disabled={flow.busy} onClick={() => void flow.approve()}>
+          {flow.approving ? "Approving…" : `${approveLabelFor(q)} to ${q.business}`}
         </button>
+        <span className="hg-muted db-hint">Approving charges nothing; you pay with Pay next. Only you can approve; your agent can't.</span>
       </>
     );
-  } else if (blocker) {
-    body = <span className="db-blocked">Can't approve yet. {blocker.long}</span>;
   } else {
-    body = (
-      <>
-        <button className="hg-btn hg-btn-primary" disabled={busy} onClick={() => void onApprove()}>
-          {approve.isPending || approveInView.isPending ? "Approving…" : `Approve ${q.business}`}
-        </button>
-        <span className="hg-muted db-hint">
-          Then you pay the {words}
-          {now.deposit ? ` of the ${usd(q.total_usd)} total` : " (no deposit stated)"}. Only you can approve; your agent can't.
-        </span>
-      </>
-    );
+    return null;
   }
 
   return (
     <div className="db-approve">
       {body}
-      {note && <span className="db-status">{note}</span>}
-      {err && (
+      {flow.note && <span className="db-status">{flow.note}</span>}
+      {flow.err && (
         <span className="db-err" role="alert">
-          {err}
+          {flow.err}
         </span>
       )}
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Other quotes, businesses, questions
+/** "Approve $200 deposit" or "Approve $1,080 (full total)". */
+function approveLabelFor(q: Quote): string {
+  const now = payNow(q);
+  return now.deposit ? `Approve ${usd(now.amount)} deposit` : `Approve ${usd(now.amount)} (full total)`;
+}
 
-function QuoteRow({ quote: q, board }: { quote: Quote; board: DealBoard }) {
-  const out = q.eligible === false || !q.meets_requirements || q.flags.some(isRiskFlag);
+// ---------------------------------------------------------------------------
+// Other quotes, businesses, conversations, questions
+
+function QuoteRow({ quote: q, board, onChanged }: { quote: Quote; board: DealBoard; onChanged: () => Promise<void> }) {
+  const out = isUnsafe(board, q);
   const flash = useFlashOnChange(q.total_usd);
+  const [talk, setTalk] = useState(false);
   const rejected = board.rejected?.find((r) => r.quote_id === q.quote_id);
   const reason = rejected?.detail ?? q.excluded_reason;
   const whyNot = board.value?.explanation?.others.find((o) => o.quote_id === q.quote_id)?.text;
-  const status = bizStatus(board.businesses.find((b) => b.id === q.business_id) ?? ({ id: q.business_id, status: "quoted" } as DealBoardBusiness), board);
+  const biz = board.businesses.find((b) => b.id === q.business_id);
+  const status = bizStatus(biz ?? ({ id: q.business_id, status: "quoted" } as DealBoardBusiness), board);
   return (
     <li className={`db-quote${out ? " is-out" : ""}${flash ? " is-flash" : ""}`}>
       <div className="db-quote-line">
@@ -854,23 +1043,28 @@ function QuoteRow({ quote: q, board }: { quote: Quote; board: DealBoard }) {
               <FlagChip key={x} flag={x} />
             ))}
           </div>
-          <p className="db-rejected">Can't be approved{reason ? `: ${reason}` : "."}</p>
+          <p className="db-rejected">Can't be chosen{reason ? `: ${reason}` : ": a safety flag on this quote."}</p>
         </>
       ) : (
         <>
           <QuoteFacts q={q} board={board} />
+          {board.job.ask && board.job.ask.length > 0 && <AskFields quote={q} board={board} />}
           {whyNot && <p className="db-whynot">{whyNotText(whyNot)}</p>}
         </>
       )}
       <NegTrail board={board} businessId={q.business_id} />
       {!out && <Terms t={board.terms?.[q.quote_id]} />}
       <Said board={board} q={q} />
+      <ConversationToggle open={talk} onToggle={() => setTalk(!talk)} />
+      {talk && <ConversationPanel jobId={board.job.id} biz={biz} businessId={q.business_id} business={q.business} onClose={() => setTalk(false)} />}
+      <QuoteAction board={board} quote={q} primary={false} onChanged={onChanged} />
     </li>
   );
 }
 
-/** Everyone contacted: channel, status in plain words, and their price when one exists. */
+/** Everyone contacted: channel, status in plain words, their price when one exists, and their thread inline. */
 function Businesses({ board }: { board: DealBoard }) {
+  const [open, setOpen] = useState<string | null>(null);
   const learning = board.contact_learning;
   const history = (id: string) => {
     const l = learning?.[id];
@@ -900,28 +1094,93 @@ function Businesses({ board }: { board: DealBoard }) {
                 <ChannelBadge channel={b.channel} />
                 <span className="db-bizrow-status">{s.label}</span>
                 <span className="db-bizrow-price">
-                  {q ? (
+                  {q && hasTotal(q) ? (
                     <>
                       {st?.negotiation === "vendor_revised" && st.first_total_usd !== undefined && st.first_total_usd > q.total_usd && <s className="db-was">{usd(st.first_total_usd)}</s>}
                       {isApproximate(q) ? `≈ ${usd(q.total_usd)}` : usd(q.total_usd)}
                     </>
+                  ) : q ? (
+                    <span className="hg-muted">total not stated</span>
                   ) : (
                     <span className="hg-muted">—</span>
                   )}
                 </span>
               </div>
-              {(detail || b.last_event_at) && (
-                <p className="db-bizrow-event">
-                  {detail}
-                  {b.last_event_at && <span className="hg-muted">{detail ? " · " : ""}{relativeTime(b.last_event_at)}</span>}
-                </p>
-              )}
+              <p className="db-bizrow-event">
+                {detail}
+                {b.last_event_at && <span className="hg-muted">{detail ? " · " : ""}{relativeTime(b.last_event_at)}</span>}
+                <ConversationToggle open={open === b.id} onToggle={() => setOpen((cur) => (cur === b.id ? null : b.id))} />
+              </p>
               {h && <p className="db-bizrow-event hg-muted">{h}</p>}
+              {open === b.id && <ConversationPanel jobId={board.job.id} biz={b} businessId={b.id} business={b.name} onClose={() => setOpen(null)} />}
             </li>
           );
         })}
       </ul>
     </section>
+  );
+}
+
+function ConversationToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button className="db-link" aria-expanded={open} onClick={onToggle}>
+      {open ? "Hide conversation" : "Conversation"}
+    </button>
+  );
+}
+
+/**
+ * One business's thread, inline on the board: loaded with get_conversation when opened and again
+ * when that business has news. Business text is untrusted data, rendered as plain text.
+ */
+function ConversationPanel({ jobId, biz, businessId, business, onClose }: { jobId: string; biz?: DealBoardBusiness; businessId: string; business: string; onClose: () => void }) {
+  const load = useCallTool("get_conversation");
+  const [convo, setConvo] = useState<Conversation | null>(null);
+  const [sent, setSent] = useState<ConversationEntry[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const stamp = `${biz?.last_event_at ?? ""}|${biz?.last_event ?? ""}`;
+
+  const fetchIt = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await load.callTool({ job_id: jobId, business_id: businessId, limit: 50 });
+      setConvo(res.structuredContent as Conversation);
+      setSent([]);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }, [jobId, businessId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    void fetchIt();
+  }, [fetchIt, stamp]);
+
+  const entries = convo ? mergeEntries(convo, sent) : [];
+  return (
+    <div className="db-convo" role="region" aria-label={`Conversation with ${business}`}>
+      <div className="db-convo-head">
+        <strong>Conversation with {business}</strong>
+        <span className="hg-muted">{convo ? `${entries.length} message${entries.length === 1 ? "" : "s"}` : ""}</span>
+        <button className="db-link" onClick={() => void fetchIt()} disabled={load.isPending}>
+          {load.isPending ? "Loading…" : "Refresh"}
+        </button>
+        <button className="db-link" onClick={onClose}>
+          Close
+        </button>
+      </div>
+      {error ? (
+        <p className="db-err" role="alert">
+          Couldn't load the conversation: {error}
+        </p>
+      ) : !convo ? (
+        <Skeleton rows={2} />
+      ) : (
+        <div className="cv">
+          <EntryList entries={entries} business={business} />
+          <Reply compact convo={convo} onSent={(e) => setSent((s) => [...s, e])} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -996,11 +1255,11 @@ function Question({ jobId, question, onChanged }: { jobId: string; question: Ope
           className="db-q-form"
           onSubmit={(e) => {
             e.preventDefault();
-            if (draft.trim())
-              void answer
-                .callTool({ job_id: jobId, question_id: question.question_id, answer: draft.trim() })
-                .then(() => onChanged())
-                .catch(() => {});
+            if (!draft.trim()) return;
+            void answer
+              .callTool({ job_id: jobId, question_id: question.question_id, answer: draft.trim() })
+              .then(() => onChanged())
+              .catch(() => {});
           }}
         >
           <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Your answer" aria-label={`Answer ${question.business}`} maxLength={2000} />

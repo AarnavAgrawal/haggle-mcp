@@ -256,11 +256,14 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
       .slice(0, Math.max(0, count))
       .map((e) => {
         const learnedChannel = learned.get(e.id)?.best_channel;
-        const reachable = learnedChannel && hasContact(e, learnedChannel) ? learnedChannel : routeChannel(e);
+        // An operator's channel override wins; a texted or called business is offered without its email.
+        const preferred = e.prefer_channel && hasContact(e, e.prefer_channel) ? e.prefer_channel : undefined;
+        const reachable = preferred ?? (learnedChannel && hasContact(e, learnedChannel) ? learnedChannel : routeChannel(e));
+        const byPhone = preferred === "imessage" || preferred === "phone";
         return {
           id: e.id,
           name: e.name,
-          ...(e.email ? { email: e.email } : {}),
+          ...(e.email && !byPhone ? { email: e.email } : {}),
           ...(e.phone ? { phone: e.phone } : {}),
           ...(e.a2a_card_url ? { a2a_card_url: e.a2a_card_url } : {}),
           best_channel: reachable,

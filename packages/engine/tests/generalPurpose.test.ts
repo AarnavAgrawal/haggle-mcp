@@ -50,7 +50,11 @@ describe("a non-catering purchase: roof leak repair (contractor)", () => {
     expect(sent[0]!.subject).toMatch(/Quote request: roof leak repair, 1 job, /);
     expect(sent[0]!.bodyText).toMatch(/- Quantity: 1 job/);
     expect(sent[0]!.bodyText).not.toMatch(/People:|vegetarian/);
-    expect(texts[0]!.text).toMatch(/^Hi Peak Roof Co, Haggle AI assistant here\. Quote for roof leak repair on Tue, Nov 3 at 412 Grand Ave/);
+    // Persona (decision 17): the customer's AI assistant, never "Haggle"; the venue and date stay (main).
+    expect(texts[0]!.text).toMatch(/^Hi Peak Roof Co, I'm an AI assistant for a customer\. Quote for roof leak repair/);
+    expect(texts[0]!.text).not.toMatch(/Haggle/);
+    expect(texts[0]!.text).toMatch(/Nov 3/);
+    expect(texts[0]!.text).toMatch(/412 Grand Ave/);
     expect(texts[0]!.text.length).toBeLessThanOrEqual(159);
 
     const rfq = (await repo.getBusinesses(deal.job_id)).find((b) => b.name === "Bayside Roofing")!.rfq_message_id!;
@@ -61,15 +65,16 @@ describe("a non-catering purchase: roof leak repair (contractor)", () => {
     let board = await e.getQuotes(deal.job_id);
     const by = (n: string) => board.quotes.find((q) => q.business === n && q.status === "current")!;
     expect(by("Bayside Roofing")).toMatchObject({ total_usd: 2400, verdict: "compliant", eligible: true });
-    expect(by("Peak Roof Co")).toMatchObject({ total_usd: 1900, verdict: "incomplete", eligible: false }); // licensing not stated
+    // Soft requirements (decision 1): still an option, ranked below the compliant quote, with the caveat.
+    expect(by("Peak Roof Co")).toMatchObject({ total_usd: 1900, verdict: "incomplete", eligible: true, meets_requirements: false }); // licensing not stated
     expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: Licensed and insured\? HG-/); // asked once, by text
     expect(board.recommended_quote_id).toBe(by("Bayside Roofing").quote_id);
 
-    // Peak answers that it isn't licensed: now a stated "no", the quote keeps its price and stays out.
+    // Peak answers that it isn't licensed: now a stated "no"; the quote keeps its price and ranks below.
     expect((await e.ingestIMessage({ messageId: "im_2", from: "+15105550188", text: "No license, sorry, but we're cheap", isGroup: false })).outcome).toBe("stored");
     await e.advanceJob(deal.job_id);
     board = await e.getQuotes(deal.job_id);
-    expect(by("Peak Roof Co")).toMatchObject({ total_usd: 1900, eligible: false });
+    expect(by("Peak Roof Co")).toMatchObject({ total_usd: 1900, eligible: true, meets_requirements: false });
     expect(board.recommended_quote_id).toBe(by("Bayside Roofing").quote_id);
     expect(board.value!.explanation!.winner).toMatch(/^Bayside Roofing: best value/);
   });

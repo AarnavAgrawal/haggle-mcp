@@ -79,10 +79,12 @@ describe("only safety stops a purchase; everything else is a caveat", { timeout:
     await expect(engine.requestApproval(deal.job_id, deli.quote_id, "simulated")).rejects.toMatchObject({ code: "quote_not_eligible" });
     // Non-safety problems are flagged, never shown as rejected.
     expect(board.quotes.find((q) => q.business === "Golden Grill")!.verdict).not.toBe("rejected");
-    // ...but the stage chip agrees with the card: a quote that fails a hard requirement "can't win".
+    // Requirements are soft (decision 1): a quote that fails a hard requirement still ranks, with the
+    // miss as a caveat; only the unsafe quote is excluded, and the stage chip agrees with the card.
     const grill = board.quotes.find((q) => q.business === "Golden Grill")!;
-    expect(board.rejected.find((r) => r.quote_id === grill.quote_id)).toBeTruthy();
-    expect(board.stages![grill.business_id]!.stage).toBe("excluded");
+    expect(board.rejected.find((r) => r.quote_id === grill.quote_id)).toBeUndefined();
+    expect(grill.verdict).toBe("incomplete");
+    expect(board.stages![grill.business_id]!.stage).not.toBe("excluded");
     expect(board.stages![deli.business_id]!.stage).toBe("excluded");
   });
 });

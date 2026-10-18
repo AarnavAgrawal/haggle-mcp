@@ -1,10 +1,10 @@
 // Engine read models -> the shared view schemas (@haggle/core/views). Every tool that renders a view
 // returns exactly one of these shapes, parsed (validated and stripped of engine-only fields).
-import { Approval, DealBoard, DealBoardOrEmpty, requirementText, type Channel, type Mode } from "@haggle/core";
+import { Approval, DealBoard, DealBoardOrEmpty, Quote, requirementText, type Channel, type Mode } from "@haggle/core";
 import { eventPlace, eventWhen, type DealBoardData } from "@haggle/engine";
 import { z } from "zod";
 
-export { BusinessProfile, DealBoard, DealBoardOrEmpty, Estimates } from "@haggle/core";
+export { BusinessProfile, Conversation, DealBoard, DealBoardOrEmpty, Estimates, Identity } from "@haggle/core";
 
 /**
  * approve/pay output: the shared Approval plus mock mode's "simulated" approval channel (a headless
@@ -12,33 +12,51 @@ export { BusinessProfile, DealBoard, DealBoardOrEmpty, Estimates } from "@haggle
  * is open: until it is settled, "simulated" appears only in mock mode.
  */
 export const ApprovalOut = Approval.extend({
-  channel: z.enum([...Approval.shape.channel.options, "simulated"]),
+  /** + "email" (a coded APPROVE reply to the approval email) and mock mode's "simulated". */
+  channel: z.enum([...Approval.shape.channel.options, "email", "simulated"]),
   demo: z.string().optional(),
   /** The quote's order total; amount_usd is what is paid now (the deposit). */
   order_total_usd: z.number().nonnegative().optional(),
-  /** What amount_usd is: the stated deposit, or the full total because the business stated no deposit. */
+  /** What amount_usd is: the stated deposit, or the full total because the business stated no deposit (never $0). Absent for confirm-only. */
   pay_now_basis: z.enum(["deposit", "full_total"]).optional(),
   payment: z.looseObject({ status: z.string(), simulated: z.boolean() }).optional(),
 });
 export type ApprovalOut = z.infer<typeof ApprovalOut>;
 
+/**
+ * A quote as Haggle's board shows it: the shared Quote, except a total the business never stated is
+ * null with total_known: false (decision 22: unknown, never $0). Core's Quote requires a number, so
+ * this extension lives here (core unchanged).
+ */
+export const BoardQuote = Quote.extend({ total_usd: z.number().nonnegative().nullable(), total_known: z.boolean().optional() });
+export type BoardQuote = z.infer<typeof BoardQuote>;
+
+/** The shared DealBoard with BoardQuote rows (what toDealBoard returns). */
+export const LiveDealBoard = DealBoard.extend({ quotes: z.array(BoardQuote) });
+export type LiveDealBoard = z.infer<typeof LiveDealBoard>;
+
 const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
 export function requestSummary(r: DealBoardData["job"]["request"]): string {
-  return [`${r.what} for ${r.quantity}${r.unit ? ` ${r.unit}` : ""}`, eventWhen(r.date, r.time, r.date_until), eventPlace(r.area, r.venue)].filter(Boolean).join(" · ");
+  return [r.quantity !== undefined ? `${r.what} for ${r.quantity}${r.unit ? ` ${r.unit}` : ""}` : r.what, r.date ? eventWhen(r.date, r.time, r.date_until) : "", eventPlace(r.area, r.venue)].filter(Boolean).join(" · ");
 }
 
 /** Flags that mean the business's own words must not be echoed to the model or the view. */
 const UNSAFE_TEXT = new Set(["prompt_injection", "external_payment_link"]);
 
-export function toDealBoard(b: DealBoardData, mode: Mode): DealBoard {
-  const priced = b.quotes.filter((q) => q.total_usd !== null); // D2: a reply with no total is an open question, not a quote
+export function toDealBoard(b: DealBoardData, mode: Mode): LiveDealBoard {
+  // D2: a reply with no total is an open question, not a quote. Custom asks: a reply that answered
+  // the asked fields is a quote even without a total (total_usd: null, total_known: false; never $0).
+  const priced = b.quotes.filter((q) => q.total_usd !== null || (q.fields && Object.values(q.fields).some((v) => v !== null)));
+  const r = b.job.request;
   const unsafe = new Set(b.quotes.filter((q) => q.flags.some((f) => UNSAFE_TEXT.has(f))).map((q) => q.business_id));
-  return DealBoard.parse({
+  return LiveDealBoard.parse({
     job: {
-      id: b.job.id, request: requestSummary(b.job.request), state: b.job.state,
+      id: b.job.id, request: requestSummary(r), state: b.job.state,
       ...(b.job.budget_usd !== null ? { budget_usd: b.job.budget_usd } : {}),
-      requirements: b.job.request.requirements.map(requirementText),
+      requirements: r.requirements.map(requirementText),
+      ...(r.ask?.length ? { ask: r.ask.map((f) => ({ key: f.key, label: f.label, type: f.type, required: f.required })) } : {}),
+      ...(r.compare_by ? { compare_by: r.compare_by } : {}),
     },
     businesses: b.businesses.map((x) => ({
       id: x.business_id, name: x.name, channel: x.channel, status: x.status, last_event: x.last_event ?? "Contacted",
@@ -46,14 +64,14 @@ export function toDealBoard(b: DealBoardData, mode: Mode): DealBoard {
       ...(x.transcript_snippet && !unsafe.has(x.business_id) ? { transcript_snippet: x.transcript_snippet } : {}),
       ...(x.unavailable_reason ? { unavailable_reason: x.unavailable_reason } : {}),
     })),
-    quotes: priced.map((q) => ({ ...q, round: Math.max(1, q.round) })),
+    quotes: priced.map((q) => ({ ...q, total_usd: q.total_usd, ...(q.total_usd === null ? { total_known: false } : {}), round: Math.max(1, q.round) })),
     ...(b.recommended_quote_id ? { recommended_quote_id: b.recommended_quote_id } : {}),
     open_questions: b.open_questions,
     next: b.next,
     mode,
     rejected: b.rejected,
     negotiation: b.negotiation,
-    approval: b.approval ? { approval_id: b.approval.approval_id, quote_id: b.approval.quote_id, status: b.approval.status, channel: b.approval.channel } : null,
+    approval: b.approval ? { approval_id: b.approval.approval_id, quote_id: b.approval.quote_id, status: b.approval.status, channel: b.approval.channel, ...(b.approval.replaceable ? { replaceable: true } : {}) } : null,
     payment: b.payment ? { status: b.payment.status, simulated: b.payment.simulated, ...(b.payment.receipt_url ? { receipt_url: b.payment.receipt_url } : b.payment.explorer_url ? { receipt_url: b.payment.explorer_url } : {}) } : null,
     ready: b.ready,
   });
@@ -66,11 +84,16 @@ const Blocker = z.object({ vendor: z.string(), channel: z.string(), reason: z.st
  * plus engine/server additions the board shows when present. Extends (never edits) @haggle/core.
  */
 export const DealBoardPlus = DealBoardOrEmpty.extend({
+  quotes: z.array(BoardQuote),
   ok: z.boolean().optional(),
   job_id: z.string().optional(),
+  /** deal only: the buyer inbox replies go to, the job state when outreach started, and when first replies are expected. */
+  inbox: z.string().optional(),
+  state: z.string().optional(),
+  eta: z.string().optional(),
   /** Exactly what the businesses were asked, so the human can check the parse. */
   request_details: z.object({
-    what: z.string(), headcount: z.number().int(), when: z.string(), place: z.string(), date: z.string(), time: z.string().optional(),
+    what: z.string(), headcount: z.number().int().optional(), when: z.string(), place: z.string(), date: z.string().optional(), time: z.string().optional(),
     requirements: z.array(z.string()), budget_usd: z.number().nullable(), budget_source: z.enum(["request", "settings_default"]).optional(),
   }).optional(),
   /** Operator/settings ceiling for any single payment (the deposit), separate from the order budget. */
@@ -118,10 +141,11 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
 });
 export type DealBoardPlus = z.infer<typeof DealBoardPlus>;
 
-export function requestDetails(b: DealBoardData, budgetSource?: "request" | "settings_default"): NonNullable<DealBoardPlus["request_details"]> {
+export function requestDetails(b: { job: Pick<DealBoardData["job"], "request" | "budget_usd"> }, budgetSource?: "request" | "settings_default"): NonNullable<DealBoardPlus["request_details"]> {
   const r = b.job.request;
   return {
-    what: r.what, headcount: r.quantity, when: eventWhen(r.date, r.time, r.date_until), place: eventPlace(r.area, r.venue), date: r.date, ...(r.time ? { time: r.time } : {}),
+    what: r.what, ...(r.quantity !== undefined ? { headcount: r.quantity } : {}), when: r.date ? eventWhen(r.date, r.time, r.date_until) : "no date given", place: eventPlace(r.area, r.venue),
+    ...(r.date ? { date: r.date } : {}), ...(r.time ? { time: r.time } : {}),
     requirements: r.requirements.map(requirementText), budget_usd: b.job.budget_usd, ...(budgetSource ? { budget_source: budgetSource } : {}),
   };
 }
@@ -136,6 +160,32 @@ export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<Dea
   });
 }
 
+type DealOut = {
+  ok: boolean; next: string; job_id: string; inbox: string; state: string; eta: string;
+  contacted: { business_id: string; business: string; channel: Channel }[];
+  not_contacted: { business_id?: string; business: string; channel: Channel; reason: string }[];
+};
+
+/**
+ * deal's output: the live deal board (rendered by deal-live the moment outreach starts) plus the deal
+ * result fields (inbox, state, eta, contacted, not_contacted). `board` is the engine's read of the new
+ * job; when that read failed (the outreach already went out, so deal must not fail), a minimal board
+ * is built from the deal result: every contacted business as "contacted", no quotes yet.
+ */
+export function dealStartedBoard(r: DealOut, board: DealBoardData | null, request: DealBoardData["job"]["request"], mode: Mode, extra: Partial<DealBoardPlus> = {}): DealBoardPlus {
+  const deal = { ok: r.ok, job_id: r.job_id, inbox: r.inbox, state: r.state, eta: r.eta, contacted: r.contacted, not_contacted: r.not_contacted };
+  if (board) return toDealBoardPlus(board, mode, { ...deal, ...extra });
+  return DealBoardPlus.parse({
+    job: { id: r.job_id, request: requestSummary(request), state: r.state, requirements: request.requirements.map(requirementText) },
+    empty: false,
+    businesses: [
+      ...r.contacted.map((c) => ({ id: c.business_id, name: c.business, channel: c.channel, status: "contacted", last_event: `Contacted by ${c.channel}` })),
+      ...r.not_contacted.filter((c) => c.business_id).map((c) => ({ id: c.business_id!, name: c.business, channel: c.channel, status: "unavailable", last_event: "Not contacted", unavailable_reason: c.reason })),
+    ],
+    quotes: [], open_questions: [], next: r.next, mode, ...deal, ...extra,
+  });
+}
+
 export function emptyBoard(mode: Mode): DealBoardOrEmpty {
   return DealBoardOrEmpty.parse({ job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode, next: "No deals yet. Call deal with what to buy, or ask for an instant estimate." });
 }
@@ -147,19 +197,23 @@ export function toApproval(
   const q = b.quotes.find((x) => x.quote_id === quote_id);
   const a = b.approval?.quote_id === quote_id ? b.approval : null;
   const total = q?.total_usd ?? a?.quote_total_usd ?? 0;
-  // What is paid now: the stated deposit, or the full total when the business stated none (the engine's
-  // rule). Never "$0": an unstated deposit is not a free deposit.
+  // Approve, then pay (decisions 2, 3, 20): a "pay" approval pays the stated deposit, or the full total
+  // when the business stated none (never "$0": an unstated deposit is not a free deposit); a confirm-only
+  // approval pays nothing. The stored approval's amount wins over the quote.
   const deposit = q?.deposit_usd;
-  const payNow = a?.payment_usd ?? deposit ?? total;
-  const basis = deposit !== undefined ? "deposit" as const : "full_total" as const;
+  const action: "confirm" | "pay" = a?.action === "confirm" ? "confirm" : "pay";
+  const payNow = action === "confirm" ? 0 : a ? a.payment_usd : deposit && deposit > 0 ? deposit : total;
+  const basis = deposit !== undefined && deposit > 0 && payNow === deposit ? "deposit" as const : "full_total" as const;
   const business = q?.business ?? "unknown";
   const channel: Channel = q?.channel ?? b.businesses.find((x) => x.business_id === q?.business_id)?.channel ?? "email";
-  const how = a?.channel === "elicitation" || a?.channel === "view" || a?.channel === "imessage" || a?.channel === "simulated" ? a.channel : "view";
+  const how = a?.channel === "elicitation" || a?.channel === "view" || a?.channel === "imessage" || a?.channel === "email" || a?.channel === "simulated" ? a.channel : "view";
+  const summary = action === "confirm" ? `${business}: ${money(total)} order total; confirm the order only (nothing is paid)`
+    : `${business}: ${money(total)} order total; ${basis === "deposit" ? `pay ${money(payNow)} deposit now` : `pay ${money(payNow)} now (full total: no deposit stated)`}`;
   return ApprovalOut.parse({
     job_id: b.job.id, quote_id, business, quote_channel: channel,
-    summary: `${business}: ${money(total)} order total; ${basis === "deposit" ? `pay ${money(payNow)} deposit now` : `pay ${money(payNow)} now (full total: no deposit stated)`}`,
-    items: q?.items ?? [], amount_usd: payNow, ...(q || a ? { order_total_usd: total } : {}), ...(deposit !== undefined ? { deposit_usd: deposit } : {}), pay_now_basis: basis, cap_usd: a?.cap_usd ?? payNow,
-    status, channel: how,
+    summary,
+    items: q?.items ?? [], amount_usd: payNow, ...(q || a ? { order_total_usd: total } : {}), ...(deposit !== undefined ? { deposit_usd: deposit } : {}), ...(action === "pay" ? { pay_now_basis: basis } : {}), cap_usd: a?.cap_usd ?? payNow,
+    status, channel: how, action,
     ...(a?.approved_at ? { approved_at: a.approved_at } : {}),
     ...(a ? { approval_id: a.approval_id, expires_at: a.expires_at } : {}),
     ...(b.payment ? { payment: b.payment } : {}),

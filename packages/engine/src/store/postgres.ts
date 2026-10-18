@@ -3,8 +3,9 @@
 // in real transactions; the database re-checks every safety invariant on its own.
 import postgres from "postgres";
 import { newId } from "../ids.ts";
-import type {
-  ApprovalRow, JobBusinessRow, JobEventRow, JobRow, MessageRow, NewMessage, PaymentRow, QuestionRow, QuoteRow, Repository, SettingsRow,
+import { isTransient } from "../live/transient.ts";
+import {
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -23,16 +24,52 @@ const rows = <T>(rs: readonly Record<string, unknown>[]): T[] => rs.map((r) => r
 /** bigint columns come back from postgres.js as strings; cents are always numbers in the engine. */
 const settingsRow = (s: SettingsRow | null): SettingsRow | null => (s ? { ...s, spending_cap_cents: Number(s.spending_cap_cents) } : null);
 
+/** A tagged-template query that only reads (a plain SELECT, not the event-appending function). */
+const isReadTemplate = (s: unknown): boolean =>
+  Array.isArray(s) && "raw" in (s as object) && /^\s*select\b/i.test(String((s as string[])[0])) && !(s as string[]).join("").includes("haggle_append_event");
+
+/**
+ * One retry, after a short pause, for a plain SELECT that hit a transient connection error
+ * (EMAXCONNSESSION while the pooler is full, a reset socket, a connect timeout): reads are
+ * idempotent. Writes are never retried here (their callers are idempotent by key instead).
+ * Everything else (sql(obj) helpers, sql.json, sql.begin, sql.end) passes straight through.
+ */
+export function retryingReads(sql: Sql, delayMs = 300): Sql {
+  const call = (first: unknown, ...rest: unknown[]) => {
+    const run = () => (sql as unknown as (...a: unknown[]) => PromiseLike<unknown>)(first, ...rest);
+    if (!isReadTemplate(first)) return run();
+    return {
+      then<A, B>(ok?: (v: unknown) => A | PromiseLike<A>, fail?: (e: unknown) => B | PromiseLike<B>) {
+        return Promise.resolve(run())
+          .catch(async (e) => {
+            if (!isTransient(e)) throw e;
+            await new Promise((r) => setTimeout(r, delayMs));
+            return run();
+          })
+          .then(ok, fail);
+      },
+    };
+  };
+  return new Proxy(call, {
+    get(_t, p) {
+      const v = Reflect.get(sql as object, p);
+      return typeof v === "function" ? v.bind(sql) : v;
+    },
+  }) as unknown as Sql;
+}
+
 export class PostgresRepository implements Repository {
   private readonly sql: Sql;
 
   /** `schema`: where the migrations were applied when not `public` (a database shared with another app). */
-  constructor(url: string, opts: { max?: number; schema?: string } = {}) {
+  constructor(url: string, opts: { max?: number; schema?: string; retryDelayMs?: number } = {}) {
     if (opts.schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(opts.schema)) throw new Error(`invalid database schema name: ${opts.schema}`);
-    this.sql = postgres(url, {
-      max: opts.max ?? 5, idle_timeout: 20, connect_timeout: 15, prepare: false, onnotice: () => {},
+    // Small pool, idle connections released after 20 s, recycled after 30 min: Supabase's session
+    // pooler caps clients per database (15), shared by every process and reload.
+    this.sql = retryingReads(postgres(url, {
+      max: opts.max ?? 4, idle_timeout: 20, max_lifetime: 30 * 60, connect_timeout: 15, prepare: false, onnotice: () => {},
       ...(opts.schema ? { connection: { search_path: opts.schema } } : {}),
-    }) as unknown as Sql;
+    }) as unknown as Sql, opts.retryDelayMs ?? 300);
   }
 
   async close() {
@@ -49,6 +86,20 @@ export class PostgresRepository implements Repository {
     return out;
   }
 
+  async insertWorkspace(w: Omit<WorkspaceRow, "created_at">) {
+    const r = await this.sql`insert into workspaces ${this.sql(this.vals(w as never))} returning id, name, token_hash, connector_secret_hash, timezone, created_at`;
+    return row<WorkspaceRow>(r[0])!;
+  }
+  async getWorkspace(id: string) {
+    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, created_at from workspaces where id = ${id}`)[0]);
+  }
+  async findWorkspaceByTokenHash(hash: string) {
+    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, created_at from workspaces where token_hash = ${hash}`)[0]);
+  }
+  async findWorkspaceBySecretHash(hash: string) {
+    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, created_at from workspaces where connector_secret_hash = ${hash}`)[0]);
+  }
+
   async insertJob(job: JobRow) {
     const r = await this.sql`insert into jobs ${this.sql(this.vals(job as never))} returning *`;
     return row<JobRow>(r[0])!;
@@ -56,8 +107,8 @@ export class PostgresRepository implements Repository {
   async getJob(id: string) {
     return row<JobRow>((await this.sql`select * from jobs where id = ${id}`)[0]);
   }
-  async findJobByClientRequestId(id: string) {
-    return row<JobRow>((await this.sql`select * from jobs where client_request_id = ${id}`)[0]);
+  async findJobByClientRequestId(id: string, workspaceId = DEFAULT_WORKSPACE_ID) {
+    return row<JobRow>((await this.sql`select * from jobs where workspace_id = ${workspaceId} and client_request_id = ${id}`)[0]);
   }
   async findJobByShortCode(code: string) {
     return row<JobRow>((await this.sql`select * from jobs where short_code = ${code.toUpperCase()}`)[0]);
@@ -75,7 +126,7 @@ export class PostgresRepository implements Repository {
     return row<JobRow>(r[0]);
   }
   async listOpenJobs() {
-    return rows<JobRow>(await this.sql`select * from jobs where state not in ('paid','cancelled','failed') order by created_at`);
+    return rows<JobRow>(await this.sql`select * from jobs where state not in ('paid','confirmed','cancelled','failed') order by created_at`);
   }
 
   async insertBusinesses(list: JobBusinessRow[]) {
@@ -140,6 +191,12 @@ export class PostgresRepository implements Repository {
   }
   async findOutboundByRfcIds(ids: string[]) {
     return rows<MessageRow>(await this.sql`select * from messages where direction = 'out' and lower(btrim(rfc_message_id, '<>')) = any(${ids.map(norm)})`);
+  }
+  async listPhoneMessages(number: string, sinceIso: string) {
+    return rows<MessageRow>(await this.sql`
+      select * from messages where channel = 'phone' and created_at >= ${sinceIso}
+        and ((direction = 'out' and to_address = ${number}) or (direction = 'in' and from_address = ${number}))
+      order by created_at, id`);
   }
 
   async insertCurrentQuote(q: Omit<QuoteRow, "id" | "created_at" | "status">) {
@@ -209,6 +266,14 @@ export class PostgresRepository implements Repository {
     const set = this.vals(rest);
     if (Object.keys(set).length) await this.sql`update approvals set ${this.sql(set)} where id = ${id}`;
   }
+  async recordWrongApprovalCode(id: string, maxAttempts: number) {
+    const r = await this.sql`
+      update approvals set attempts = attempts + 1,
+        status = case when attempts + 1 >= ${maxAttempts} then 'locked' else status end,
+        decided_at = case when attempts + 1 >= ${maxAttempts} then now() else decided_at end
+      where id = ${id} and status = 'pending' returning attempts, status`;
+    return r[0] ? { attempts: Number(r[0].attempts), locked: r[0].status === "locked" } : null;
+  }
 
   async insertPayment(p: Omit<PaymentRow, "created_at" | "updated_at">) {
     const r = await this.sql`insert into payments ${this.sql(this.vals(p as never))} on conflict do nothing returning *`;
@@ -242,19 +307,24 @@ export class PostgresRepository implements Repository {
     return r.length > 0;
   }
 
-  async listRecentJobs(limit: number) {
-    return rows<JobRow>(await this.sql`select * from jobs order by updated_at desc, created_at desc limit ${limit}`);
+  async listRecentJobs(limit: number, workspaceId?: string) {
+    return workspaceId === undefined
+      ? rows<JobRow>(await this.sql`select * from jobs order by updated_at desc, created_at desc limit ${limit}`)
+      : rows<JobRow>(await this.sql`select * from jobs where workspace_id = ${workspaceId} order by updated_at desc, created_at desc limit ${limit}`);
   }
-  async getSettings() {
-    return settingsRow(row<SettingsRow>((await this.sql`select spending_cap_cents, approver_phone, approver_email, default_area, updated_at from engine_settings where id = 1`)[0]));
+  /** Settings live on the workspace row (migration 103 moved engine_settings id=1 to ws_default). */
+  async getSettings(workspaceId = DEFAULT_WORKSPACE_ID) {
+    return settingsRow(row<SettingsRow>((await this.sql`
+      select spending_cap_cents, approver_phone, approver_email, default_area, settings_updated_at as updated_at
+      from workspaces where id = ${workspaceId} and spending_cap_cents is not null`)[0]));
   }
-  async saveSettings(s: Omit<SettingsRow, "updated_at">) {
+  async saveSettings(s: Omit<SettingsRow, "updated_at">, workspaceId = DEFAULT_WORKSPACE_ID) {
     const r = await this.sql`
-      insert into engine_settings (id, spending_cap_cents, approver_phone, approver_email, default_area, updated_at)
-      values (1, ${s.spending_cap_cents}, ${s.approver_phone}, ${s.approver_email}, ${s.default_area}, now())
-      on conflict (id) do update set spending_cap_cents = excluded.spending_cap_cents, approver_phone = excluded.approver_phone,
-        approver_email = excluded.approver_email, default_area = excluded.default_area, updated_at = now()
-      returning spending_cap_cents, approver_phone, approver_email, default_area, updated_at`;
+      update workspaces set spending_cap_cents = ${s.spending_cap_cents}, approver_phone = ${s.approver_phone}, approver_email = ${s.approver_email},
+        default_area = ${s.default_area}, settings_updated_at = now()
+      where id = ${workspaceId}
+      returning spending_cap_cents, approver_phone, approver_email, default_area, settings_updated_at as updated_at`;
+    if (!r[0]) throw new Error(`unknown workspace ${workspaceId}`);
     return settingsRow(row<SettingsRow>(r[0]))!;
   }
 }

@@ -2,21 +2,29 @@
 // MOCK mode). One server rehearses public discovery from a recorded Places/website fixture with exactly
 // one discovered business authorized (Ace's phone on HAGGLE_ALLOWED_RECIPIENTS); the other has no Places
 // key. Nothing is sent anywhere: mock ports, and dry runs where the point is "who would be contacted".
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const APP_DIR = join(import.meta.dirname, "..");
-const BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].find((p) => existsSync(p)) ?? "mcp-use";
+// On Windows the runnable shim is mcp-use.cmd, which needs a shell (and a quoted path); stop the whole tree.
+const WIN = process.platform === "win32";
+const BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].map((p) => (WIN ? `${p}.cmd` : p)).find((p) => existsSync(p)) ?? "mcp-use";
+const startServer = (env: NodeJS.ProcessEnv): ChildProcess =>
+  WIN ? spawn(`"${BIN}"`, ["start"], { cwd: APP_DIR, stdio: "ignore", env, shell: true }) : spawn(BIN, ["start"], { cwd: APP_DIR, stdio: "ignore", env });
+const stopServer = (proc: ChildProcess | undefined): void => {
+  if (WIN && proc?.pid) spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+  else proc?.kill();
+};
 const FIXTURE = join(import.meta.dirname, "fixtures/places.json");
 const freePort = () => new Promise<number>((res, rej) => { const s = createServer().once("error", rej).listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); }); });
 
 type Server = { proc: ChildProcess; base: string; id: number };
 async function start(env: Record<string, string>): Promise<Server> {
   const port = await freePort();
-  const proc = spawn(BIN, ["start"], { cwd: APP_DIR, stdio: "ignore", env: { ...process.env, PORT: String(port), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0", ...env } });
+  const proc = startServer({ ...process.env, PORT: String(port), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0", ...env });
   const base = `http://127.0.0.1:${port}`;
   for (let i = 0; i < 80; i++) { try { if ((await fetch(`${base}/health`)).ok) return { proc, base, id: 0 }; } catch { /* starting */ } await new Promise((r) => setTimeout(r, 250)); }
   throw new Error("server did not start (run `mcp-use build` first)");
@@ -37,7 +45,7 @@ let off: Server;
 beforeAll(async () => {
   [fx, off] = await Promise.all([start({ HAGGLE_PLACES_FIXTURE: FIXTURE, HAGGLE_ALLOWED_RECIPIENTS: "+15105550141" }), start({})]);
 }, 40_000);
-afterAll(() => { fx?.proc.kill(); off?.proc.kill(); });
+afterAll(() => { stopServer(fx?.proc); stopServer(off?.proc); });
 
 describe("discover real businesses, understand them, reach only the authorized ones", () => {
   it("discover: deduplicated, evidence-ranked listings with contact states; demo caterers aren't offered for plumbing", async () => {

@@ -14,7 +14,8 @@
     "start": "mcp-use start",
     "deploy": "mcp-use deploy",
     "typecheck": "mcp-use typecheck",
-    "test": "vitest run"
+    "test": "vitest run",
+    "workspace:create": "node --env-file-if-exists=.env scripts/workspace-create.ts"
   },
   "dependencies": {
     "@haggle/brain": "*",

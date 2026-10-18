@@ -191,9 +191,12 @@ export function toolErrorText(e: unknown): string | undefined {
   }
 }
 
-/** What is paid now for a quote: the stated deposit, or the full total when no deposit was stated. */
-export function payNow(q: { total_usd: number; deposit_usd?: number }): { amount: number; deposit: boolean } {
-  return q.deposit_usd !== undefined ? { amount: q.deposit_usd, deposit: true } : { amount: q.total_usd, deposit: false };
+/**
+ * What Pay charges for a quote: the stated deposit, or the full total when no deposit was stated (a $0
+ * deposit is never shown; decision 20). Only meaningful for a quote with a total (approvable quotes).
+ */
+export function payNow(q: { total_usd: number | null; deposit_usd?: number }): { amount: number; deposit: boolean } {
+  return q.deposit_usd !== undefined && q.deposit_usd > 0 ? { amount: q.deposit_usd, deposit: true } : { amount: q.total_usd ?? 0, deposit: false };
 }
 
 /** "$50 deposit" or "$860 full total": the one wording used on every button and status line. */
@@ -221,4 +224,40 @@ export type ViewTicket = { approval_id: string; code: string };
 export function viewTicket(meta: Record<string, unknown> | undefined): ViewTicket | undefined {
   const t = meta?.["haggle/approval"] as Partial<ViewTicket> | undefined;
   return t && typeof t.approval_id === "string" && typeof t.code === "string" ? { approval_id: t.approval_id, code: t.code } : undefined;
+}
+
+/** HAGGLE_MODE=mock: every view says the data is simulated. */
+export function DemoTag({ mode }: { mode?: string }) {
+  if (mode !== "mock") return null;
+  return (
+    <span className="hg-demo" title="Simulated data: nothing here was really sent or paid">
+      DEMO
+    </span>
+  );
+}
+
+/** Copy text to the clipboard; resolves false when the host's sandbox blocks it. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Clipboard API refused (sandboxed iframe); fall back below.
+  }
+  try {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.setAttribute("readonly", "");
+    el.style.position = "fixed";
+    el.style.opacity = "0";
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand("copy");
+    el.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }

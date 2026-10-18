@@ -255,3 +255,136 @@
   outline: 2px solid var(--ch-email);
   outline-offset: 2px;
 }
+
+/* DEMO tag (HAGGLE_MODE=mock) used by the conversation and identity-card views */
+.hg-demo {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 16px;
+  padding: 1px 6px;
+  border-radius: var(--radius-s);
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px dashed var(--warn);
+  white-space: nowrap;
+}
+
+/* Business pieces (business-list, business-profile): contact badge, stars, links, evidence */
+.hg-contact {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.hg-contact-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.hg-contact-muted { color: var(--ink-3); background: var(--rule); }
+.hg-contact-warn { color: var(--warn); background: var(--warn-soft); }
+.hg-contact-win { color: var(--win); background: var(--win-soft); }
+.hg-contact-info { color: var(--info); background: var(--info-soft); }
+.hg[data-theme="dark"] .hg-contact-muted { color: var(--ink-2); }
+
+.hg-stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.hg-stars-bar {
+  position: relative;
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 1px;
+}
+.hg-stars-empty { color: var(--rule-strong); }
+.hg-stars-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: #d99a06;
+}
+.hg[data-theme="dark"] .hg-stars-fill { color: #f2b84b; }
+
+.hg-links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.hg-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ch-email);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 2px;
+}
+.hg-link:hover { text-decoration-color: currentColor; }
+
+.hg-evidence {
+  display: grid;
+  gap: 10px;
+}
+.hg-ev-group {
+  display: grid;
+  gap: 4px;
+}
+.hg-ev-group h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.hg-ev-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.hg-ev-group li {
+  display: grid;
+  gap: 1px;
+  padding: 6px 0 6px 10px;
+  border-left: 2px solid var(--rule-strong);
+}
+.hg-ev-group li + li { margin-top: 2px; }
+.hg-ev-verified li { border-left-color: var(--win); }
+.hg-ev-listing li { border-left-color: var(--ch-email); }
+.hg-ev-claims li { border-left-color: var(--warn); }
+.hg-ev-estimates li { border-left-color: var(--info); }
+.hg-ev-statement {
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.hg-ev-meta {
+  font-size: 11px;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+.hg-ev-caveat {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--ink-2);
+}

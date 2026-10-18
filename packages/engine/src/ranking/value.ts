@@ -1,7 +1,8 @@
 // PURE: explainable best-value ranking over quotes that already passed the hard gates.
 //
 // Order of decisions (never changed by this module):
-//   1. Safety and hard requirements (rank.ts `rejectReason`): only eligible quotes are scored here.
+//   1. Safety (rank.ts `rejectReason`): only eligible quotes are scored here; preferences are soft, so a
+//      quote that misses one is scored too, in a lower tier (ValueInput.tier) that always ranks after.
 //   2. Among eligible quotes, a weighted score of evidence-backed factors, each in [0, 1]:
 //        price        cheapest all-in total / this all-in total (1 = cheapest)
 //        reputation   public rating shrunk toward neutral by review count and by how surely the listing
@@ -58,6 +59,12 @@ export interface ValueInput {
   dietaryStated: boolean; // every requested dietary need has a stated count
   itemsListed: boolean;
   confidence: number; // extraction confidence 0..1
+  /**
+   * Soft-preference tier (decision 1: requirements and budget are soft): 0 = meets everything that
+   * was asked; higher = misses more (rank.ts caveats). A lower tier always ranks first; the score
+   * orders quotes within a tier. Absent = 0.
+   */
+  tier?: number;
   negotiatedFromCents?: number;
   reputation?: ReputationEvidence | null;
   /** "simulated" = a fictional demo vendor: reputation is never looked up. */
@@ -170,7 +177,8 @@ export function scoreQuotes(quotes: ValueInput[], weights: Partial<ValueWeights>
   });
 
   const conf = new Map(quotes.map((q) => [q.quoteId, q.confidence]));
-  ranked.sort((a, b) => (Math.abs(b.score - a.score) > TIE ? b.score - a.score : a.totalCents - b.totalCents || (conf.get(b.quoteId)! - conf.get(a.quoteId)!) || a.quoteId.localeCompare(b.quoteId)));
+  const tier = new Map(quotes.map((q) => [q.quoteId, q.tier ?? 0]));
+  ranked.sort((a, b) => (tier.get(a.quoteId)! - tier.get(b.quoteId)!) || (Math.abs(b.score - a.score) > TIE ? b.score - a.score : a.totalCents - b.totalCents || (conf.get(b.quoteId)! - conf.get(a.quoteId)!) || a.quoteId.localeCompare(b.quoteId)));
   const win = ranked[0]!;
   return { method: "best_value", weights: w, ranked, recommendedQuoteId: win.quoteId, explanation: explain(win, ranked.slice(1), quotes) };
 }

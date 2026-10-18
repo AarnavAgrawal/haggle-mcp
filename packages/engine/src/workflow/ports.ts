@@ -3,16 +3,45 @@
 // payer; phone/A2A ports are absent until enabled, so those businesses are reported "unavailable".
 // Mock (labelled DEMO everywhere): SimFleet (email + simulated calls), inline attachments, StubBrain.
 import type { Brain } from "../contract.ts";
-import type { ExtractedFile, PdfFile } from "../inbound/attachments.ts";
+import { imageContentType, type ExtractedFile, type ImageFile, type PdfFile } from "../inbound/attachments.ts";
 import type { OutboundEmail, SendOutcome } from "../outbound/primitiveSender.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
+import type { QuestionAnswerInput } from "../parsing/answerQuestion.ts";
 import type { PayerClient } from "../payments/x402Challenge.ts";
 import type { StripePort } from "../payments/stripe.ts";
 import type { MessageRow, Mode, Repository } from "../store/types.ts";
 
 export interface EmailPort {
   send(msg: OutboundEmail): Promise<SendOutcome>;
+}
+
+/** Why a send failed, in the engine's terms; adapters map provider errors to it (live/inkbox.ts mapInkboxError). */
+export type SendFailureReason = "rate_limited" | "provider_error" | "invalid_address" | "opted_out" | "not_opted_in" | "channel_not_configured";
+
+/**
+ * A classified send failure. Retryable ones keep the business pending and the same channel is
+ * tried again after retryAfterMs (same idempotency key); the rest move on to the next channel.
+ */
+export class ChannelSendError extends Error {
+  override name = "ChannelSendError";
+  readonly reason: SendFailureReason;
+  readonly retryable: boolean;
+  readonly retryAfterMs: number;
+  constructor(reason: SendFailureReason, retryable: boolean, retryAfterMs: number, message: string) {
+    super(message);
+    this.reason = reason;
+    this.retryable = retryable;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/**
+ * The buyer identity's Voice AI answering instructions (inbound calls). The engine replaces them
+ * with the open requests so a business calling back is matched to its request. Optional.
+ */
+export interface VoiceContextPort {
+  setInstructions(instructions: string): Promise<void>;
 }
 
 /** A Voice AI call request. `reason` is the task brief (≤ 2,000 chars) and says it is an AI assistant. */
@@ -62,8 +91,26 @@ export interface IMessagePort {
   send(req: { to: string; text: string; idempotencyKey: string }): Promise<{ messageId: string }>;
 }
 
+/**
+ * SMS from the buyer identity's own number (Inkbox sendText): update texts to the human
+ * (config.notifyPhone, else the settings approver) and follow-ups to phone businesses.
+ */
+export interface SmsPort {
+  send(req: { to: string; text: string; idempotencyKey: string }): Promise<{ messageId: string }>;
+  /**
+   * Optional: texts sent to this number since it last texted back (Inkbox refuses more than 10).
+   * Lets a restarted server keep the remaining texts for questions and approvals.
+   */
+  unanswered?(to: string): Promise<number>;
+}
+
 export interface ExtractorPort {
-  extract(input: { request: ExtractionRequest; bodyText: string; pdfs: PdfFile[]; message: MessageRow }): Promise<QuoteExtraction>;
+  extract(input: { request: ExtractionRequest; bodyText: string; pdfs: PdfFile[]; images?: ImageFile[]; message: MessageRow }): Promise<QuoteExtraction>;
+  /**
+   * Optional (Claude): answer a business's question from the request's own facts, or null to leave
+   * it for the human. Without it every question goes to the human.
+   */
+  answerQuestion?(input: QuestionAnswerInput): Promise<{ answer: string; basis: string } | null>;
 }
 
 export interface AttachmentPort {
@@ -110,6 +157,61 @@ export interface EngineConfig {
   callDelayMs?: number;
   /** Call an email business with an allowlisted phone when its email is unanswered this long (needs the phone port). Off when unset. */
   escalateEmailToCallAfterMs?: number;
+  /** Local hours [start, end) in the workspace timezone when Haggle may place calls. Absent = any time. */
+  callHours?: { start: number; end: number };
+  /** No new call to a number within this long after the last one (either direction). Default 2 min. */
+  callCooldownMs?: number;
+  /**
+   * The gap before a counteroffer call to a number Haggle just called (the business quoted on that
+   * call). Default min(callCooldownMs, 60 s), never under 30 s (0 when callCooldownMs is 0).
+   */
+  counterCallGapMs?: number;
+  /** The floor under counterCallGapMs. Default 30 s (demo speed lowers it); a 0 cooldown still means no spacing. */
+  minCallGapMs?: number;
+  /** A scheduled call whose placement failed (e.g. 503 hosted_agent_at_capacity) is retried after this long. Default 60 s. */
+  callRetryMs?: number;
+  /** A business message keeps the window open at least this long, so a half-answered business can finish. */
+  replyGraceMs?: number;
+  /**
+   * Business questions Haggle can't answer from the request are texted to the human together: as
+   * soon as no other business is still to reply, or once the oldest has waited this long. Default 45 s.
+   */
+  questionBatchMs?: number;
+  /**
+   * An unanswered question holds the collection window for its business at most this long (the rest
+   * keep quoting meanwhile); answering it reopens the wait for that business. Default replyGraceMs, else min(window, 15 min).
+   */
+  questionHoldMs?: number;
+  /**
+   * A business Haggle just asked for something (a missing-info or exact-total follow-up, the answer
+   * to its question) holds the collection window at most this long after the ask (a call scheduled
+   * for later counts from its time), so it can still answer; one that never does doesn't keep the
+   * deal waiting. Default min(questionHoldMs ?? replyGraceMs, 3 min).
+   */
+  followUpHoldMs?: number;
+  /**
+   * The human texted (SMS port on) only when they need to act or money moved: business questions,
+   * "all quotes are in" with the recommendation to approve by text, an approval, the payment result,
+   * a deal that failed. Their reply answers the open question. Falls back to the settings approver.
+   */
+  notifyPhone?: string;
+  /** Wrong approval codes before an approval locks. Default 5. */
+  maxApprovalAttempts?: number;
+  /**
+   * Email approval from an approver whose mail Inkbox can't authenticate (any non-Inkbox address):
+   * accept a reply only when it comes from the approver's exact address, in the approval's thread,
+   * and its first line carries this approval's one-time code (APPROVE <code> / NO <code>). The code
+   * goes only to the human's inbox, phone and approval card, never to the model. Wrong codes count
+   * toward the lockout. Off: only authenticated senders can approve by email.
+   */
+  emailApprovalByCode?: boolean;
+  /** The buyer identity as businesses see it (get_identity; Voice AI instructions). */
+  identity?: { name: string; phone?: string | null };
+  /**
+   * Who the AI assistant acts for when the request doesn't say (a detail like "Customer: Acme Labs"
+   * wins): messages to businesses say "I'm an AI assistant ... on behalf of <name>". Default "a customer".
+   */
+  customerName?: string;
 }
 
 export interface EngineDeps {
@@ -121,6 +223,10 @@ export interface EngineDeps {
   a2a?: A2APort;
   /** Optional: iMessage approval requests (live: only when enabled). */
   imessage?: IMessagePort;
+  /** Optional: SMS updates to the human and follow-ups to phone businesses (live: only when enabled). */
+  sms?: SmsPort;
+  /** Optional: keeps the buyer's Voice AI answering instructions in sync with open requests (inbound callbacks). */
+  voice?: VoiceContextPort;
   extractor: ExtractorPort;
   attachments: AttachmentPort;
   brain: Brain;
@@ -138,6 +244,12 @@ export interface EngineDeps {
   now?: () => Date;
   /** Mock mode: deliver due simulated replies before each advance. */
   onTick?: () => Promise<void>;
+  /**
+   * Live: look for inbound replies whose webhook never arrived (InboundReconciler.sweepJob) and
+   * ingest them. Called before a negotiation round closes and before "all quotes are in" goes out,
+   * so a just-missed reply counts. Returns how many items were recovered for the job; never throws.
+   */
+  reconcile?: (jobId: string) => Promise<number>;
   log?: (event: string, data: Record<string, unknown>) => void;
 }
 
@@ -146,10 +258,11 @@ export const inlineAttachments: AttachmentPort = {
   async load(m) {
     return m.attachments
       .filter((a) => a.content_base64)
-      .map((a) => {
+      .map((a): ExtractedFile => {
         const name = (a.filename ?? "").toLowerCase();
-        const kind = a.content_type === "application/pdf" || name.endsWith(".pdf") ? ("pdf" as const) : ("json" as const);
-        return { kind, filename: a.filename ?? "attachment", data: Buffer.from(a.content_base64!, "base64") };
+        const image = imageContentType(a.content_type, a.filename);
+        const kind = a.content_type === "application/pdf" || name.endsWith(".pdf") ? ("pdf" as const) : image ? ("image" as const) : ("json" as const);
+        return { kind, filename: a.filename ?? "attachment", data: Buffer.from(a.content_base64!, "base64"), ...(kind === "image" ? { contentType: image! } : {}) };
       });
   },
 };

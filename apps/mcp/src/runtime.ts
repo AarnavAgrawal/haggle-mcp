@@ -1,9 +1,10 @@
 // Builds the engine for the configured mode. Mock mode (default) needs no credentials and is
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
 import { readFileSync } from "node:fs";
-import { createMockEngine, fleetBusinesses, PostgresRepository, type BrainAdapter, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy, type Persona, type QuoteExtraction } from "@haggle/engine";
+import { createMockEngine, fleetBusinesses, PostgresRepository, type BrainAdapter, type HaggleEngine, type InboundReconciler, type InkboxMailApi, type InkboxTrustPolicy, type Persona, type QuoteExtraction } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { fixtureFetchers, type PlacesFetch, type WebFetch } from "./fixtures.ts";
+import { mockDemoConfig } from "./timings.ts";
 import { buildRoster, type ChannelStatus, type RosterEntry } from "./vendors.ts";
 
 export type Runtime = {
@@ -15,6 +16,8 @@ export type Runtime = {
   tick?: () => Promise<number>;
   /** Live mode: the Inkbox buyer identity and its webhook signing key. */
   inkbox?: { api: InkboxMailApi; buyerMailbox: string; webhookSecret: string; senderTrust: InkboxTrustPolicy; transcript?: (callId: string) => Promise<string> };
+  /** Live mode: recovers inbound mail, texts and calls whose webhook was lost (the webhook notes what it handled). */
+  reconciler?: Pick<InboundReconciler, "noteHandled" | "sweepAll" | "sweepJob">;
   missing: string[];
   /** The demo vendors and whether each can be contacted now (never contacts anyone). */
   roster: () => Promise<RosterEntry[]>;
@@ -29,6 +32,8 @@ export type Runtime = {
   configErrors?: string[];
 };
 
+// ANTHROPIC_API_KEY is required in live mode (decision 30): Claude reads replies and chooses counter
+// moves. The keyword fallback still reads a reply if a Claude call fails, flagged low confidence.
 export const LIVE_REQUIRED = ["INKBOX_API_KEY", "INKBOX_WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "SUPABASE_DB_URL"] as const;
 
 let runtime: Promise<Runtime> | null = null;
@@ -73,16 +78,17 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   const m = createMockEngine({
     delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain, ...(personas ? { personas } : {}),
     ...(env.HAGGLE_MOCK_DATABASE_URL ? { repo: new PostgresRepository(env.HAGGLE_MOCK_DATABASE_URL) } : {}),
-    ...(allow ? { config: { recipientAllowlist: allow } } : {}),
+    // HAGGLE_DEMO_SPEED=true: the same shorter windows as live (decision 49).
+    config: { ...mockDemoConfig(env), ...(allow ? { recipientAllowlist: allow } : {}) },
   });
   // Mock: the simulated fleet plays all six demo vendors; every one is reachable (DEMO).
   // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board).
-  const roster = env.HAGGLE_MOCK_VENDORS === "none" ? buildRoster({}, { email: true, imessage: false, phone: false, a2a: false, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false }) : fleet.map((b): RosterEntry => ({
+  const roster = env.HAGGLE_MOCK_VENDORS === "none" ? buildRoster({}, { email: true, imessage: false, sms: false, phone: false, a2a: false, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false }) : fleet.map((b): RosterEntry => ({
     key: b.slug, name: b.name, category: "catering", channel: b.a2a_card_url && m.engine.a2aEnabled ? "a2a" : b.email ? "email" : "phone", played_by: "simulated seller (DEMO)", simulated: true, ready: true,
     ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}),
   }));
   brain.useAliases((b) => m.engine.businessAliases(b));
-  const channels = async (): Promise<ChannelStatus> => ({ email: true, imessage: false, phone: true, a2a: m.engine.a2aEnabled, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false });
+  const channels = async (): Promise<ChannelStatus> => ({ email: true, imessage: false, sms: false, phone: true, a2a: m.engine.a2aEnabled, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false });
   runtime = Promise.resolve({
     mode: "mock", engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster, channels,
     ...(fx ? { placesKey: "fixture", placesFetch: fx.places, webFetch: { fetch: fx.web, resolve: fx.resolve } } : {}),

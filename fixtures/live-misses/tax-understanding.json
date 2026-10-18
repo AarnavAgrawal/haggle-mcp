@@ -1,0 +1,203 @@
+{
+  "about": "Mission Eats (Voice AI calls, live DB 2026-10-18): the business stated its tax rate and confirmed the agent's all-in read-back, yet the deal board said 'Tax isn't included' (flag tax_excluded). Claude followed the old prompt rule 'a rate goes in tax_rate_percent with tax_included false', so a confirmed all-in total that already contains the tax was flagged. Each case pairs the real (or, where marked synthetic, a realistic) transcript with what Claude returns under the per-quote tax judgement (tax_status + tax_rate_percent + tax_evidence) and, for the real misses, the live Claude output. Phone numbers removed. Tests: packages/engine/tests/taxUnderstanding.test.ts.",
+  "requests": {
+    "catering100": {
+      "source_job": "job_83be19bbf1294f548170",
+      "what": "catering", "quantity": 100, "date": "2026-10-22", "area": "Y Combinator HQ, San Francisco, CA",
+      "requirements": [
+        { "id": "veg20", "hard": true, "kind": "dietary", "text": "At least 20 vegetarian meals", "min_count": 20 },
+        { "id": "delivery", "hard": true, "kind": "delivery", "text": "Delivery to Y Combinator HQ in San Francisco" }
+      ]
+    },
+    "lunch40": {
+      "source_job": "job_31129edc33ba4057b8c7",
+      "what": "lunch catering", "quantity": 40, "date": "2026-10-30", "area": "San Francisco, CA (Y Combinator office)",
+      "requirements": [
+        { "id": "veg12", "hard": true, "kind": "dietary", "text": "At least 12 vegetarian meals", "min_count": 12 },
+        { "id": "delivery", "hard": true, "kind": "delivery", "text": "Delivered to the Y Combinator office in San Francisco" }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "five-percent-then-confirmed-all-in",
+      "source": "job_83be19bbf1294f548170 msg_7adc8ce390164ab88a93 (real)",
+      "request": "catering100",
+      "transcript": "remote: Hello\nlocal: Hi, I'm an AI assistant calling on behalf of a customer about a quote for catering. Do you have a minute?\nremote: Yeah, I do\nlocal: Great, thanks. I'm looking for a quote for delivery catering for 100 meals on Thursday, October 22nd at Y Combinator HQ in San Francisco. We need at least 20 of those meals to be vegetarian. Can you help with that?\nremote: Yeah, I can\nlocal: Okay, could you walk me through the total price including delivery and tax, plus what's included and any deposit?\nremote: Yeah, um, so it'll be fifteen dollars per person plus a hundred delivery which includes um, like delivering it, setup, etc. And then there's a 5 percent\nlocal: Okay.\nlocal: Got it.\nlocal: Okay.\nremote: tax And the deposit is two fifty upfront\nlocal: Okay, thanks. And that would cover all 100 meals with at least 20 vegetarian, right?\nlocal: Sorry, could you confirm that would cover a 100 meals with at least 20 being vegetarian?\nremote: Sorry\nremote: Yes, yes, it would\nlocal: Okay, great. Just to confirm fifteen dollars per person for 100 meals, one hundred dollars delivery, 5 percent tax. So that's one thousand six hundred eighty dollars all in with a two hundred fifty dollar deposit. Is that right?\nlocal: Perfect. Thanks so much for your help.\nremote: Yes, that is correct\nremote: No problem. Have a good day\nlocal: You too. Bye.",
+      "live_extraction": {
+        "available": true, "price_per_head_usd": 15, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": 100, "delivery_included": true,
+        "tax_usd": null, "tax_included": false, "tax_rate_percent": 5, "total_usd": 1680, "deposit_usd": 250, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 20 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [
+          { "field": "total", "source": "call transcript (confirmed read-back)", "excerpt": "one thousand six hundred eighty dollars all in with a two hundred fifty dollar deposit. Is that right? ... Yes, that is correct" },
+          { "field": "deposit", "source": "call transcript", "excerpt": "the deposit is two fifty upfront" },
+          { "field": "delivery_fee", "source": "call transcript", "excerpt": "a hundred delivery which includes um, like delivering it, setup, etc." },
+          { "field": "price_per_head", "source": "call transcript", "excerpt": "fifteen dollars per person" }
+        ],
+        "missing_fields": ["subtotal_usd", "tax_usd", "valid_until"], "confidence": 0.85
+      },
+      "extraction": {
+        "available": true, "price_per_head_usd": 15, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": 100, "delivery_included": true,
+        "tax_usd": null, "tax_status": "included", "tax_rate_percent": 5, "tax_evidence": "there's a 5 percent tax ... so that's one thousand six hundred eighty dollars all in. Is that right? / Yes, that is correct",
+        "total_usd": 1680, "deposit_usd": 250, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 20 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [
+          { "field": "total", "source": "call transcript (confirmed read-back)", "excerpt": "one thousand six hundred eighty dollars all in with a two hundred fifty dollar deposit. Is that right? ... Yes, that is correct" },
+          { "field": "deposit", "source": "call transcript", "excerpt": "the deposit is two fifty upfront" },
+          { "field": "delivery_fee", "source": "call transcript", "excerpt": "a hundred delivery which includes um, like delivering it, setup, etc." },
+          { "field": "price_per_head", "source": "call transcript", "excerpt": "fifteen dollars per person" }
+        ],
+        "missing_fields": ["subtotal_usd", "valid_until"], "confidence": 0.9
+      },
+      "expect": { "total_cents": 168000, "tax_cents": 8000, "tax_status": "included", "tax_rate_percent": 5, "tax_excluded": false }
+    },
+    {
+      "name": "ten-percent-in-words-confirmed-all-in",
+      "source": "job_f067a617c25b4adf8a80 msg_6a8503ea640b47cbab11 (real)",
+      "request": "catering100",
+      "transcript": "local: Hi, I'm an AI assistant calling on behalf of a customer about a quote for catering. Do you have a minute?\nremote: Hello\nremote: Yeah, I do\nlocal: Great, thanks. I'm hoping to get a quote for an order of 100 meals for Thursday, October 22nd, delivered to Y Combinator HQ in San Francisco. We need food for 100 people, with at least 20 vegetarian meals. Could you give me your all-in total, including delivery\nlocal: and tax, and whether there's a deposit?\nremote: Yeah, sorry, can you like break down those questions? Um, it was a lot of information at once\nlocal: Sure. First, can you handle 100 meals delivered on Thursday, October 22nd, to Y Combinator HQ in San Francisco, with at least 20 of those being vegetarian?\nremote: Yes. Yes\nlocal: Okay, what's your per person price? And do you charge a delivery fee? And then what's the tax rate and is there any deposit required?\nremote: Yeah, so per person fee is twenty five dollars per person\nlocal: Okay.\nremote: And the um, delivery fee is a hundred dollars, which includes delivery and setup\nlocal: Alright,\nremote: And the tax rate is ten percent. And the deposit is two fifty. And that's due immediately whenever you want to confirm us to go with your event\nlocal: Okay. So, you said twenty five dollars per person, a hundred dollar delivery and setup fee, ten percent tax, and a two fifty deposit due at confirmation.\nlocal: So I just wanna make sure I've got this right. Just to confirm: twenty five dollars per person for a hundred meals, plus a hundred dollars delivery, and ten percent tax. So that's twenty five hundred plus a hundred, which is twenty six hundred, and ten percent on that makes it twenty\nlocal: eight sixty all in. With a two fifty deposit to book. Is that right?\nlocal: Great. Thank you, that's really helpful.\nremote: Yes\nlocal: Bye.",
+      "live_extraction": {
+        "available": true, "price_per_head_usd": 25, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": 100, "delivery_included": true,
+        "tax_usd": null, "tax_included": false, "tax_rate_percent": 10, "total_usd": 2860, "deposit_usd": 250, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 20 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [
+          { "field": "total", "source": "call transcript (confirmed read-back)", "excerpt": "twenty eight sixty all in. With a two fifty deposit to book. Is that right? ... Yes" },
+          { "field": "deposit", "source": "call transcript", "excerpt": "the deposit is two fifty" },
+          { "field": "delivery_fee", "source": "call transcript", "excerpt": "delivery fee is a hundred dollars, which includes delivery and setup" },
+          { "field": "price_per_head", "source": "call transcript", "excerpt": "per person fee is twenty five dollars per person" }
+        ],
+        "missing_fields": ["subtotal_usd", "tax_usd", "valid_until"], "confidence": 0.85
+      },
+      "extraction": {
+        "available": true, "price_per_head_usd": 25, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": 100, "delivery_included": true,
+        "tax_usd": null, "tax_status": "included", "tax_rate_percent": 10, "tax_evidence": "the tax rate is ten percent ... twenty eight sixty all in. Is that right? / Yes",
+        "total_usd": 2860, "deposit_usd": 250, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 20 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [
+          { "field": "total", "source": "call transcript (confirmed read-back)", "excerpt": "twenty eight sixty all in. With a two fifty deposit to book. Is that right? ... Yes" },
+          { "field": "deposit", "source": "call transcript", "excerpt": "the deposit is two fifty" },
+          { "field": "delivery_fee", "source": "call transcript", "excerpt": "delivery fee is a hundred dollars, which includes delivery and setup" },
+          { "field": "price_per_head", "source": "call transcript", "excerpt": "per person fee is twenty five dollars per person" }
+        ],
+        "missing_fields": ["subtotal_usd", "valid_until"], "confidence": 0.9
+      },
+      "expect": { "total_cents": 286000, "tax_cents": 26000, "tax_status": "included", "tax_rate_percent": 10, "tax_excluded": false }
+    },
+    {
+      "name": "eight-percent-confirmed-669-60",
+      "source": "job_31129edc33ba4057b8c7 msg_32aea36780e6474ebd9a (real)",
+      "request": "lunch40",
+      "transcript": "remote: Hello\nlocal: Hi,I'm an AI assistant calling on behalf of a customer about a quote for lunch catering. Do you have a minute?\nremote: Yeah\nlocal: Okay, great. So the customer is looking for lunch catering for 40 meals on Friday, October 30th, delivered to the Y Combinator office in San Francisco. They need at least 12 vegetarian meals included in that total. Could you give me the all-in total, including delivery\nlocal: and tax, any deposit and when that deposit would be due, and what is included? Like meal count and how you'll meet the vegetarian requirement.\nremote: Yeah, yeah. Sorry, can you ask me the questions like one at a time\nlocal: Yeah, no problem. What's the total price, including delivery and tax, for 40 meals?\nremote: So it'll be 13 dollars per meal, plus 100 dollar delivery and setup fee. And then tax is 8 percent\nlocal: Okay, I'll work out the total. And what deposit, if any, would be required, and when would it be due?\nremote: 250 dollars, um, whenever you choose to, you know, purchase from us\nlocal: Okay. And what's included in the order in terms of meal count and how the vegetarian requirement will be met?\nremote: Um, you tell me and do whatever\nlocal: M-what would you include to meet the requirement of at least 12 vegetarian meals out of the 40?\nremote: Well, then we'll make 12 vegetarian meals. Um, like 12 falafel wraps, say. And then the rest would be like chicken shawarmas\nlocal: Just to confirm: 13 dollars per person for 40 meals, 100 dollars for delivery and setup, 8 percent tax, so 669 dollars and 60 cents all in, with a 250 dollar deposit, and that would include 12 vegetarian meals.\nlocal: Is that right?\nlocal: Thank you. I'll pass this along to the customer. That's everything I need.\nremote: Yes, that is correct\nremote: Okay. Take care",
+      "live_extraction": {
+        "available": true, "price_per_head_usd": 13, "headcount": 40, "subtotal_usd": null, "delivery_fee_usd": 100, "delivery_included": true,
+        "tax_usd": null, "tax_included": false, "tax_rate_percent": 8, "total_usd": 669.6, "deposit_usd": 250, "menu_items": ["falafel wraps", "chicken shawarmas"],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 12 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [
+          { "field": "total", "source": "call transcript (confirmed read-back)", "excerpt": "669 dollars and 60 cents all in" },
+          { "field": "deposit", "source": "call transcript", "excerpt": "250 dollars" },
+          { "field": "delivery_fee", "source": "call transcript", "excerpt": "100 dollar delivery and setup fee" },
+          { "field": "price_per_head", "source": "call transcript", "excerpt": "13 dollars per meal" }
+        ],
+        "missing_fields": ["subtotal_usd", "tax_usd", "valid_until"], "confidence": 0.85
+      },
+      "extraction": {
+        "available": true, "price_per_head_usd": 13, "headcount": 40, "subtotal_usd": null, "delivery_fee_usd": 100, "delivery_included": true,
+        "tax_usd": null, "tax_status": "included", "tax_rate_percent": 8, "tax_evidence": "tax is 8 percent ... so 669 dollars and 60 cents all in ... Is that right? / Yes, that is correct",
+        "total_usd": 669.6, "deposit_usd": 250, "menu_items": ["falafel wraps", "chicken shawarmas"],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 12 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [
+          { "field": "total", "source": "call transcript (confirmed read-back)", "excerpt": "669 dollars and 60 cents all in" },
+          { "field": "deposit", "source": "call transcript", "excerpt": "250 dollars" },
+          { "field": "delivery_fee", "source": "call transcript", "excerpt": "100 dollar delivery and setup fee" },
+          { "field": "price_per_head", "source": "call transcript", "excerpt": "13 dollars per meal" }
+        ],
+        "missing_fields": ["subtotal_usd", "valid_until"], "confidence": 0.9
+      },
+      "expect": { "total_cents": 66960, "tax_cents": 4960, "tax_status": "included", "tax_rate_percent": 8, "tax_excluded": false }
+    },
+    {
+      "name": "all-in-including-tax-in-words",
+      "source": "synthetic (the business says the total includes tax, no rate)",
+      "request": "catering100",
+      "transcript": "local: Hi, I'm an AI assistant calling on behalf of a customer about a quote for catering. Do you have a minute?\nremote: Sure.\nlocal: Could you give me the total for 100 meals on October 22nd, delivered to Y Combinator HQ, with at least 20 vegetarian?\nremote: Yeah, we can do that. It comes to twelve hundred, all in, that's with tax and delivery.\nlocal: Great. Is there a deposit?\nremote: No deposit.\nlocal: Thanks, bye.",
+      "extraction": {
+        "available": true, "price_per_head_usd": null, "headcount": null, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": true,
+        "tax_usd": null, "tax_status": "included", "tax_rate_percent": null, "tax_evidence": "twelve hundred, all in, that's with tax and delivery",
+        "total_usd": 1200, "deposit_usd": null, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": null }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [{ "field": "total", "source": "call transcript", "excerpt": "It comes to twelve hundred, all in, that's with tax and delivery" }],
+        "missing_fields": ["deposit_usd", "valid_until"], "confidence": 0.9
+      },
+      "expect": { "total_cents": 120000, "tax_cents": null, "tax_status": "included", "tax_rate_percent": null, "tax_excluded": false }
+    },
+    {
+      "name": "tax-included-confirmed-in-read-back",
+      "source": "synthetic (the business never says 'tax' itself; it confirms the agent's 'including tax' read-back)",
+      "request": "catering100",
+      "transcript": "local: Hi, I'm an AI assistant calling on behalf of a customer about a quote for catering. Do you have a minute?\nremote: Yeah.\nlocal: What would 100 meals on October 22nd at Y Combinator HQ cost, with at least 20 vegetarian?\nremote: Fifteen a person, and a hundred for delivery. Twenty veggie is fine.\nlocal: Just to confirm: fifteen dollars per person for 100 meals, a hundred dollars delivery, so sixteen hundred dollars all in, including tax. Is that right?\nremote: Yep, that's right.\nlocal: Thank you, bye.",
+      "extraction": {
+        "available": true, "price_per_head_usd": 15, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": 100, "delivery_included": true,
+        "tax_usd": null, "tax_status": "included", "tax_rate_percent": null, "tax_evidence": "so sixteen hundred dollars all in, including tax. Is that right? / Yep, that's right.",
+        "total_usd": 1600, "deposit_usd": null, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 20 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [
+          { "field": "total", "source": "call transcript (confirmed read-back)", "excerpt": "sixteen hundred dollars all in, including tax. Is that right? ... Yep, that's right." },
+          { "field": "price_per_head", "source": "call transcript", "excerpt": "Fifteen a person" },
+          { "field": "delivery_fee", "source": "call transcript", "excerpt": "a hundred for delivery" }
+        ],
+        "missing_fields": ["deposit_usd", "valid_until"], "confidence": 0.9
+      },
+      "expect": { "total_cents": 160000, "tax_cents": null, "tax_status": "included", "tax_rate_percent": null, "tax_excluded": false }
+    },
+    {
+      "name": "tax-never-mentioned",
+      "source": "synthetic (genuinely unmentioned tax; the total is worked out from parts)",
+      "request": "lunch40",
+      "transcript": "local: Hi, I'm an AI assistant calling on behalf of a customer about a quote for lunch catering. Do you have a minute?\nremote: Yeah\nlocal: What would 40 lunches on October 30th at the Y Combinator office cost, with at least 12 vegetarian?\nremote: Thirteen dollars per meal, plus a hundred for delivery. We'll do the 12 veggie.\nlocal: Thanks, I'll pass that along. Bye.",
+      "extraction": {
+        "available": true, "price_per_head_usd": 13, "headcount": 40, "subtotal_usd": null, "delivery_fee_usd": 100, "delivery_included": null,
+        "tax_usd": null, "tax_status": "not_mentioned", "tax_rate_percent": null, "tax_evidence": "",
+        "total_usd": null, "deposit_usd": null, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 12 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [
+          { "field": "price_per_head", "source": "call transcript", "excerpt": "Thirteen dollars per meal" },
+          { "field": "delivery_fee", "source": "call transcript", "excerpt": "plus a hundred for delivery" }
+        ],
+        "missing_fields": ["total_usd", "tax_usd", "deposit_usd"], "confidence": 0.85
+      },
+      "expect": { "total_cents": 62000, "tax_cents": null, "tax_status": "not_mentioned", "tax_rate_percent": null, "tax_excluded": true }
+    }
+  ],
+  "counter_call": {
+    "about": "Round 2 (synthetic counter call to the business of case five-percent-then-confirmed-all-in): a lower per-person price, tax and delivery not repeated. The 5% stated on the first call still applies, on the same base the business confirmed (food + delivery).",
+    "request": "catering100",
+    "round1": "five-percent-then-confirmed-all-in",
+    "transcript": "local: Hi, I'm an AI assistant calling back on behalf of the customer about the catering quote for 100 meals on October 22nd.\nremote: Oh hey, yeah.\nlocal: The customer would love to go with you. Is there any flexibility on the per person price?\nremote: Um, I could do fourteen dollars per person for that order.\nlocal: Thank you, I'll pass that along. Bye.",
+    "extraction_not_mentioned": {
+      "available": true, "price_per_head_usd": 14, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": null,
+      "tax_usd": null, "tax_status": "not_mentioned", "tax_rate_percent": null, "tax_evidence": "",
+      "total_usd": null, "deposit_usd": null, "menu_items": [], "dietary_coverage": [], "valid_until": null, "questions": [],
+      "payment_request": "none", "instructions_to_agent": false,
+      "sources": [{ "field": "price_per_head", "source": "call transcript", "excerpt": "I could do fourteen dollars per person" }],
+      "missing_fields": ["total_usd", "delivery_fee_usd", "deposit_usd"], "confidence": 0.8
+    },
+    "extraction_from_history": {
+      "available": true, "price_per_head_usd": 14, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": null,
+      "tax_usd": null, "tax_status": "added_on_top", "tax_rate_percent": 5, "tax_evidence": "earlier call: there's a 5 percent tax",
+      "total_usd": null, "deposit_usd": null, "menu_items": [], "dietary_coverage": [], "valid_until": null, "questions": [],
+      "payment_request": "none", "instructions_to_agent": false,
+      "sources": [{ "field": "price_per_head", "source": "call transcript", "excerpt": "I could do fourteen dollars per person" }],
+      "missing_fields": ["total_usd", "delivery_fee_usd", "deposit_usd"], "confidence": 0.8
+    },
+    "expect": { "total_cents": 157500, "tax_cents": 7500, "tax_rate_percent": 5, "tax_excluded": false }
+  }
+}

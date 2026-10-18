@@ -239,6 +239,26 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`en
     expect(stripe.calls).toHaveLength(0);
   });
 
+  // A revision while the human is deciding voids the approval: nothing to approve, pay or charge.
+  it("a quote revised while the human is deciding voids the approval: the late approval and pay charge nothing", async () => {
+    const stripe = scriptedStripe();
+    const { engine, clock, repo } = setup(stripe);
+    const { deal, board } = await ready(engine, clock);
+    const bay = board.quotes.find((q) => q.business === "Bay Catering")!;
+    const a = await engine.requestApproval(deal.job_id, bay.quote_id, "simulated");
+    const b = (await repo.getBusinesses(deal.job_id)).find((x) => x.name === "Bay Catering")!;
+    await engine.ingest(
+      { providerEventId: `e-rev-pending-${deal.job_id}`, eventType: "email.received", providerEmailId: `stripe-rev-pending-${deal.job_id}`, threadId: b.thread_id, messageId: `<stripe-rev-pending-${deal.job_id}@bay>`, inReplyTo: [], references: [], from: b.email, to: [deal.inbox], subject: "Re: x", bodyText: "Correction: $1,050", attachments: [], attachmentsDownloadUrl: null },
+      (expected) => ({ trusted: true, address: expected, reason: "trusted", evidence: { dmarc: "simulated", dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } }),
+      { simulated: true, inlineAttachments: [{ filename: "quote.json", contentType: "application/json", data: new TextEncoder().encode(JSON.stringify({ haggle: "quote/1", job_id: deal.job_id, business: "Bay Catering", total_usd: 1050, deposit_usd: 6, items: [], requirements_met: [{ requirement_id: "veg12", met: true }, { requirement_id: "delivery", met: true }], valid_until: "2026-10-21" })) }] },
+    );
+    await engine.advanceJob(deal.job_id);
+    expect((await repo.getApproval(a.id))!.status).toBe("expired");
+    expect(await engine.decideApproval(a.id, "approve", "simulated", "DEMO human")).toBe(false);
+    await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: expect.stringMatching(/^(approval_expired|payment_refused_quote_changed|not_payable|no_approval)$/) });
+    expect(stripe.calls).toHaveLength(0);
+  });
+
   it("a price cut flows through everywhere: the board compares the revised quote, the stale approval is refused, and the new approval and Stripe charge use the new amounts", async () => {
     const stripe = scriptedStripe();
     const { engine, clock, repo } = setup(stripe);

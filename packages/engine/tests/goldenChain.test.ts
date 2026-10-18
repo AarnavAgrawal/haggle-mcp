@@ -120,10 +120,13 @@ describe("golden scenario through the engine modules", () => {
     compliant: r.compliant, senderTrusted: r.trust.trusted, status, confidence: r.record.confidence, flags: r.record.flags,
   });
 
-  it("round 1: Harbor Table leads; Golden Grill and QuickQuote are rejected", () => {
+  it("round 1: Harbor Table leads; QuickQuote is rejected (unsafe); Golden Grill is an option that misses a requirement", () => {
     const ranking = rankQuotes(round1.map((r) => toRankable(r)), 120000);
     expect(ranking.recommendedQuoteId).toBe("q-b-harbor-1");
-    expect(ranking.rejected.map((x) => [x.businessId, x.reason])).toEqual(expect.arrayContaining([["b-grill", "requirement_unmet"], ["b-deli", "external_payment_link"], ["b-mission", "no_total"], ["b-sunset", "no_total"]]));
+    expect(ranking.rejected.map((x) => [x.businessId, x.reason])).toEqual(expect.arrayContaining([["b-deli", "external_payment_link"], ["b-mission", "no_total"], ["b-sunset", "no_total"]]));
+    expect(ranking.rejected.map((x) => x.businessId)).not.toContain("b-grill");
+    expect(ranking.caveats).toEqual(expect.arrayContaining([expect.objectContaining({ businessId: "b-grill", reasons: ["requirement_unmet"] })]));
+    expect(ranking.ranked.at(-1)!.businessId).toBe("b-grill"); // cheapest, but listed after the quotes that meet everything
   });
 
   it("negotiation cites Harbor's real quote to Bay; Bay's real $995 revision then wins", () => {

@@ -74,7 +74,7 @@ function fromV5(raw: unknown, jobId: string, reqs: EngineRequirement[]): { part:
   return { part, ...(vegetarian !== undefined ? { vegetarian } : {}), ...(deliveryIncluded !== undefined ? { deliveryIncluded } : {}) };
 }
 
-export function quotePartToExtraction(raw: unknown, jobId: string, reqs: EngineRequirement[], headcount: number): QuotePartParse {
+export function quotePartToExtraction(raw: unknown, jobId: string, reqs: EngineRequirement[], headcount: number | undefined): QuotePartParse {
   const v5 = fromV5(raw, jobId, reqs);
   if (v5 && "error" in v5) return { ok: false, reason: v5.error };
   const r = v5 ? { success: true as const, data: v5.part } : QuotePartSchema.safeParse(raw);
@@ -96,7 +96,7 @@ export function quotePartToExtraction(raw: unknown, jobId: string, reqs: EngineR
     extraction: {
       available: true,
       price_per_head_usd: p.per_unit_usd ?? null,
-      headcount,
+      headcount: headcount ?? null,
       subtotal_usd: null,
       delivery_fee_usd: p.delivery_usd ?? null,
       delivery_included: deliveryMet ?? (p.delivery_usd !== undefined ? true : null),

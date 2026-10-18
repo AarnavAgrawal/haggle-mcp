@@ -69,6 +69,14 @@ describe("BrainAdapter (engine → real brain)", () => {
     expect(await core.getProfile("biz_6c811a809659ce8e")).toMatchObject({ name: "Mission Eats (demo)" });
   });
 
+  it("discover keeps the brain's channel, so a business the operator set to be texted is texted", async () => {
+    const texting = loadDirectory(undefined, JSON.stringify([{ id: "biz_golden_grill", phone: "+14085550123", prefer_channel: "imessage" }]));
+    const brain = new BrainAdapter({ brain: createBrain({ store: new MemoryStore(), directory: texting }), directory: texting });
+    const found = await brain.discover("catering", "San Francisco", 6);
+    expect(found.find((b) => b.name === "Golden Grill")).toMatchObject({ best_channel: "imessage", phone: "+14085550123", email: "" });
+    expect(found.find((b) => b.name === "Harbor Table")).toMatchObject({ best_channel: "email" });
+  });
+
   it("maps estimates and price checks back to engine shapes", async () => {
     const core = createBrain({ store: new MemoryStore(), seed: true });
     const brain = new BrainAdapter({ brain: core, directory });

@@ -1,0 +1,224 @@
+{
+  "about": "Real replies (live DB, 2026-10-17/18) where Haggle claimed a requirement wasn't stated although it was, or asked a business to restate a fact of the request. Each case pairs the business's words with what Claude returns under the per-requirement schema (requirement_checks), plus the real Claude output that triggered the miss where it matters. Phone numbers removed. Tests: packages/engine/tests/requirementChecks.test.ts.",
+  "requests": {
+    "dinner100": {
+      "source_job": "job_892708022fd14c549187",
+      "what": "dinner catering", "quantity": 100, "date": "2026-10-24", "area": "Y Combinator HQ, San Francisco, CA",
+      "requirements": [
+        { "id": "veg20", "hard": true, "kind": "dietary", "text": "At least 20 vegetarian meals (included in the 100)", "min_count": 20 },
+        { "id": "delivery", "hard": true, "kind": "delivery", "text": "Delivery to Y Combinator HQ in San Francisco by 5:00 PM" },
+        { "id": "date", "hard": true, "kind": "date", "text": "Saturday, October 24, 2026" }
+      ],
+      "details": [
+        { "label": "Event", "value": "Dinner event for 100 people" },
+        { "label": "Delivery time", "value": "5:00 PM, Saturday October 24, 2026" },
+        { "label": "Location", "value": "Y Combinator HQ, San Francisco, CA" }
+      ]
+    },
+    "lunch40": {
+      "source_job": "job_c78295b3287a42cd8974",
+      "what": "lunch catering", "quantity": 40, "date": "2026-10-30", "area": "San Francisco, CA (Y Combinator office)",
+      "requirements": [
+        { "id": "veg12", "hard": true, "kind": "dietary", "text": "At least 12 vegetarian meals", "min_count": 12 },
+        { "id": "delivery", "hard": true, "kind": "delivery", "text": "Delivered to the Y Combinator office in San Francisco" },
+        { "id": "date", "hard": true, "kind": "date", "text": "Lunch delivery on October 30, 2026" }
+      ],
+      "details": [
+        { "label": "Headcount", "value": "40 people" },
+        { "label": "Vegetarian", "value": "12 of the 40 meals must be vegetarian" },
+        { "label": "Delivery site", "value": "Y Combinator office, San Francisco" }
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "harbor-table-date-in-prose",
+      "request": "dinner100",
+      "channel": "email",
+      "live_miss": "Haggle emailed 'Could you also tell us: - Saturday, October 24, 2026' although the reply opened with 'on Saturday October 24' (date requirement was always 'needs review').",
+      "body": "Hello there,\n\nWhat a lovely evening to be part of! We'd be delighted to cater your client's dinner at Y Combinator HQ on Saturday October 24, and we can meet every requirement on your list.\n\nFor 100 guests, we're proposing our lemon-herb chicken with roasted fingerling potatoes, and 20 of those meals will be our eggplant parmesan, fully vegetarian and just as hearty. That matches the 20 vegetarian meals your client requested, all within the 100 total.\n\nThe total comes to $3,200, which works out to $32 per person, and delivery to Y Combinator HQ is included.\n\nWarmly,\nElena\nHarbor Table Catering",
+      "extraction": {
+        "available": true, "price_per_head_usd": 32, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": true,
+        "tax_usd": null, "tax_included": null, "total_usd": 3200, "deposit_usd": null, "menu_items": ["lemon-herb chicken with roasted fingerling potatoes", "eggplant parmesan"],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 20 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [{ "field": "total", "source": "email body", "excerpt": "The total comes to $3,200" }, { "field": "price_per_head", "source": "email body", "excerpt": "$32 per person" }],
+        "missing_fields": ["deposit_usd"], "confidence": 0.92,
+        "requirement_checks": [
+          { "requirement_id": "veg20", "met": true, "evidence": "20 of those meals will be our eggplant parmesan, fully vegetarian", "note": "20 vegetarian meals within the 100" },
+          { "requirement_id": "delivery", "met": true, "evidence": "delivery to Y Combinator HQ is included", "note": "delivery included; 5:00 PM not contradicted" },
+          { "requirement_id": "date", "met": true, "evidence": "cater your client's dinner at Y Combinator HQ on Saturday October 24", "note": "confirmed the requested date" }
+        ]
+      },
+      "expected": { "veg20": true, "delivery": true, "date": true },
+      "expected_followup": []
+    },
+    {
+      "name": "sunset-kitchen-date-not-repeated",
+      "request": "dinner100",
+      "channel": "email",
+      "live_miss": "Quote for the request without restating the date: Haggle followed up asking for 'Saturday, October 24, 2026'. A fact of the request is accepted when the business quotes for it without contradicting it.",
+      "body": "Hi there,\n\nHere's your full quote for 100 people:\n\n- Chicken piccata and lemon bars for 100\n- 20 roasted vegetable lasagnas, so 20 vegetarian meals, just like you asked\n- Plates, cutlery and napkins for everyone\n- Delivery is included\n\nTotal comes to $3,025, which works out to $30.25 a head. We'd need a $302.50 deposit to hold the date.\n\nCheers,\nMaya @ Sunset Kitchen",
+      "extraction": {
+        "available": true, "price_per_head_usd": 30.25, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": true,
+        "tax_usd": null, "tax_included": null, "total_usd": 3025, "deposit_usd": 302.5, "menu_items": ["Chicken piccata", "lemon bars", "roasted vegetable lasagna"],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 20 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [{ "field": "total", "source": "email body", "excerpt": "Total comes to $3,025" }, { "field": "deposit", "source": "email body", "excerpt": "$302.50 deposit" }],
+        "missing_fields": [], "confidence": 0.9,
+        "requirement_checks": [
+          { "requirement_id": "veg20", "met": true, "evidence": "20 roasted vegetable lasagnas, so 20 vegetarian meals", "note": "20 vegetarian" },
+          { "requirement_id": "delivery", "met": true, "evidence": "Delivery is included", "note": "delivery included" },
+          { "requirement_id": "date", "met": null, "evidence": "", "note": "date not mentioned in the reply" }
+        ]
+      },
+      "expected": { "veg20": true, "delivery": true, "date": true },
+      "expected_followup": []
+    },
+    {
+      "name": "golden-grill-20-veg-or-more-text",
+      "request": "dinner100",
+      "channel": "imessage",
+      "live_miss": "Claude keyed the need as '20 vegetarian' (the prompt said 'Dietary needs: 20 vegetarian'), the lookup by 'vegetarian' failed, and Haggle asked 'At least 20 vegetarian meals (included in the 100), Saturday, October 24, 2026' although the text said '20 veg meals or more'.",
+      "body": "can do $13/prseon + $50 delivery fee + 8% tax. i can do 20 veg meals or more if u want",
+      "extraction": {
+        "available": true, "price_per_head_usd": 13, "headcount": null, "subtotal_usd": null, "delivery_fee_usd": 50, "delivery_included": false,
+        "tax_usd": null, "tax_included": false, "tax_rate_percent": 8, "total_usd": null, "deposit_usd": null, "menu_items": [],
+        "dietary_coverage": [{ "need": "20 vegetarian", "covered": true, "count_offered": 20 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [{ "field": "price_per_head", "source": "text", "excerpt": "$13/prseon" }, { "field": "delivery_fee", "source": "text", "excerpt": "$50 delivery fee" }],
+        "missing_fields": ["total_usd", "deposit_usd", "headcount"], "confidence": 0.8,
+        "requirement_checks": [
+          { "requirement_id": "veg20", "met": true, "evidence": "i can do 20 veg meals or more", "note": "20 or more vegetarian meals" },
+          { "requirement_id": "delivery", "met": true, "evidence": "$50 delivery fee", "note": "delivers for $50" },
+          { "requirement_id": "date", "met": null, "evidence": "", "note": "date not mentioned" }
+        ]
+      },
+      "later": {
+        "body": "[Haggle's last text to the business, for context only; these are not the business's words]: Hi Golden Grill, Haggle (AI assistant) again about dinner catering for 100 meals. Could you text back your exact all-in total, incl. delivery and tax, and the deposit? HG-ZQ9R\n[The business's reply]: 1454",
+        "live_miss": "The short reply '1454' came back with dietary 'vegetarian' covered:false (not mentioned), which turned the requirement into 'business said it can't cover it'.",
+        "extraction": {
+          "available": true, "price_per_head_usd": null, "headcount": null, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": null,
+          "tax_usd": null, "tax_included": null, "total_usd": 1454, "deposit_usd": null, "menu_items": [],
+          "dietary_coverage": [{ "need": "vegetarian", "covered": false, "count_offered": null }], "valid_until": null, "questions": [],
+          "payment_request": "none", "instructions_to_agent": false,
+          "sources": [{ "field": "total", "source": "text", "excerpt": "1454" }],
+          "missing_fields": ["deposit_usd"], "confidence": 0.75,
+          "requirement_checks": [
+            { "requirement_id": "veg20", "met": null, "evidence": "", "note": "not in this reply" },
+            { "requirement_id": "delivery", "met": null, "evidence": "", "note": "not in this reply" },
+            { "requirement_id": "date", "met": null, "evidence": "", "note": "not in this reply" }
+          ]
+        },
+        "expected": { "veg20": true, "delivery": true, "date": true }
+      },
+      "expected": { "veg20": true, "delivery": true, "date": true },
+      "expected_followup": []
+    },
+    {
+      "name": "mission-eats-call-all-veg-then-confirms-date",
+      "request": "lunch40",
+      "channel": "phone",
+      "live_miss": "'we will obviously do all the vegetarian meals that you need' had no count, so the requirement stayed unknown; the follow-up call's transcript ('Could you confirm lunch delivery on that date?' / 'Yeah, yeah') then set vegetarian covered:false and the quote was marked 'business said it can't cover it'.",
+      "body": "local: Great, the customer is looking for lunch catering for forty people on Friday, October 30th, delivered to the Y Combinator office in San Francisco, with at least 12 of those meals being vegetarian.\nremote: Um, yeah, so, so, to answer your question, it'll be seventeen dollars per meal. Plus a hundred dollars for delivery and then 10% tax. And then we will obviously do all the vegetarian meals that you need. And that includes setup, delivery, etc. Yeah\nlocal: Got it. Is there a deposit required?\nremote: Um, yeah, two fifty bucks",
+      "extraction": {
+        "available": true, "price_per_head_usd": 17, "headcount": 40, "subtotal_usd": null, "delivery_fee_usd": 100, "delivery_included": false,
+        "tax_usd": null, "tax_included": false, "tax_rate_percent": 10, "total_usd": null, "deposit_usd": 250, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": null }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [{ "field": "price_per_head", "source": "call transcript", "excerpt": "seventeen dollars per meal" }, { "field": "delivery_fee", "source": "call transcript", "excerpt": "a hundred dollars for delivery" }, { "field": "deposit", "source": "call transcript", "excerpt": "two fifty bucks" }],
+        "missing_fields": ["total_usd"], "confidence": 0.8,
+        "requirement_checks": [
+          { "requirement_id": "veg12", "met": true, "evidence": "we will obviously do all the vegetarian meals that you need", "note": "will cover all vegetarian meals asked for (12)" },
+          { "requirement_id": "delivery", "met": true, "evidence": "a hundred dollars for delivery", "note": "delivers for $100 incl. setup" },
+          { "requirement_id": "date", "met": true, "evidence": "to answer your question, it'll be seventeen dollars per meal", "note": "quoted for the request as sent, not contradicted" }
+        ]
+      },
+      "later": {
+        "body": "local: Hi, I'm an AI assistant calling on behalf of a customer, checking on lunch delivery for October 30th, 2026.\nremote: Okay, what's up\nlocal: Mission Eats already quoted for lunch catering, 40 meals delivered to Y Combinator's office in San Francisco on October 30th, 2026. Could you confirm lunch delivery on that date?\nremote: Yeah, yeah\nlocal: Great, thanks for confirming that.\nremote: Okay",
+        "live_miss": "Real Claude output for this transcript: dietary vegetarian covered:false, every money field missing.",
+        "extraction": {
+          "available": true, "price_per_head_usd": null, "headcount": null, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": null,
+          "tax_usd": null, "tax_included": null, "total_usd": null, "deposit_usd": null, "menu_items": [],
+          "dietary_coverage": [{ "need": "vegetarian", "covered": false, "count_offered": null }], "valid_until": null, "questions": [],
+          "payment_request": "none", "instructions_to_agent": false, "sources": [],
+          "missing_fields": ["total_usd", "deposit_usd"], "confidence": 0.7,
+          "requirement_checks": [
+            { "requirement_id": "veg12", "met": null, "evidence": "", "note": "not discussed on this call" },
+            { "requirement_id": "delivery", "met": null, "evidence": "", "note": "not discussed on this call" },
+            { "requirement_id": "date", "met": true, "evidence": "Yeah, yeah", "note": "confirmed lunch delivery on October 30 when the assistant read it back" }
+          ]
+        },
+        "expected": { "veg12": true, "delivery": true, "date": true }
+      },
+      "expected": { "veg12": true, "delivery": true, "date": true },
+      "expected_followup": []
+    },
+    {
+      "name": "delivery-stated-only-in-prose",
+      "request": "lunch40",
+      "channel": "email",
+      "live_miss": "Paraphrase of live replies that state delivery only in a sentence ('lunch will arrive on the day', 'we bring it to you'): the keyword rules need delivery_included or a fee, so a reader that left both null produced 'delivery not stated'.",
+      "body": "Hello,\n\nHappy to help with lunch for your team on Friday October 30. The total comes to $1,220 for 40 people, which works out to $30.50 per person.\n\nThe menu is lemon-herb chicken and seasonal greens for 40, plus 12 mushroom risotto meals for your vegetarian guests. We'll bring everything to the Y Combinator office ourselves and lunch will arrive on the day.\n\nWarmly,\nElena\nHarbor Table Catering",
+      "extraction": {
+        "available": true, "price_per_head_usd": 30.5, "headcount": 40, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": null,
+        "tax_usd": null, "tax_included": null, "total_usd": 1220, "deposit_usd": null, "menu_items": ["lemon-herb chicken and seasonal greens", "mushroom risotto"],
+        "dietary_coverage": [{ "need": "12 vegetarian", "covered": true, "count_offered": 12 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [{ "field": "total", "source": "email body", "excerpt": "The total comes to $1,220" }],
+        "missing_fields": ["delivery_fee_usd", "deposit_usd"], "confidence": 0.9,
+        "requirement_checks": [
+          { "requirement_id": "veg12", "met": true, "evidence": "plus 12 mushroom risotto meals for your vegetarian guests", "note": "12 vegetarian" },
+          { "requirement_id": "delivery", "met": true, "evidence": "We'll bring everything to the Y Combinator office ourselves", "note": "delivers to the office" },
+          { "requirement_id": "date", "met": true, "evidence": "lunch for your team on Friday October 30", "note": "confirmed the date" }
+        ]
+      },
+      "expected": { "veg12": true, "delivery": true, "date": true },
+      "expected_followup": []
+    },
+    {
+      "name": "numbers-and-contradictions-still-count",
+      "request": "dinner100",
+      "channel": "email",
+      "live_miss": "Guard case (not a miss): a stated count below the minimum is a no even if a reader says yes, and a different date is a no.",
+      "body": "We could do this on Sunday the 25th instead (Saturday is booked): $2,900 total, delivered, with 10 vegetarian plates.",
+      "extraction": {
+        "available": true, "price_per_head_usd": null, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": true,
+        "tax_usd": null, "tax_included": null, "total_usd": 2900, "deposit_usd": null, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 10 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [{ "field": "total", "source": "email body", "excerpt": "$2,900 total" }],
+        "missing_fields": [], "confidence": 0.9,
+        "requirement_checks": [
+          { "requirement_id": "veg20", "met": true, "evidence": "10 vegetarian plates", "note": "has vegetarian plates" },
+          { "requirement_id": "delivery", "met": true, "evidence": "delivered", "note": "delivered" },
+          { "requirement_id": "date", "met": false, "evidence": "We could do this on Sunday the 25th instead (Saturday is booked)", "note": "offers Sunday, not the Saturday requested" }
+        ]
+      },
+      "expected": { "veg20": false, "delivery": true, "date": false },
+      "expected_followup": []
+    },
+    {
+      "name": "genuinely-unaddressed-is-still-asked",
+      "request": "dinner100",
+      "channel": "email",
+      "live_miss": "Guard case: a requirement the business never addressed and that isn't a fact of the request (delivery) still gets one follow-up.",
+      "body": "Saturday the 24th works. $2,800 total for 100, and yes, 20 of them vegetarian.",
+      "extraction": {
+        "available": true, "price_per_head_usd": null, "headcount": 100, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": null,
+        "tax_usd": null, "tax_included": null, "total_usd": 2800, "deposit_usd": null, "menu_items": [],
+        "dietary_coverage": [{ "need": "vegetarian", "covered": true, "count_offered": 20 }], "valid_until": null, "questions": [],
+        "payment_request": "none", "instructions_to_agent": false,
+        "sources": [{ "field": "total", "source": "email body", "excerpt": "$2,800 total" }],
+        "missing_fields": ["delivery"], "confidence": 0.9,
+        "requirement_checks": [
+          { "requirement_id": "veg20", "met": true, "evidence": "20 of them vegetarian", "note": "20 vegetarian" },
+          { "requirement_id": "delivery", "met": null, "evidence": "", "note": "delivery not mentioned" },
+          { "requirement_id": "date", "met": true, "evidence": "Saturday the 24th works", "note": "confirmed the date" }
+        ]
+      },
+      "expected": { "veg20": true, "delivery": null, "date": true },
+      "expected_followup": ["Delivery to Y Combinator HQ in San Francisco by 5:00 PM"]
+    }
+  ]
+}

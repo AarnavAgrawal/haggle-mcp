@@ -1,6 +1,6 @@
 /**
  * Where profiles live. Memory for tests, a JSON file for local dev, Supabase for the deployed server.
- * Pick with storeFromEnv(): SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY → Supabase,
+ * Pick with storeFromEnv(): SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY → Supabase (schema HAGGLE_DB_SCHEMA, default public),
  * HAGGLE_BRAIN_STORE=memory → memory, otherwise a file at HAGGLE_BRAIN_FILE (.haggle-data/brain.json).
  */
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -76,10 +76,14 @@ export class FileStore implements ProfileStore {
 const TABLE = "brain_profiles";
 
 export class SupabaseStore implements ProfileStore {
-  private readonly db: SupabaseClient;
+  // A shared database keeps the tables in another schema (HAGGLE_DB_SCHEMA), which must then be
+  // in Supabase's exposed schemas; the client type is widened from its "public" default for it.
+  private readonly db: SupabaseClient<any, string, string>;
+  readonly schema: string;
 
-  constructor(url: string, serviceRoleKey: string) {
-    this.db = createClient(url, serviceRoleKey, { auth: { persistSession: false } });
+  constructor(url: string, serviceRoleKey: string, schema = "public") {
+    this.schema = schema;
+    this.db = createClient<any, string>(url, serviceRoleKey, { auth: { persistSession: false }, db: { schema } });
   }
 
   async get(businessId: string) {
@@ -110,7 +114,7 @@ export class SupabaseStore implements ProfileStore {
 
 export function storeFromEnv(env: NodeJS.ProcessEnv = process.env): ProfileStore {
   if (env.SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY) {
-    return new SupabaseStore(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+    return new SupabaseStore(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, env.HAGGLE_DB_SCHEMA?.trim() || "public");
   }
   if (env.HAGGLE_BRAIN_STORE === "memory") return new MemoryStore();
   return new FileStore(env.HAGGLE_BRAIN_FILE ?? ".haggle-data/brain.json");

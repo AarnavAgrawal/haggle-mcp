@@ -6,7 +6,7 @@
 // Known product defects are pinned with `defect(...)`: by default they run as `it.fails` (green while the
 // defect exists, red once it's fixed, so the marker gets removed); ACCEPTANCE_STRICT=1 runs them as plain
 // tests, which fail until the product is fixed. Run `npm run build -w @haggle/mcp` first.
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,7 +14,15 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const APP_DIR = join(import.meta.dirname, "..");
-const BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].find((p) => existsSync(p)) ?? "mcp-use";
+// On Windows the runnable shim is mcp-use.cmd, which needs a shell (and a quoted path); stop the whole tree.
+const WIN = process.platform === "win32";
+const BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].map((p) => (WIN ? `${p}.cmd` : p)).find((p) => existsSync(p)) ?? "mcp-use";
+const startServer = (env: NodeJS.ProcessEnv): ChildProcess =>
+  WIN ? spawn(`"${BIN}"`, ["start"], { cwd: APP_DIR, stdio: "ignore", env, shell: true }) : spawn(BIN, ["start"], { cwd: APP_DIR, stdio: "ignore", env });
+const stopServer = (proc: ChildProcess | undefined): void => {
+  if (WIN && proc?.pid) spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+  else proc?.kill();
+};
 const DB = process.env.HAGGLE_TEST_DATABASE_URL;
 const defect = process.env.ACCEPTANCE_STRICT ? it : it.fails;
 
@@ -66,13 +74,13 @@ beforeAll(async () => {
   const port = await freePort();
   base = `http://127.0.0.1:${port}`;
   const brain = join(mkdtempSync(join(tmpdir(), "haggle-accept-")), "brain.json");
-  proc = spawn(BIN, ["start"], { cwd: APP_DIR, stdio: "ignore", env: { ...process.env, PORT: String(port), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0", HAGGLE_MOCK_BRAIN_FILE: brain, ...(DB ? { HAGGLE_MOCK_DATABASE_URL: DB } : {}) } });
+  proc = startServer({ ...process.env, PORT: String(port), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0", HAGGLE_MOCK_BRAIN_FILE: brain, ...(DB ? { HAGGLE_MOCK_DATABASE_URL: DB } : {}) });
   for (let i = 0; i < 80; i++) { try { if ((await fetch(`${base}/health`)).ok) break; } catch { /* starting */ } await new Promise((r) => setTimeout(r, 250)); }
   // An unrelated, older deal exists before the user's request.
   oldJob = (await call("deal", { request: { what: "hackathon catering", quantity: 200, date: SAT, area: "San Francisco, CA", venue: "YC HQ" }, budget_usd: 5000 })).structuredContent.job_id;
   expect(oldJob).toMatch(/^job_/);
 }, 60_000);
-afterAll(() => { proc?.kill(); });
+afterAll(() => { stopServer(proc); });
 
 describe(`release acceptance${DB ? " (Postgres)" : " (memory)"}`, { timeout: 120_000 }, () => {
   it("one-sentence request: a NEW job whose board is that job; nothing invented", async () => {

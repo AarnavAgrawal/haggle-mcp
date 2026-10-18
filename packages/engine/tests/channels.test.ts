@@ -174,11 +174,13 @@ describe("iMessage approval (real engine, fake iMessage port)", () => {
     expect((await engine.ingestIMessage(msg(`YES ${a.code}`, { from: "+14155559999" }))).outcome).toBe("not_approver");
     expect((await engine.ingestIMessage(msg(`YES ${a.code}`, { isGroup: true }))).outcome).toBe("group_ignored");
     expect((await engine.ingestIMessage(msg("YES"))).outcome).toBe("code_required");
-    expect((await engine.ingestIMessage(msg("YES 0000"))).outcome).toBe(a.code === "0000" ? "approved" : "no_matching_approval");
+    // A wrong code against the approver's only pending approval counts toward the lockout.
+    expect((await engine.ingestIMessage(msg("YES 0000"))).outcome).toBe(a.code === "0000" ? "approved" : "wrong_code");
     expect((await engine.ingestIMessage(msg("sure, sounds good!"))).outcome).toBe("not_a_decision");
-    expect((await repo.getApproval(a.id))!.status).toBe("pending");
+    expect((await repo.getApproval(a.id))!).toMatchObject({ status: "pending", attempts: a.code === "0000" ? 0 : 1 });
     expect((await engine.ingestIMessage(msg(`yes ${a.code}`, { messageId: "in_ok" }))).outcome).toBe("approved");
     expect((await engine.ingestIMessage(msg(`yes ${a.code}`, { messageId: "in_ok" }))).outcome).toBe("duplicate");
+    // Approved outside the chat: the approval is recorded; paying is the separate pay step (decision 2).
     expect(await repo.getApproval(a.id)).toMatchObject({ status: "approved", channel: "imessage", approver: APPROVER });
     expect((await repo.getJob(deal.job_id))!.state).toBe("paying");
   });
@@ -191,7 +193,8 @@ describe("iMessage approval (real engine, fake iMessage port)", () => {
     const broken = await approvable({ send: async () => { throw new InkboxAPIError(403, "recipient has not connected"); } });
     const b = await broken.engine.requestApproval(broken.deal.job_id, broken.bay.quote_id, "imessage");
     expect(await broken.engine.approvalIMessageSent(b.id)).toBe(false);
-    expect((await broken.engine.approveWithViewCode(b.id, b.code)).status).toBe("approved");
+    expect((await broken.engine.approveWithViewCode(b.id, b.code)).status).toBe("approved"); // approved on the card; pay is the next step
+    expect((await broken.repo.getJob(broken.deal.job_id))!.state).toBe("paying");
   });
 
   it("refuses an iMessage approval without an approver phone or with iMessage off", async () => {
@@ -258,17 +261,31 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
   }
   const trusted = (expected: string) => ({ trusted: true as const, address: expected, reason: "trusted" as const, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
 
+  it("a callback needs a negotiation round left (decision 37): a one-round deal refuses it with a fix hint", async () => {
+    const { engine, repo, calls } = demoEngine();
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, max_rounds: 1, businesses: [{ name: "Mission Eats", phone: "+14155550104" }, { name: "Harbor Table", email: "harbor-table-sf@inkboxmail.test" }] });
+    const mission = (await repo.getBusinesses(deal.job_id)).find((b) => b.name === "Mission Eats")!;
+    expect(await engine.callbackProposals(deal.job_id)).toEqual([]);
+    await expect(engine.placeCallback(deal.job_id, mission.business_id, "human")).rejects.toMatchObject({ code: "no_rounds_left", fix: expect.stringMatching(/max_rounds 2/) });
+    expect(calls.filter((c) => /called earlier/.test(c.reason ?? ""))).toHaveLength(0);
+  });
+
   it("collects all three; a justified, human-authorized callback cites the real competing quote; best value picks the winner", async () => {
     const { engine, repo, clock, sent, texts, calls } = demoEngine({ callDelayMs: 60_000, globalPaymentCapCents: 500_000 }); // the fake extractor reads no deposits: full totals must fit the ceiling
     const { budget_usd, ...request } = GOLDEN_REQUEST;
-    const deal = await engine.deal({ request, budget_usd, businesses: [
+    // A callback needs a negotiation round left (decision 37: max_rounds 2). A fourth business that never
+    // answers keeps collection open, so the automatic counter round (which may call phone vendors itself,
+    // decision 13) hasn't run and the human-authorized callback is what negotiates with Mission Eats.
+    const deal = await engine.deal({ request, budget_usd, max_rounds: 2, businesses: [
       { name: "Harbor Table", email: "harbor-table-sf@inkboxmail.test" },
       { name: "Sunset Kitchen", phone: "+14155550111", channel: "imessage" },
       { name: "Mission Eats", phone: "+14155550104" },
+      { name: "Quiet Bistro", email: "quiet-bistro@inkboxmail.test" },
     ] });
     expect(deal.contacted.map((c) => [c.business, c.channel])).toEqual(expect.arrayContaining([["Harbor Table", "email"], ["Sunset Kitchen", "imessage"]]));
-    expect(sent).toHaveLength(1);
-    expect(texts).toEqual([{ to: "+14155550111", text: expect.stringMatching(/^Hi Sunset Kitchen, Haggle AI assistant here\..{0,140}HG-/), idempotencyKey: expect.any(String) }]);
+    expect(sent).toHaveLength(2); // the two email RFQs
+    expect(texts).toEqual([{ to: "+14155550111", text: expect.stringMatching(/^Hi Sunset Kitchen, I'm an AI assistant for a customer\..{0,140}HG-/), idempotencyKey: expect.any(String) }]);
     expect(texts[0]!.text.length).toBeLessThanOrEqual(159);
     expect(calls).toHaveLength(0); // scheduled, not yet placed
 
@@ -282,8 +299,10 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     clock.advance(61_000);
     await engine.advanceJob(deal.job_id);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.reason).toMatch(/this is Haggle, an AI assistant/);
+    expect(calls[0]!.reason).toMatch(/Hi, I'm an AI assistant calling on behalf of a customer/);
+    expect(calls[0]!.reason).not.toMatch(/Haggle/);
     expect(calls[0]!.reason).toMatch(/Do not mention other businesses or prices/);
+    expect(calls[0]!.reason).not.toMatch(/\$1,080/);
     expect((await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "haggle: I'm an AI assistant...\nremote: For you, $1,150 total all-in, 12 vegetarian, delivery included, $150 deposit." })).outcome).toBe("stored");
     await engine.advanceJob(deal.job_id);
 
@@ -334,7 +353,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
       textExtractor.extract = real;
     }
     const q = (await engine.getQuotes(deal.job_id)).quotes.find((x) => x.status === "current")!;
-    expect(q).toMatchObject({ total_usd: 4750, deposit_usd: 1000, round: 2, meets_requirements: true, delivery_usd: 250 });
+    expect(q).toMatchObject({ total_usd: 4750, deposit_usd: 1000, round: 1, meets_requirements: true, delivery_usd: 250 });
     expect(q.source).toMatch(/^computed from stated total \+ delivery fee/);
     expect(q.flags).not.toContain("delivery_unclear");
   });
@@ -427,8 +446,9 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
       let board = await engine.getQuotes(deal.job_id);
       expect(board.quotes[0]).toMatchObject({ total_usd: 6700, verdict: "incomplete", source: "iMessage text" });
       expect(board.quotes[0]!.flags).not.toContain("requirement_unmet");
-      expect(board.quotes[0]!.excluded_reason).toBe("a hard requirement isn't confirmed yet");
-      expect(board.rejected[0]).toMatchObject({ reason: "requirement_unknown", detail: "a hard requirement isn't confirmed yet" });
+      // Soft requirements (decision 1): an unconfirmed requirement is a caveat, never a rejection.
+      expect(board.quotes[0]).toMatchObject({ meets_requirements: false });
+      expect(board.rejected).toEqual([]);
       expect(board.state).toBe("collecting"); // waits for the answer instead of failing
       expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 12 vegetarian meals\? HG-/);
 
@@ -436,7 +456,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
       await engine.advanceJob(deal.job_id);
       board = await engine.getQuotes(deal.job_id);
       const q = board.quotes.find((x) => x.status === "current")!;
-      expect(q).toMatchObject({ total_usd: 6700, verdict: "compliant", eligible: true, round: 2 });
+      expect(q).toMatchObject({ total_usd: 6700, verdict: "compliant", eligible: true, round: 1 }); // a confirm-once answer is not a counter round (decision 16)
       expect(texts.filter((t) => /confirm/.test(t.text))).toHaveLength(1); // asked once
       // Live regression: a reply that adds nothing (just the reference code) keeps the vendor "quoted", no noise flags.
       expect((await engine.ingestIMessage({ messageId: "im_b", from: "+14155550111", text: "HG-RMT2", isGroup: false })).outcome).toBe("stored");
