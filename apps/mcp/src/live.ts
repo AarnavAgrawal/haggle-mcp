@@ -43,7 +43,8 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // The demo vendor roster: configuring a vendor's contact is the operator authorizing it as a recipient.
   const vendorConfig = parseVendorConfig(env.HAGGLE_DEMO_VENDORS);
   const contacts: Record<string, VendorContact> = { ...vendorConfig.contacts };
-  for (const b of fleet) if (!Object.values(contacts).some((c) => c.email === b.email)) contacts[`fleet_${b.slug}`] = { name: b.name, email: b.email, channel: "email" };
+  // Without an explicit roster, the legacy fleet entries stand in as extra email vendors.
+  if (!env.HAGGLE_DEMO_VENDORS?.trim()) for (const b of fleet) if (!Object.values(contacts).some((c) => c.email === b.email)) contacts[`fleet_${b.slug}`] = { name: b.name, email: b.email, channel: "email" };
   const allowlist = [...new Set([...fleet.map((b) => b.email), ...rosterRecipients(vendorConfig.contacts), ...(env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim()).filter(Boolean)])];
   // Seller-reply trust (see InkboxTrustPolicy): strict by default; "pinned-org-identity" is the
   // operator opt-in for an agent-scoped buyer key, limited to the pinned fleet/allowlist addresses.
