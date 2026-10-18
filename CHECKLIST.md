@@ -104,6 +104,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-17 22:25 · Aarnav · Preferences are soft: budget, requirements and required answers rank and caveat a quote but never exclude it; only unsafe (scam link, injection, unverified, superseded) or unpriced quotes are rejected. Negotiation counters every safe quote above the cited one. Per-head price without headcount, tax rate on food, texted reply read with its question. Payment ceiling raised to $10k (Stripe test). Claude.ai connector shows the old 13-tool list: reconnect to refresh. 401 tests; deployed
+
 - 2026-10-17 22:30 · Aarnav · Demo outreach mix live on haggle-aarnav: deal(discover:true) emails Harbor Table, Bay Catering, Sunset Kitchen, QuickQuote Deli; texts Golden Grill by SMS (TEXT_VENDOR_PHONE, the text channel falls back to SMS when iMessage is off); calls Mission Eats (MISSION_EATS_PHONE); update texts to HAGGLE_NOTIFY_PHONE. 396 tests; live discover verified, read-only 17/18
 
 - 2026-10-17 21:40 · Aarnav (in Yash's lane, approved; needs his review) · Calls: spoken prices ("seventeen", "two fifty"), confirmed read-backs and tax rates now make a quote (the live Mission Eats call had been dropped); Voice AI confirms the all-in total. SMS (`HAGGLE_ENABLE_SMS`, `HAGGLE_NOTIFY_PHONE`): update texts to the human on quotes/questions/calls/ready/failed, a texted reply answers the open question, one SMS follow-up to a phone vendor without a clear total; `text.received` webhook. Deal board "Keep chat updated" wakes the model on updates. 392 tests; deployed to haggle-aarnav (sms + notify on), live read-only 17/18
