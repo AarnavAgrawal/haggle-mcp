@@ -101,6 +101,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 17:55 · Yash · Live iMessage PASS on 0c22c28 (job_e8ab806d016e41468b2e): RFQ out → signed reply from the pinned number → $6,700 quote (iMessage text, over budget) → requirement unknown → exactly one confirming text → reply stored; vendor answered "HG-RMT2" (no veg count) so the requirement stayed unknown and the job closed correctly; confirm→compliant merge tested, not yet exercised live; board wording for unconfirmed requirements fixed locally (not deployed)
+
 - 17:55 · Yash · Live Voice AI call PASS (job_8eebfe8012ff43a2bf0a, $6,200 from the transcript); calm-spark 263338c with calls+iMessage on, payments off, allowlist +1 number, ANTHROPIC_WORKSPACE_ID added (fixes all live LLM parsing); iMessage RFQ blocked by Inkbox `imessage_awaiting_inbound` (vendor's first text not received); P0 journey fix (deal opens board, ready demo vendors, setup blockers) + regressions; 310 tests
 
 - 19:30 · Yash · Product polish (54b2d47, deployed): launcher no longer crashes on an empty server; deal board does approve → human form → pay → receipt in place, re-syncs on open/reconnect, shows LIVE/DEMO, why the winner wins, counteroffers, can't-win reasons and each business's own words (flagged businesses' text never echoed); approval card shows order total + deposit; Voice AI brief rewritten as short steps; seed brain data no longer called "real quotes"; flaky Postgres launcher test fixed; all flows driven in the mcp-use Inspector; 295 tests + 193 on Postgres, 21/21 live
