@@ -42,7 +42,7 @@ export function createMockEngine(opts: { now?: () => Date; delayScale?: number; 
       simulated: true,
     },
     config: {
-      mode: "mock", inboxDomain: MOCK_INBOX_DOMAIN, sharedInbox: MOCK_BUYER_INBOX, collectionWindowMs: 10 * 60_000, negotiationWindowMs: 5 * 60_000,
+      mode: "mock", inboxDomain: MOCK_INBOX_DOMAIN, sharedInbox: MOCK_BUYER_INBOX, collectionWindowMs: 10 * 60_000, negotiationWindowMs: 5 * 60_000, followUpHoldMs: 60_000,
       approvalTtlMs: 30 * 60_000, globalPaymentCapCents: rail === "stripe" ? 50_000 : 500, maxRounds: 2, defaultSpendingCapCents: 150_000, spendingCapCeilingCents: 500_000,
       // Simulated businesses only: no call spacing, no call hours (live sets both), DEMO identity.
       callCooldownMs: 0, identity: { name: "Haggle (DEMO)", phone: null },

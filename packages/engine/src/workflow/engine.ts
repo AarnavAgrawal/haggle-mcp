@@ -103,6 +103,12 @@ const CALL_RETRY_MS = 60_000;
 const CALL_MAX_ATTEMPTS = 3;
 /** A counteroffer call still on the line when the negotiation window ends may finish within this long. */
 const COUNTER_CALL_GRACE_MS = 4 * 60_000;
+/** A just-asked business holds the collection window at most this long by default (followUpHoldMs). */
+const DEFAULT_FOLLOW_UP_HOLD_MS = 3 * 60_000;
+/** The per-job advance queue, one per process (see advanceJob). */
+const ADVANCING: Map<string, Promise<void>> = ((globalThis as { __haggleAdvancing?: Map<string, Promise<void>> }).__haggleAdvancing ??= new Map());
+/** A text from the human that is only a greeting or an acknowledgement. */
+const PLEASANTRY_TEXT = /^\s*(hi+|hey+|hello+|yo|ok(ay)?|k|thanks?( you)?|thx|ty|cool|great|nice|got it|sounds good|👍)\s*[.!?]*\s*$/iu;
 /** Business questions wait at most this long for others to be batched into one text to the human. */
 const DEFAULT_QUESTION_BATCH_MS = 45_000;
 const DEFAULT_MAX_APPROVAL_ATTEMPTS = 5;
@@ -114,6 +120,8 @@ const MESSAGE_LIMIT: Record<Channel, number> = { email: 5000, a2a: 5000, phone: 
 const SMS_LIMIT = 320;
 const usdText = (cents: number) => `$${centsToUsd(cents).toLocaleString("en-US", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
 /** One line, at most n characters (an ellipsis when cut). */
+/** The exact-total ask folded into a missing-info follow-up (one message, not two). */
+const exactTotalAsk = (readCents: number | null) => `your exact all-in total, incl. delivery and tax, and any deposit${readCents !== null ? ` (we worked it out as ${usdText(readCents)})` : ""}`;
 const clip = (s: string, n: number) => {
   const t = s.replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, Math.max(1, n - 1)).trimEnd()}…` : t;
@@ -1502,10 +1510,32 @@ export class HaggleEngine {
       return { jobId: batch.jobId, outcome: "ambiguous_answer" };
     }
     const target = named ?? pending.find((q) => q.id === last?.questionId) ?? pending.sort((x, y) => Date.parse(y.created_at) - Date.parse(x.created_at))[0];
-    const jobId = target?.job_id ?? last?.jobId ?? null;
+    let jobId = target?.job_id ?? last?.jobId ?? null;
+    if (!jobId) {
+      // Nothing texted to this human yet: their newest open deal.
+      const mine: JobRow[] = [];
+      for (const job of open) if (from === (await this.notifyTarget(job))) mine.push(job);
+      jobId = mine.sort((x, y) => y.created_at.localeCompare(x.created_at))[0]?.id ?? null;
+    }
     const stored = jobId ? await storeAnswer(jobId) : null;
     if (jobId && !stored) return { jobId, outcome: "duplicate" };
-    if (!target) return { jobId, outcome: "no_open_question" };
+    if (!target) {
+      // Not an answer to anything open ("add cookies and brownies" is a change to the request): never
+      // dropped silently. It goes on the deal for the agent (wait_for_update) and the human is told
+      // how to change the request; nothing is sent to a business and the request isn't changed.
+      const job = jobId ? await this.repo.getJob(jobId) : null;
+      if (job && !TERMINAL.has(job.state)) {
+        const said = clip(m.text, 200);
+        await this.repo.appendEvent(job.id, "reply", {
+          business_id: null, kind: "user_text", text: said,
+          summary: `You texted: "${said}" (no business question was open, so nothing was sent to a business. If it changes the request, confirm with the user and pass it on with send_message; Haggle never changes a request by text.)`,
+        });
+        await this.repo.touchJob(job.id);
+        // A greeting or a thanks (often just to lift Inkbox's pause on texts) needs no reply.
+        if (!PLEASANTRY_TEXT.test(said)) await this.notifyHuman(job, `unmatched:${m.messageId}`, `got "${clip(said, 60)}", but no business question is open, so nothing was sent. To change the request, tell your agent in Claude.`);
+      }
+      return { jobId, outcome: "no_open_question" };
+    }
     await this.answerSeller(target.job_id, target.id, answer);
     return { jobId: target.job_id, outcome: "answered" };
   }
@@ -1575,7 +1605,7 @@ export class HaggleEngine {
       `2. The order: ${r.what} for ${r.quantity} ${r.unit ?? "people"} on ${when}${r.area ? `, in ${r.area}` : ""}.${reqs.length ? ` Must have: ${reqs.join("; ")}.` : ""}`,
       `3. Ask for: the all-in total including delivery and tax, how each requirement is met (for example how many vegetarian meals), any deposit and when it is due, and what is included.`,
       opts.competingTotalUsd !== undefined ? `4. We have a real quote of ${money(opts.competingTotalUsd)} total for the same order. You may say that figure and ask if they can do better. Never invent, round down or exaggerate it.` : `4. Do not mention other businesses or prices.`,
-      `5. If they give parts (a price per person, a delivery fee, tax as a percent), work out the all-in total yourself. Before ending, read back every figure they gave plus that total, in the form "Just to confirm: [price] per person for [count], [fee] delivery, [rate] tax, so [total] all in, with a [deposit] deposit. Is that right?" (their numbers only, never these placeholders). Wait for their yes or correction, then thank them and end the call.`,
+      `5. If they give parts (a price per person, a delivery fee, tax as a percent), work out the all-in total yourself.${reqs.length ? " If they haven't said how each must-have is met, ask once before the read-back." : ""} Before ending, read back every figure they gave plus that total${reqs.length ? ", and each must-have they confirmed" : ""}, in the form "Just to confirm: [price] per person for [count], [fee] delivery, [rate] tax, so [total] all in, with a [deposit] deposit${reqs.length ? ", and [each must-have]" : ""}. Is that right?" (their words only, never these placeholders). Wait for their yes or correction, then thank them and end the call. This one call should get everything: we don't want to call back.`,
       `If they ask something you don't know, say you'll pass it on to the customer; never guess. If they can't do it or decline, thank them and end politely. If you reach voicemail, leave one sentence asking for a quote by email and hang up.`,
       `Never agree to buy, book or pay, and never share payment details. Reference HG-${job.short_code}.`,
     ].join("\n").slice(0, 2000);
@@ -2062,12 +2092,15 @@ export class HaggleEngine {
 
   // ───────────────────────────── advance ─────────────────────────────
 
-  private readonly advancing = new Map<string, Promise<void>>();
+  private readonly advancing = ADVANCING;
 
   /**
    * One advance per job at a time. The webhook, every wait_for_update and the backup tick all call
    * this; run concurrently, two of them parse the same reply (a slow LLM call) and store it twice:
-   * duplicate questions, duplicate quotes. Callers queue behind the running advance instead.
+   * duplicate questions, duplicate quotes. Callers queue behind the running advance instead. The
+   * queue is per process, shared by every engine instance: a dev hot reload builds a new engine
+   * while the old one's tick keeps running (live 2026-10-18, HG-2QAM: both parsed Harbor Table's
+   * reply and the losing parse reset it to "replied"). Across processes storeExtraction is idempotent.
    */
   async advanceJob(jobId: string): Promise<void> {
     const prev = this.advancing.get(jobId) ?? Promise.resolve();
@@ -2108,17 +2141,9 @@ export class HaggleEngine {
     if (job.state === "contacting") return businesses.every((b) => b.status !== "pending") ? { type: "rfqs_sent" } : null;
     if ((job.state === "collecting" || job.state === "negotiating") && !job.ready) {
       if (job.state === "collecting") {
-        // Still waiting on: anyone contacted and silent, a call or a retry/deferred call that is due,
-        // and a business that owes the answer to Haggle's follow-up (it keeps the window open).
-        const owesFollowUp = await this.owingFollowUp(job);
-        // A business waiting on the human's answer holds the window only for a while: everyone else
-        // keeps quoting and the question goes to the human; once answered, the business is "contacted" again.
-        const holdMs = this.d.config.questionHoldMs ?? this.d.config.replyGraceMs ?? Math.min(this.d.config.collectionWindowMs, 15 * 60_000);
-        const questions = (await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending");
-        const askingRecently = new Set(questions.filter((q) => now - Date.parse(q.created_at) < holdMs).map((q) => q.business_id));
-        const waiting = businesses.filter((b) => b.status === "contacted" || b.status === "replied" || (b.status === "question" && (askingRecently.has(b.business_id) || !questions.some((q) => q.business_id === b.business_id))) || b.status === "ringing"
-          || (b.status === "pending" && b.next_attempt_at !== null) || owesFollowUp.has(b.business_id));
-        if (businesses.length > 0 && waiting.length === 0) return { type: "window_closed" };
+        // Every contacted business has answered (a quote, a decline, no reply, a bounce): close now
+        // and negotiate or finish, instead of sitting out the whole collection window.
+        if (businesses.length > 0 && (await this.collectionWaiting(job, businesses)).length === 0) return { type: "window_closed" };
       } else {
         const events = await this.repo.listEvents(job.id);
         const sent = events.some((e) => e.type === "counteroffers_sent" && e.data.round === job.round);
@@ -2192,6 +2217,36 @@ export class HaggleEngine {
     return { waiting, onCall };
   }
 
+  /**
+   * The businesses the collection window still waits for: one contacted and not yet answered, a
+   * call on the line or due, a reply still being read, and, briefly (holdMs), one Haggle just asked
+   * for something (a follow-up, the answer to its question) or that asked a question the human
+   * hasn't answered. A business with a current priced quote has answered, whatever its status row
+   * says (the status can lag or be overwritten; the quote is the fact). Custom-ask requests also
+   * hold for a business owing its missing required answers (owingFollowUp).
+   */
+  private async collectionWaiting(job: JobRow, businesses: JobBusinessRow[]): Promise<JobBusinessRow[]> {
+    const now = this.now().getTime();
+    const holdMs = this.d.config.questionHoldMs ?? this.d.config.replyGraceMs ?? Math.min(this.d.config.collectionWindowMs, 15 * 60_000);
+    const owesFollowUp = await this.owingFollowUp(job);
+    const questions = (await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending");
+    const askingRecently = new Set(questions.filter((q) => now - Date.parse(q.created_at) < holdMs).map((q) => q.business_id));
+    const quoted = answeredByQuote(await this.repo.listQuotes(job.id));
+    const msgs = await this.repo.listMessages(job.id);
+    const chased = chasedRecently(msgs, await this.repo.listEvents(job.id), now, this.d.config.followUpHoldMs ?? Math.min(holdMs, DEFAULT_FOLLOW_UP_HOLD_MS));
+    const reading = new Set(msgs.filter((m) => m.direction === "in" && m.parse_status === "pending" && m.business_id).map((m) => m.business_id!));
+    return businesses.filter((b) => {
+      const id = b.business_id;
+      if (b.status === "ringing" || (b.status === "pending" && b.next_attempt_at !== null) || owesFollowUp.has(id) || chased.has(id) || reading.has(id)) return true;
+      if (quoted.has(id)) return false;
+      if (b.status === "contacted") return true;
+      // Replied without a price (and nothing asked back): give it a moment, not the whole window.
+      if (b.status === "replied") return now - Date.parse(b.last_reply_at ?? b.contacted_at ?? job.created_at) < holdMs;
+      if (b.status === "question") return askingRecently.has(id) || !questions.some((q) => q.business_id === id);
+      return false;
+    });
+  }
+
   private async owingFollowUp(job: JobRow): Promise<Set<string>> {
     if (!job.request.ask?.length) return new Set();
     const msgs = await this.repo.listMessages(job.id);
@@ -2208,6 +2263,8 @@ export class HaggleEngine {
     const reqs = this.requirements(job);
     const businesses = await this.repo.getBusinesses(job.id);
     for (const msg of await this.repo.getPendingMessages(job.id)) {
+      // Parsed meanwhile by another advance (another process; an old engine after a hot reload).
+      if ((await this.repo.getMessage(msg.id))?.parse_status !== "pending") continue;
       const b = businesses.find((x) => x.business_id === msg.business_id);
       if (!b) {
         await this.repo.updateMessage(msg.id, { parse_status: "failed" });
@@ -2318,16 +2375,12 @@ export class HaggleEngine {
     }
     const results = evaluateRequirements(record, reqs, job.request.quantity);
     const compliant = meetsHardRequirements(results, reqs);
-    // A business question never stops the deal: it is recorded here, answered from the request when
-    // the request plainly answers it (below), and otherwise texted to the human together with the
-    // other open questions (surfaceQuestions) while every business keeps quoting.
-    const questionIds: string[] = [];
-    const asked: QuestionRow[] = [];
-    for (const text of record.questions) {
-      const q = await this.repo.insertQuestion({ job_id: job.id, business_id: b.business_id, message_id: msg.id, text });
-      questionIds.push(q.id);
-      asked.push(q);
-      await this.repo.appendEvent(job.id, "question", { question_id: q.id, business_id: b.business_id, text });
+    // Already stored from this very message: another parse of it won (another process, an old
+    // engine after a hot reload). Storing again would duplicate its questions and, worse, write a
+    // stale status over the winner's ("replied" over "quoted": live 2026-10-18, HG-2QAM).
+    if (prior.some((q) => q.message_id === msg.id) || (await this.repo.listQuestions(job.id)).some((q) => q.message_id === msg.id)) {
+      this.log("parse_duplicate", { job_id: job.id, message_id: msg.id });
+      return;
     }
     let quoteRow: QuoteRow | null = null;
     // Every priced reply is reported as a quote, even without a single stated total (flagged; Haggle
@@ -2344,33 +2397,54 @@ export class HaggleEngine {
         job_id: job.id, business_id: b.business_id, message_id: msg.id, round: Math.max(1, counteredRound), record, total_cents: record.total_cents,
         deposit_cents: record.deposit_cents, compliant, requirement_results: results, sender_trusted: msg.sender_trusted === true, source,
       });
-      if (quoteRow) {
-        // No text to the human per quote: the deal board and wait_for_update show it; the human is
-        // texted once quotes are final (offerReady) or when they must answer something.
-        await this.repo.appendEvent(job.id, "quote", { quote_id: quoteRow.id, business_id: b.business_id, total_usd: record.total_cents === null ? null : centsToUsd(record.total_cents), round: quoteRow.round });
-        for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
-        if (!compliant) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "requirement_unmet" });
-        if (priorCurrent) await this.onRevision(job, priorCurrent);
-        // No stated total (missing or worked out from parts): ask once for the exact figure, on the
-        // channel the business was first contacted on (email, text, a follow-up call, A2A).
-        const stated = record.total_cents !== null && !/^computed/.test(record.sources.total?.source ?? "");
-        if (record.available && !stated && record.questions.length === 0) await this.askExactTotal(job, b, record.total_cents);
+      // A concurrent parse of the same message stored it first (and set the status): nothing more to do.
+      if (!quoteRow) {
+        this.log("parse_duplicate", { job_id: job.id, message_id: msg.id });
+        return;
       }
+    }
+    // A business question never stops the deal: it is recorded here, answered from the request when
+    // the request plainly answers it (below), and otherwise texted to the human together with the
+    // other open questions (surfaceQuestions) while every business keeps quoting. Courtesy questions
+    // ("so, will you be using us?") need no answer: kept on the record and the board, never relayed.
+    const questionIds: string[] = [];
+    const asked: QuestionRow[] = [];
+    for (const text of record.questions) {
+      const q = await this.repo.insertQuestion({ job_id: job.id, business_id: b.business_id, message_id: msg.id, text });
+      questionIds.push(q.id);
+      asked.push(q);
+      await this.repo.appendEvent(job.id, "question", { question_id: q.id, business_id: b.business_id, text });
+    }
+    if (record.courtesy_questions?.length) {
+      await this.repo.appendEvent(job.id, "reply", {
+        business_id: b.business_id, kind: "courtesy_question",
+        summary: `${b.name} asked "${clip(record.courtesy_questions.join(" "), 140)}" (no answer needed for the quote; not passed on)`,
+      });
+    }
+    // No stated total (missing or worked out from parts): ask once for the exact figure, on the
+    // channel the business was first contacted on (email, text, a follow-up call, A2A). Vague replies
+    // ("~900ish", a call that ended without a price) too, instead of guessing a number.
+    const stated = record.total_cents !== null && !/^computed/.test(record.sources.total?.source ?? "");
+    const needExact = record.available && record.questions.length === 0 && !(quoteRow && stated);
+    // One automatic follow-up for whatever the quote still lacks (required answers, unstated hard
+    // requirements), with the exact-total ask folded in: one message, not two.
+    const missing = quoteRow && record.available && job.request.auto_follow_up !== false && !TERMINAL.has(job.state) && !job.ready ? this.missingLabels(job, quoteRow) : [];
+    if (quoteRow) {
+      // No text to the human per quote: the deal board and wait_for_update show it; the human is
+      // texted once quotes are final (offerReady) or when they must answer something.
+      await this.repo.appendEvent(job.id, "quote", { quote_id: quoteRow.id, business_id: b.business_id, total_usd: record.total_cents === null ? null : centsToUsd(record.total_cents), round: quoteRow.round });
+      for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
+      if (!compliant) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "requirement_unmet" });
+      if (priorCurrent) await this.onRevision(job, priorCurrent);
     } else if (record.questions.length === 0) {
       for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
-      // Vague reply ("~900ish", or a call that ended without a price): ask once for one exact total
-      // instead of guessing a number, on the same channel (a phone business gets a follow-up call).
-      if (record.available) await this.askExactTotal(job, b, null);
     }
+    if (needExact && missing.length === 0) await this.askExactTotal(job, b, record.total_cents);
     const status = !record.available ? "declined" : quoteRow ? "quoted" : record.questions.length ? "question" : b.followups_sent >= 1 ? "silent" : "replied";
     await this.repo.updateBusiness(job.id, b.business_id, { status });
     if (asked.length && record.available && !record.flags.some((f) => f === "external_payment_link" || f === "prompt_injection")) await this.answerFromRequest(job, b, asked);
-    // One automatic follow-up for whatever the quote still lacks (required answers, unstated hard
-    // requirements). The window stays open until the business answers it or the deadline passes.
-    if (quoteRow && record.available && job.request.auto_follow_up !== false && !TERMINAL.has(job.state) && !job.ready) {
-      const missing = this.missingLabels(job, quoteRow);
-      if (missing.length) await this.sendMissingFollowUp(job, { ...b, status }, missing);
-    }
+    // The window waits briefly for the answer (collectionWaiting), never past the deadline.
+    if (missing.length) await this.sendMissingFollowUp(job, { ...b, status }, needExact && b.followups_sent < 1 ? [exactTotalAsk(record.total_cents), ...missing] : missing);
     // Partner's brain learns from every parsed reply; a brain failure never blocks the deal.
     try {
       const contractQuote = quoteRow ? toContractQuote(quoteRow, b, { budgetCents: job.budget_cents }) : null;
@@ -2445,7 +2519,8 @@ export class HaggleEngine {
     if (!fresh.length) return;
     const businesses = await this.repo.getBusinesses(job.id);
     const asking = new Set(pending.map((q) => q.business_id));
-    const othersWaiting = businesses.some((x) => !asking.has(x.business_id) && ["pending", "contacted", "ringing", "replied"].includes(x.status));
+    const answered = answeredByQuote(await this.repo.listQuotes(job.id));
+    const othersWaiting = businesses.some((x) => !asking.has(x.business_id) && ["pending", "contacted", "ringing", "replied"].includes(x.status) && (x.status === "ringing" || !answered.has(x.business_id)));
     const now = this.now().getTime();
     const oldest = Math.min(...fresh.map((q) => Date.parse(q.created_at)));
     const due = !othersWaiting || job.ready || now - oldest >= (this.d.config.questionBatchMs ?? DEFAULT_QUESTION_BATCH_MS) || now >= Date.parse(job.collect_until);
@@ -2834,6 +2909,11 @@ export class HaggleEngine {
       const who = waiting.length ? `waiting for ${waiting.map((b) => b.name).join(", ")} to answer the counteroffer` : "counteroffers answered";
       return `Negotiating round ${job.round}: ${who}; quotes are final when every countered business has answered or at ${by}, whichever is first (Haggle then texts the user the recommendation). The user may already approve any current quote (approve). Call wait_for_update.`;
     }
+    if (job.state === "collecting") {
+      const waiting = await this.collectionWaiting(job, await this.repo.getBusinesses(job.id));
+      const by = `${new Date(job.collect_until).toISOString().slice(11, 16)} UTC`;
+      if (waiting.length) return `Still collecting: waiting for ${waiting.map((b) => b.name).join(", ")}; quotes close as soon as every business has answered, at ${by} at the latest. Call wait_for_update again (cursor from this response).`;
+    }
     return "Still collecting. Call wait_for_update again (cursor from this response).";
   }
 
@@ -2892,10 +2972,11 @@ export class HaggleEngine {
       if (typeof e.data.transcript_snippet === "string" && e.data.transcript_snippet) transcripts.set(bid, e.data.transcript_snippet);
     }
     const wonBusiness = approval && ["approved", "used"].includes(approval.status) ? approval.business_id : job.state === "paid" && payment ? payment.business_id : null;
+    const answered = answeredByQuote(all);
     const board: BoardBusiness[] = businesses.map((b) => {
       const transcript = transcripts.get(b.business_id);
       return {
-        id: b.business_id, business_id: b.business_id, name: b.name, business: b.name, channel: b.channel, status: this.boardStatus(b, job, wonBusiness, all), engine_status: b.status,
+        id: b.business_id, business_id: b.business_id, name: b.name, business: b.name, channel: b.channel, status: this.boardStatus(b, job, wonBusiness, all, answered), engine_status: b.status,
         simulated: b.simulated, last_event: lastEvent.get(b.business_id) ?? null, ...(transcript ? { transcript_snippet: transcript } : {}),
         ...(b.status === "unavailable" ? { unavailable_reason: this.route(b).reason } : {}),
       };
@@ -2934,14 +3015,16 @@ export class HaggleEngine {
     };
   }
 
-  private boardStatus(b: JobBusinessRow, job: JobRow, wonBusiness: string | null, quotes: QuoteRow[]): BoardStatus {
+  private boardStatus(b: JobBusinessRow, job: JobRow, wonBusiness: string | null, quotes: QuoteRow[], answered: Set<string>): BoardStatus {
     if (wonBusiness === b.business_id) return "won";
+    if (b.status === "ringing") return "ringing";
+    // A current priced quote is the fact: the business quoted, whatever its status row says (a
+    // stale write, a follow-up call that went unanswered, a later message that bounced).
+    if (b.status === "quoted" || answered.has(b.business_id)) {
+      const latest = Math.max(0, ...quotes.filter((q) => q.business_id === b.business_id).map((q) => q.round));
+      return job.state === "negotiating" && b.countered_round > 0 && latest < b.countered_round ? "negotiating" : "quoted";
+    }
     switch (b.status) {
-      case "ringing": return "ringing";
-      case "quoted": {
-        const latest = Math.max(0, ...quotes.filter((q) => q.business_id === b.business_id).map((q) => q.round));
-        return job.state === "negotiating" && b.countered_round > 0 && latest < b.countered_round ? "negotiating" : "quoted";
-      }
       case "declined": case "bounced": return "declined";
       case "silent": case "no_reply": return "no_reply";
       case "unavailable": return "unavailable";
@@ -3841,6 +3924,40 @@ export function paymentStatus(p: PaymentRow): EnginePaymentStatus {
   }
   if (p.reason) s.reason = p.reason;
   return s;
+}
+
+/**
+ * Businesses whose current quote is a real answer: available, from a verified sender, with a price
+ * (or a stated custom field). The board shows them quoted and the window stops waiting for them.
+ */
+function answeredByQuote(quotes: QuoteRow[]): Set<string> {
+  return new Set(quotes.filter((q) => q.status === "current" && q.record.available && q.sender_trusted
+    && (q.total_cents !== null || q.record.subtotal_cents !== null || q.record.price_per_head_cents !== null || q.record.deposit_cents !== null || Object.values(q.record.fields ?? {}).some((v) => v !== null)))
+    .map((q) => q.business_id));
+}
+
+/**
+ * Businesses Haggle asked for something within holdMs (a follow-up, the answer to its question, a
+ * message) that haven't replied since. A call scheduled for later counts from its time. Holding
+ * for them is short: one that never answers doesn't keep the deal waiting for the whole window.
+ */
+function chasedRecently(msgs: MessageRow[], events: JobEventRow[], now: number, holdMs: number): Set<string> {
+  const askedAt = new Map<string, number>();
+  const note = (id: string, at: number) => { if (!Number.isNaN(at) && at > (askedAt.get(id) ?? -Infinity)) askedAt.set(id, at); };
+  const ASKS = new Set(["followup", "answer", "message"]);
+  const placed = new Set(msgs.filter((m) => m.direction === "out" && m.idempotency_key).map((m) => m.idempotency_key!));
+  const dropped = new Set(events.filter((e) => e.type === "call_dropped").map((e) => String(e.data.key)));
+  for (const m of msgs) if (m.direction === "out" && m.business_id && ASKS.has(m.kind)) note(m.business_id, Date.parse(m.created_at));
+  for (const e of events) {
+    const key = typeof e.data.key === "string" ? e.data.key : null;
+    if (e.type === "call_scheduled" && key && ASKS.has(String(e.data.kind)) && typeof e.data.business_id === "string" && !placed.has(key) && !dropped.has(key)) note(e.data.business_id, Date.parse(String(e.data.at)));
+  }
+  const chased = new Set<string>();
+  for (const [id, at] of askedAt) {
+    const answered = msgs.some((m) => m.direction === "in" && m.kind === "reply" && m.business_id === id && Date.parse(m.created_at) > at);
+    if (!answered && now - at < holdMs) chased.add(id);
+  }
+  return chased;
 }
 
 function toUpdate(e: { type: string; data: Record<string, unknown> }): JobUpdate | null {

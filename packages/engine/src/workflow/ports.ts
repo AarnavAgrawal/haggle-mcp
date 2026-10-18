@@ -179,6 +179,13 @@ export interface EngineConfig {
    */
   questionHoldMs?: number;
   /**
+   * A business Haggle just asked for something (a missing-info or exact-total follow-up, the answer
+   * to its question) holds the collection window at most this long after the ask (a call scheduled
+   * for later counts from its time), so it can still answer; one that never does doesn't keep the
+   * deal waiting. Default min(questionHoldMs ?? replyGraceMs, 3 min).
+   */
+  followUpHoldMs?: number;
+  /**
    * The human texted (SMS port on) only when they need to act or money moved: business questions,
    * "all quotes are in" with the recommendation to approve by text, an approval, the payment result,
    * a deal that failed. Their reply answers the open question. Falls back to the settings approver.

@@ -32,7 +32,16 @@ export const QuoteExtraction = z.object({
     .array(z.object({ need: z.string(), covered: z.boolean(), count_offered: z.number().int().nullable() }))
     .describe("For each requested dietary need: whether the business said it can cover it, and how many meals it offered if it said"),
   valid_until: z.string().nullable().describe("YYYY-MM-DD if stated"),
-  questions: z.array(z.string()).describe("Questions the business asked the buyer before it can quote, verbatim"),
+  questions: z
+    .array(
+      z.object({
+        text: z.string().describe("The question, verbatim"),
+        needs_answer_to_quote: z
+          .boolean()
+          .describe("true: the business needs the buyer's answer to quote or finish the quote (a menu or service choice, a time, an access detail, an option it would price). false: a social, closing or status question that changes nothing in the quote ('will you be using us?', 'what's the plan?', 'let me know', 'any questions?', 'how did you hear about us?'); Haggle never passes these on"),
+      }),
+    )
+    .describe("Every question the business asked the buyer in this reply, each judged"),
   payment_request: z
     .enum(["none", "external_link", "bank_details", "other"])
     .describe("Whether the email asks to be paid outside this thread (a link, bank details, ...)"),
@@ -59,6 +68,25 @@ export const QuoteExtraction = z.object({
     .describe("One entry per listed requirement: your judgement from what the business said in this reply and the earlier conversation"),
 });
 
+/** One business question as Claude judged it. */
+export type ExtractedQuestion = z.infer<typeof QuoteExtraction>["questions"][number];
+
+/**
+ * The questions the buyer must answer (they go to the human or are answered from the request) and
+ * the courtesy ones ("will you be using us?") that are kept for the record only, never relayed.
+ */
+export function splitQuestions(questions: readonly (string | ExtractedQuestion)[]): { blocking: string[]; courtesy: string[] } {
+  const blocking: string[] = [];
+  const courtesy: string[] = [];
+  for (const q of questions) {
+    const text = (typeof q === "string" ? q : q.text).trim();
+    if (!text) continue;
+    if (typeof q !== "string" && q.needs_answer_to_quote === false) courtesy.push(text);
+    else blocking.push(text);
+  }
+  return { blocking, courtesy };
+}
+
 /** One requirement judged from the conversation (Claude), stored on the quote record. */
 export type RequirementCheckExtraction = z.infer<typeof QuoteExtraction>["requirement_checks"][number];
 
@@ -70,7 +98,9 @@ export type TaxStatus = z.infer<typeof QuoteExtraction>["tax_status"];
  * `tax_rate_percent`, `tax_evidence`) and `requirement_checks`. They may say `tax_included`
  * instead (true = included, false = added on top, null = not stated); Claude no longer does.
  */
-export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers" | "tax_status" | "tax_rate_percent" | "tax_evidence" | "requirement_checks"> & {
+export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers" | "tax_status" | "tax_rate_percent" | "tax_evidence" | "requirement_checks" | "questions"> & {
+  /** Claude judges each question; a plain string (keyword fallback, quote.json, the fleet) needs an answer. */
+  questions: (string | ExtractedQuestion)[];
   answers?: z.infer<typeof QuoteExtraction>["answers"];
   tax_status?: TaxStatus;
   tax_rate_percent?: number | null;
@@ -121,7 +151,10 @@ export interface QuoteRecord {
   menu_items: string[];
   dietary_coverage: Record<string, { covered: boolean; count_offered: number | null }>;
   valid_until: string | null;
+  /** Questions the buyer must answer before the quote is complete. */
   questions: string[];
+  /** Social / closing / status questions ("will you be using us?"): kept for the record, never relayed. */
+  courtesy_questions?: string[];
   flags: string[];
   sources: Partial<Record<MoneyField, { source: string; excerpt: string }>>;
   missing_fields: string[];

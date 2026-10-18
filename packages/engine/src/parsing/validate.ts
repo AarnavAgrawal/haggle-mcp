@@ -12,7 +12,7 @@
 //     requests and instructions aimed at the agent.
 import type { AskField } from "../contract.ts";
 import { MoneyError, usdToCents } from "../money.ts";
-import { MONEY_FIELDS, type FieldValue, type MoneyField, type QuoteExtraction, type QuoteRecord, type TaxInfo } from "./extraction.ts";
+import { MONEY_FIELDS, splitQuestions, type FieldValue, type MoneyField, type QuoteExtraction, type QuoteRecord, type TaxInfo } from "./extraction.ts";
 
 const MAX_MONEY_USD = 50_000;
 const SUBTOTAL_TOLERANCE = 0.02;
@@ -359,7 +359,9 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
   // 7. Untrusted-content signals. These never change a number; they only flag.
   if (x.payment_request !== "none") flags.add("external_payment_link");
   if (x.instructions_to_agent) flags.add("prompt_injection");
-  if (x.questions.length > 0 && cents.total === null && (!custom || custom.missing.length > 0)) flags.add("question_pending");
+  // Courtesy questions ("will you be using us?") need no answer and hold nothing.
+  const asked = splitQuestions(x.questions);
+  if (asked.blocking.length > 0 && cents.total === null && (!custom || custom.missing.length > 0)) flags.add("question_pending");
 
   const confidence = Math.max(0, Math.min(1, x.confidence - failures * CONFIDENCE_PENALTY));
   if (confidence < 0.6) flags.add("low_confidence");
@@ -390,7 +392,8 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
     menu_items: x.menu_items.slice(0, 20),
     dietary_coverage: dietary,
     valid_until: validUntil,
-    questions: x.questions.slice(0, 5).map((q) => q.slice(0, 500)),
+    questions: asked.blocking.slice(0, 5).map((q) => q.slice(0, 500)),
+    ...(asked.courtesy.length ? { courtesy_questions: asked.courtesy.slice(0, 5).map((q) => q.slice(0, 300)) } : {}),
     flags: [...flags],
     sources,
     missing_fields: [...missing],

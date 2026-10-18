@@ -94,8 +94,17 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     },
     log,
   });
-  // Backup tick: deadlines advance even when no agent is calling.
-  setInterval(() => {
+  // Backup tick: deadlines advance even when no agent is calling. One per process: a dev hot reload
+  // re-runs this with a new engine, and the old engine's tick (old code) must stop, or two engines
+  // advance the same jobs (live 2026-10-18: both parsed one reply).
+  // The previous runtime's database pool is closed too: each reload's new pool would otherwise
+  // keep its connections and exhaust Supabase's session pool (EMAXCONNSESSION, pool_size 15).
+  const g = globalThis as { __haggleTick?: ReturnType<typeof setInterval>; __haggleRepo?: PostgresRepository };
+  if (g.__haggleTick) clearInterval(g.__haggleTick);
+  const previousRepo = g.__haggleRepo;
+  g.__haggleRepo = repo;
+  if (previousRepo && previousRepo !== repo) void previousRepo.close().catch(() => {});
+  g.__haggleTick = setInterval(() => {
     void repo.listOpenJobs().then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
   }, TICK_MS).unref();
   console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: env.HAGGLE_EMAIL_APPROVAL_BY_CODE !== "false" ? "code" : "verified-senders-only", payments: stripe ? "stripe-test" : "disabled", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));

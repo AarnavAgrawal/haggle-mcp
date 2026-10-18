@@ -1,7 +1,7 @@
 // Engine rows <-> frozen contract types (packages/core/contracts.ts).
 import type { ParsedReply, Quote, QuoteField, QuoteFlag, Request, Requirement } from "../contract.ts";
 import { centsToUsd } from "../money.ts";
-import type { QuoteExtraction } from "../parsing/extraction.ts";
+import { splitQuestions, type QuoteExtraction } from "../parsing/extraction.ts";
 import type { EngineRequirement } from "../parsing/requirements.ts";
 import type { JobBusinessRow, QuoteRow } from "../store/types.ts";
 
@@ -87,7 +87,8 @@ export function toParsedReply(x: QuoteExtraction, quote: Quote | null, questionI
     const { quote_id: _a, price_check: _b, status: _c, ...rest } = quote;
     items.push({ kind: "quote", quote: rest });
   }
-  x.questions.forEach((text, i) => items.push({ kind: "question", question_id: questionIds[i] ?? `q${i}`, text, blocks_quote: quote === null }));
+  // Only the questions the buyer must answer (courtesy ones are never stored as questions).
+  splitQuestions(x.questions).blocking.forEach((text, i) => items.push({ kind: "question", question_id: questionIds[i] ?? `q${i}`, text, blocks_quote: quote === null }));
   if (!x.available) items.push({ kind: "decline" });
   if (x.payment_request !== "none") items.push({ kind: "payment_request", rail: "external_link" });
   if (items.length === 0) items.push({ kind: "status", status: "need_more_info" });
