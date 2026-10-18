@@ -142,7 +142,7 @@ describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
     const resumed = (await call(ready, "get_quotes", {})).structuredContent;
     expect(resumed.job_id).toBe(v.job_id);
     expect(Object.keys(resumed.stages)).toHaveLength(6);
-    for (const st of Object.values(resumed.stages) as { stage: string }[]) expect(st.stage).toMatch(/^(waiting|quoted|countered|vendor_revised|held_firm|final|asked_question|clarifying|responded|no_reply|calling|declined|unreachable)$/);
+    for (const st of Object.values(resumed.stages) as { stage: string }[]) expect(st.stage).toMatch(/^(waiting|quoted|countered|vendor_revised|held_firm|final|excluded|asked_question|clarifying|responded|no_reply|calling|declined|unreachable)$/);
   });
 
   it("variations: noon + 40 vegetarian; no budget stated; a past date; a typed-in vendor list", async () => {

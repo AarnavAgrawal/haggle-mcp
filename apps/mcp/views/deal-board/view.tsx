@@ -72,7 +72,7 @@ function Terms({ t }: { t?: NonNullable<Extras["terms"]>[string] }) {
 /** Finer stage words than the shared status (a counteroffer is never shown as a price). */
 const STAGE_LABEL: Record<string, string> = {
   sending: "Sending", waiting: "Waiting for reply", calling: "Calling", responded: "Replied", asked_question: "Asked a question", clarifying: "Confirming details",
-  quoted: "Quoted", countered: "Countered, awaiting answer", vendor_revised: "Lowered their price", held_firm: "Held firm", final: "Final quote",
+  quoted: "Quoted", countered: "Countered, awaiting answer", vendor_revised: "Lowered their price", held_firm: "Held firm", final: "Final quote", excluded: "Can't win",
   buyer_approved: "Approved by you", paid: "Paid", no_reply: "No reply", unreachable: "Can't reach", declined: "Declined",
 };
 type DealBoard = CoreDealBoard & Extras;
@@ -399,7 +399,7 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
           {q.per_unit_usd !== undefined && <span>{usd(q.per_unit_usd)} per person</span>}
           {q.deposit_usd !== undefined && <span>{usd(q.deposit_usd)} deposit</span>}
           {!q.flags.some(isRiskFlag) && <VerdictChip verdict={q.price_check} />}
-          {overBudget && <FlagChip flag="over_budget" />}
+          {overBudget && !q.flags.includes("over_budget") && <FlagChip flag="over_budget" />}
           {q.flags.map((f) => (
             <FlagChip key={f} flag={f} />
           ))}

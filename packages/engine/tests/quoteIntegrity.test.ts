@@ -133,7 +133,7 @@ describe("quote revisions and approvals", () => {
     const done = await soft.engine.getQuotes(d2.job_id);
     expect(done.quotes.find((q) => q.status === "current")).toMatchObject({ total_usd: 4100, round: 3 });
     expect(done.ready).toBe(true); // rounds used up: Haggle stops and explains instead of pushing again
-    expect(done.stages![sid]).toMatchObject({ stage: "final", negotiation: "vendor_revised", first_total_usd: 4500, current_total_usd: 4100, saved_usd: 400 });
+    expect(done.stages![sid]).toMatchObject({ stage: "vendor_revised", negotiation: "vendor_revised", first_total_usd: 4500, current_total_usd: 4100, saved_usd: 400 });
     expect(soft.texts.filter((x) => /target/.test(x.text))).toHaveLength(2);
   });
 

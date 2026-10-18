@@ -134,7 +134,7 @@ export interface CallbackProposal {
 
 /** One business's place in the deal (finer than the shared board status). */
 export interface BusinessStage {
-  stage: "sending" | "waiting" | "calling" | "responded" | "asked_question" | "clarifying" | "quoted" | "countered" | "vendor_revised" | "held_firm" | "final" | "buyer_approved" | "paid" | "no_reply" | "unreachable" | "declined";
+  stage: "sending" | "waiting" | "calling" | "responded" | "asked_question" | "clarifying" | "quoted" | "countered" | "vendor_revised" | "held_firm" | "final" | "excluded" | "buyer_approved" | "paid" | "no_reply" | "unreachable" | "declined";
   /** none · countered (Haggle's counter, not a price) · vendor_revised (the business lowered its price) · held_firm */
   negotiation: "none" | "countered" | "vendor_revised" | "held_firm";
   first_total_usd?: number;
@@ -1734,7 +1734,9 @@ export class HaggleEngine {
       return { business_id: bid, business: byId.get(bid)?.name ?? bid, round: Number(e.data.round), target_total_usd: Number(e.data.target_total_usd), basis_quote_id: String(e.data.basis_quote_id), outcome_total_usd: answer?.total_cents == null ? null : centsToUsd(answer.total_cents) };
     });
     const openQuestions = questions.map((q) => ({ question_id: q.id, business_id: q.business_id, business: byId.get(q.business_id)?.name ?? q.business_id, text: q.text }));
-    const stages = this.stages(job, businesses, all, negotiation, questions.map((q) => q.business_id), approval);
+    // Excluded = its current quote can't win for a safety reason or a hard requirement it fails (not just over target).
+    const excludedBiz = new Set(out.filter((q) => q.status === "current" && q.verdict === "rejected").map((q) => q.business_id));
+    const stages = this.stages(job, businesses, all, negotiation, questions.map((q) => q.business_id), approval, excludedBiz);
     // Best value among the eligible quotes (hard gates already applied): deterministic and explained.
     const value = await this.valueRanking(job, quotes.filter((q) => order.has(q.id)), all, byId);
     const valueOrder = new Map(value.ranked.map((r, i) => [r.quoteId, i]));
@@ -1775,7 +1777,7 @@ export class HaggleEngine {
    * is coarser): waiting, responded, clarifying, quoted, countered, revised, held firm, final, …, plus
    * the negotiation outcome so a counteroffer is never mistaken for an accepted price.
    */
-  private stages(job: JobRow, businesses: JobBusinessRow[], all: QuoteRow[], negotiation: NegotiationStep[], questionFrom: string[], approval: ApprovalRow | null): Record<string, BusinessStage> {
+  private stages(job: JobRow, businesses: JobBusinessRow[], all: QuoteRow[], negotiation: NegotiationStep[], questionFrom: string[], approval: ApprovalRow | null, excluded: Set<string> = new Set()): Record<string, BusinessStage> {
     const out: Record<string, BusinessStage> = {};
     for (const b of businesses) {
       const mine = all.filter((q) => q.business_id === b.business_id && q.total_cents !== null).sort((x, y) => x.round - y.round);
@@ -1799,7 +1801,8 @@ export class HaggleEngine {
         : negotiationState === "countered" ? "countered"
         : b.status === "replied" && current ? "clarifying"
         : b.status === "replied" ? "responded"
-        : current ? (job.ready ? "final" : negotiationState === "vendor_revised" ? "vendor_revised" : negotiationState === "held_firm" ? "held_firm" : "quoted")
+        : current && excluded.has(b.business_id) ? "excluded"
+        : current ? (negotiationState === "vendor_revised" ? "vendor_revised" : negotiationState === "held_firm" ? "held_firm" : job.ready ? "final" : "quoted")
         : "waiting";
       out[b.business_id] = {
         stage, negotiation: negotiationState,

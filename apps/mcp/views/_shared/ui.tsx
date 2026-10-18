@@ -82,7 +82,10 @@ const FLAG_INFO: Record<string, { label: string; tone: "risk" | "warn" | "info" 
   hidden_fee: { label: "Hidden fee", tone: "warn" },
   external_payment_link: { label: "Pay-now link blocked", tone: "risk" },
   prompt_injection: { label: "Tried to instruct the agent", tone: "risk" },
-  over_budget: { label: "Over budget", tone: "risk" },
+  // A budget is a target by default: over it is a caveat to weigh (and negotiate), not a disqualifier.
+  over_budget: { label: "Over budget", tone: "warn" },
+  fees_unclear: { label: "Fees unclear", tone: "warn" },
+  requirement_unknown: { label: "Not confirmed yet", tone: "warn" },
   low_confidence: { label: "Low confidence", tone: "warn" },
   question_pending: { label: "Waiting on our answer", tone: "info" },
   expired: { label: "Expired", tone: "warn" },
