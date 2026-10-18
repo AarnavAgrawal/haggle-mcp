@@ -29,6 +29,7 @@ import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.ts";
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
 import { dropUnstatedDietaryRefusals, dropUnsupportedRequirementAnswers, validateQuote } from "../parsing/validate.ts";
+import { answeredSomething, dropAgentOnlyAmounts } from "../parsing/callSafety.ts";
 import { verifyApproval } from "../approvals/verifyApproval.ts";
 import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
 import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
@@ -131,6 +132,17 @@ export interface CallbackProposal {
   why: string;
 }
 
+/** One business's place in the deal (finer than the shared board status). */
+export interface BusinessStage {
+  stage: "sending" | "waiting" | "calling" | "responded" | "asked_question" | "clarifying" | "quoted" | "countered" | "vendor_revised" | "held_firm" | "final" | "buyer_approved" | "paid" | "no_reply" | "unreachable" | "declined";
+  /** none · countered (Haggle's counter, not a price) · vendor_revised (the business lowered its price) · held_firm */
+  negotiation: "none" | "countered" | "vendor_revised" | "held_firm";
+  first_total_usd?: number;
+  current_total_usd?: number;
+  quote_version?: number;
+  saved_usd?: number;
+}
+
 export interface NegotiationStep {
   business_id: string;
   business: string;
@@ -164,6 +176,10 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
   value?: ValueRanking;
   /** Negotiation callbacks the evidence justifies (each needs a human's go-ahead). */
   callbacks?: CallbackProposal[];
+  /** Per business: stage, negotiation state, first vs current price, version, savings. */
+  stages?: Record<string, BusinessStage>;
+  /** Per current quote: extra fees (with inclusion) and commercial terms, as the business stated them. */
+  terms?: Record<string, { fees?: { label: string; amount_usd?: number; included: boolean | null; excerpt: string }[]; deposit_terms?: string | null; cancellation?: string | null; exclusions?: string[] }>;
 };
 
 const REJECT_TEXT: Record<import("../ranking/rank.ts").RejectReason, string> = {
@@ -409,6 +425,7 @@ export class HaggleEngine {
     const FLAG_TEXT: Record<string, string> = {
       hidden_deposit: "The deposit was only in the fine print (PDF page 2+)", delivery_unclear: "Delivery cost wasn't stated",
       tax_excluded: "Tax isn't included", conflicting_numbers: "Some numbers in the reply didn't add up", low_confidence: "Haggle wasn't confident reading this reply",
+      fees_unclear: "Some fees may not be in the total",
     };
     for (const f of q.record.flags) if (FLAG_TEXT[f]) caveats.push(FLAG_TEXT[f]!);
     if (q.total_cents !== null && !(q.deposit_cents && q.deposit_cents > 0)) caveats.push(`No deposit stated: the full ${dollars(q.total_cents)} is charged now`);
@@ -877,7 +894,8 @@ export class HaggleEngine {
     const b = (await this.repo.getBusinesses(placed.job_id)).find((x) => x.business_id === placed.business_id);
     if (!job || !b) return { jobId: null, outcome: "unknown_call" };
     const transcript = call.transcript.trim().slice(0, 20_000);
-    const completed = call.outcome === "completed" && transcript.length > 0;
+    // A call screener, voicemail or phone menu is "reached, no answer", never an (empty) quote.
+    const completed = call.outcome === "completed" && transcript.length > 0 && answeredSomething(transcript);
     const stored = await this.repo.insertMessage({
       job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: "phone", provider_email_id: `call-ended:${call.callId}`, idempotency_key: null,
       rfc_message_id: null, thread_id: null, from_address: b.phone, to_address: job.inbox, subject: null, body_text: transcript || null, attachments: [], attachments_download_url: null,
@@ -1245,6 +1263,8 @@ export class HaggleEngine {
             dietary: reqs.filter((r) => r.kind === "dietary" && r.need).map((r) => ({ need: r.need!, count: r.min_count ?? 0 })), requirements: job.request.requirements.map((r) => r.text) },
           bodyText: msg.body_text ?? "", pdfs: files.filter((f): f is typeof f & { kind: "pdf" } => f.kind === "pdf"), message: msg,
         });
+        // On a call, a price only Haggle's voice agent said (a cited quote, the buyer's target) is not the business's.
+        if (msg.channel === "phone") extraction = dropAgentOnlyAmounts(extraction, msg.body_text ?? "");
         // Silence about a dietary need is unknown, not a refusal (only checkable when no PDF is involved).
         if (!qj && !files.some((f) => f.kind === "pdf")) extraction = dropUnsupportedRequirementAnswers(dropUnstatedDietaryRefusals(extraction, msg.body_text ?? ""), msg.body_text ?? "");
         // The extractor only knows email wording ("email body"); figures from a call or a text say so.
@@ -1274,28 +1294,34 @@ export class HaggleEngine {
     let record = validateQuote(x, job.request.quantity);
     // An answer to "can you confirm X?" ("yes, 45 vegetarian") carries no price: it revises the
     // business's current quote with what it now states, keeping that quote's own figures.
-    const statesTerms = Object.keys(record.dietary_coverage).length > 0 || record.delivery_included !== null || record.delivery_fee_cents !== null || record.tax_cents !== null || Object.keys(record.requirement_answers ?? {}).length > 0;
+    const statesTerms = Object.keys(record.dietary_coverage).length > 0 || record.delivery_included !== null || record.delivery_fee_cents !== null || record.tax_cents !== null || Object.keys(record.requirement_answers ?? {}).length > 0 || (record.other_fees?.length ?? 0) > 0 || !!record.terms;
     if (record.total_cents === null && record.available && statesTerms && priorCurrent?.record.total_cents != null && record.questions.length === 0) {
       const p = priorCurrent.record;
       // A newly stated extra ("$250 extra for delivery", "+$300 tax") the earlier total didn't include
       // is added to it, with its source, so the all-in total stays honest.
       const extras = ([["delivery_fee", "delivery_fee_cents", p.delivery_included !== true], ["tax", "tax_cents", p.tax_included !== true]] as const)
         .filter(([, k, notIncluded]) => notIncluded && p[k] === null && record[k] !== null && record[k]! > 0);
-      const added = extras.reduce((sum, [, k]) => sum + record[k]!, 0);
+      // A fee disclosed later as not included ("plus $300 staffing") is added the same way.
+      const knownFees = new Set((p.other_fees ?? []).map((f) => f.label.toLowerCase()));
+      const newFees = (record.other_fees ?? []).filter((f) => f.included_in_total === false && f.amount_cents !== null && f.amount_cents > 0 && !knownFees.has(f.label.toLowerCase()));
+      const added = extras.reduce((sum, [, k]) => sum + record[k]!, 0) + newFees.reduce((sum, f) => sum + f.amount_cents!, 0);
       // Gap flags are recomputed from the merged facts, never copied from a short answer that simply
       // didn't repeat them (e.g. "Yes, 45 vegetarian" doesn't make an included delivery unclear again).
       const deliveryKnown = (record.delivery_included ?? p.delivery_included) !== null || record.delivery_fee_cents !== null || p.delivery_fee_cents !== null;
-      const flags = [...new Set([...p.flags, ...record.flags])].filter((f) => !(f === "delivery_unclear" && deliveryKnown) && f !== "question_pending");
+      const feesKnown = !(record.flags.includes("fees_unclear")) && (record.other_fees?.length ?? 0) > 0;
+      const flags = [...new Set([...p.flags, ...record.flags])].filter((f) => !(f === "delivery_unclear" && deliveryKnown) && !(f === "fees_unclear" && feesKnown) && f !== "question_pending");
       const statedTotal = p.sources.total;
       record = {
         ...p, dietary_coverage: { ...p.dietary_coverage, ...record.dietary_coverage }, delivery_included: record.delivery_included ?? p.delivery_included,
         ...(p.requirement_answers || record.requirement_answers ? { requirement_answers: { ...p.requirement_answers, ...record.requirement_answers } } : {}),
+        ...(record.terms || p.terms ? { terms: record.terms ?? p.terms } : {}),
+        ...(record.other_fees?.length || p.other_fees?.length ? { other_fees: [...(p.other_fees ?? []), ...(record.other_fees ?? []).filter((f) => !knownFees.has(f.label.toLowerCase()))] } : {}),
         ...(added ? {
           total_cents: p.total_cents! + added,
           ...Object.fromEntries(extras.map(([, k]) => [k, record[k]])),
           sources: {
             ...p.sources, ...Object.fromEntries(extras.flatMap(([f]) => (record.sources[f] ? [[f, record.sources[f]]] : []))),
-            total: { source: `computed from stated total + ${extras.map(([f]) => f.replace("_", " ")).join(" + ")}${statedTotal ? ` (${statedTotal.source})` : ""}`, excerpt: [statedTotal?.excerpt, ...extras.map(([f]) => record.sources[f]?.excerpt)].filter(Boolean).join(" + ").slice(0, 200) },
+            total: { source: `computed from stated total + ${[...extras.map(([f]) => f.replace("_", " ")), ...newFees.map((f) => f.label)].join(" + ")}${statedTotal ? ` (${statedTotal.source})` : ""}`, excerpt: [statedTotal?.excerpt, ...extras.map(([f]) => record.sources[f]?.excerpt), ...newFees.map((f) => f.excerpt)].filter(Boolean).join(" + ").slice(0, 200) },
           },
         } : {}),
         flags, missing_fields: p.missing_fields.filter((f) => !(f in record.sources)), confidence: Math.min(p.confidence, record.confidence),
@@ -1708,6 +1734,7 @@ export class HaggleEngine {
       return { business_id: bid, business: byId.get(bid)?.name ?? bid, round: Number(e.data.round), target_total_usd: Number(e.data.target_total_usd), basis_quote_id: String(e.data.basis_quote_id), outcome_total_usd: answer?.total_cents == null ? null : centsToUsd(answer.total_cents) };
     });
     const openQuestions = questions.map((q) => ({ question_id: q.id, business_id: q.business_id, business: byId.get(q.business_id)?.name ?? q.business_id, text: q.text }));
+    const stages = this.stages(job, businesses, all, negotiation, questions.map((q) => q.business_id), approval);
     // Best value among the eligible quotes (hard gates already applied): deterministic and explained.
     const value = await this.valueRanking(job, quotes.filter((q) => order.has(q.id)), all, byId);
     const valueOrder = new Map(value.ranked.map((r, i) => [r.quoteId, i]));
@@ -1718,6 +1745,11 @@ export class HaggleEngine {
       quotes: out,
       ...(value.recommendedQuoteId ? { recommended_quote_id: value.recommendedQuoteId } : {}),
       ...(value.ranked.length ? { value } : {}),
+      stages,
+      terms: Object.fromEntries(quotes.filter((q) => q.record.terms || q.record.other_fees?.length).map((q) => [q.id, {
+        ...(q.record.other_fees?.length ? { fees: q.record.other_fees.map((f) => ({ label: f.label, ...(f.amount_cents !== null ? { amount_usd: centsToUsd(f.amount_cents) } : {}), included: f.included_in_total, excerpt: f.excerpt })) } : {}),
+        ...(q.record.terms ?? {}),
+      }])),
       callbacks: await this.callbackProposals(jobId),
       rejected: ranking.rejected.map((r) => {
         const res = unknownOnly.get(r.quoteId) ?? [];
@@ -1736,6 +1768,47 @@ export class HaggleEngine {
       payments_enabled: this.d.stripe !== undefined || !this.d.payer.disabledReason,
       next: await this.nextHint(job),
     };
+  }
+
+  /**
+   * Where each business is in the deal, in words the board and agents can use (the shared status enum
+   * is coarser): waiting, responded, clarifying, quoted, countered, revised, held firm, final, …, plus
+   * the negotiation outcome so a counteroffer is never mistaken for an accepted price.
+   */
+  private stages(job: JobRow, businesses: JobBusinessRow[], all: QuoteRow[], negotiation: NegotiationStep[], questionFrom: string[], approval: ApprovalRow | null): Record<string, BusinessStage> {
+    const out: Record<string, BusinessStage> = {};
+    for (const b of businesses) {
+      const mine = all.filter((q) => q.business_id === b.business_id && q.total_cents !== null).sort((x, y) => x.round - y.round);
+      const current = mine.at(-1);
+      const first = mine[0];
+      const steps = negotiation.filter((n) => n.business_id === b.business_id).sort((x, y) => x.round - y.round);
+      const last = steps.at(-1);
+      let negotiationState: BusinessStage["negotiation"] = "none";
+      if (last && last.outcome_total_usd === null) negotiationState = "countered";
+      else if (last && first?.total_cents != null && last.outcome_total_usd !== null) negotiationState = last.outcome_total_usd < centsToUsd(first.total_cents) ? "vendor_revised" : "held_firm";
+      const approved = approval && ["approved", "used"].includes(approval.status) && approval.business_id === b.business_id;
+      const stage: BusinessStage["stage"] =
+        job.state === "paid" && approved ? "paid"
+        : approved ? "buyer_approved"
+        : b.status === "pending" ? "sending"
+        : b.status === "ringing" ? "calling"
+        : b.status === "declined" ? "declined"
+        : b.status === "bounced" || b.status === "unavailable" ? "unreachable"
+        : b.status === "silent" || b.status === "no_reply" ? "no_reply"
+        : questionFrom.includes(b.business_id) || b.status === "question" ? "asked_question"
+        : negotiationState === "countered" ? "countered"
+        : b.status === "replied" && current ? "clarifying"
+        : b.status === "replied" ? "responded"
+        : current ? (job.ready ? "final" : negotiationState === "vendor_revised" ? "vendor_revised" : negotiationState === "held_firm" ? "held_firm" : "quoted")
+        : "waiting";
+      out[b.business_id] = {
+        stage, negotiation: negotiationState,
+        ...(first?.total_cents != null ? { first_total_usd: centsToUsd(first.total_cents) } : {}),
+        ...(current?.total_cents != null ? { current_total_usd: centsToUsd(current.total_cents), quote_version: current.round } : {}),
+        ...(first?.total_cents != null && current?.total_cents != null && current.total_cents < first.total_cents ? { saved_usd: centsToUsd(first.total_cents - current.total_cents) } : {}),
+      };
+    }
+    return out;
   }
 
   private boardStatus(b: JobBusinessRow, job: JobRow, wonBusiness: string | null, quotes: QuoteRow[]): BoardStatus {
@@ -2059,6 +2132,26 @@ export class HaggleEngine {
 
   // ───────────────────────────── launcher + settings ─────────────────────────────
 
+  /**
+   * Recent deals for an agent that doesn't hold job ids (new conversation, reconnect): compact rows,
+   * newest first, open ones first. Read-only: never advances a job or contacts anyone.
+   */
+  async recentDeals(limit = 10): Promise<{ job_id: string; what: string; quantity: number; unit?: string; date: string; area: string; state: JobState; ready: boolean; created_at: string; updated_at: string; businesses: number; quotes: number; leading?: { business: string; total_usd: number } }[]> {
+    const jobs = (await this.repo.listRecentJobs(Math.min(Math.max(limit, 1), 50))).sort((a, b) => Number(TERMINAL.has(a.state)) - Number(TERMINAL.has(b.state)) || b.created_at.localeCompare(a.created_at));
+    const out = [];
+    for (const j of jobs) {
+      const { quotes, ranking } = await this.rankRows(j);
+      const businesses = await this.repo.getBusinesses(j.id);
+      const lead = quotes.find((q) => q.id === ranking.recommendedQuoteId);
+      out.push({
+        job_id: j.id, what: j.request.what, quantity: j.request.quantity, ...(j.request.unit ? { unit: j.request.unit } : {}), date: j.request.date, area: j.request.area, state: j.state, ready: j.ready,
+        created_at: j.created_at, updated_at: j.updated_at, businesses: businesses.length, quotes: quotes.filter((q) => q.total_cents !== null).length,
+        ...(lead?.total_cents != null ? { leading: { business: businesses.find((b) => b.business_id === lead.business_id)?.name ?? lead.business_id, total_usd: centsToUsd(lead.total_cents) } } : {}),
+      });
+    }
+    return out;
+  }
+
   /** Most relevant job for the launcher: newest open job, else the newest job. */
   async latestJob(): Promise<JobRow | null> {
     const recent = await this.repo.listRecentJobs(20);
@@ -2146,7 +2239,7 @@ function excludedText(reason: import("../ranking/rank.ts").RejectReason, results
  * stated (included or priced). For a roof repair, "delivery not stated" means nothing and doesn't block.
  */
 function allInKnown(r: import("../parsing/extraction.ts").QuoteRecord, needsDelivery = true): boolean {
-  return !r.flags.includes("tax_excluded") && !(needsDelivery && r.flags.includes("delivery_unclear"));
+  return !r.flags.includes("tax_excluded") && !r.flags.includes("fees_unclear") && !(needsDelivery && r.flags.includes("delivery_unclear"));
 }
 
 function rejectToFlag(r: string) {

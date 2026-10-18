@@ -53,6 +53,27 @@ type Extras = {
     explanation: { winner: string; others: { quote_id: string; text: string }[] } | null;
   };
   callbacks?: { business_id: string; business: string; their_total_usd: number; basis_total_usd: number; basis_business: string; why: string }[];
+  stages?: Record<string, { stage: string; negotiation: string; first_total_usd?: number; current_total_usd?: number; quote_version?: number; saved_usd?: number }>;
+  terms?: Record<string, { fees?: { label: string; amount_usd?: number; included: boolean | null; excerpt: string }[]; deposit_terms?: string | null; cancellation?: string | null; exclusions?: string[] }>;
+};
+
+/** Fees and commercial terms exactly as the business stated them. */
+function Terms({ t }: { t?: NonNullable<Extras["terms"]>[string] }) {
+  if (!t) return null;
+  const lines = [
+    ...(t.fees ?? []).map((f) => `${f.label}${f.amount_usd !== undefined ? ` ${usd(f.amount_usd)}` : ""}: ${f.included === true ? "included" : f.included === false ? "added to the all-in total" : "unclear if included"}`),
+    ...(t.deposit_terms ? [`Deposit: ${t.deposit_terms}`] : []),
+    ...(t.cancellation ? [`Cancellation: ${t.cancellation}`] : []),
+    ...(t.exclusions?.length ? [`Excludes: ${t.exclusions.join(", ")}`] : []),
+  ];
+  return lines.length ? <ul className="db-terms">{lines.map((l) => <li key={l}>{l}</li>)}</ul> : null;
+}
+
+/** Finer stage words than the shared status (a counteroffer is never shown as a price). */
+const STAGE_LABEL: Record<string, string> = {
+  sending: "Sending", waiting: "Waiting for reply", calling: "Calling", responded: "Replied", asked_question: "Asked a question", clarifying: "Confirming details",
+  quoted: "Quoted", countered: "Countered, awaiting answer", vendor_revised: "Lowered their price", held_firm: "Held firm", final: "Final quote",
+  buyer_approved: "Approved by you", paid: "Paid", no_reply: "No reply", unreachable: "Can't reach", declined: "Declined",
 };
 type DealBoard = CoreDealBoard & Extras;
 type DealBoardOrEmpty = CoreDealBoardOrEmpty & Extras;
@@ -277,7 +298,7 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
           {board.open_questions.map((q) => (
             <Question key={q.question_id} jobId={board.job.id} question={q} onChanged={onChanged} />
           ))}
-          <Businesses businesses={board.businesses} quotes={board.quotes} compact={!fullscreen} />
+          <Businesses businesses={board.businesses} quotes={board.quotes} compact={!fullscreen} stages={board.stages} />
         </section>
       </div>
 
@@ -387,6 +408,7 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
         {winner && <Factors board={board} quoteId={q.quote_id} />}
         {!winner && q.meets_requirements && <WhyNot board={board} quoteId={q.quote_id} />}
         {winner && q.items.length > 0 && <p className="db-items">{q.items.join(", ")}</p>}
+        <Terms t={(board as DealBoard).terms?.[q.quote_id]} />
         {countered.map((n) => (
           <p key={`${n.business_id}-${n.round}`} className="db-neg">
             {n.basis_quote_id === "buyer_target" ? (
@@ -645,7 +667,8 @@ function Question({ jobId, question, onChanged }: { jobId: string; question: Ope
   );
 }
 
-function Businesses({ businesses, quotes, compact }: { businesses: DealBoardBusiness[]; quotes: Quote[]; compact: boolean }) {
+function Businesses({ businesses, quotes, compact, stages }: { businesses: DealBoardBusiness[]; quotes: Quote[]; compact: boolean; stages?: Extras["stages"] }) {
+  const label = (b: DealBoardBusiness) => (stages?.[b.id] ? STAGE_LABEL[stages[b.id]!.stage] ?? stages[b.id]!.stage : STATUS_LABEL[b.status] ?? b.status);
   const quoted = new Set(quotes.map((q) => q.business_id));
   if (compact) {
     // Inline: one wrapped line of chips; businesses still waiting show their last event under it.
@@ -658,7 +681,7 @@ function Businesses({ businesses, quotes, compact }: { businesses: DealBoardBusi
               <span className="db-dot" aria-hidden="true" />
               {b.name}
               <ChannelBadge channel={b.channel} />
-              <span className="db-chip-status">{STATUS_LABEL[b.status] ?? b.status}</span>
+              <span className="db-chip-status">{label(b)}</span>
             </li>
           ))}
         </ul>
@@ -685,7 +708,7 @@ function Businesses({ businesses, quotes, compact }: { businesses: DealBoardBusi
               <span className="db-dot" aria-hidden="true" />
               <span className="db-bizrow-name">{b.name}</span>
               <ChannelBadge channel={b.channel} />
-              <span className="db-bizrow-status">{STATUS_LABEL[b.status] ?? b.status}</span>
+              <span className="db-bizrow-status">{label(b)}</span>
             </div>
             <p className="db-bizrow-event">
               {b.unavailable_reason ?? b.last_event}

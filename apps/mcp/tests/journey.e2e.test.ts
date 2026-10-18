@@ -135,6 +135,14 @@ describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
     // open_haggle (the launcher) shows the same active deal.
     const open = (await call(ready, "open_haggle", {})).structuredContent;
     expect(open.job.id).toBe(v.job_id);
+
+    // A new conversation without ids: list_deals and get_quotes() find it; every vendor has a stage.
+    const deals = (await call(ready, "list_deals", {})).structuredContent.deals;
+    expect(deals[0]).toMatchObject({ job_id: v.job_id, what: "hackathon catering", quantity: 200 });
+    const resumed = (await call(ready, "get_quotes", {})).structuredContent;
+    expect(resumed.job_id).toBe(v.job_id);
+    expect(Object.keys(resumed.stages)).toHaveLength(6);
+    for (const st of Object.values(resumed.stages) as { stage: string }[]) expect(st.stage).toMatch(/^(waiting|quoted|countered|vendor_revised|held_firm|final|asked_question|clarifying|responded|no_reply|calling|declined|unreachable)$/);
   });
 
   it("variations: noon + 40 vegetarian; no budget stated; a past date; a typed-in vendor list", async () => {

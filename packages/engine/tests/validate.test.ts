@@ -201,3 +201,26 @@ describe("dropUnstatedDietaryRefusals (live regression 2026-10-18)", () => {
     expect(dropUnstatedDietaryRefusals(yes, "$860 total").dietary_coverage).toHaveLength(1);
   });
 });
+
+describe("other fees and terms (all-in integrity)", () => {
+  const base = (over: Record<string, unknown>) => validateQuote({
+    available: true, price_per_head_usd: null, headcount: null, subtotal_usd: null, delivery_fee_usd: null, delivery_included: true, tax_usd: null, tax_included: true,
+    total_usd: 2000, deposit_usd: 200, menu_items: [], dietary_coverage: [], valid_until: null, questions: [], payment_request: "none", instructions_to_agent: false,
+    sources: [{ field: "total", source: "email body", excerpt: "$2,000 total" }, { field: "deposit", source: "email body", excerpt: "$200 deposit" }], missing_fields: [], confidence: 0.9, ...over,
+  } as never, 1);
+  it("an excluded fee is added to the all-in total with its source; an included one changes nothing", () => {
+    const r = base({ other_fees: [{ label: "staffing", amount_usd: 300, included_in_total: false, excerpt: "plus $300 staffing" }, { label: "setup", amount_usd: 100, included_in_total: true, excerpt: "setup included" }] });
+    expect(r.total_cents).toBe(230_000);
+    expect(r.sources.total).toMatchObject({ source: "computed from stated total + staffing (email body)", excerpt: "$2,000 total + plus $300 staffing" });
+    expect(r.flags).not.toContain("fees_unclear");
+  });
+  it("a fee whose inclusion is unclear leaves the all-in total unknown, never guessed", () => {
+    const r = base({ other_fees: [{ label: "service charge", amount_usd: null, included_in_total: null, excerpt: "service charge applies" }] });
+    expect(r.total_cents).toBe(200_000);
+    expect(r.flags).toContain("fees_unclear");
+  });
+  it("terms are kept exactly as stated", () => {
+    const r = base({ terms: { deposit_terms: "due on booking, non-refundable", cancellation: "free until 7 days before", exclusions: ["plates"] } });
+    expect(r.terms).toEqual({ deposit_terms: "due on booking, non-refundable", cancellation: "free until 7 days before", exclusions: ["plates"] });
+  });
+});

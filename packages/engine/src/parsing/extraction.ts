@@ -31,6 +31,14 @@ export const QuoteExtraction = z.object({
     .array(z.object({ requirement: z.string(), answer: z.enum(["yes", "no", "not_stated"]), excerpt: z.string() }))
     .optional()
     .describe("For each listed requirement that is not a dietary need or delivery: yes/no only if the business explicitly addressed it (with the exact short text), else not_stated"),
+  other_fees: z
+    .array(z.object({ label: z.string(), amount_usd: z.number().nullable(), included_in_total: z.boolean().nullable(), excerpt: z.string() }))
+    .optional()
+    .describe("Fees other than delivery and tax (setup, staffing, service charge, gratuity, travel, rentals): amount if stated, whether the stated total already includes it (null if unclear), exact short text"),
+  terms: z
+    .object({ deposit_terms: z.string().nullable(), cancellation: z.string().nullable(), exclusions: z.array(z.string()) })
+    .optional()
+    .describe("Commercial terms only as stated: when the deposit is due / refundable, the cancellation policy, what is excluded. null / [] if not stated"),
   valid_until: z.string().nullable().describe("YYYY-MM-DD if stated"),
   questions: z.array(z.string()).describe("Questions the business asked the buyer before it can quote, verbatim"),
   payment_request: z
@@ -62,6 +70,10 @@ export interface QuoteRecord {
   deposit_cents: number | null;
   menu_items: string[];
   dietary_coverage: Record<string, { covered: boolean; count_offered: number | null }>;
+  /** Fees other than delivery/tax; `included_in_total` null = unclear (the all-in total is then unknown). */
+  other_fees?: { label: string; amount_cents: number | null; included_in_total: boolean | null; excerpt: string }[];
+  /** Commercial terms exactly as stated (evidence only). */
+  terms?: { deposit_terms: string | null; cancellation: string | null; exclusions: string[] };
   /** Other requirements the business explicitly answered, keyed by the requirement's text (lowercased). */
   requirement_answers?: Record<string, { met: boolean; excerpt: string }>;
   valid_until: string | null;

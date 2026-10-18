@@ -119,6 +119,26 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
   const confidence = Math.max(0, Math.min(1, x.confidence - failures * CONFIDENCE_PENALTY));
   if (confidence < 0.6) flags.add("low_confidence");
 
+  // 8. Other fees: an amount the stated total excludes is added to the all-in total (labelled); a fee
+  // whose inclusion is unclear leaves the all-in total unknown ("fees_unclear"), never guessed.
+  const otherFees: NonNullable<QuoteRecord["other_fees"]> = [];
+  for (const f of x.other_fees ?? []) {
+    let amount: number | null = null;
+    try { amount = f.amount_usd === null ? null : usdToCents(f.amount_usd); } catch { amount = null; }
+    if (amount !== null && (amount < 0 || amount > MAX_MONEY_USD * 100)) amount = null;
+    otherFees.push({ label: f.label.trim().slice(0, 60) || "fee", amount_cents: amount, included_in_total: f.included_in_total, excerpt: f.excerpt.trim().slice(0, 200) });
+  }
+  const excluded = otherFees.filter((f) => f.included_in_total === false && f.amount_cents !== null && f.amount_cents > 0);
+  if (cents.total !== null && excluded.length) {
+    cents.total += excluded.reduce((a, f) => a + f.amount_cents!, 0);
+    const was = sources.total;
+    sources.total = { source: `computed from stated total + ${excluded.map((f) => f.label).join(" + ")}${was ? ` (${was.source})` : ""}`, excerpt: [was?.excerpt, ...excluded.map((f) => f.excerpt)].filter(Boolean).join(" + ").slice(0, 200) };
+  }
+  if (otherFees.some((f) => f.included_in_total === null || (f.included_in_total === false && f.amount_cents === null))) flags.add("fees_unclear");
+  const terms = x.terms && (x.terms.deposit_terms || x.terms.cancellation || x.terms.exclusions.length)
+    ? { deposit_terms: x.terms.deposit_terms?.slice(0, 200) ?? null, cancellation: x.terms.cancellation?.slice(0, 200) ?? null, exclusions: x.terms.exclusions.map((e) => e.slice(0, 120)).slice(0, 10) }
+    : undefined;
+
   const dietary: QuoteRecord["dietary_coverage"] = {};
   for (const d of x.dietary_coverage) dietary[d.need.trim().toLowerCase()] = { covered: d.covered, count_offered: d.count_offered };
   const answers: NonNullable<QuoteRecord["requirement_answers"]> = {};
@@ -138,6 +158,8 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
     menu_items: x.menu_items.slice(0, 20),
     dietary_coverage: dietary,
     ...(Object.keys(answers).length ? { requirement_answers: answers } : {}),
+    ...(otherFees.length ? { other_fees: otherFees } : {}),
+    ...(terms ? { terms } : {}),
     valid_until: validUntil,
     questions: x.questions.slice(0, 5).map((q) => q.slice(0, 500)),
     flags: [...flags],

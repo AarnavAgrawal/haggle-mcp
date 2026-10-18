@@ -20,7 +20,7 @@ const init = await rpc("initialize", { protocolVersion: "2025-06-18", capabiliti
 check("MCP initialize", init.result?.serverInfo?.name === "haggle", `version ${init.result?.serverInfo?.version}`);
 const tools = (await rpc("tools/list", {})).result.tools;
 const names = new Set(tools.map((t) => t.name));
-const want = ["ask", "discover", "check_price", "deal", "wait_for_update", "get_quotes", "answer_business", "approve", "pay", "business_profile", "open_haggle", "settings.read", "settings.update", "mention_businesses", "approve_in_view"];
+const want = ["ask", "discover", "check_price", "deal", "wait_for_update", "get_quotes", "answer_business", "approve", "pay", "business_profile", "open_haggle", "settings.read", "settings.update", "mention_businesses", "approve_in_view", "list_deals", "call_back", "call_back_in_view"];
 check("all v5 tools listed", want.every((n) => names.has(n)), want.filter((n) => !names.has(n)).join(", ") || `${tools.length} tools`);
 const by = Object.fromEntries(tools.map((t) => [t.name, t]));
 check("get_quotes bound to the deal board with an outputSchema", JSON.stringify(by.get_quotes?._meta ?? {}).includes("deal-board") && !!by.get_quotes?.outputSchema);
@@ -39,6 +39,16 @@ if (knownJob) {
     check("headless approve can't self-approve (no human channel)", ["NO_HUMAN_CHANNEL", "not_approvable"].includes(err(await call("approve", { job_id: knownJob, quote_id: q }))?.error?.code));
   }
 }
+// Continuity and board state for agents without ids (read-only).
+const deals = await call("list_deals", { limit: 5 });
+check("list_deals finds recent deals without ids", !deals.isError && Array.isArray(deals.structuredContent?.deals), `${deals.structuredContent?.deals?.length ?? 0} deals`);
+const latest = await call("get_quotes", {});
+check("get_quotes() with no job_id opens the most relevant deal", !latest.isError && !!latest.structuredContent?.job_id, latest.structuredContent?.job_id ?? err(latest)?.error?.code);
+check("board carries vendor stages and the payment state", !!latest.structuredContent?.stages && typeof latest.structuredContent?.payments_enabled === "boolean", `payments_enabled=${latest.structuredContent?.payments_enabled}`);
+const roster = await call("discover", {});
+check("discover reports the demo roster with readiness", !roster.isError && typeof roster.structuredContent?.ready === "number", `${roster.structuredContent?.ready}/${roster.structuredContent?.total} ready`);
+const cb = latest.structuredContent?.callbacks?.[0];
+if (cb) check("call_back can't be authorized by a headless client (no call placed)", ["NO_HUMAN_CHANNEL", "callback_not_justified"].includes(err(await call("call_back", { job_id: latest.structuredContent.job_id, business_id: cb.business_id }))?.error?.code));
 const blocked = await call("deal", { request: { what: "lunch catering", quantity: 40, date: "2026-10-22", area: "San Francisco, CA", requirements: [] }, businesses: [{ name: "Some Real Diner", email: "owner@realdiner.example" }], budget_usd: 1200 });
 check("deal refuses a business outside the recipient allowlist (nothing sent)", err(blocked)?.error?.code === "recipient_not_allowed");
 const body = JSON.stringify({ id: "evt_accept_forged", event_type: "imessage.received", timestamp: new Date().toISOString(), data: { message: { id: "x" } } });

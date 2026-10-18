@@ -387,3 +387,6 @@
 .db-factor-name { display: inline-block; min-width: 86px; font-weight: 600; text-transform: capitalize; color: var(--ink); }
 .db-whynot { margin: 4px 0 0; font-size: 12px; color: var(--ink-2); }
 .db-callback { border-left: 3px solid var(--ch-phone); }
+
+.db-terms { list-style: none; margin: 4px 0 0; padding: 0; font-size: 12px; color: var(--ink-2); }
+.db-terms li::before { content: "· "; }

@@ -80,6 +80,16 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
     ranked: z.array(z.looseObject({ quoteId: z.string(), business: z.string(), score: z.number(), confidence: z.number(), factors: z.array(z.looseObject({ name: z.string(), score: z.number(), weight: z.number(), neutral: z.boolean(), note: z.string() })) })),
     explanation: z.object({ winner: z.string(), others: z.array(z.object({ quote_id: z.string(), text: z.string() })) }).nullable(),
   }).optional(),
+  /** Per business: where it is in the deal and the negotiation outcome (a counteroffer is never a price). */
+  stages: z.record(z.string(), z.object({
+    stage: z.string(), negotiation: z.enum(["none", "countered", "vendor_revised", "held_firm"]),
+    first_total_usd: z.number().optional(), current_total_usd: z.number().optional(), quote_version: z.number().int().optional(), saved_usd: z.number().optional(),
+  })).optional(),
+  /** Per current quote: extra fees and commercial terms exactly as stated. */
+  terms: z.record(z.string(), z.looseObject({
+    fees: z.array(z.looseObject({ label: z.string(), amount_usd: z.number().optional(), included: z.boolean().nullable(), excerpt: z.string() })).optional(),
+    deposit_terms: z.string().nullable().optional(), cancellation: z.string().nullable().optional(), exclusions: z.array(z.string()).optional(),
+  })).optional(),
   /** Negotiation callbacks the evidence justifies; each needs the human's go-ahead (call_back). */
   callbacks: z.array(z.looseObject({ business_id: z.string(), business: z.string(), their_total_usd: z.number(), basis_total_usd: z.number(), basis_business: z.string(), why: z.string() })).optional(),
   contacted: z.array(z.looseObject({ business: z.string(), channel: z.string() })).optional(),
@@ -101,7 +111,7 @@ export function requestDetails(b: DealBoardData, budgetSource?: "request" | "set
 /** Board + request details + payment ceiling (+ setup blockers when given). */
 export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus> = {}): DealBoardPlus {
   return DealBoardPlus.parse({
-    ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...extra,
+    ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...(b.stages ? { stages: b.stages } : {}), ...(b.terms && Object.keys(b.terms).length ? { terms: b.terms } : {}), ...extra,
   });
 }
 

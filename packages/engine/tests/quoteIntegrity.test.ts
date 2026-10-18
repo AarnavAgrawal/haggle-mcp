@@ -22,6 +22,7 @@ const extractor = {
       tax_usd: null, tax_included: null, total_usd: total ? k(total) : null, deposit_usd: deposit ? k(deposit) : null, menu_items: [],
       dietary_coverage: veg ? [{ need: "vegetarian", covered: true, count_offered: Number(veg) }] : [], valid_until: null, questions: [], payment_request: "none" as const, instructions_to_agent: false,
       ...(fee ? { requirement_answers: [{ requirement: "Total must include delivery and all fees", answer: "no" as const, excerpt: `$${fee} extra for delivery` }] } : {}),
+      ...(/\$(\d+) staffing, not included/.test(t) ? { other_fees: [{ label: "staffing", amount_usd: Number(/\$(\d+) staffing/.exec(t)![1]), included_in_total: false, excerpt: /\$\d+ staffing, not included/.exec(t)![0] }] } : {}),
       sources, missing_fields: [], confidence: 0.9,
     };
   },
@@ -112,12 +113,15 @@ describe("quote revisions and approvals", () => {
     expect(await soft.engine.approvalCaveats(d2.job_id, board.quotes[0]!.quote_id)).toEqual(expect.arrayContaining(["$500 over the $4,000 budget"]));
     // Haggle negotiates toward the buyer's target instead of declaring a winner.
     expect(board.state).toBe("negotiating");
+    const sid = board.quotes[0]!.business_id;
+    expect(board.stages![sid]).toMatchObject({ stage: "countered", negotiation: "countered", first_total_usd: 4500, current_total_usd: 4500 }); // a counter is not a price
     expect(soft.texts.at(-1)!.text).toBe("Thanks! Our client's target is $4,000.00 total. Anything you can do to get closer (delivery or deposit)? HG-" + (await soft.repo.getJob(d2.job_id))!.short_code);
     // The business revises: the new price shows as negotiated, with the original kept as history.
     await text(soft.engine, "im_s2", "Best we can do is $4.2k total, $800 deposit, 45 veg, delivery included");
     await soft.engine.advanceJob(d2.job_id);
     const after = await soft.engine.getQuotes(d2.job_id);
     expect(after.quotes.find((q) => q.status === "current")).toMatchObject({ total_usd: 4200, negotiated_from: 4500, deposit_usd: 800, round: 2 });
+    expect(after.stages![sid]).toMatchObject({ first_total_usd: 4500, current_total_usd: 4200, quote_version: 2, saved_usd: 300 });
     // $4,200 is still above the target: one more (and last) bounded round; never past max_rounds.
     expect(after.negotiation).toEqual([
       expect.objectContaining({ business: "Sunset Kitchen", round: 2, target_total_usd: 4000, basis_quote_id: "buyer_target", outcome_total_usd: 4200 }),
@@ -129,6 +133,7 @@ describe("quote revisions and approvals", () => {
     const done = await soft.engine.getQuotes(d2.job_id);
     expect(done.quotes.find((q) => q.status === "current")).toMatchObject({ total_usd: 4100, round: 3 });
     expect(done.ready).toBe(true); // rounds used up: Haggle stops and explains instead of pushing again
+    expect(done.stages![sid]).toMatchObject({ stage: "final", negotiation: "vendor_revised", first_total_usd: 4500, current_total_usd: 4100, saved_usd: 400 });
     expect(soft.texts.filter((x) => /target/.test(x.text))).toHaveLength(2);
   });
 
@@ -147,5 +152,24 @@ describe("quote revisions and approvals", () => {
     await expect(e.pay(deal.job_id, q.quote_id)).rejects.toBeTruthy();
     expect(stripe.charges).toHaveLength(0);
     expect(await e.revokeApproval(deal.job_id, a.id, "again")).toBe(false); // once
+  });
+
+  it("a clarification that discloses a new excluded fee updates the all-in total and voids an approval of the old version", async () => {
+    const { engine: e, stripe } = engine({ stripe: true });
+    const deal = await e.deal({ request: REQUEST, budget_usd: 6000, businesses: [SUNSET] });
+    await text(e, "im_f1", "$4.5k total, $1k deposit, 45 veg, delivery included");
+    await e.advanceJob(deal.job_id);
+    const v1 = (await e.getQuotes(deal.job_id)).quotes[0]!;
+    const a = await e.requestApproval(deal.job_id, v1.quote_id, "view");
+    await e.decideApproval(a.id, "approve", "view", "human");
+    await text(e, "im_f2", "One thing: $300 staffing, not included");
+    await e.advanceJob(deal.job_id);
+    const board = await e.getQuotes(deal.job_id);
+    const v2 = board.quotes.find((q) => q.status === "current")!;
+    expect(v2).toMatchObject({ total_usd: 4800, round: 2 });
+    expect(v2.source).toMatch(/^computed from stated total \+ staffing/);
+    expect(board.terms![v2.quote_id]!.fees).toEqual([expect.objectContaining({ label: "staffing", amount_usd: 300, included: false })]);
+    expect(board.approval).toMatchObject({ approval_id: a.id, status: "expired" });
+    expect(stripe.charges).toHaveLength(0);
   });
 });
