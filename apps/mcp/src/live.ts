@@ -6,7 +6,7 @@
 // when HAGGLE_ENABLE_PAYMENTS=true and the key is sk_test_ (refuses to start otherwise); without the
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
-  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, heuristicExtractor, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
+  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, heuristicExtractor, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
   withHeuristicFallback,
 } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
@@ -15,7 +15,7 @@ import { registerLiveFactory, type Runtime } from "./runtime.ts";
 const TICK_MS = 30_000;
 
 registerLiveFactory(async (env): Promise<Runtime> => {
-  const { api, buyerMailbox, phone, a2a, imessage, sms, voice, identityInfo, transcript, callOrigin } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
+  const { api, buyerMailbox, phone, a2a, imessage, sms, voice, identityInfo, transcript, callOrigin, identityAddresses, listTexts, listCalls } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
 
   // Only the explicitly configured simulated fleet is offered by discover (never arbitrary businesses).
   const fleet = parseFleet(env.HAGGLE_DEMO_FLEET).map((b) => ({
@@ -28,7 +28,9 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const cap = Number(env.HAGGLE_GLOBAL_PAYMENT_CAP_CENTS ?? (stripe ? "50000" : "500"));
   const capMax = stripe ? 1_000_000 : 1000;
   const ceiling = Number(env.HAGGLE_SPENDING_CAP_CEILING_CENTS ?? "500000");
-  const repo = new PostgresRepository(env.SUPABASE_DB_URL!, env.HAGGLE_DB_SCHEMA?.trim() ? { schema: env.HAGGLE_DB_SCHEMA.trim() } : {});
+  // Supabase's session pooler caps clients (15): a small pool per process (HAGGLE_DB_POOL_MAX, default 4).
+  const poolMax = Number(env.HAGGLE_DB_POOL_MAX ?? "4");
+  const repo = new PostgresRepository(env.SUPABASE_DB_URL!, { max: Number.isInteger(poolMax) && poolMax >= 1 && poolMax <= 10 ? poolMax : 4, ...(env.HAGGLE_DB_SCHEMA?.trim() ? { schema: env.HAGGLE_DB_SCHEMA.trim() } : {}) });
   // Each outbound channel is OFF unless explicitly enabled (real calls / iMessages / A2A tasks need
   // Yash's go-ahead). A2A cards and phone numbers must still be on the recipient allowlist; iMessage
   // only ever goes to the settings approver.
@@ -61,8 +63,14 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // Call hours (local, in each workspace's timezone); escalation timing is HAGGLE_ESCALATE_EMAIL_TO_CALL_S.
   const hours = (env.HAGGLE_CALL_HOURS ?? "9-20").match(/^(\d{1,2})-(\d{1,2})$/);
   const callHours = hours && Number(hours[1]) < Number(hours[2]) && Number(hours[2]) <= 24 ? { start: Number(hours[1]), end: Number(hours[2]) } : { start: 9, end: 20 };
+  // Lost webhooks (a 503, the server down, a tunnel gap): the reconciler lists the buyer's mailbox,
+  // texts and calls and ingests what isn't stored yet, every HAGGLE_RECONCILE_EVERY_S (default 60 s)
+  // and before a negotiation round closes or "all quotes are in" goes out. HAGGLE_RECONCILE=false: off.
+  const reconcileOn = env.HAGGLE_RECONCILE !== "false";
+  let reconciler: InboundReconciler | null = null;
   const engine = new HaggleEngine({
     repo,
+    ...(reconcileOn ? { reconcile: (jobId: string) => reconciler?.sweepJob(jobId) ?? Promise.resolve(0) } : {}),
     email: inkboxEmail(api, buyerMailbox),
     ...(phonePort ? { phone: phonePort } : {}),
     ...(a2aPort ? { a2a: a2aPort } : {}),
@@ -94,6 +102,19 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     },
     log,
   });
+  reconciler = reconcileOn
+    ? new InboundReconciler({
+      engine, repo, log,
+      sources: {
+        mail: { api, buyerMailbox, senderTrust, identityAddresses },
+        ...(smsPort ? { texts: { list: listTexts } } : {}),
+        ...(phonePort ? { calls: { list: listCalls, transcript } } : {}),
+      },
+    })
+    : null;
+  const sweepEvery = Math.max(1, Math.round((Number(env.HAGGLE_RECONCILE_EVERY_S) > 0 ? Number(env.HAGGLE_RECONCILE_EVERY_S) : 60) * 1000 / TICK_MS));
+  let ticks = 0;
+  const sweep = () => (reconciler ? reconciler.sweepAll().then(() => undefined, (e) => console.error(JSON.stringify({ level: "error", event: "reconcile_failed", error: (e as Error).message }))) : Promise.resolve());
   // Backup tick: deadlines advance even when no agent is calling. One per process: a dev hot reload
   // re-runs this with a new engine, and the old engine's tick (old code) must stop, or two engines
   // advance the same jobs (live 2026-10-18: both parsed one reply).
@@ -105,8 +126,11 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   g.__haggleRepo = repo;
   if (previousRepo && previousRepo !== repo) void previousRepo.close().catch(() => {});
   g.__haggleTick = setInterval(() => {
-    void repo.listOpenJobs().then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
+    // Every sweepEvery-th tick, recover lost inbound first so this tick's advance reads it.
+    void (ticks++ % sweepEvery === 0 ? sweep() : Promise.resolve()).then(() => repo.listOpenJobs()).then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
   }, TICK_MS).unref();
-  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: env.HAGGLE_EMAIL_APPROVAL_BY_CODE !== "false" ? "code" : "verified-senders-only", payments: stripe ? "stripe-test" : "disabled", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
-  return { mode: "live", engine, brain, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript } };
+  // Anything that arrived while this server was down or restarting.
+  setTimeout(() => void sweep(), 5_000).unref();
+  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: env.HAGGLE_EMAIL_APPROVAL_BY_CODE !== "false" ? "code" : "verified-senders-only", payments: stripe ? "stripe-test" : "disabled", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false }));
+  return { mode: "live", engine, brain, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript }, ...(reconciler ? { reconciler } : {}) };
 });

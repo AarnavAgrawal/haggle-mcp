@@ -1,6 +1,6 @@
 // Builds the engine for the configured mode. Mock mode (default) needs no credentials and is
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
-import { createMockEngine, fleetBusinesses, type BrainAdapter, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
+import { createMockEngine, fleetBusinesses, type BrainAdapter, type HaggleEngine, type InboundReconciler, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 
 export type Runtime = {
@@ -12,6 +12,8 @@ export type Runtime = {
   tick?: () => Promise<number>;
   /** Live mode: the Inkbox buyer identity and its webhook signing key. */
   inkbox?: { api: InkboxMailApi; buyerMailbox: string; webhookSecret: string; senderTrust: InkboxTrustPolicy; transcript?: (callId: string) => Promise<string> };
+  /** Live mode: recovers inbound mail, texts and calls whose webhook was lost (the webhook notes what it handled). */
+  reconciler?: Pick<InboundReconciler, "noteHandled" | "sweepAll" | "sweepJob">;
   missing: string[];
 };
 

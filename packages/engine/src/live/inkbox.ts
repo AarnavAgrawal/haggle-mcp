@@ -20,8 +20,11 @@ export interface InkboxMailApi {
   send(mailbox: string, o: { to: string[]; subject: string; bodyText?: string; inReplyToMessageId?: string; attachments?: { filename: string; contentType: string; contentBase64: string }[]; idempotencyKey?: string }): Promise<{ id: string; messageId: string; status: string }>;
   get(mailbox: string, id: string): Promise<InkboxMessageDetail>;
   getAttachment(mailbox: string, id: string, filename: string): Promise<{ url: string }>;
-  list(mailbox: string, o?: { pageSize?: number; direction?: "inbound" | "outbound"; startDatetime?: string }): AsyncIterable<{ messageId: string; direction: string }>;
+  list(mailbox: string, o?: { pageSize?: number; direction?: "inbound" | "outbound"; startDatetime?: string }): AsyncIterable<InkboxListedMessage>;
 }
+
+/** A message as `inkbox.messages.list` yields it, newest first (the fields Haggle uses). */
+export type InkboxListedMessage = { id?: string; messageId: string; direction: string; createdAt?: Date | string; fromAddress?: string; toAddresses?: string[] };
 
 export interface InkboxMessageDetail {
   id: string;
@@ -474,5 +477,10 @@ export async function connectInkboxBuyer(opts: { apiKey: string; handle: string 
     voice: () => inkboxVoiceContext(identity as never),
     identityInfo: { handle: identity.agentHandle, displayName: identity.displayName, phoneNumber: identity.phoneNumber?.number ?? null, imessageEnabled: identity.imessageEnabled },
     transcript: (callId: string) => fullCallTranscript(identity as never, callId),
+    // Inbound reconciliation (reconcile.ts): this org's identity addresses (what a mail webhook's
+    // agent_identities says about the sender), and the buyer identity's own texts and calls.
+    identityAddresses: async () => (await inkbox.listIdentities()).map((i) => i.emailAddress ?? "").filter(Boolean),
+    listTexts: (o: { startDatetime?: string; limit?: number }) => withRetry(() => identity.listTexts(o)),
+    listCalls: (o: { startDatetime?: string; limit?: number }) => withRetry(() => identity.listCalls(o)),
   };
 }

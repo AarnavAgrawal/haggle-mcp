@@ -903,7 +903,7 @@ server.post("/webhooks/inkbox", async (c) => {
     return c.json({ error: "not configured" }, 503);
   }
   const r = await handleInkboxWebhook(rt, await c.req.text(), c.req.raw.headers);
-  return c.json(r.body, r.status);
+  return c.json(r.body, r.status, r.retryAfterS ? { "Retry-After": String(r.retryAfterS) } : undefined);
 });
 
 /**

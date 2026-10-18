@@ -236,6 +236,12 @@ export interface EngineDeps {
   now?: () => Date;
   /** Mock mode: deliver due simulated replies before each advance. */
   onTick?: () => Promise<void>;
+  /**
+   * Live: look for inbound replies whose webhook never arrived (InboundReconciler.sweepJob) and
+   * ingest them. Called before a negotiation round closes and before "all quotes are in" goes out,
+   * so a just-missed reply counts. Returns how many items were recovered for the job; never throws.
+   */
+  reconcile?: (jobId: string) => Promise<number>;
   log?: (event: string, data: Record<string, unknown>) => void;
 }
 

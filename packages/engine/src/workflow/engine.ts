@@ -13,6 +13,7 @@
 // v5 additions: channel routing (A2A card > email > phone; a channel without an enabled port is
 // "unavailable", never faked), Voice AI call results via ingestCall, one shared Inkbox mailbox,
 // the deal-board read model, approval from the approval view, settings, and the launcher.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
   ApprovalRecord, AskField, Business, DealResult, JobState, JobUpdate, PaymentStatus, Profile, Quote, QuotesResult, Request, WaitResult,
@@ -107,6 +108,8 @@ const COUNTER_CALL_GRACE_MS = 4 * 60_000;
 const DEFAULT_FOLLOW_UP_HOLD_MS = 3 * 60_000;
 /** The per-job advance queue, one per process (see advanceJob). */
 const ADVANCING: Map<string, Promise<void>> = ((globalThis as { __haggleAdvancing?: Map<string, Promise<void>> }).__haggleAdvancing ??= new Map());
+/** The jobs the current async call chain is advancing (see advanceJob: a re-entrant call must not queue behind itself). */
+const ADVANCE_CTX: AsyncLocalStorage<ReadonlySet<string>> = ((globalThis as { __haggleAdvanceCtx?: AsyncLocalStorage<ReadonlySet<string>> }).__haggleAdvanceCtx ??= new AsyncLocalStorage());
 /** A text from the human that is only a greeting or an acknowledgement. */
 const PLEASANTRY_TEXT = /^\s*(hi+|hey+|hello+|yo|ok(ay)?|k|thanks?( you)?|thx|ty|cool|great|nice|got it|sounds good|👍)\s*[.!?]*\s*$/iu;
 /** Business questions wait at most this long for others to be batched into one text to the human. */
@@ -1141,6 +1144,8 @@ export class HaggleEngine {
     if (!events.some((e) => e.type === "ready" && Number(e.data.round) === job.round)) return;
     if (events.some((e) => e.type === "ready_offered" && Number(e.data.round) === job.round)) return;
     if (!(await this.notifyTarget(job))) return;
+    // A reply that came in just now (its webhook lost) is read before Haggle recommends anything.
+    if (await this.reconcileJob(jobId)) await this.parsePending(job);
     await this.repo.appendEvent(jobId, "ready_offered", { round: job.round });
     try {
       const { ranking, quotes } = await this.rankRows(job);
@@ -1185,8 +1190,14 @@ export class HaggleEngine {
     const n = (await this.repo.listQuotes(job.id)).filter((q) => q.status === "current" && q.total_cents !== null).length;
     const deposit = a.payment_cents > 0 && a.payment_cents < a.quote_total_cents;
     const act = a.payment_cents <= 0 ? `confirm ${name} (nothing is paid now)` : `pay the ${usdText(a.payment_cents)}${deposit ? " deposit" : ""} to ${name} now`;
+    // A replacement suggestion (a better quote after "all quotes are in"): says what changed.
+    const update = (await this.repo.listEvents(job.id)).find((e) => e.type === "approval_requested" && e.data.approval_id === a.id)?.data.update;
+    if (typeof update === "string" && update) {
+      const pay = a.payment_cents <= 0 ? `confirm ${name} (nothing is paid now)` : `pay the ${usdText(a.payment_cents)}${deposit ? " deposit" : ""} to ${name}`;
+      return `Haggle update: ${update}. Reply YES ${a.code} to ${pay} instead; the earlier code no longer works. (HG-${job.short_code})`.slice(0, SMS_LIMIT);
+    }
     const tail = `See every option in Claude, or reply YES ${a.code} to ${act}. (HG-${job.short_code})`;
-    const rec = `Recommended: ${name} ${usdText(a.quote_total_cents)}${deposit ? ` (deposit ${usdText(a.payment_cents)})` : ""}.`;
+    const rec =`Recommended: ${name} ${usdText(a.quote_total_cents)}${deposit ? ` (deposit ${usdText(a.payment_cents)})` : ""}.`;
     // The code is never cut: the request summary gives way first.
     const room = SMS_LIMIT - `Haggle: All quotes are in for  (${n} quotes). ${rec} ${tail}`.length;
     return `Haggle: All quotes are in for ${clip(job.request.what, Math.max(12, room))} (${n} quote${n === 1 ? "" : "s"}). ${rec} ${tail}`.slice(0, SMS_LIMIT);
@@ -1210,6 +1221,63 @@ export class HaggleEngine {
     await this.repo.appendEvent(job.id, "approval_superseded", { approval_id: a.id, quote_id: a.quote_id, reason });
     await this.fire(job.id, { type: "approval_void" });
     return true;
+  }
+
+  /**
+   * A better quote after "all quotes are in" (a late reply, or one the inbound sweep recovered): the
+   * board shows it at once. Haggle's own unclaimed suggestion is replaced (the old one expires, so
+   * its code can never pay) by one for the new best quote, and the human is texted once: "Update:
+   * Sunset Kitchen lowered to $2,660 (now the best). Reply YES 5678 to pay … instead." An approval
+   * the human or agent chose is never replaced; the human is told once instead. Live HG-2QAM: the
+   * $2,660 never reached the board and the human paid Mission Eats' $2,740.
+   */
+  private async reviseSuggestion(jobId: string) {
+    const job = await this.repo.getJob(jobId);
+    if (!job || !job.ready || !this.d.sms || !["awaiting_approval", "collecting", "negotiating"].includes(job.state)) return;
+    const a = await this.repo.getLatestApproval(jobId);
+    if (!a) return;
+    const events = await this.repo.listEvents(jobId);
+    const auto = events.some((e) => e.type === "approval_requested" && e.data.approval_id === a.id && e.data.auto === "ready")
+      && !events.some((e) => e.type === "approval_claimed" && e.data.approval_id === a.id);
+    // Haggle's suggestion voided because its own business revised its quote (onRevision) is renewed too.
+    const revisedAway = a.status === "expired" && events.some((e) => e.type === "approval_void" && e.data.approval_id === a.id && /revised/.test(String(e.data.reason)));
+    if (a.status !== "pending" && !(auto && revisedAway)) return;
+    const pay = await this.repo.getPaymentForJob(jobId);
+    if (pay && pay.approval_id === a.id) return; // money is moving for it
+    const { ranking, quotes } = await this.rankRows(job);
+    const top = ranking.ranked[0];
+    const q = top ? quotes.find((x) => x.id === top.quoteId) : undefined;
+    if (!q || q.total_cents === null || q.id === a.quote_id) return;
+    // Only news: the quote arrived after the suggestion was made (event order, not clock time).
+    const quoteSeq = events.find((e) => e.type === "quote" && e.data.quote_id === q.id)?.seq;
+    const askedSeq = events.find((e) => e.type === "approval_requested" && e.data.approval_id === a.id)?.seq;
+    if (quoteSeq === undefined || askedSeq === undefined || quoteSeq < askedSeq) return;
+    if (events.some((e) => e.type === "suggestion_revised" && e.data.quote_id === q.id)) return;
+    const name = clip(await this.businessName(jobId, q.business_id), 30);
+    const all = await this.repo.listQuotes(jobId);
+    const earlier = events.filter((e) => e.type === "quote" && e.data.business_id === q.business_id && e.seq < quoteSeq).at(-1);
+    const before = earlier ? all.find((x) => x.id === earlier.data.quote_id && x.total_cents !== null) : undefined;
+    const verb = !before ? "quoted" : before.total_cents! > q.total_cents ? "lowered to" : "revised to";
+    const what = `${name} ${verb} ${usdText(q.total_cents)} (now the best)`;
+    await this.repo.appendEvent(jobId, "suggestion_revised", { quote_id: q.id, replaced_approval_id: a.id, auto });
+    if (!auto) {
+      const chosen = clip(await this.businessName(jobId, a.business_id), 30);
+      await this.repo.appendEvent(jobId, "reply", { business_id: null, kind: "better_quote", summary: `${what}, after ${chosen} ${usdText(a.quote_total_cents)} was sent for approval. That approval stands until someone chooses otherwise.` });
+      await this.notifyHuman(job, `better:${q.id}`, `Update: ${what}. The approval waiting for you is ${chosen} ${usdText(a.quote_total_cents)}; to switch, choose ${name} on the deal board in Claude.`);
+      return;
+    }
+    // The human's YES for the old code may have won meanwhile: then it stands (the CAS refuses).
+    if (a.status === "pending" && !(await this.supersedeAutoApproval(job, a, `a better quote arrived: ${what}`))) return;
+    try {
+      const next = await this.openApproval(jobId, q.id, "imessage", undefined, { text: true, email: false }, true, what);
+      await this.repo.appendEvent(jobId, "reply", {
+        business_id: null, kind: "ready_texted", approval_id: next.id,
+        summary: `Update: ${what}. Haggle's recommendation now is ${name}${(await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(next.id)}`)) ? "; texted the user the new code (the earlier one no longer works)" : ""}.`,
+      });
+    } catch (err) {
+      this.log("revised_approval_skipped", { job_id: jobId, error: (err as Error).message.slice(0, 200) });
+      await this.notifyHuman(job, `better:${q.id}`, `Update: ${what}. The earlier recommendation was withdrawn; choose and approve on the deal board in Claude.`);
+    }
   }
 
   /** An explicit request for the quote Haggle already suggested: send the channels it asks for (best effort). */
@@ -2103,13 +2171,44 @@ export class HaggleEngine {
    * reply and the losing parse reset it to "replied"). Across processes storeExtraction is idempotent.
    */
   async advanceJob(jobId: string): Promise<void> {
+    // Re-entrant: something this job's own advance awaits wants it advanced (a reply recovered by the
+    // pre-close sweep that decides an approval). Queuing behind itself would deadlock; the running
+    // advance carries on with the new state, and one more advance runs right after it.
+    const inside = ADVANCE_CTX.getStore();
+    if (inside?.has(jobId)) return this.advanceAfter(jobId);
     const prev = this.advancing.get(jobId) ?? Promise.resolve();
-    const run = prev.catch(() => {}).then(() => this.advanceJobOnce(jobId));
+    const run = prev.catch(() => {}).then(() => ADVANCE_CTX.run(new Set([...(inside ?? []), jobId]), () => this.advanceJobOnce(jobId)));
     this.advancing.set(jobId, run);
     try {
       await run;
     } finally {
       if (this.advancing.get(jobId) === run) this.advancing.delete(jobId);
+    }
+  }
+
+  private readonly advanceFollowUps = new Set<string>();
+
+  /** One more advance of this job once the running one finishes (outside its async context). */
+  private advanceAfter(jobId: string) {
+    if (this.advanceFollowUps.has(jobId)) return;
+    this.advanceFollowUps.add(jobId);
+    const current = this.advancing.get(jobId) ?? Promise.resolve();
+    ADVANCE_CTX.exit(() => {
+      void current.catch(() => {}).then(() => {
+        this.advanceFollowUps.delete(jobId);
+        return this.advanceJob(jobId);
+      }).catch((e) => this.log("advance_failed", { job_id: jobId, error: (e as Error).message }));
+    });
+  }
+
+  /** The live inbound sweep for one job (EngineDeps.reconcile); never throws. */
+  private async reconcileJob(jobId: string): Promise<number> {
+    if (!this.d.reconcile) return 0;
+    try {
+      return await this.d.reconcile(jobId);
+    } catch (e) {
+      this.log("reconcile_failed", { job_id: jobId, error: (e as Error).message });
+      return 0;
     }
   }
 
@@ -2123,15 +2222,26 @@ export class HaggleEngine {
     await this.runDueContacts((await this.repo.getJob(jobId)) ?? first);
     await this.surfaceQuestions((await this.repo.getJob(jobId)) ?? first);
     await this.processPayment(jobId);
+    let swept = false;
     for (let step = 0; step < 6; step++) {
       const job = await this.repo.getJob(jobId);
       if (!job || TERMINAL.has(job.state)) return;
       const event = await this.dueEvent(job);
       if (!event) break;
+      // Before quotes become final (collection or a negotiation round closes): pick up a reply whose
+      // webhook was lost (live HG-2QAM: Sunset Kitchen's $2,660 counter answer), read it, decide again.
+      if (event.type === "window_closed" && !swept && !job.ready && (job.state === "collecting" || job.state === "negotiating")) {
+        swept = true;
+        if (await this.reconcileJob(jobId)) {
+          await this.parsePending((await this.repo.getJob(jobId)) ?? job);
+          continue;
+        }
+      }
       const r = await this.fire(jobId, event);
       if (!r.ok) break;
     }
     await this.offerReady(jobId);
+    await this.reviseSuggestion(jobId);
   }
 
   private async dueEvent(job: JobRow): Promise<JobEvent | null> {
@@ -3267,7 +3377,7 @@ export class HaggleEngine {
    * Asking for another quote (or another action) while that suggestion is pending replaces it;
    * asking for the same quote claims it (it then holds the job like any requested approval).
    */
-  private async openApproval(jobId: string, quoteId: string, channel: ApprovalRow["channel"], action?: ApprovalAction, offer?: ApprovalOffer, auto = false): Promise<ApprovalRow> {
+  private async openApproval(jobId: string, quoteId: string, channel: ApprovalRow["channel"], action?: ApprovalAction, offer?: ApprovalOffer, auto = false, update?: string): Promise<ApprovalRow> {
     let job = await this.loadJob(jobId);
     if (!auto && job.state === "awaiting_approval") {
       const latest = await this.repo.getLatestApproval(jobId);
@@ -3328,7 +3438,7 @@ export class HaggleEngine {
       await this.repo.transitionApproval(approval.id, "pending", { status: "expired" });
       throw new EngineError("not_approvable", fired.reason ?? "conflict", "Call get_quotes and try again.", "get_quotes");
     }
-    await this.repo.appendEvent(jobId, "approval_requested", { approval_id: approval.id, quote_id: q.id, channel, ...(auto ? { auto: "ready" } : {}) });
+    await this.repo.appendEvent(jobId, "approval_requested", { approval_id: approval.id, quote_id: q.id, channel, ...(auto ? { auto: "ready" } : {}), ...(auto && update ? { update } : {}) });
     if (channel === "email") await this.sendApprovalEmail(sendJob, approval);
     else if (emailIt) {
       try {

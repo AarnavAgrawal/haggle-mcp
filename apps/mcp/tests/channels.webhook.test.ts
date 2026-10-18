@@ -127,3 +127,62 @@ describe("brain start-up never crashes the server", () => {
     expect(texts.some((t) => t.to === "+14155550104")).toBe(false);
   });
 });
+
+// Live HG-2QAM (2026-10-18): Sunset Kitchen's reply hit "(EMAXCONNSESSION) max clients reached" and
+// the route answered 503 "processing failed". Transient failures answer 503 + Retry-After, permanent
+// ones a 4xx, a bug 500; every success tells the reconciler (it skips what the webhook handled).
+describe("POST /webhooks/inkbox: status codes for failures", () => {
+  const SELLER = "sunset-kitchen-sf@inkboxmail.test";
+  async function withReply() {
+    const env = liveRuntime();
+    const noted: string[] = [];
+    env.rt.reconciler = { noteHandled: (k: string) => { noted.push(k); }, sweepAll: async () => ({ recovered: [], errors: 0 }), sweepJob: async () => 0 };
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await env.engine.deal({ request, budget_usd, businesses: [{ name: "Sunset Kitchen", email: SELLER }] });
+    const api = env.rt.inkbox!.api as FakeInkbox;
+    const rfq = (await env.repo.getBusinesses(deal.job_id))[0]!.rfq_message_id!;
+    const detail = api.reply(SELLER, rfq, "We can do $1,070 total all-in, $50 deposit.");
+    const raw = event("evt_m1", "message.received", { message: { id: detail.id }, agent_identities: [{ bucket: "from", address: SELLER }] });
+    return { ...env, api, deal, detail, raw, noted };
+  }
+
+  it("a full database pool during ingest answers 503 with Retry-After; the redelivery ingests it once", async () => {
+    const { rt, repo, raw, detail, deal, noted } = await withReply();
+    const insert = repo.insertMessage.bind(repo);
+    let fail = true;
+    repo.insertMessage = async (m) => {
+      if (fail) { fail = false; throw Object.assign(new Error("(EMAXCONNSESSION) max clients reached in session mode - max clients are limited to pool_size: 15"), { code: "XX000" }); }
+      return insert(m);
+    };
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 503, body: { error: "retry later", retry: true }, retryAfterS: 30 });
+    expect(await repo.findMessageByProviderId(detail.id)).toBeNull();
+    expect(noted).toEqual([]); // not handled: the sweep will pick it up
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 200, jobId: deal.job_id, outcome: "stored" });
+    expect(noted).toEqual([`mail:${detail.id}`]);
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 200, outcome: "duplicate" });
+    expect((await repo.listMessages(deal.job_id)).filter((m) => m.direction === "in")).toHaveLength(1);
+  });
+
+  it("Inkbox 5xx or unreachable while fetching the message or the transcript: 503; a message Inkbox doesn't have: 422; a bug: 500", async () => {
+    const { rt, api, raw } = await withReply();
+    const get = api.get.bind(api);
+    // Shaped like the SDK's InkboxAPIError / InkboxConnectionError (apps/mcp doesn't import the SDK).
+    const apiError = (statusCode: number) => Object.assign(new Error(`Inkbox ${statusCode}`), { name: "InkboxAPIError", statusCode });
+    api.get = async () => { throw apiError(502); };
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 503, body: { retry: true } });
+    api.get = async () => { throw apiError(404); };
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 422, body: { retry: false } });
+    api.get = async () => { throw new TypeError("Cannot read properties of undefined (reading 'toAddresses')"); };
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 500, body: { retry: true } });
+    api.get = get;
+    expect(await handleInkboxWebhook(rt, raw, signed(raw))).toMatchObject({ status: 200, outcome: "stored" });
+
+    rt.inkbox!.transcript = async () => { throw Object.assign(new Error("socket hang up"), { name: "InkboxConnectionError", code: "ECONNRESET" }); };
+    const call = event("evt_c9", "call.ended", { call: { id: "call_9", direction: "outbound" }, outcome: "completed", transcript: { entries: [{ marker: "abridged" }], abridged: true } });
+    expect(await handleInkboxWebhook(rt, call, signed(call))).toMatchObject({ status: 503 });
+    // Permanent problems stay 4xx / 200: bad signature, malformed payload, not for the buyer.
+    expect((await handleInkboxWebhook(rt, raw, new Headers())).status).toBe(401);
+    const bad = event("evt_b", "message.received", { message: {} });
+    expect((await handleInkboxWebhook(rt, bad, signed(bad))).status).toBe(400);
+  });
+});

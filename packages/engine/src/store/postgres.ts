@@ -3,6 +3,7 @@
 // in real transactions; the database re-checks every safety invariant on its own.
 import postgres from "postgres";
 import { newId } from "../ids.ts";
+import { isTransient } from "../live/transient.ts";
 import {
   DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow,
 } from "./types.ts";
@@ -23,16 +24,52 @@ const rows = <T>(rs: readonly Record<string, unknown>[]): T[] => rs.map((r) => r
 /** bigint columns come back from postgres.js as strings; cents are always numbers in the engine. */
 const settingsRow = (s: SettingsRow | null): SettingsRow | null => (s ? { ...s, spending_cap_cents: Number(s.spending_cap_cents) } : null);
 
+/** A tagged-template query that only reads (a plain SELECT, not the event-appending function). */
+const isReadTemplate = (s: unknown): boolean =>
+  Array.isArray(s) && "raw" in (s as object) && /^\s*select\b/i.test(String((s as string[])[0])) && !(s as string[]).join("").includes("haggle_append_event");
+
+/**
+ * One retry, after a short pause, for a plain SELECT that hit a transient connection error
+ * (EMAXCONNSESSION while the pooler is full, a reset socket, a connect timeout): reads are
+ * idempotent. Writes are never retried here (their callers are idempotent by key instead).
+ * Everything else (sql(obj) helpers, sql.json, sql.begin, sql.end) passes straight through.
+ */
+export function retryingReads(sql: Sql, delayMs = 300): Sql {
+  const call = (first: unknown, ...rest: unknown[]) => {
+    const run = () => (sql as unknown as (...a: unknown[]) => PromiseLike<unknown>)(first, ...rest);
+    if (!isReadTemplate(first)) return run();
+    return {
+      then<A, B>(ok?: (v: unknown) => A | PromiseLike<A>, fail?: (e: unknown) => B | PromiseLike<B>) {
+        return Promise.resolve(run())
+          .catch(async (e) => {
+            if (!isTransient(e)) throw e;
+            await new Promise((r) => setTimeout(r, delayMs));
+            return run();
+          })
+          .then(ok, fail);
+      },
+    };
+  };
+  return new Proxy(call, {
+    get(_t, p) {
+      const v = Reflect.get(sql as object, p);
+      return typeof v === "function" ? v.bind(sql) : v;
+    },
+  }) as unknown as Sql;
+}
+
 export class PostgresRepository implements Repository {
   private readonly sql: Sql;
 
   /** `schema`: where the migrations were applied when not `public` (a database shared with another app). */
-  constructor(url: string, opts: { max?: number; schema?: string } = {}) {
+  constructor(url: string, opts: { max?: number; schema?: string; retryDelayMs?: number } = {}) {
     if (opts.schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(opts.schema)) throw new Error(`invalid database schema name: ${opts.schema}`);
-    this.sql = postgres(url, {
-      max: opts.max ?? 5, idle_timeout: 20, connect_timeout: 15, prepare: false, onnotice: () => {},
+    // Small pool, idle connections released after 20 s, recycled after 30 min: Supabase's session
+    // pooler caps clients per database (15), shared by every process and reload.
+    this.sql = retryingReads(postgres(url, {
+      max: opts.max ?? 4, idle_timeout: 20, max_lifetime: 30 * 60, connect_timeout: 15, prepare: false, onnotice: () => {},
       ...(opts.schema ? { connection: { search_path: opts.schema } } : {}),
-    }) as unknown as Sql;
+    }) as unknown as Sql, opts.retryDelayMs ?? 300);
   }
 
   async close() {
