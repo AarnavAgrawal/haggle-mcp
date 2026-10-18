@@ -64,7 +64,9 @@ The same phone can't play two vendors in one deal (the second is shown as blocke
 Evidence to keep: job id, board screenshots (start, quotes, paid), the email thread, the iMessage thread (numbers
 redacted), the call transcript on the board, the Stripe test PaymentIntent id, and the `ask` output.
 
-## Status (calm-spark c1d4516, 2026-10-18)
+## Status (calm-spark ac3095a, 2026-10-18)
+
+Full requirement-by-requirement matrix: `docs/traceability.md`.
 
 LIVE PASS = seen on the hosted server with real channels; AUTOMATED = hosted read-only acceptance script;
 MOCK/TEST = local tests or the mock server; BLOCKED = waiting on a person or an authorization.
@@ -78,7 +80,7 @@ MOCK/TEST = local tests or the mock server; BLOCKED = waiting on a person or an 
 | Claude.ai: deal started, board rendered + polled, approval card tapped | LIVE PASS | deployment logs (claude-ai client) |
 | Stale approval never charged | LIVE PASS | ap_32e2d549… revoked (recorded total omitted disclosed $250 delivery) |
 | Stripe test mode enabled; payment guards | LIVE PASS (config) | live_ready payments=stripe-test; pay w/o approval refused |
-| All-in gate, fee/terms, revisions void approvals, stages | MOCK/TEST | 360 tests + 241 on Postgres |
+| All-in gate, fee/terms, revisions void approvals, stages | MOCK/TEST | 372 tests + 253 on Postgres; simulated purchase over MCP with restarts 1/1 |
 | Target vs hard budget, Claude strategist, bounded counters | MOCK/TEST + real-Claude dry run | an accepted live counter not yet witnessed |
 | Stripe test charge + hosted receipt | BLOCKED | one charge, after a fresh human approval |
 | Fresh Claude.ai purchase end to end | BLOCKED | needs Yash + Aarnav |
