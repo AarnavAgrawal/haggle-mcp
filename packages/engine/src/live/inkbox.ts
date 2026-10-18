@@ -247,7 +247,7 @@ export function inkboxCallEnded(payload: { data: Record<string, unknown> }): Cal
   const d = payload.data as { call?: { id?: string; ended_at?: string | null; direction?: string; remote_phone_number?: string }; transcript?: { entries?: { party?: string; text?: string; marker?: string }[]; abridged?: boolean } | null; outcome?: string | null };
   if (!d.call?.id) return null;
   const outcome = (["completed", "no_answer", "declined", "failed"] as const).find((o) => o === d.outcome) ?? "failed";
-  const transcript = (d.transcript?.entries ?? []).filter((e) => typeof e.text === "string").map((e) => `${e.party ?? "party"}: ${e.text}`).join("\n");
+  const transcript = (d.transcript?.entries ?? []).filter((e) => typeof e.text === "string").map((e) => `${e.party === "local" ? "haggle (AI assistant)" : e.party ?? "party"}: ${e.text}`).join("\n");
   return {
     callId: d.call.id, outcome, transcript, ...(d.call.ended_at ? { endedAt: d.call.ended_at } : {}),
     ...(d.transcript?.abridged ? { abridged: true } : {}),

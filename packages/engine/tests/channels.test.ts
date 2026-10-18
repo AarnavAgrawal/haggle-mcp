@@ -225,7 +225,7 @@ describe("calls a business places to Haggle", () => {
 
 describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, fake Inkbox ports)", () => {
   // Reads the figures out of free text, like the Claude extractor does live (no scripted winner).
-  const textExtractor = {
+  const textExtractor: { extract(i: { bodyText: string }): Promise<Record<string, unknown> & { sources: { field: "total"; source: string; excerpt: string }[] }> } = {
     async extract(i: { bodyText: string }) {
       const t = i.bodyText;
       const money = (re: RegExp) => { const m = t.match(re); return m ? Number(m[1]!.replace(/,/g, "")) : null; };
@@ -311,6 +311,50 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     await engine.advanceJob(deal.job_id);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.reason).toMatch(/emailed earlier/);
+  });
+
+  // Regression (live job_8eebfe8012ff43a2bf0a, 2026-10-18): iPhone call screening answered first, Inkbox
+  // labelled Haggle's turns "local", and the extractor (email-trained) sourced the figures as "email body".
+  it("a live-shaped call: provenance says call transcript and the board quotes the priced line, not call screening", async () => {
+    const { engine } = demoEngine();
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd: 8000, businesses: [{ name: "Mission Eats (demo)", phone: "+14155550104" }] });
+    await engine.advanceJob(deal.job_id);
+    const real = textExtractor.extract.bind(textExtractor);
+    textExtractor.extract = async (i) => { const e = await real(i); return { ...e, sources: e.sources.map((x) => ({ ...x, source: "email body" })) }; };
+    try {
+      const transcript = [
+        "remote: If you record your name and reason for calling",
+        "local: Hi, this is Haggle, an AI assistant calling for a customer to ask for a catering quote. Please call or email us back.",
+        "remote: Hello",
+        "local: Hi, this is Haggle, an AI assistant calling for a customer about a quote for catering. Do you have a minute?",
+        "remote: Yes I do",
+        "remote: For 40 meals including 12 vegetarian it'll be $6,200 total with delivery, no deposit",
+        "local: Great, thank you!",
+      ].join("\n");
+      expect((await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript })).outcome).toBe("stored");
+      await engine.advanceJob(deal.job_id);
+    } finally {
+      textExtractor.extract = real;
+    }
+    const board = await engine.getQuotes(deal.job_id);
+    expect(board.quotes[0]).toMatchObject({ channel: "phone", total_usd: 6200, source: "call transcript" });
+    expect(board.businesses[0]!.transcript_snippet).toBe("Mission Eats (demo): For 40 meals including 12 vegetarian it'll be $6,200 total with delivery, no deposit");
+  });
+
+  it("an iMessage quote is sourced as iMessage text; a refused RFQ says exactly why (Inkbox code)", async () => {
+    const { engine, repo } = demoEngine();
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Sunset Kitchen (demo)", phone: "+14155550111", channel: "imessage" }] });
+    expect((await engine.ingestIMessage({ messageId: "im_in_1", from: "+14155550111", text: "We can do $1,080 total, 14 vegetarian, delivered, $100 deposit", isGroup: false })).outcome).toBe("stored");
+    await engine.advanceJob(deal.job_id);
+    expect((await engine.getQuotes(deal.job_id)).quotes[0]).toMatchObject({ channel: "imessage", total_usd: 1080, source: "iMessage text" });
+
+    const refusing = new HaggleEngine({ ...(engine as unknown as { d: ConstructorParameters<typeof HaggleEngine>[0] }).d, repo, imessage: { async send() { throw new Error('HTTP 409: {"error":"imessage_awaiting_inbound","message":"… hasn\'t sent a message or reaction yet"}'); } } });
+    const d2 = await refusing.deal({ request, budget_usd, businesses: [{ name: "Sunset Kitchen (demo)", phone: "+14155550111", channel: "imessage" }], client_request_id: "refused" });
+    const b = (await refusing.getQuotes(d2.job_id)).businesses[0]!;
+    expect(b.last_event).toBe("Couldn't text Sunset Kitchen (demo): connected, but they haven't texted the agent's iMessage line yet: they must send it one message (to the line Inkbox assigned, not the router) before Haggle can text first");
+    expect(b.last_event).not.toMatch(/connect @/);
   });
 
   it("an unanswered call is shown as no reply, makes no quote, and its redelivery changes nothing", async () => {

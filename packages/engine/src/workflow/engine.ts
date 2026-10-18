@@ -22,6 +22,7 @@ import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, subjectS
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers } from "../negotiation/counteroffer.ts";
+import { imessageFailureReason } from "../outbound/imessageErrors.ts";
 import { buildRfqEmail, eventPlace, eventWhen, humanTime } from "../outbound/rfq.ts";
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.ts";
@@ -588,7 +589,7 @@ export class HaggleEngine {
     } catch (err) {
       if (kind === "rfq") {
         await this.repo.updateBusiness(job.id, b.business_id, { status: "bounced" });
-        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `iMessage to ${b.name} failed (has it texted connect @${job.inbox.split("@")[0]}?)`, channel: "imessage" });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Couldn't text ${b.name}: ${imessageFailureReason((err as Error).message, job.inbox.split("@")[0]!)}`, channel: "imessage" });
       }
       this.log("imessage_business_failed", { job_id: job.id, business_id: b.business_id, kind, error: (err as Error).message });
       if (kind !== "rfq") throw err;
@@ -1017,8 +1018,10 @@ export class HaggleEngine {
             dietary: reqs.filter((r) => r.kind === "dietary" && r.need).map((r) => ({ need: r.need!, count: r.min_count ?? 0 })), requirements: job.request.requirements.map((r) => r.text) },
           bodyText: msg.body_text ?? "", pdfs: files.filter((f): f is typeof f & { kind: "pdf" } => f.kind === "pdf"), message: msg,
         });
-        if (msg.channel === "a2a") for (const src of extraction.sources) src.source = "a2a task";
-        await this.storeExtraction(job, b, msg, extraction, msg.channel === "a2a" ? "a2a task" : msg.channel === "phone" ? "call transcript" : qj ? "quote.json" : files.some((f) => f.kind === "pdf") ? "pdf" : "email body");
+        // The extractor only knows email wording ("email body"); figures from a call or a text say so.
+        const channelSource = msg.channel === "a2a" ? "a2a task" : msg.channel === "phone" ? "call transcript" : msg.channel === "imessage" ? "iMessage text" : null;
+        if (channelSource) for (const src of extraction.sources) if (msg.channel === "a2a" || !/^pdf\b/i.test(src.source)) src.source = channelSource;
+        await this.storeExtraction(job, b, msg, extraction, channelSource ?? (qj ? "quote.json" : files.some((f) => f.kind === "pdf") ? "pdf" : "email body"));
         await this.repo.updateMessage(msg.id, { parse_status: "done" });
       } catch (err) {
         this.log("parse_failed", { job_id: job.id, message_id: msg.id, error: (err as Error).message });

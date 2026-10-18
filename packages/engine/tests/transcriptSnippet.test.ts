@@ -21,6 +21,24 @@ describe("transcriptSnippet", () => {
   });
 });
 
+describe("transcriptSnippet on a live Inkbox transcript (regression, 2026-10-18)", () => {
+  const live = [
+    "remote: If you record your name and reason for calling",
+    "local: Hi, this is Haggle, an AI assistant calling for a customer to ask for a catering quote. Please call or email us back.",
+    "remote: Hello",
+    "remote: Yes I do",
+    "local: Great, thank you! We're looking for catering for 200 people on Saturday, October 24th, 2026.",
+    "remote: Yes, for two hundred total meals. Including forty vegetarian it'll cost about six thousand dollars",
+    "remote: And then about two hundred dollars in delivery and setup",
+  ].join("\n");
+  it("skips call screening and Haggle's own 'local' turns; finds a price said in words", () => {
+    expect(transcriptSnippet(live, "Mission Eats (demo)")).toBe("Mission Eats (demo): Yes, for two hundred total meals. Including forty vegetarian it'll cost about six thousand dollars");
+  });
+  it("a screened call with no answer never shows the screening prompt as the business's words", () => {
+    expect(transcriptSnippet("remote: If you record your name and reason for calling\nlocal: Please call us back.", "Bay")).toBe("local: Please call us back.");
+  });
+});
+
 describe("messageSnippet", () => {
   it("prefers the priced line, strips links and quoted history", () => {
     expect(messageSnippet("Hi!\nTotal $1,150 incl. delivery, pay at https://evil.example/pay\n> earlier: $9")).toBe("Total $1,150 incl. delivery, pay at [link removed]");

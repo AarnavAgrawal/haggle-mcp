@@ -196,8 +196,11 @@ export const deal = server.tool(
         ...(input.client_request_id ? { client_request_id: input.client_request_id } : {}),
       });
       const b = await engine.getQuotes(r.job_id);
+      // A failed send says why (e.g. the Inkbox iMessage code) instead of a bare "send failed".
+      const notContacted = r.not_contacted.map((c) => (c.reason === "send failed" ? { ...c, reason: b.businesses.find((x) => x.business_id === c.business_id)?.last_event ?? c.reason } : c));
+      r.not_contacted = notContacted;
       const v = toDealBoardPlus(b, rt.mode, {
-        ok: true, contacted: r.contacted, not_contacted: r.not_contacted, warnings, ...(setup ? { setup } : {}),
+        ok: true, contacted: r.contacted, not_contacted: notContacted, warnings, ...(setup ? { setup } : {}),
         request_details: requestDetails(b, input.budget_usd === undefined ? "settings_default" : "request"),
         next: `Deal started; the board updates by itself. Call wait_for_update(job_id='${r.job_id}') to follow it; nothing is bought until the human approves a quote.`,
       });

@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: MVP rehearsal, waiting on the setup actions and authorization in `docs/mvp-demo.md` · Aarnav: keys for `haggle-buyer`, Voice AI persona, ChatGPT/Claude view checks
+**Now working on:** Yash: live Voice AI call + iMessage exchange from `haggle` over the shared iMessage line (calm-spark 263338c, payments off) · Aarnav: keys for `haggle-buyer`, Voice AI persona, ChatGPT/Claude view checks
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
