@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: the witnessed Claude.ai purchase on calm-spark 62c7c43 (routes READY, Stripe test mode on); waiting for Yash + Aarnav to say ready · Aarnav: live Haggle in the Claude app (`haggle-aarnav` on Manufact, branch `aarnav-live-e2e`), then the first live call to Mission Eats
+**Now working on:** Yash: the witnessed Claude.ai purchase on calm-spark c1d4516 (routes READY, Stripe test mode on); waiting for Yash + Aarnav to say ready · Aarnav: live Haggle in the Claude app (`haggle-aarnav` on Manufact, branch `aarnav-live-e2e`), then the first live call to Mission Eats
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -110,6 +110,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 04:30 · Yash · calm-spark c1d4516: per-vendor stages + negotiation outcomes, fees/terms in the all-in total, list_deals / get_quotes() without ids, estimate freshness, call safety ported from feat/live-demo (screener calls, agent-only amounts), board polish (over-target is a caveat); hosted acceptance 26/26 (no outreach, 0 PaymentIntents); 360 tests + 241 on Postgres
 
 - 03:40 · Yash · calm-spark 62c7c43: quote integrity (all-in gate, versioned revisions void stale approvals, live Sunset approval revoked), target-vs-limit budgets, Claude negotiation strategist (validated), Stripe test mode enabled (secrets staged write-only), no premature winner on the board; yashnil-mvp deleted (tag backup/yashnil-mvp); Aarnav's feat/live-demo (7k lines, own Supabase) not merged pending a decision; 352 tests + 233 on Postgres
 
