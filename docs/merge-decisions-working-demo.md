@@ -49,6 +49,7 @@ Branch `merged-working-demo` is `main` (0672d36, Yash's rc1) merged with `feat/l
 | 42 | Confirm-only on the board | **No button on the board.** Confirm-only is available only to the agent through `approve(action: "confirm")`. |
 | 43 | "Back to the deal board" link on the approval card | **Removed** (strictly one board per deal). |
 | 44 | `views/deal-started` | **Deleted** (no tool binds it; `deal` uses `deal-live`). |
+| 45 | Missed-webhook seller emails (backup sweep) | **Trust listed sellers.** Under `pinned-org-identity`, an email in the buyer's mailbox from a pinned roster/allowlist address counts as a same-org identity (same address check as the webhook path), even though an agent-scoped buyer key lists only the buyer. Other senders stay untrusted. |
 | 32 | Tests on the losing side | **Updated to the chosen behavior**, keeping each scenario's coverage. |
 
 ## Non-negotiable technical fixes (both owners already agree)

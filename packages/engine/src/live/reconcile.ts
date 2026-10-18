@@ -206,7 +206,10 @@ export class InboundReconciler {
         const detail = await api.get(buyerMailbox, id);
         if (!detail.toAddresses.map((a) => a.toLowerCase()).includes(buyer)) return "skip";
         const from = (detail.fromAddress ?? "").trim().toLowerCase();
-        const payload = { id: `reconcile:${id}`, event_type: "message.received", data: { agent_identities: from && identities.has(from) ? [{ bucket: "from", address: from }] : [] } };
+        // An agent-scoped buyer key lists only the buyer itself, so under "pinned-org-identity" the
+        // operator's pinned roster addresses stand in for the org directory (same address check as the webhook path).
+        const pinned = senderTrust.policy === "pinned-org-identity" && senderTrust.allowedSenders.some((a) => a.trim().toLowerCase() === from);
+        const payload = { id: `reconcile:${id}`, event_type: "message.received", data: { agent_identities: from && (identities.has(from) || pinned) ? [{ bucket: "from", address: from }] : [] } };
         const msg = inkboxToInbound(payload, detail);
         const trust = await inkboxSenderTrust(api, payload as never, detail, senderTrust);
         if (!trust.trusted && trust.retryable) return "retry";

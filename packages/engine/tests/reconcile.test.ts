@@ -8,7 +8,7 @@ import { InkboxAPIError, InkboxConnectionError } from "@inkbox/sdk";
 import { describe, expect, it } from "vitest";
 import {
   callOutcome, classifyFailure, disabledPayer, GOLDEN_REQUEST, HaggleEngine, InboundReconciler, inkboxEmail, inkboxSenderTrust, inkboxToInbound, InMemoryRepository, retryingReads, StubBrain, trustForSender,
-  type InkboxMailApi, type ListedCall, type ListedText, type SmsPort,
+  type InkboxMailApi, type InkboxTrustPolicy, type ListedCall, type ListedText, type SmsPort,
 } from "../src/index.ts";
 import { BUYER, FakeInkbox } from "./helpers/fakeInkbox.ts";
 
@@ -40,7 +40,7 @@ const textExtractor = {
   },
 };
 
-function setup(opts: { identities?: () => Promise<string[]>; api?: FakeInkbox } = {}) {
+function setup(opts: { identities?: () => Promise<string[]>; api?: FakeInkbox; senderTrust?: InkboxTrustPolicy } = {}) {
   let t = Date.now();
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const api = opts.api ?? new FakeInkbox();
@@ -67,7 +67,7 @@ function setup(opts: { identities?: () => Promise<string[]>; api?: FakeInkbox } 
   reconciler = new InboundReconciler({
     engine, repo, log, now: clock.now, callGraceMs: 0,
     sources: {
-      mail: { api, buyerMailbox: BUYER, senderTrust: { policy: "outbound-verified" }, identityAddresses: opts.identities ?? (async () => [BUYER, HARBOR, MISSION, SUNSET]) },
+      mail: { api, buyerMailbox: BUYER, senderTrust: opts.senderTrust ?? { policy: "outbound-verified" }, identityAddresses: opts.identities ?? (async () => [BUYER, HARBOR, MISSION, SUNSET]) },
       texts: { list: async () => inboxTexts },
       calls: { list: async () => inboxCalls, transcript: async (id) => transcripts.get(id) ?? "" },
     },
@@ -127,6 +127,19 @@ describe("inbound reconciliation: a reply whose webhook was lost is never lost",
     const spoof = env.api.reply(OUTSIDER, b.rfq_message_id!, "$10 total all-in", [], { recordOutbound: false });
     const r = await env.reconciler.sweepAll();
     expect(r.recovered.map((x) => x.providerId)).toEqual([spoof.id]);
+    expect(await env.repo.findMessageByProviderId(spoof.id)).toMatchObject({ sender_trusted: false });
+    await env.engine.advanceJob(deal.job_id);
+    expect((await board(env, deal.job_id)).quotes.map((q) => q.total_usd)).toEqual([1000]);
+  });
+
+  it("pinned-org-identity with an agent-scoped buyer key (directory lists only the buyer): a pinned seller's lost reply is trusted; an unpinned sender is not", async () => {
+    const env = setup({ identities: async () => [BUYER], senderTrust: { policy: "pinned-org-identity", allowedSenders: [HARBOR] } });
+    const deal = await env.engine.deal({ request, budget_usd: 5000, businesses: [{ name: "Harbor Table", email: HARBOR }] });
+    const detail = await lostReply(env, deal.job_id, HARBOR, "$1,000 total all-in, 12 vegetarian, delivered, $100 deposit.");
+    const b = (await env.repo.getBusinesses(deal.job_id))[0]!;
+    const spoof = env.api.reply(OUTSIDER, b.rfq_message_id!, "$10 total all-in", [], { recordOutbound: false });
+    await env.reconciler.sweepAll();
+    expect(await env.repo.findMessageByProviderId(detail.id)).toMatchObject({ sender_trusted: true, trust_reason: "inkbox-org-identity" });
     expect(await env.repo.findMessageByProviderId(spoof.id)).toMatchObject({ sender_trusted: false });
     await env.engine.advanceJob(deal.job_id);
     expect((await board(env, deal.job_id)).quotes.map((q) => q.total_usd)).toEqual([1000]);
