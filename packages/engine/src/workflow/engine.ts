@@ -1760,8 +1760,14 @@ export class HaggleEngine {
       return { business_id: bid, business: byId.get(bid)?.name ?? bid, round: Number(e.data.round), target_total_usd: Number(e.data.target_total_usd), basis_quote_id: String(e.data.basis_quote_id), outcome_total_usd: answer?.total_cents == null ? null : centsToUsd(answer.total_cents) };
     });
     const openQuestions = questions.map((q) => ({ question_id: q.id, business_id: q.business_id, business: byId.get(q.business_id)?.name ?? q.business_id, text: q.text }));
-    // Excluded = its current quote can't win for a safety reason or a hard requirement it fails (not just over target).
-    const excludedBiz = new Set(out.filter((q) => q.status === "current" && q.verdict === "rejected").map((q) => q.business_id));
+    // Excluded = its current quote can't win (the same ranking rejections the card shows as "Can't win"),
+    // except a requirement the business simply hasn't confirmed yet. Over a soft target never rejects.
+    const excludedBiz = new Set(out.filter((q) => {
+      const reason = rejectedBy.get(q.quote_id);
+      if (q.status !== "current" || !reason || reason === "not_current") return false;
+      const res = unknownOnly.get(q.quote_id) ?? [];
+      return !(reason === "requirement_unmet" && res.some((x) => x.met === null) && !res.some((x) => x.met === false));
+    }).map((q) => q.business_id));
     const stages = this.stages(job, businesses, all, negotiation, questions.map((q) => q.business_id), approval, excludedBiz);
     // Best value among the eligible quotes (hard gates already applied): deterministic and explained.
     const value = await this.valueRanking(job, quotes.filter((q) => order.has(q.id)), all, byId);
