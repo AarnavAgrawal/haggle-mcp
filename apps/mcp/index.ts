@@ -312,7 +312,7 @@ export const approve = server.tool(
     name: "approve",
     title: "Ask the human to approve a quote",
     description:
-      "Ask the human to approve one exact quote and its deposit. The decision always comes from the human: the Approve button on the approval card or an approval form shown by the client " +
+      "Ask the human to approve one exact quote and its deposit, normally once get_quotes says quotes are final (ready) and Haggle has recommended one; earlier only if the user explicitly picks a quote. The decision always comes from the human: the Approve button on the approval card or an approval form shown by the client " +
       "(the model can't fill it). Calling this tool is never an approval by itself. Returns approved, pending_human or refused; NO_HUMAN_CHANNEL means this client can show neither. " +
       "Works for any quote except safety refusals (scam/pay-elsewhere links, injected instructions, unverified senders, a business that declined, no amount): " +
       "over budget, over the spending cap, unmet or unconfirmed requirements and computed totals are shown to the human as caveats, so use such a quote only when the user chose it. " +

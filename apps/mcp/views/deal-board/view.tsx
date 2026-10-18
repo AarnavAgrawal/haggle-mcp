@@ -361,7 +361,7 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
         <div className="db-quote-line">
           <span className="db-biz">{q.business}</span>
           <ChannelBadge channel={q.channel} />
-          {winner && <span className="db-best-label">{board.payment?.status === "settled" ? "Won" : board.approval?.quote_id === q.quote_id ? "Chosen" : "Recommended"}</span>}
+          {winner && <span className="db-best-label">{board.payment?.status === "settled" ? "Won" : board.approval?.quote_id === q.quote_id ? "Chosen" : board.ready ? "Recommended" : "Leading so far"}</span>}
           <span className="db-total">
             {q.negotiated_from !== undefined && <s className="db-was">{usd(q.negotiated_from)}</s>}
             {usd(q.total_usd)}
@@ -406,7 +406,11 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
             <span className="db-said-src">{q.channel === "phone" ? "On the call" : q.channel === "imessage" ? "Texted" : "Wrote"}</span> {said}
           </p>
         )}
-        {winner && <DealAction board={board} quote={q} onChanged={onChanged} />}
+        {winner && (board.ready || board.approval?.quote_id === q.quote_id ? (
+          <DealAction board={board} quote={q} onChanged={onChanged} />
+        ) : (
+          <p className="hg-muted db-approve-hint">Negotiation in progress. Haggle recommends once quotes are final; you approve then.</p>
+        ))}
       </div>
     </li>
   );
