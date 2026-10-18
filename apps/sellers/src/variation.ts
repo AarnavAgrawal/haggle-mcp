@@ -130,12 +130,14 @@ export function drawTerms(p: Persona, rng: Rng = Math.random): Terms {
     case "golden_grill":
       t.vegetarianCap = 4 + Math.floor(rng() * 5); // 4..8: still short of most asks
       t.deliveryUsd = chance(rng, 0.35) ? pick(rng, [30, 40, 50]) : 0;
+      t.depositPct = pick(rng, [0.15, 0.2, 0.25]); // real caterers hold the date with a deposit
       t.negotiation = { dropPct: chance(rng, 0.6) ? 0 : round2(between(rng, 0.03, 0.05)), needsCompetingQuote: true };
       break;
     case "sunset_kitchen": {
       const q = pick(rng, SUNSET_QUESTIONS);
       t.question = q.question;
       t.addOn = { label: q.label, perHead: quarter(between(rng, q.perHead[0], q.perHead[1])) };
+      t.depositPct = pick(rng, [0.1, 0.15, 0.2]);
       t.negotiation = { dropPct: round2(between(rng, 0.03, 0.08)), needsCompetingQuote: chance(rng, 0.3) };
       break;
     }

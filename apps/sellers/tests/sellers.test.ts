@@ -130,6 +130,21 @@ describe("variety: every conversation draws its own terms", () => {
     expect(new Set(sunset.map((r) => (r.plan.kind === "question" ? r.plan.question : ""))).size).toBeGreaterThan(1);
   });
 
+  it("every honest business asks for a deposit, so an approved quote always has something to pay", () => {
+    for (const key of ["bay_catering", "harbor_table", "golden_grill"]) {
+      for (const r of draws(key)) {
+        if (r.plan.kind !== "quote") continue;
+        expect(r.plan.facts.depositUsd, key).toBeGreaterThan(0);
+        expect(r.plan.facts.depositUsd!, key).toBeLessThan(r.plan.facts.total * 0.4);
+      }
+    }
+    for (const r of draws("sunset_kitchen")) {
+      const yes = planReply(persona("sunset_kitchen"), r.state, "Yes please.");
+      expect(quote(yes.plan).depositUsd).toBeGreaterThan(0);
+    }
+    for (const r of draws("quickquote_deli")) expect(quote(r.plan).depositUsd).toBeUndefined(); // the scam only has its pay-now link
+  });
+
   it("keeps one conversation consistent: the drawn terms carry through negotiation", () => {
     const harbor = persona("harbor_table");
     let first = planReply(harbor, undefined, RFQ, undefined, (p) => drawTerms(p, seeded(7)));
