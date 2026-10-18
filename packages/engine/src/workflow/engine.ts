@@ -1223,13 +1223,28 @@ export class HaggleEngine {
     let record = validateQuote(x, job.request.quantity);
     // An answer to "can you confirm X?" ("yes, 45 vegetarian") carries no price: it revises the
     // business's current quote with what it now states, keeping that quote's own figures.
-    const statesTerms = Object.keys(record.dietary_coverage).length > 0 || record.delivery_included !== null || Object.keys(record.requirement_answers ?? {}).length > 0;
+    const statesTerms = Object.keys(record.dietary_coverage).length > 0 || record.delivery_included !== null || record.delivery_fee_cents !== null || record.tax_cents !== null || Object.keys(record.requirement_answers ?? {}).length > 0;
     if (record.total_cents === null && record.available && statesTerms && priorCurrent?.record.total_cents != null && record.questions.length === 0) {
       const p = priorCurrent.record;
+      // A newly stated extra ("$250 extra for delivery", "+$300 tax") the earlier total didn't include
+      // is added to it, with its source, so the all-in total stays honest.
+      const extras = ([["delivery_fee", "delivery_fee_cents", p.delivery_included !== true], ["tax", "tax_cents", p.tax_included !== true]] as const)
+        .filter(([, k, notIncluded]) => notIncluded && p[k] === null && record[k] !== null && record[k]! > 0);
+      const added = extras.reduce((sum, [, k]) => sum + record[k]!, 0);
+      const flags = [...new Set([...p.flags, ...record.flags])].filter((f) => !(f === "delivery_unclear" && (record.delivery_fee_cents !== null || p.delivery_fee_cents !== null)));
+      const statedTotal = p.sources.total;
       record = {
         ...p, dietary_coverage: { ...p.dietary_coverage, ...record.dietary_coverage }, delivery_included: record.delivery_included ?? p.delivery_included,
         ...(p.requirement_answers || record.requirement_answers ? { requirement_answers: { ...p.requirement_answers, ...record.requirement_answers } } : {}),
-        flags: [...new Set([...p.flags, ...record.flags])], missing_fields: p.missing_fields.filter((f) => !(f in record.sources)), confidence: Math.min(p.confidence, record.confidence),
+        ...(added ? {
+          total_cents: p.total_cents! + added,
+          ...Object.fromEntries(extras.map(([, k]) => [k, record[k]])),
+          sources: {
+            ...p.sources, ...Object.fromEntries(extras.flatMap(([f]) => (record.sources[f] ? [[f, record.sources[f]]] : []))),
+            total: { source: `computed from stated total + ${extras.map(([f]) => f.replace("_", " ")).join(" + ")}${statedTotal ? ` (${statedTotal.source})` : ""}`, excerpt: [statedTotal?.excerpt, ...extras.map(([f]) => record.sources[f]?.excerpt)].filter(Boolean).join(" + ").slice(0, 200) },
+          },
+        } : {}),
+        flags, missing_fields: p.missing_fields.filter((f) => !(f in record.sources)), confidence: Math.min(p.confidence, record.confidence),
       };
     }
     const results = evaluateRequirements(record, reqs, job.request.quantity);

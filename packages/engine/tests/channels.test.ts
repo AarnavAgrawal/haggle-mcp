@@ -312,6 +312,33 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     expect(board.callbacks).toEqual([]); // nothing more to justify
   });
 
+  // Regression (live job_dec51a570667400eae64, 2026-10-18): the confirming answer added "$250 extra for
+  // delivery"; the revision kept $4,500 and dropped the fee. The all-in total must become $4,750.
+  it("a confirmation that states a new extra adds it to the all-in total, with its source", async () => {
+    const { engine } = demoEngine();
+    const { budget_usd: _b, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request: { ...request, quantity: 200, requirements: [{ id: "veg40", kind: "dietary", text: "At least 40 vegetarian meals", hard: true, min_count: 40 }] }, budget_usd: 5000, businesses: [{ name: "Sunset Kitchen", phone: "+14155550111", channel: "imessage" }] });
+    const real = textExtractor.extract.bind(textExtractor);
+    // What the live model returned for each text.
+    textExtractor.extract = async (i) => {
+      const base = await real(i);
+      if (/4\.5k/.test(i.bodyText)) return { ...base, total_usd: 4500, deposit_usd: 1000, delivery_included: null, dietary_coverage: [], sources: [{ field: "total" as const, source: "iMessage text", excerpt: "$4.5k total" }, { field: "deposit" as const, source: "iMessage text", excerpt: "$1k deposit" }] } as never;
+      return { ...base, total_usd: null, deposit_usd: null, delivery_fee_usd: 250, delivery_included: false, dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 40 }], sources: [{ field: "delivery_fee" as const, source: "iMessage text", excerpt: "$250 extra for delivery" }] } as never;
+    };
+    try {
+      await engine.ingestIMessage({ messageId: "im_a1", from: "+14155550111", text: "$4.5k total, $1k deposit", isGroup: false });
+      await engine.advanceJob(deal.job_id);
+      await engine.ingestIMessage({ messageId: "im_a2", from: "+14155550111", text: "yes 40 veggie meals . $250 extra for delivery", isGroup: false });
+      await engine.advanceJob(deal.job_id);
+    } finally {
+      textExtractor.extract = real;
+    }
+    const q = (await engine.getQuotes(deal.job_id)).quotes.find((x) => x.status === "current")!;
+    expect(q).toMatchObject({ total_usd: 4750, deposit_usd: 1000, round: 2, meets_requirements: true, delivery_usd: 250 });
+    expect(q.source).toMatch(/^computed from stated total \+ delivery fee/);
+    expect(q.flags).not.toContain("delivery_unclear");
+  });
+
   it("the same number on two open jobs: a reply quoting HG-<code> goes to that job, else to the latest contact", async () => {
     const { engine, repo, clock, texts } = demoEngine();
     const { budget_usd, ...request } = GOLDEN_REQUEST;
