@@ -3,17 +3,20 @@
 // seller fleet (email + one simulated Voice AI call), approval (this client advertises no form or
 // app UI) and payment. Scenario (PLAN §8/§10): 40-person SF lunch, ≥12 vegetarian, delivery, $1,200.
 // Run `mcp-use build` first: this starts the built entry, as Manufact does.
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ApprovalOut as Approval, BusinessProfile, DealBoard, DealBoardOrEmpty, Estimates } from "../src/views.ts";
+import { ApprovalOut as Approval, BusinessProfile, Conversation, DealBoard, DealBoardOrEmpty, Estimates, Identity } from "../src/views.ts";
 
-// npm workspaces hoist the binary to the repo root; a per-package install keeps it local.
+// npm workspaces hoist the binary to the repo root; a per-package install keeps it local. On
+// Windows the runnable shim is mcp-use.cmd, which needs a shell (and a quoted path).
 const APP_DIR = join(import.meta.dirname, "..");
-const MCP_USE_BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].find((p) => existsSync(p)) ?? "mcp-use";
+const WIN = process.platform === "win32";
+const MCP_USE_BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].map((p) => (WIN ? `${p}.cmd` : p)).find((p) => existsSync(p)) ?? "mcp-use";
 const PORT = 3900 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
+const TICK_SECRET = "e2e-tick-secret-0123456789";
 let proc: ChildProcess;
 let id = 0;
 
@@ -38,7 +41,8 @@ const REQUEST = {
 };
 
 beforeAll(async () => {
-  proc = spawn(MCP_USE_BIN, ["start"], { cwd: APP_DIR, env: { ...process.env, PORT: String(PORT), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0" }, stdio: "ignore" });
+  const env = { ...process.env, PORT: String(PORT), HAGGLE_MODE: "mock", HAGGLE_SIM_DELAY_SCALE: "0", HAGGLE_TICK_SECRET: TICK_SECRET };
+  proc = WIN ? spawn(`"${MCP_USE_BIN}"`, ["start"], { cwd: APP_DIR, env, stdio: "ignore", shell: true }) : spawn(MCP_USE_BIN, ["start"], { cwd: APP_DIR, env, stdio: "ignore" });
   for (let i = 0; i < 80; i++) {
     try {
       if ((await fetch(`${BASE}/health`)).ok) return;
@@ -48,7 +52,9 @@ beforeAll(async () => {
   throw new Error("server did not start (run `mcp-use build` first)");
 }, 30_000);
 afterAll(() => {
-  proc?.kill();
+  // On Windows the server runs under a shell: kill the whole tree, or it keeps the port.
+  if (WIN && proc?.pid) spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+  else proc?.kill();
 });
 
 describe("Haggle MCP over HTTP (mock mode)", () => {
@@ -57,7 +63,8 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(init.serverInfo.name).toBe("haggle");
     const { tools } = await rpc("tools/list");
     const names = tools.map((t: { name: string }) => t.name);
-    for (const n of ["ask", "discover", "check_price", "deal", "wait_for_update", "get_quotes", "answer_business", "approve", "pay", "business_profile", "open_haggle", "settings.read", "settings.update", "mention_businesses"]) expect(names).toContain(n);
+    for (const n of ["ask", "discover", "check_price", "deal", "wait_for_update", "get_quotes", "answer_business", "approve", "pay", "business_profile", "open_haggle", "settings.read", "settings.update", "mention_businesses",
+      "get_identity", "send_message", "negotiate", "get_conversation", "cancel_deal"]) expect(names).toContain(n);
     const byName = Object.fromEntries(tools.map((t: { name: string }) => [t.name, t]));
     expect(JSON.stringify(byName.get_quotes._meta)).toContain("deal-board");
     expect(byName.get_quotes.outputSchema).toBeTruthy();
@@ -78,7 +85,12 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
   it("validates input and returns actionable errors", async () => {
     const invalid = await call("deal", { request: { what: "x" } }); // schema rejection before the handler runs
     expect(invalid.isError).toBe(true);
-    expect(invalid.content[0].text).toMatch(/Input validation error.*request\.quantity/);
+    expect(invalid.content[0].text).toMatch(/Input validation error.*request\.what/);
+    // The catering default needs quantity + date; any other request describes its answers with ask[].
+    const noQty = await call("deal", { request: { what: "lunch catering", area: "SF" }, businesses: [{ name: "X", email: "x@x.test" }] });
+    expect(errorOf(noQty)).toMatchObject({ error: { code: "INVALID_INPUT" }, next: "deal" });
+    const badAsk = await call("deal", { request: { what: "fix a sink", area: "SF", ask: [{ key: "price", label: "Price", type: "money" }], payable_field: "nope" }, businesses: [{ name: "X", email: "x@x.test" }] });
+    expect(errorOf(badAsk)).toMatchObject({ error: { code: "bad_ask" } });
     const noJob = await call("wait_for_update", { job_id: "job_nope", cursor: "0", timeout_s: 0 });
     expect(errorOf(noJob)).toMatchObject({ ok: false, mode: "mock", error: { code: "job_not_found" }, next: "deal" });
     const badPhone = await call("deal", { request: REQUEST, businesses: [{ name: "X", phone: "+1415555012345678" }] });
@@ -153,8 +165,8 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // Bay Catering wins at $995 after negotiating from $1,150.
     expect(board.recommended_quote_id).toBe(q("Bay Catering").quote_id);
     expect(q("Bay Catering")).toMatchObject({ total_usd: 995, negotiated_from: 1150, deposit_usd: 5, verdict: "compliant", channel: "email" });
-    // Golden Grill: only 6 vegetarian meals → rejected.
-    expect(q("Golden Grill")).toMatchObject({ verdict: "rejected", meets_requirements: false });
+    // Golden Grill: only 6 vegetarian meals → excluded from the ranking, but "incomplete" (a caveat, not a safety stop).
+    expect(q("Golden Grill")).toMatchObject({ verdict: "incomplete", meets_requirements: false });
     expect(board.rejected.find((r: { business_id: string }) => r.business_id === q("Golden Grill").business_id).reason).toBe("requirement_unmet");
     // Harbor Table: deposit found on page 2 of the PDF.
     expect(q("Harbor Table").flags).toContain("hidden_deposit");
@@ -182,7 +194,8 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const early = await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(errorOf(early)).toMatchObject({ error: { code: "no_approval" }, next: "approve" });
     const grill = await call("approve", { job_id: job, quote_id: q("Golden Grill").quote_id });
-    expect(errorOf(grill).error.code).toBe("quote_not_eligible");
+    // Golden Grill is approvable with a caveat, but with no deposit the full total is due now, above the payment cap.
+    expect(errorOf(grill).error.code).toBe("over_cap");
     const scam = await call("approve", { job_id: job, quote_id: q("QuickQuote Deli").quote_id });
     expect(errorOf(scam).error.code).toBe("quote_not_eligible");
     const ghost = await call("approve", { job_id: job, quote_id: "q_does_not_exist" });
@@ -227,5 +240,54 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
   it("the Inkbox webhook route is off in mock mode", async () => {
     const r = await fetch(`${BASE}/webhooks/inkbox`, { method: "POST", body: "{}" });
     expect(r.status).toBe(404);
+  });
+
+  it("get_identity, any-request deals, conversation, guarded send_message and cancel_deal", async () => {
+    const id = await call("get_identity", {});
+    expect(Identity.safeParse(id.structuredContent).success).toBe(true);
+    expect(id.structuredContent).toMatchObject({ mode: "mock", channels: { email: "ready", phone: "ready" }, workspace: { id: "ws_default" } });
+    const businesses = [{ name: "Harbor Table", email: "orders@harbor-table.sim.haggle.dev" }, { name: "Golden Grill", email: "sales@golden-grill.sim.haggle.dev" }];
+    const d = await call("deal", {
+      request: { what: "fix a leaking kitchen sink", area: "San Francisco, CA", details: [{ label: "Fixture", value: "kitchen sink" }], ask: [{ key: "price", label: "Total price", type: "money" }, { key: "earliest_date", label: "Earliest date", type: "date" }], compare_by: { field: "price" } },
+      businesses, client_request_id: "e2e-any",
+    });
+    expect(d.isError).toBeFalsy();
+    const job = d.structuredContent.job_id;
+    const board = (await call("get_quotes", { job_id: job })).structuredContent;
+    expect(DealBoard.safeParse(board).success).toBe(true);
+    expect(board.job.ask.map((f: { key: string }) => f.key)).toEqual(["price", "earliest_date"]);
+    const harbor = board.businesses.find((b: { name: string }) => b.name === "Harbor Table").id;
+    const convo = await call("get_conversation", { job_id: job, business_id: harbor });
+    expect(Conversation.safeParse(convo.structuredContent).success).toBe(true);
+    expect(convo.structuredContent.entries[0]).toMatchObject({ direction: "out", kind: "rfq", channel: "email" });
+    expect(convo.structuredContent.entries[0].text).toMatch(/Could you reply by .* with:\n- Total price/);
+    const invented = await call("send_message", { job_id: job, business_id: harbor, text: "Someone quoted $90. Can you beat it?" });
+    expect(errorOf(invented)).toMatchObject({ error: { code: "unverified_amount" } });
+    const named = await call("send_message", { job_id: job, business_id: harbor, text: "Golden Grill is faster." });
+    expect(errorOf(named)).toMatchObject({ error: { code: "mentions_other_business" } });
+    const fine = await call("send_message", { job_id: job, business_id: harbor, text: "Is parking available near you?" });
+    expect(fine.structuredContent).toMatchObject({ sent: true, channel: "email" });
+    const nego = await call("negotiate", { job_id: job });
+    expect(errorOf(nego)).toMatchObject({ error: { code: "not_ready" } });
+    const c = await call("cancel_deal", { job_id: job });
+    expect(c.structuredContent).toMatchObject({ state: "cancelled" });
+    const after = await call("send_message", { job_id: job, business_id: harbor, text: "hello?" });
+    expect(errorOf(after)).toMatchObject({ error: { code: "job_closed" } });
+  });
+
+  it("auth: an unknown workspace token or connector secret is refused; the handshake stays open; the tick needs its secret", async () => {
+    const init = { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} };
+    const headers = { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18" };
+    const bad = await fetch(`${BASE}/mcp`, { method: "POST", headers: { ...headers, authorization: "Bearer hgw_not_a_real_token" }, body: JSON.stringify(init) });
+    expect(bad.status).toBe(401);
+    expect((await bad.json()).error.code).toBe("UNAUTHORIZED");
+    const badSecret = await fetch(`${BASE}/c/hgc_not_a_real_secret/mcp`, { method: "POST", headers, body: JSON.stringify(init) });
+    expect(badSecret.status).toBe(401);
+    const tickNo = await fetch(`${BASE}/internal/tick`, { method: "POST" });
+    expect(tickNo.status).toBe(401);
+    const tick = await fetch(`${BASE}/internal/tick`, { method: "POST", headers: { authorization: `Bearer ${TICK_SECRET}` } });
+    expect(await tick.json()).toMatchObject({ ok: true, failed: 0 });
+    const health = await (await fetch(`${BASE}/health`)).json();
+    expect(health).toMatchObject({ auth: "open" });
   });
 });

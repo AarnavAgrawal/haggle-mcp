@@ -19,7 +19,7 @@ export interface RequirementResult {
   reason: string;
 }
 
-export function evaluateRequirements(q: QuoteRecord, reqs: EngineRequirement[], requestedHeadcount: number): RequirementResult[] {
+export function evaluateRequirements(q: QuoteRecord, reqs: EngineRequirement[], requestedHeadcount: number | undefined): RequirementResult[] {
   return reqs.map((r): RequirementResult => {
     switch (r.kind) {
       case "dietary": {
@@ -36,11 +36,14 @@ export function evaluateRequirements(q: QuoteRecord, reqs: EngineRequirement[], 
         if (q.delivery_included === true || q.delivery_fee_cents !== null) return { requirement_id: r.id, met: true, reason: "delivery priced or included" };
         if (q.delivery_included === false) return { requirement_id: r.id, met: false, reason: "delivery not offered" };
         return { requirement_id: r.id, met: null, reason: "delivery not stated" };
-      case "quantity":
+      case "quantity": {
+        const need = requestedHeadcount ?? r.min_count;
+        if (need === undefined) return { requirement_id: r.id, met: null, reason: "needs review" };
         if (q.headcount === null) return { requirement_id: r.id, met: null, reason: "headcount not stated" };
-        return q.headcount >= requestedHeadcount
+        return q.headcount >= need
           ? { requirement_id: r.id, met: true, reason: `${q.headcount} guests` }
-          : { requirement_id: r.id, met: false, reason: `quoted for ${q.headcount}, need ${requestedHeadcount}` };
+          : { requirement_id: r.id, met: false, reason: `quoted for ${q.headcount}, need ${need}` };
+      }
       default:
         return { requirement_id: r.id, met: null, reason: "needs review" };
     }

@@ -1,18 +1,20 @@
 // In-memory Repository for tests and mock mode. Enforces the same uniqueness rules as
 // supabase/migrations/100_engine_core.sql so tests exercise real invariants. Single-process only.
 import { newId } from "../ids.ts";
-import type {
-  ApprovalRow,
-  JobBusinessRow,
-  JobEventRow,
-  JobRow,
-  MessageRow,
-  NewMessage,
-  PaymentRow,
-  QuestionRow,
-  QuoteRow,
-  Repository,
-  SettingsRow,
+import {
+  DEFAULT_WORKSPACE_ID,
+  type ApprovalRow,
+  type JobBusinessRow,
+  type JobEventRow,
+  type JobRow,
+  type MessageRow,
+  type NewMessage,
+  type PaymentRow,
+  type QuestionRow,
+  type QuoteRow,
+  type Repository,
+  type SettingsRow,
+  type WorkspaceRow,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -29,11 +31,35 @@ export class InMemoryRepository implements Repository {
   private payments: PaymentRow[] = [];
   private events: JobEventRow[] = [];
   private inboundEvents = new Set<string>();
-  private settings: SettingsRow | null = null;
+  private settings = new Map<string, SettingsRow>();
+  private workspaces = new Map<string, WorkspaceRow>([[DEFAULT_WORKSPACE_ID, { id: DEFAULT_WORKSPACE_ID, name: "Default workspace", token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles", created_at: now() }]]);
+
+  async insertWorkspace(w: Omit<WorkspaceRow, "created_at">) {
+    if (this.workspaces.has(w.id)) throw new Error("duplicate workspace id");
+    const all = [...this.workspaces.values()];
+    if (w.token_hash && all.some((x) => x.token_hash === w.token_hash)) throw new Error("duplicate token_hash");
+    if (w.connector_secret_hash && all.some((x) => x.connector_secret_hash === w.connector_secret_hash)) throw new Error("duplicate connector_secret_hash");
+    const row = { ...clone(w), created_at: now() };
+    this.workspaces.set(w.id, row);
+    return clone(row);
+  }
+  async getWorkspace(id: string) {
+    const w = this.workspaces.get(id);
+    return w ? clone(w) : null;
+  }
+  async findWorkspaceByTokenHash(hash: string) {
+    const w = [...this.workspaces.values()].find((x) => x.token_hash !== null && x.token_hash === hash);
+    return w ? clone(w) : null;
+  }
+  async findWorkspaceBySecretHash(hash: string) {
+    const w = [...this.workspaces.values()].find((x) => x.connector_secret_hash !== null && x.connector_secret_hash === hash);
+    return w ? clone(w) : null;
+  }
 
   async insertJob(job: JobRow) {
     if (this.jobs.has(job.id)) throw new Error("duplicate job id");
-    if (job.client_request_id && [...this.jobs.values()].some((j) => j.client_request_id === job.client_request_id)) throw new Error("duplicate client_request_id");
+    if (!this.workspaces.has(job.workspace_id)) throw new Error("unknown workspace_id");
+    if (job.client_request_id && [...this.jobs.values()].some((j) => j.workspace_id === job.workspace_id && j.client_request_id === job.client_request_id)) throw new Error("duplicate client_request_id");
     if ([...this.jobs.values()].some((j) => j.short_code === job.short_code)) throw new Error("duplicate short_code");
     this.jobs.set(job.id, clone(job));
     return clone(job);
@@ -42,8 +68,8 @@ export class InMemoryRepository implements Repository {
     const j = this.jobs.get(id);
     return j ? clone(j) : null;
   }
-  async findJobByClientRequestId(id: string) {
-    const j = [...this.jobs.values()].find((x) => x.client_request_id === id);
+  async findJobByClientRequestId(id: string, workspaceId = DEFAULT_WORKSPACE_ID) {
+    const j = [...this.jobs.values()].find((x) => x.workspace_id === workspaceId && x.client_request_id === id);
     return j ? clone(j) : null;
   }
   async findJobByShortCode(code: string) {
@@ -63,7 +89,7 @@ export class InMemoryRepository implements Repository {
     return clone(j);
   }
   async listOpenJobs() {
-    return [...this.jobs.values()].filter((j) => !["paid", "cancelled", "failed"].includes(j.state)).map(clone);
+    return [...this.jobs.values()].filter((j) => !["paid", "confirmed", "cancelled", "failed"].includes(j.state)).map(clone);
   }
 
   async insertBusinesses(rows: JobBusinessRow[]) {
@@ -91,10 +117,13 @@ export class InMemoryRepository implements Repository {
       .filter((b) => codes.has(b.short_code) || (q.threadId !== null && b.thread_id === q.threadId) || (b.rfq_message_id !== null && ids.has(norm(b.rfq_message_id))) || this.messages.some((m) => m.direction === "out" && m.business_id === b.business_id && m.job_id === b.job_id && m.rfc_message_id !== null && ids.has(norm(m.rfc_message_id))));
   }
 
+  /** Strictly increasing message times (like Postgres's microseconds), so "after" never ties. */
+  private lastMessageMs = 0;
   async insertMessage(m: NewMessage) {
     if (m.provider_email_id && this.messages.some((x) => x.provider_email_id === m.provider_email_id)) return null;
     if (m.idempotency_key && this.messages.some((x) => x.idempotency_key === m.idempotency_key)) return null;
-    const row: MessageRow = { ...clone(m), channel: m.channel ?? "email", id: newId("msg"), created_at: now() };
+    this.lastMessageMs = Math.max(Date.now(), this.lastMessageMs + 1);
+    const row: MessageRow = { ...clone(m), channel: m.channel ?? "email", id: newId("msg"), created_at: new Date(this.lastMessageMs).toISOString() };
     this.messages.push(row);
     return clone(row);
   }
@@ -123,6 +152,11 @@ export class InMemoryRepository implements Repository {
   async findOutboundByRfcIds(ids: string[]) {
     const set = new Set(ids.map(norm));
     return this.messages.filter((m) => m.direction === "out" && m.rfc_message_id && set.has(norm(m.rfc_message_id))).map(clone);
+  }
+  async listPhoneMessages(number: string, sinceIso: string) {
+    return this.messages
+      .filter((m) => m.channel === "phone" && m.created_at >= sinceIso && (m.direction === "out" ? m.to_address === number : m.from_address === number))
+      .map(clone);
   }
 
   async insertCurrentQuote(q: Omit<QuoteRow, "id" | "created_at" | "status">) {
@@ -197,6 +231,14 @@ export class InMemoryRepository implements Repository {
     const a = this.approvals.find((x) => x.id === id);
     if (a) Object.assign(a, patch);
   }
+  async recordWrongApprovalCode(id: string, maxAttempts: number) {
+    const a = this.approvals.find((x) => x.id === id);
+    if (!a || a.status !== "pending") return null;
+    a.attempts += 1;
+    const locked = a.attempts >= maxAttempts;
+    if (locked) Object.assign(a, { status: "locked", decided_at: now() });
+    return { attempts: a.attempts, locked };
+  }
 
   async insertPayment(p: Omit<PaymentRow, "created_at" | "updated_at">) {
     if (this.payments.some((x) => x.approval_id === p.approval_id)) return null;
@@ -232,14 +274,18 @@ export class InMemoryRepository implements Repository {
     return true;
   }
 
-  async listRecentJobs(limit: number) {
-    return [...this.jobs.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.created_at.localeCompare(a.created_at)).slice(0, limit).map(clone);
+  async listRecentJobs(limit: number, workspaceId?: string) {
+    return [...this.jobs.values()]
+      .filter((j) => workspaceId === undefined || j.workspace_id === workspaceId)
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.created_at.localeCompare(a.created_at)).slice(0, limit).map(clone);
   }
-  async getSettings() {
-    return this.settings ? clone(this.settings) : null;
+  async getSettings(workspaceId = DEFAULT_WORKSPACE_ID) {
+    const s = this.settings.get(workspaceId);
+    return s ? clone(s) : null;
   }
-  async saveSettings(s: Omit<SettingsRow, "updated_at">) {
-    this.settings = { ...clone(s), updated_at: now() };
-    return clone(this.settings);
+  async saveSettings(s: Omit<SettingsRow, "updated_at">, workspaceId = DEFAULT_WORKSPACE_ID) {
+    const row = { ...clone(s), updated_at: now() };
+    this.settings.set(workspaceId, row);
+    return clone(row);
   }
 }

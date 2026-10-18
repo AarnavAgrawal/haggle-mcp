@@ -6,7 +6,8 @@
 // when HAGGLE_ENABLE_PAYMENTS=true and the key is sk_test_ (refuses to start otherwise); without the
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
-  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
+  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, heuristicExtractor, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
+  withHeuristicFallback,
 } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
@@ -14,7 +15,7 @@ import { registerLiveFactory, type Runtime } from "./runtime.ts";
 const TICK_MS = 30_000;
 
 registerLiveFactory(async (env): Promise<Runtime> => {
-  const { api, buyerMailbox, phone, a2a, imessage, transcript, callOrigin } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
+  const { api, buyerMailbox, phone, a2a, imessage, voice, identityInfo, transcript, callOrigin } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
 
   // Only the explicitly configured simulated fleet is offered by discover (never arbitrary businesses).
   const fleet = parseFleet(env.HAGGLE_DEMO_FLEET).map((b) => ({
@@ -45,13 +46,25 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     ? { policy: "pinned-org-identity", allowedSenders: allowlist.filter((a) => a.includes("@") && !a.startsWith("@")) }
     : { policy: "outbound-verified" };
   const brain = makeBrain(fleet.map((b) => ({ business_id: b.business_id, name: b.name, email: b.email, simulated: b.simulated })), env);
+  const log = (event: string, data: Record<string, unknown>) => console.log(JSON.stringify({ level: "info", event, ...data }));
+  // Claude reads replies; if it fails (or there's no key) the keyword fallback reads them at low
+  // confidence, so a reply is never silently dropped (its quote is flagged low_confidence).
+  const extractor = env.ANTHROPIC_API_KEY?.trim()
+    ? withHeuristicFallback(claudeExtractor({ apiKey: env.ANTHROPIC_API_KEY, model: env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }), log)
+    : heuristicExtractor;
+  if (!env.ANTHROPIC_API_KEY?.trim()) console.error(JSON.stringify({ level: "warn", event: "no_anthropic_key", detail: "replies are read by the keyword fallback (low confidence)" }));
+  // Call hours (local, in each workspace's timezone); escalation timing is HAGGLE_ESCALATE_EMAIL_TO_CALL_S.
+  const hours = (env.HAGGLE_CALL_HOURS ?? "9-20").match(/^(\d{1,2})-(\d{1,2})$/);
+  const callHours = hours && Number(hours[1]) < Number(hours[2]) && Number(hours[2]) <= 24 ? { start: Number(hours[1]), end: Number(hours[2]) } : { start: 9, end: 20 };
   const engine = new HaggleEngine({
     repo,
     email: inkboxEmail(api, buyerMailbox),
     ...(phonePort ? { phone: phonePort } : {}),
     ...(a2aPort ? { a2a: a2aPort } : {}),
     ...(imessagePort ? { imessage: imessagePort } : {}),
-    extractor: claudeExtractor({ apiKey: env.ANTHROPIC_API_KEY!, model: env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }),
+    // Inbound callbacks: keep the Voice AI's answering instructions in sync with open requests (calls on only).
+    ...(phonePort && env.HAGGLE_SYNC_VOICE_CONTEXT !== "false" ? { voice: voice() } : {}),
+    extractor,
     attachments: inkboxAttachments(api, buyerMailbox),
     brain,
     payer: disabledPayer("Payments are not enabled on this server (HAGGLE_ENABLE_PAYMENTS is off); nothing was charged."),
@@ -64,8 +77,10 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       trustInboundCallerId: env.HAGGLE_TRUST_INBOUND_CALLER_ID === "true",
       ...(Number(env.HAGGLE_CALL_DELAY_S) > 0 ? { callDelayMs: Number(env.HAGGLE_CALL_DELAY_S) * 1000 } : {}),
       ...(Number(env.HAGGLE_ESCALATE_EMAIL_TO_CALL_S) > 0 ? { escalateEmailToCallAfterMs: Number(env.HAGGLE_ESCALATE_EMAIL_TO_CALL_S) * 1000 } : {}),
+      callHours, callCooldownMs: 2 * 60_000,
+      identity: { name: identityInfo.displayName || "Haggle", phone: identityInfo.phoneNumber },
     },
-    log: (event, data) => console.log(JSON.stringify({ level: "info", event, ...data })),
+    log,
   });
   // Backup tick: deadlines advance even when no agent is calling.
   setInterval(() => {

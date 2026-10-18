@@ -8,7 +8,10 @@
 import { z } from "zod";
 
 /** Bump on every change to this file or views.ts (CONTRACTS.md: "Changing a frozen surface"). */
-export const CONTRACT_VERSION = "haggle.contracts/5" as const;
+export const CONTRACT_VERSION = "haggle.contracts/6" as const;
+// v6 (additive, agreed for the haggle-testing parity branch): JobState "confirmed"; Quote.fields /
+// missing_fields / total_known for custom asks; views.ts: DealBoard.job.ask / compare_by,
+// Approval.action, ApprovalStatus "confirmed", Conversation and Identity view schemas.
 
 // ---------------------------------------------------------------------------
 // Basics
@@ -24,6 +27,8 @@ export const JobState = z.enum([
   "awaiting_approval",
   "paying",
   "paid",
+  /** A confirm-only approval: the business was told to go ahead, nothing was paid. */
+  "confirmed",
   "cancelled",
   "failed",
 ]);
@@ -152,6 +157,13 @@ export const Quote = z.object({
   status: z.enum(["current", "superseded", "expired", "withdrawn"]).optional(),
   /** Inbox message, call or A2A task this quote came from. */
   message_id: z.string().optional(),
+  // v6, custom asks (requests that aren't the catering default; all optional):
+  /** Answers by ask key; money in USD, dates YYYY-MM-DD; null = not stated. */
+  fields: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])).optional(),
+  /** Labels of required answers still missing (a follow-up asks for them). */
+  missing_fields: z.array(z.string()).optional(),
+  /** False when the business stated no total (total_usd is then 0 and means "unknown"). */
+  total_known: z.boolean().optional(),
 });
 export type Quote = z.infer<typeof Quote>;
 

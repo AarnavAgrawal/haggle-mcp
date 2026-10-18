@@ -6,7 +6,7 @@ import { InkboxAPIError } from "@inkbox/sdk";
 import { BUYER, FakeInkbox, SECRET, signed } from "./helpers/fakeInkbox.ts";
 import { describe, expect, it } from "vitest";
 import {
-  GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, inkboxAttachments, inkboxCallEnded, inkboxEmail, inkboxSenderTrust, inkboxToInbound, trustForSender,
+  ChannelSendError, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, inkboxAttachments, inkboxCallEnded, inkboxEmail, inkboxSenderTrust, inkboxToInbound, mapInkboxError, trustForSender,
   verifyInkboxWebhook, type QuoteExtraction,
 } from "../src/index.ts";
 
@@ -40,11 +40,20 @@ describe("inkboxEmail", () => {
     expect(api.sent[0]!.o.attachments![0]).toMatchObject({ filename: "counter.json", contentBase64: "e30=" });
     await expect(email.send({ from: "other@x.test", to: "a@b.test", subject: "s", bodyText: "b", idempotencyKey: "rfq:job_1:biz_1" })).rejects.toThrow(/buyer identity/);
   });
-  it("does not retry a 4xx", async () => {
+  it("does not retry a 4xx, and reports it as a classified, non-retryable send failure", async () => {
     const api = new FakeInkbox();
     api.failNext = [422];
-    await expect(inkboxEmail(api, BUYER, { sleep: async () => {} }).send({ from: BUYER, to: "a@b.test", subject: "s", bodyText: "b", idempotencyKey: "rfq:job_1:biz_1" })).rejects.toBeInstanceOf(InkboxAPIError);
+    const err = await inkboxEmail(api, BUYER, { sleep: async () => {} }).send({ from: BUYER, to: "a@b.test", subject: "s", bodyText: "b", idempotencyKey: "rfq:job_1:biz_1" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ChannelSendError);
+    expect(err).toMatchObject({ reason: "invalid_address", retryable: false });
     expect(api.sent).toHaveLength(0);
+  });
+  it("maps Inkbox error codes: rate limits and capacity retry later, blocked / opted-out recipients move on", () => {
+    expect(mapInkboxError(new InkboxAPIError(429, { error: "mail_rate_limited" }))).toMatchObject({ reason: "rate_limited", retryable: true, retryAfterMs: 120_000 });
+    expect(mapInkboxError(new InkboxAPIError(503, { error: "hosted_agent_at_capacity" }))).toMatchObject({ reason: "provider_error", retryable: true });
+    expect(mapInkboxError(new InkboxAPIError(403, { error: "recipient_blocked" }))).toMatchObject({ reason: "invalid_address", retryable: false });
+    expect(mapInkboxError(new InkboxAPIError(400, { error: "recipient_opted_out" }))).toMatchObject({ reason: "opted_out", retryable: false });
+    expect(mapInkboxError(new InkboxAPIError(500, "boom"))).toMatchObject({ reason: "provider_error", retryable: true });
   });
 });
 

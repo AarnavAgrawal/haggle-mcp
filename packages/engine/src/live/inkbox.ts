@@ -8,12 +8,12 @@
 // Mail from outside Inkbox is stored but never becomes a quote ("unverified-external-sender").
 // Seller content is untrusted data throughout.
 import { CallMode, CallOrigin, Inkbox, InkboxAPIError, InkboxConnectionError, verifyWebhook as sdkVerifyWebhook, type A2AClient, type A2AResolvedTarget, type A2AWireMessage, type A2AWireTask, type MailWebhookPayload } from "@inkbox/sdk";
-import { attachmentKind, MAX_JSON_BYTES, MAX_PDF_BYTES, type ExtractedFile } from "../inbound/attachments.ts";
+import { attachmentKind, imageContentType, MAX_IMAGE_BYTES, MAX_JSON_BYTES, MAX_PDF_BYTES, type ExtractedFile } from "../inbound/attachments.ts";
 import { normalizeMessageId } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { replySubject, type OutboundEmail, type SendOutcome } from "../outbound/primitiveSender.ts";
 import type { MessageRow } from "../store/types.ts";
-import type { A2AAgentMessage, A2APort, A2ATaskView, AttachmentPort, EmailPort, IMessagePort, PhoneCallRequest, PhonePort } from "../workflow/ports.ts";
+import { ChannelSendError, inlineAttachments, type A2AAgentMessage, type A2APort, type A2ATaskView, type AttachmentPort, type EmailPort, type IMessagePort, type PhoneCallRequest, type PhonePort, type SendFailureReason, type VoiceContextPort } from "../workflow/ports.ts";
 
 /** The slice of the Inkbox SDK the engine uses (`inkbox.messages`), so tests can fake it. */
 export interface InkboxMailApi {
@@ -65,14 +65,19 @@ export function inkboxEmail(api: InkboxMailApi, buyerMailbox: string, opts: { sl
   return {
     async send(msg: OutboundEmail): Promise<SendOutcome> {
       if (msg.from.toLowerCase() !== buyerMailbox.toLowerCase()) throw new Error("outbound mail must come from the buyer identity mailbox");
-      const sent = await withRetry(() => api.send(buyerMailbox, {
-        to: [msg.to],
-        subject: msg.thread ? replySubject(msg.subject) : msg.subject,
-        bodyText: msg.bodyText,
-        ...(msg.thread ? { inReplyToMessageId: msg.thread.inReplyTo } : {}),
-        ...(msg.attachments?.length ? { attachments: msg.attachments.map((a) => ({ filename: a.filename, contentType: a.contentType, contentBase64: Buffer.from(a.content).toString("base64") })) } : {}),
-        idempotencyKey: msg.idempotencyKey,
-      }), opts.sleep);
+      let sent;
+      try {
+        sent = await withRetry(() => api.send(buyerMailbox, {
+          to: [msg.to],
+          subject: msg.thread ? replySubject(msg.subject) : msg.subject,
+          bodyText: msg.bodyText,
+          ...(msg.thread ? { inReplyToMessageId: msg.thread.inReplyTo } : {}),
+          ...(msg.attachments?.length ? { attachments: msg.attachments.map((a) => ({ filename: a.filename, contentType: a.contentType, contentBase64: Buffer.from(a.content).toString("base64") })) } : {}),
+          idempotencyKey: msg.idempotencyKey,
+        }), opts.sleep);
+      } catch (e) {
+        throw mapInkboxError(e);
+      }
       return { providerId: sent.id, status: sent.status, idempotentReplay: false, messageId: sent.messageId || null };
     },
   };
@@ -204,18 +209,19 @@ function isHttps(url: string) {
   }
 }
 
-/** AttachmentPort: fetch PDFs and JSON parts through Inkbox signed URLs, with size caps and a timeout. */
+/** AttachmentPort: fetch PDFs, images and JSON parts through Inkbox signed URLs, with size caps and a timeout. */
 export function inkboxAttachments(api: InkboxMailApi, buyerMailbox: string, fetchImpl: typeof fetch = fetch): AttachmentPort {
   return {
     async load(m: MessageRow): Promise<ExtractedFile[]> {
-      const files: ExtractedFile[] = m.attachments.filter((a) => a.content_base64).map((a) => ({ kind: a.content_type === "application/pdf" ? ("pdf" as const) : ("json" as const), filename: a.filename ?? "attachment", data: Buffer.from(a.content_base64!, "base64") }));
+      const files: ExtractedFile[] = await inlineAttachments.load(m);
       if (!m.provider_email_id) return files;
       let pdfBytes = 0;
+      let imageBytes = 0;
       for (const a of m.attachments) {
         if (a.content_base64 || !a.filename) continue;
         const kind = attachmentKind({ tarPath: a.filename, contentType: a.content_type, filename: a.filename });
         if (!kind) continue;
-        const cap = kind === "pdf" ? MAX_PDF_BYTES - pdfBytes : MAX_JSON_BYTES;
+        const cap = kind === "pdf" ? MAX_PDF_BYTES - pdfBytes : kind === "image" ? MAX_IMAGE_BYTES - imageBytes : MAX_JSON_BYTES;
         if (a.size_bytes > cap) continue;
         const { url } = await api.getAttachment(buyerMailbox, m.provider_email_id, a.filename);
         if (!isHttps(url)) throw new Error("attachment URL is not https");
@@ -224,11 +230,42 @@ export function inkboxAttachments(api: InkboxMailApi, buyerMailbox: string, fetc
         const data = Buffer.from(await res.arrayBuffer());
         if (data.byteLength > cap) continue;
         if (kind === "pdf") pdfBytes += data.byteLength;
-        files.push({ kind, filename: a.filename, data });
+        if (kind === "image") imageBytes += data.byteLength;
+        files.push({ kind, filename: a.filename, data, ...(kind === "image" ? { contentType: imageContentType(a.content_type, a.filename)! } : {}) });
       }
       return files;
     },
   };
+}
+
+// Inkbox error codes -> ChannelSendError (ported from haggle-testing src/comms/channels/types.ts
+// mapInkboxError): retry the same channel later, move on to the next channel, or give up.
+const RETRY_CODES: Record<string, [SendFailureReason, number]> = {
+  idempotency_in_progress: ["provider_error", 20_000], send_outcome_ambiguous: ["provider_error", 20_000],
+  hosted_agent_at_capacity: ["provider_error", 20_000], hosted_agent_unavailable: ["provider_error", 20_000], call_capacity_busy: ["provider_error", 20_000],
+  mail_rate_limited: ["rate_limited", 120_000], sender_rate_limited: ["rate_limited", 120_000], concurrent_calls_limit: ["rate_limited", 120_000],
+  new_external_recipient_limit: ["rate_limited", 120_000], sender_sms_pending: ["channel_not_configured", 120_000],
+};
+const HARD_CODES: Record<string, SendFailureReason> = {
+  recipient_blocked: "invalid_address", invalid_receiver_number: "invalid_address", invalid_destination_number: "invalid_address", invalid_recipient: "invalid_address",
+  recipient_not_opted_in: "not_opted_in", recipient_opted_out: "opted_out",
+};
+
+/** Classify any error thrown by an Inkbox send (after the SDK's own bounded retries). */
+export function mapInkboxError(e: unknown): ChannelSendError {
+  if (e instanceof ChannelSendError) return e;
+  if (e instanceof InkboxConnectionError) return new ChannelSendError("provider_error", true, 30_000, "Inkbox unreachable");
+  const status = (e as { statusCode?: number }).statusCode;
+  const detail = (e as { detail?: unknown; code?: unknown; body?: unknown }) ?? {};
+  const raw = detail.detail ?? detail.body;
+  const code = String((raw && typeof raw === "object" ? ((raw as { error?: unknown; code?: unknown }).error ?? (raw as { code?: unknown }).code) : undefined) ?? detail.code ?? "").toLowerCase();
+  const msg = (e as Error)?.message ?? "send failed";
+  if (code && RETRY_CODES[code]) return new ChannelSendError(RETRY_CODES[code]![0], true, RETRY_CODES[code]![1], `${code}: ${msg}`);
+  if (code && HARD_CODES[code]) return new ChannelSendError(HARD_CODES[code]!, false, 0, `${code}: ${msg}`);
+  if (status === 429) return new ChannelSendError("rate_limited", true, 120_000, msg);
+  if (status !== undefined && status >= 500) return new ChannelSendError("provider_error", true, 30_000, msg);
+  if (status === 400 || status === 404 || status === 422) return new ChannelSendError("invalid_address", false, 0, msg);
+  return new ChannelSendError("provider_error", false, 0, msg);
 }
 
 export type CallEnded = {
@@ -273,11 +310,35 @@ export type CallOriginChoice = "dedicated_number" | "shared_imessage_number";
 export function inkboxPhone(identity: { placeCall(o: { toNumber: string; origination?: CallOrigin; mode?: CallMode; reason?: string }): Promise<{ id: string }> }, origin: CallOriginChoice = "dedicated_number", sleep?: (ms: number) => Promise<void>): PhonePort {
   return {
     async placeCall(req: PhoneCallRequest) {
-      const call = await withRetry(() => identity.placeCall({
-        toNumber: req.toNumber, origination: origin === "shared_imessage_number" ? CallOrigin.SHARED_IMESSAGE_NUMBER : CallOrigin.DEDICATED_NUMBER,
-        mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000),
-      }), sleep);
-      return { callId: call.id };
+      try {
+        const call = await withRetry(() => identity.placeCall({
+          toNumber: req.toNumber, origination: origin === "shared_imessage_number" ? CallOrigin.SHARED_IMESSAGE_NUMBER : CallOrigin.DEDICATED_NUMBER,
+          mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000),
+        }), sleep);
+        return { callId: call.id };
+      } catch (e) {
+        throw mapInkboxError(e);
+      }
+    },
+  };
+}
+
+/**
+ * VoiceContextPort over the buyer identity's Voice AI config: replaces the answering instructions
+ * (full replace, keeping the saved voice) so a business calling back is matched to its request.
+ */
+export function inkboxVoiceContext(identity: { getHostedAgentConfig(): Promise<{ voice: string | null; instructions: string | null }>; setHostedAgentConfig(o: { voice?: string; instructions?: string }): Promise<unknown> }): VoiceContextPort {
+  let last: string | null = null;
+  return {
+    async setInstructions(instructions) {
+      if (instructions === last) return;
+      const cur = await identity.getHostedAgentConfig();
+      if (cur.instructions === instructions) {
+        last = instructions;
+        return;
+      }
+      await identity.setHostedAgentConfig({ ...(cur.voice ? { voice: cur.voice } : {}), instructions });
+      last = instructions;
     },
   };
 }
@@ -369,6 +430,8 @@ export async function connectInkboxBuyer(opts: { apiKey: string; handle: string 
     phone: () => (callOrigin ? inkboxPhone(identity as never, callOrigin) : null),
     a2a: () => inkboxA2A(identity as never),
     imessage: () => (identity.imessageEnabled ? inkboxIMessage(identity as never) : null),
+    voice: () => inkboxVoiceContext(identity as never),
+    identityInfo: { handle: identity.agentHandle, displayName: identity.displayName, phoneNumber: identity.phoneNumber?.number ?? null, imessageEnabled: identity.imessageEnabled },
     transcript: (callId: string) => fullCallTranscript(identity as never, callId),
   };
 }

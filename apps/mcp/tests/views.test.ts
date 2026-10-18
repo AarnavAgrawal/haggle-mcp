@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { DealBoardData } from "@haggle/engine";
 import { ApprovalOut, DealBoard, DealBoardOrEmpty, emptyBoard, toApproval, toDealBoard } from "../src/views.ts";
+import { callHoursText, formatField, isLongText, kindLabel, parseToolError, toolErrorText } from "../views/_shared/format.ts";
 
 const request = {
   what: "lunch catering", quantity: 40, unit: "people", date: "2026-10-22", area: "San Francisco, CA", budget_usd: 1200,
@@ -54,5 +55,44 @@ describe("toDealBoard (live-shaped engine data)", () => {
     expect(ApprovalOut.safeParse(a).success).toBe(true);
     expect(a).toMatchObject({ business: "Haggle Test Seller", quote_channel: "email", amount_usd: 5, cap_usd: 5, channel: "view", status: "pending_human", approval_id: "ap_1" });
     expect(a.summary).toBe("Haggle Test Seller: $1,080 order total; pay $5 deposit now");
+  });
+});
+
+// Pure display helpers the views share (views/_shared/format.ts): no DOM needed.
+
+describe("view display helpers", () => {
+  it("custom-ask cells: money as USD, booleans yes/no, not stated as a dash", () => {
+    expect(formatField(1080, "money")).toBe("$1,080");
+    expect(formatField(24.5, "money")).toBe("$24.50");
+    expect(formatField(true, "boolean")).toBe("Yes");
+    expect(formatField(false, "boolean")).toBe("No");
+    expect(formatField(null, "money")).toBe("—");
+    expect(formatField(undefined, "text")).toBe("—");
+    expect(formatField("2026-10-22", "date")).toBe("Thu, Oct 22");
+    expect(formatField("evening only", "text")).toBe("evening only");
+  });
+
+  it("conversation kinds read as words", () => {
+    expect(kindLabel("rfq")).toBe("Request for quote");
+    expect(kindLabel("followup")).toBe("Follow-up");
+    expect(kindLabel("counter")).toBe("Counteroffer");
+    expect(kindLabel("quarantine")).toBe("Quarantined (unverified sender)");
+    expect(kindLabel("approval_reply")).toBe("Approval reply");
+  });
+
+  it("tool errors: the guard's JSON becomes message + fix; anything else passes through", () => {
+    const guard = new Error(JSON.stringify({ ok: false, mode: "live", error: { code: "COMMITMENT", message: "Messages can't commit to an order.", fix: "Use approve to commit." }, next: "approve" }));
+    expect(parseToolError(guard)).toEqual({ code: "COMMITMENT", message: "Messages can't commit to an order.", fix: "Use approve to commit.", next: "approve" });
+    expect(toolErrorText(guard)).toBe("Messages can't commit to an order. Use approve to commit.");
+    expect(parseToolError(new Error("Host refused the call"))).toEqual({ message: "Host refused the call" });
+    expect(parseToolError(undefined).message).toMatch(/try again/i);
+  });
+
+  it("call hours and long text", () => {
+    expect(callHoursText({ start: 9, end: 18 })).toBe("9 AM – 6 PM");
+    expect(callHoursText({ start: 8.5, end: 12 })).toBe("8:30 AM – 12 PM");
+    expect(isLongText("short")).toBe(false);
+    expect(isLongText("x".repeat(400))).toBe(true);
+    expect(isLongText("a\nb\nc\nd\ne\nf\ng")).toBe(true);
   });
 });

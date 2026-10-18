@@ -156,3 +156,39 @@ export function viewTicket(meta: Record<string, unknown> | undefined): ViewTicke
   const t = meta?.["haggle/approval"] as Partial<ViewTicket> | undefined;
   return t && typeof t.approval_id === "string" && typeof t.code === "string" ? { approval_id: t.approval_id, code: t.code } : undefined;
 }
+
+/** HAGGLE_MODE=mock: every view says the data is simulated. */
+export function DemoTag({ mode }: { mode?: string }) {
+  if (mode !== "mock") return null;
+  return (
+    <span className="hg-demo" title="Simulated data: nothing here was really sent or paid">
+      DEMO
+    </span>
+  );
+}
+
+/** Copy text to the clipboard; resolves false when the host's sandbox blocks it. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Clipboard API refused (sandboxed iframe); fall back below.
+  }
+  try {
+    const el = document.createElement("textarea");
+    el.value = text;
+    el.setAttribute("readonly", "");
+    el.style.position = "fixed";
+    el.style.opacity = "0";
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand("copy");
+    el.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}

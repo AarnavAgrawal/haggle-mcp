@@ -18,7 +18,8 @@ export type UntrustedText = string;
 
 export type JobState =
   | "created" | "contacting" | "collecting" | "negotiating"
-  | "awaiting_approval" | "paying" | "paid" | "cancelled" | "failed";
+  | "awaiting_approval" | "paying" | "paid" | "confirmed" | "cancelled" | "failed";
+// "confirmed": a confirm-only approval was sent to the winning business (nothing to pay).
 // D7: deadline expiry with no approval is "failed" with reason "deadline_passed". Payment
 // sub-states live in PaymentStatus.
 
@@ -34,15 +35,37 @@ export interface Requirement {
   min_count?: number;         // e.g. 12 for "at least 12 vegetarian"
 }
 
+/** Type of one answer the buyer wants back from each business (any kind of request, not only catering). */
+export type AskFieldType = "money" | "number" | "date" | "time" | "text" | "boolean";
+
+/** One thing to ask every business, e.g. { key: "earliest_date", label: "Earliest start date", type: "date" }. */
+export interface AskField {
+  key: string;                // ^[a-z][a-z0-9_]{0,31}$
+  label: string;
+  type: AskFieldType;
+  required: boolean;          // a quote missing a required answer can't be approved
+  description?: string;
+}
+
 /** What the agent wants. Shared by deal(), ask() and the brain's estimate(). */
 export interface Request {
   what: string;               // "lunch catering"
-  quantity: number;           // 40
+  quantity?: number;          // 40 (absent for requests that aren't counted, e.g. "fix a leak")
   unit?: string;              // "people" | "meals" | "units"
-  date: IsoDate;              // "2026-10-22"
+  date?: IsoDate;             // "2026-10-22" (absent = flexible)
   area: string;               // "San Francisco, CA"
   requirements: Requirement[];
   budget_usd?: Usd;           // buyer's hard cap for the order total
+  /** Free-form facts every business is told, e.g. { label: "Fixture", value: "kitchen sink" }. */
+  details?: { label: string; value: string }[];
+  /** Custom answers to collect from every business (any domain). Absent = the catering default (total, deposit, delivery). */
+  ask?: AskField[];
+  /** Which ask field ranks the quotes (min = lower is better). Money fields also drive negotiation. */
+  compare_by?: { field: string; direction: "min" | "max" };
+  /** Money ask field paid on approval (instead of the deposit). */
+  payable_field?: string;
+  /** One automatic follow-up for missing required answers (default true). */
+  auto_follow_up?: boolean;
 }
 
 /* ───────────────────────── businesses ───────────────────────── */

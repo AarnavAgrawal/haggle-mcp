@@ -7,9 +7,10 @@ import { ModelContext, useCallTool, useDisplayMode, useOpenExternal, useSendFoll
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { DealBoard, DealBoardBusiness, DealBoardOrEmpty, OpenQuestion, Quote } from "@haggle/core";
 import { ChannelBadge, ErrorNote, FlagChip, Meter, ModeBadge, Shell, Skeleton, VerdictChip, isRiskFlag, relativeTime, usd, viewTicket } from "../_shared/ui.tsx";
+import { formatField, toolErrorText } from "../_shared/format.ts";
 import "./view.css";
 
-const TERMINAL = new Set(["paid", "cancelled", "failed"]);
+const TERMINAL = new Set(["paid", "confirmed", "cancelled", "failed"]);
 const POLL_MS = 4000;
 const RETRY_MS = 10_000;
 
@@ -21,6 +22,7 @@ const STATE_LABEL: Record<string, string> = {
   awaiting_approval: "Waiting for approval",
   paying: "Paying",
   paid: "Paid",
+  confirmed: "Confirmed",
   cancelled: "Cancelled",
   failed: "Failed",
 };
@@ -38,6 +40,10 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 type Sync = { at: number | null; trouble: boolean };
+
+/** False when the business stated no total (total_usd is then 0 and means "unknown"): never show $0. */
+const knownTotal = (q: Quote) => q.total_known !== false;
+const totalText = (q: Quote) => (knownTotal(q) ? usd(q.total_usd) : "total not stated");
 
 export default function DealBoardView() {
   const ctx = useToolContext<"get_quotes">();
@@ -151,12 +157,13 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
   const best = board.quotes.find((q) => q.quote_id === board.recommended_quote_id);
   const winner = (board.payment?.status === "settled" || board.approval) ? board.quotes.find((q) => q.quote_id === board.approval?.quote_id) ?? best : best;
   const ask = (prompt: string) => void followUp({ prompt }).catch(() => {});
+  const rankBy = board.job.compare_by && board.job.ask?.find((f) => f.key === board.job.compare_by!.field);
 
   return (
     <div className={`db${fullscreen ? " db-full" : ""}`}>
       <ModelContext
         content={`Haggle deal board for ${board.job.id}: ${stateLabel(board)}; ${board.quotes.length} quotes; ${
-          winner ? `recommended ${winner.business} ${usd(winner.total_usd)}` : "no recommendation yet"
+          winner ? `recommended ${winner.business} ${totalText(winner)}` : "no recommendation yet"
         }; ${board.open_questions.length} open question(s)${board.payment?.status === "settled" ? "; deposit paid" : ""}.`}
       />
       <header className="db-head">
@@ -165,6 +172,11 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
           <p className="hg-muted">
             {board.job.budget_usd !== undefined && <>Budget {usd(board.job.budget_usd)}. </>}
             {board.job.requirements.join(", ")}
+            {rankBy && (
+              <>
+                {board.job.requirements.length > 0 ? ". " : ""}Ranked by {rankBy.label.toLowerCase()}, {board.job.compare_by!.direction === "min" ? "lowest" : "highest"} first.
+              </>
+            )}
           </p>
         </div>
         <div className="db-head-side">
@@ -192,7 +204,7 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
           {board.open_questions.map((q) => (
             <Question key={q.question_id} jobId={board.job.id} question={q} onChanged={onChanged} />
           ))}
-          <Businesses businesses={board.businesses} quotes={board.quotes} compact={!fullscreen} />
+          <Businesses businesses={board.businesses} quotes={board.quotes} compact={!fullscreen} jobId={board.job.id} />
         </section>
       </div>
 
@@ -249,7 +261,7 @@ function Ladder({ board, winnerId, onChanged }: { board: DealBoard; winnerId?: s
       </p>
     );
   }
-  const scale = Math.max(board.job.budget_usd ?? 0, ...board.quotes.map((q) => q.total_usd)) * 1.05;
+  const scale = Math.max(board.job.budget_usd ?? 0, ...board.quotes.filter(knownTotal).map((q) => q.total_usd)) * 1.05;
   return (
     <ol className="db-quotes">
       {board.quotes.map((q, i) => (
@@ -261,7 +273,9 @@ function Ladder({ board, winnerId, onChanged }: { board: DealBoard; winnerId?: s
 
 function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: Quote; rank: number; scale: number; board: DealBoard; winner: boolean; onChanged: () => Promise<void> }) {
   const out = !q.meets_requirements || q.flags.some(isRiskFlag);
-  const overBudget = board.job.budget_usd !== undefined && q.total_usd > board.job.budget_usd;
+  const known = knownTotal(q);
+  const overBudget = known && board.job.budget_usd !== undefined && q.total_usd > board.job.budget_usd;
+  const followUp = useSendFollowUp();
   const flash = useFlashOnChange(q.total_usd);
   const said = board.businesses.find((b) => b.id === q.business_id)?.transcript_snippet;
   const rejected = board.rejected?.find((r) => r.quote_id === q.quote_id);
@@ -277,18 +291,25 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
           <span className="db-biz">{q.business}</span>
           <ChannelBadge channel={q.channel} />
           {winner && <span className="db-best-label">{board.payment?.status === "settled" ? "Won" : board.approval?.quote_id === q.quote_id ? "Chosen" : "Recommended"}</span>}
-          <span className="db-total">
-            {q.negotiated_from !== undefined && <s className="db-was">{usd(q.negotiated_from)}</s>}
-            {usd(q.total_usd)}
-          </span>
+          {known ? (
+            <span className="db-total">
+              {q.negotiated_from !== undefined && <s className="db-was">{usd(q.negotiated_from)}</s>}
+              {usd(q.total_usd)}
+            </span>
+          ) : (
+            <span className="db-total db-total-unknown">total not stated</span>
+          )}
         </div>
-        <Meter
-          value={q.total_usd}
-          max={scale}
-          marker={board.job.budget_usd}
-          tone={winner ? "win" : out ? "risk" : undefined}
-          label={`${usd(q.total_usd)}${board.job.budget_usd !== undefined ? ` against a ${usd(board.job.budget_usd)} budget` : ""}`}
-        />
+        {known && (
+          <Meter
+            value={q.total_usd}
+            max={scale}
+            marker={board.job.budget_usd}
+            tone={winner ? "win" : out ? "risk" : undefined}
+            label={`${usd(q.total_usd)}${board.job.budget_usd !== undefined ? ` against a ${usd(board.job.budget_usd)} budget` : ""}`}
+          />
+        )}
+        {board.job.ask && board.job.ask.length > 0 && <AskFields quote={q} board={board} />}
         <div className="db-quote-meta">
           {q.per_unit_usd !== undefined && <span>{usd(q.per_unit_usd)} per person</span>}
           {q.deposit_usd !== undefined && <span>{usd(q.deposit_usd)} deposit</span>}
@@ -297,6 +318,10 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
           {q.flags.map((f) => (
             <FlagChip key={f} flag={f} />
           ))}
+          {q.missing_fields && q.missing_fields.length > 0 && <span className="hg-flag hg-tone-warn">Still owes: {q.missing_fields.join(", ")}</span>}
+          <button className="db-link" onClick={() => void followUp({ prompt: conversationPrompt(q.business, board.job.id, q.business_id) }).catch(() => {})}>
+            Conversation
+          </button>
         </div>
         {winner && <p className="db-why">{whyWinner(q, board)}</p>}
         {winner && q.items.length > 0 && <p className="db-items">{q.items.join(", ")}</p>}
@@ -337,7 +362,7 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
     try {
       setNote(await fn());
     } catch (e) {
-      setErr((e as Error).message);
+      setErr(toolErrorText(e));
     }
     await onChanged();
   };
@@ -365,7 +390,10 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
     });
 
   let body: ReactNode;
-  if (payment?.status === "settled") {
+  if (approval?.status === "confirmed" || (board.job.state === "confirmed" && !payment)) {
+    // A confirm-only approval: the order went ahead, nothing was paid.
+    body = <span className="db-approved">Confirmed — the business was told to go ahead (nothing paid)</span>;
+  } else if (payment?.status === "settled") {
     body = (
       <>
         <span className="db-paid">
@@ -403,7 +431,7 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
     body = (
       <>
         <button className="hg-btn hg-btn-primary" disabled={busy} onClick={() => void onApprove()}>
-          {approve.isPending || approveInView.isPending ? "Approving…" : `Approve ${usd(q.total_usd)}`}
+          {approve.isPending || approveInView.isPending ? "Approving…" : knownTotal(q) ? `Approve ${usd(q.total_usd)}` : "Approve"}
         </button>
         <span className="hg-muted db-approve-hint">{deposit !== undefined ? `Then pay the ${usd(deposit)} deposit. ` : ""}Only you can approve; your agent can't.</span>
       </>
@@ -425,12 +453,16 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
 
 function whyWinner(q: Quote, board: DealBoard): string {
   const eligible = board.quotes.filter((x) => x.meets_requirements && !x.flags.some(isRiskFlag));
+  // A custom compare_by field ranks the ladder instead of the total.
+  const rankBy = board.job.compare_by && board.job.ask?.find((f) => f.key === board.job.compare_by!.field);
+  const best = rankBy ? `${board.job.compare_by!.direction === "min" ? "lowest" : "highest"} ${rankBy.label.toLowerCase()}` : "lowest total";
   const parts = [
     board.job.requirements.length ? `Meets all ${board.job.requirements.length} requirements` : "Meets the request",
-    eligible.length > 1 ? `lowest total of ${eligible.length} eligible quotes` : "the only eligible quote",
+    eligible.length > 1 ? `${best} of ${eligible.length} eligible quotes` : "the only eligible quote",
   ];
-  if (board.job.budget_usd !== undefined && q.total_usd <= board.job.budget_usd) parts.push(`${usd(board.job.budget_usd - q.total_usd)} under budget`);
-  const excluded = board.quotes.filter((x) => x.total_usd < q.total_usd && !eligible.includes(x)).length;
+  const known = knownTotal(q);
+  if (known && board.job.budget_usd !== undefined && q.total_usd <= board.job.budget_usd) parts.push(`${usd(board.job.budget_usd - q.total_usd)} under budget`);
+  const excluded = known ? board.quotes.filter((x) => knownTotal(x) && x.total_usd < q.total_usd && !eligible.includes(x)).length : 0;
   if (excluded) parts.push(`${excluded} cheaper quote${excluded > 1 ? "s" : ""} excluded`);
   return `${parts.join(" · ")}.`;
 }
@@ -438,6 +470,29 @@ function whyWinner(q: Quote, board: DealBoard): string {
 function basisName(board: DealBoard, quoteId: string): string | undefined {
   return board.quotes.find((x) => x.quote_id === quoteId)?.business;
 }
+
+/** Custom asks: each answer under its ask label; the ranking answer (compare_by) is highlighted. */
+function AskFields({ quote: q, board }: { quote: Quote; board: DealBoard }) {
+  const rankKey = board.job.compare_by?.field;
+  return (
+    <dl className="db-fields">
+      {board.job.ask!.map((f) => {
+        const value = q.fields?.[f.key];
+        const cls = [f.key === rankKey && "is-rank", f.required && (value === null || value === undefined) && "is-missing"].filter(Boolean).join(" ");
+        return (
+          <div key={f.key} className={cls || undefined}>
+            <dt>{f.label}</dt>
+            <dd>{formatField(value, f.type)}</dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+}
+
+/** The board can't open another view itself: ask the assistant to show get_conversation. */
+const conversationPrompt = (business: string, jobId: string, businessId: string) =>
+  `Show me the Haggle conversation with ${business} on job ${jobId} (get_conversation with job_id ${jobId}, business_id ${businessId}).`;
 
 function Question({ jobId, question, onChanged }: { jobId: string; question: OpenQuestion; onChanged: () => Promise<void> }) {
   const answer = useCallTool("answer_business");
@@ -467,13 +522,14 @@ function Question({ jobId, question, onChanged }: { jobId: string; question: Ope
           </button>
         </form>
       )}
-      {answer.error && <span className="db-err">{answer.error.message}</span>}
+      {answer.error && <span className="db-err">{toolErrorText(answer.error)}</span>}
     </div>
   );
 }
 
-function Businesses({ businesses, quotes, compact }: { businesses: DealBoardBusiness[]; quotes: Quote[]; compact: boolean }) {
+function Businesses({ businesses, quotes, compact, jobId }: { businesses: DealBoardBusiness[]; quotes: Quote[]; compact: boolean; jobId: string }) {
   const quoted = new Set(quotes.map((q) => q.business_id));
+  const followUp = useSendFollowUp();
   if (compact) {
     // Inline: one wrapped line of chips; businesses still waiting show their last event under it.
     const waiting = businesses.filter((b) => !quoted.has(b.id) && (b.last_event || b.transcript_snippet));
@@ -512,11 +568,16 @@ function Businesses({ businesses, quotes, compact }: { businesses: DealBoardBusi
               <span className="db-dot" aria-hidden="true" />
               <span className="db-bizrow-name">{b.name}</span>
               <ChannelBadge channel={b.channel} />
-              <span className="db-bizrow-status">{STATUS_LABEL[b.status] ?? b.status}</span>
+              <span className="db-bizrow-status" title={b.unavailable_reason}>
+                {STATUS_LABEL[b.status] ?? b.status}
+              </span>
             </div>
             <p className="db-bizrow-event">
               {b.unavailable_reason ?? b.last_event}
               {b.last_event_at && <span className="hg-muted"> · {relativeTime(b.last_event_at)}</span>}
+              <button className="db-link" onClick={() => void followUp({ prompt: conversationPrompt(b.name, jobId, b.id) }).catch(() => {})}>
+                Conversation
+              </button>
             </p>
             {b.transcript_snippet && <p className={`db-said db-said-${b.channel}`}>{b.transcript_snippet}</p>}
           </li>

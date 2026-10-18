@@ -11,8 +11,29 @@ import type { RequirementResult } from "../parsing/requirements.ts";
 
 export type Mode = "mock" | "live";
 
+/** The workspace every job belongs to when a server runs single-tenant (no workspace tokens). */
+export const DEFAULT_WORKSPACE_ID = "ws_default";
+
+/**
+ * A tenant: one buyer (agent + human approver). Jobs, settings and approvals are scoped to it; an
+ * MCP connection is bound to one workspace by its bearer token or connector secret (stored only as
+ * SHA-256 hashes). Ported from haggle-testing src/comms/workspace.ts; the Inkbox buyer identity
+ * stays shared (one `haggle` mailbox), replies are still matched by thread and [HG-code].
+ */
+export interface WorkspaceRow {
+  id: string;
+  name: string;
+  token_hash: string | null;
+  connector_secret_hash: string | null;
+  /** IANA timezone for call hours, e.g. "America/Los_Angeles". */
+  timezone: string;
+  created_at: string;
+}
+
 export interface JobRow {
   id: string;
+  /** Owning workspace (DEFAULT_WORKSPACE_ID on single-tenant servers). */
+  workspace_id: string;
   short_code: string;
   state: JobState;
   mode: Mode;
@@ -62,11 +83,19 @@ export interface JobBusinessRow {
   last_reply_at: string | null;
   followups_sent: number;
   countered_round: number; // last round we sent a counteroffer for (0 = none)
+  /** Failed attempts to send the RFQ on the current channel (retryable provider errors). */
+  send_attempts: number;
+  /** When a retry (or a call deferred to call hours) is due; null = nothing scheduled. */
+  next_attempt_at: string | null;
+  /** When Haggle escalated this business from email to a Voice AI call (null = never). */
+  escalated_at: string | null;
 }
 
 export type MessageKind =
   | "rfq" | "reply" | "followup" | "answer" | "counter" | "approval_request" | "approval_reply"
-  | "accept" | "payment" | "receipt" | "cancel" | "quarantine" | "call";
+  | "accept" | "payment" | "receipt" | "cancel" | "quarantine" | "call"
+  // v5 parity: the agent's own (guarded) message to a business, and the post-approval confirmation.
+  | "message" | "confirmation";
 
 export interface StoredAttachment {
   filename: string | null;
@@ -145,7 +174,12 @@ export interface ApprovalRow {
   cap_cents: number;
   approver: string | null;
   channel: "elicitation" | "email" | "simulated" | "view" | "imessage";
-  status: "pending" | "approved" | "declined" | "expired" | "used";
+  /** locked = too many wrong codes (MAX approval attempts); it can't be approved any more. */
+  status: "pending" | "approved" | "declined" | "expired" | "used" | "locked";
+  /** What the human approves; confirm-only approvals have payment_cents 0. */
+  action: "confirm" | "pay" | "confirm_and_pay";
+  /** Wrong codes entered so far (approval card or iMessage). */
+  attempts: number;
   code: string;
   expires_at: string;
   decided_at: string | null;
@@ -204,10 +238,17 @@ export interface SettingsRow {
 
 /** Persistence port. InMemoryRepository for tests/mock mode; PostgresRepository for live. */
 export interface Repository {
+  // workspaces (tenancy)
+  insertWorkspace(w: Omit<WorkspaceRow, "created_at">): Promise<WorkspaceRow>;
+  getWorkspace(id: string): Promise<WorkspaceRow | null>;
+  findWorkspaceByTokenHash(hash: string): Promise<WorkspaceRow | null>;
+  findWorkspaceBySecretHash(hash: string): Promise<WorkspaceRow | null>;
+
   // jobs
   insertJob(job: JobRow): Promise<JobRow>;
   getJob(id: string): Promise<JobRow | null>;
-  findJobByClientRequestId(id: string): Promise<JobRow | null>;
+  /** client_request_id is unique per workspace. */
+  findJobByClientRequestId(id: string, workspaceId?: string): Promise<JobRow | null>;
   findJobByShortCode(code: string): Promise<JobRow | null>;
   /** Compare-and-swap on version; returns the new row or null if someone else won. */
   casJob(id: string, expectedVersion: number, patch: Partial<JobRow>): Promise<JobRow | null>;
@@ -234,6 +275,8 @@ export interface Repository {
   listMessages(jobId: string): Promise<MessageRow[]>;
   getPendingMessages(jobId: string): Promise<MessageRow[]>;
   findOutboundByRfcIds(ids: string[]): Promise<MessageRow[]>;
+  /** Calls to or from one number since a time, across jobs (call cooldown; a call in progress). */
+  listPhoneMessages(number: string, sinceIso: string): Promise<MessageRow[]>;
 
   // quotes
   /** Inserts as current and supersedes the business's previous current quote, atomically. Null if message already parsed. */
@@ -258,6 +301,11 @@ export interface Repository {
   /** CAS on status. */
   transitionApproval(id: string, from: ApprovalRow["status"], patch: Partial<ApprovalRow>): Promise<boolean>;
   updateApproval(id: string, patch: Partial<ApprovalRow>): Promise<void>;
+  /**
+   * One wrong code, atomically: attempts + 1 on a pending approval, and status -> locked once
+   * attempts reach maxAttempts. Returns the new count (null if the approval isn't pending).
+   */
+  recordWrongApprovalCode(id: string, maxAttempts: number): Promise<{ attempts: number; locked: boolean } | null>;
 
   // payments
   insertPayment(p: Omit<PaymentRow, "created_at" | "updated_at">): Promise<PaymentRow | null>; // null if approval already has one
@@ -271,9 +319,9 @@ export interface Repository {
   /** True the first time an event id is seen. */
   recordInboundEvent(providerEventId: string): Promise<boolean>;
 
-  // jobs (launcher) + settings
-  /** Most recently updated jobs, newest first. */
-  listRecentJobs(limit: number): Promise<JobRow[]>;
-  getSettings(): Promise<SettingsRow | null>;
-  saveSettings(s: Omit<SettingsRow, "updated_at">): Promise<SettingsRow>;
+  // jobs (launcher) + settings (per workspace)
+  /** Most recently updated jobs, newest first; only the workspace's when given. */
+  listRecentJobs(limit: number, workspaceId?: string): Promise<JobRow[]>;
+  getSettings(workspaceId?: string): Promise<SettingsRow | null>;
+  saveSettings(s: Omit<SettingsRow, "updated_at">, workspaceId?: string): Promise<SettingsRow>;
 }

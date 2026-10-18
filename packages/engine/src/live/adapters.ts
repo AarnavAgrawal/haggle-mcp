@@ -7,6 +7,7 @@ import { createX402Client } from "@primitivedotdev/sdk/x402";
 import { privateKeyToAccount } from "viem/accounts";
 import { extractAttachments, type ExtractedFile } from "../inbound/attachments.ts";
 import { sendEmail, type SenderClient } from "../outbound/primitiveSender.ts";
+import { heuristicExtract } from "../parsing/heuristic.ts";
 import { createAnthropicClient, parseReply } from "../parsing/parseReply.ts";
 import type { PayerClient } from "../payments/x402Challenge.ts";
 import type { MessageRow } from "../store/types.ts";
@@ -26,7 +27,29 @@ export function primitiveEmail(apiKey: string): EmailPort & { client: PrimitiveC
 
 export function claudeExtractor(opts: { apiKey: string; workspaceId?: string; model: string }): ExtractorPort {
   const client = createAnthropicClient({ apiKey: opts.apiKey, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) });
-  return { extract: ({ request, bodyText, pdfs }) => parseReply(client, opts.model, { request, bodyText, pdfs }) };
+  return { extract: ({ request, bodyText, pdfs, images }) => parseReply(client, opts.model, { request, bodyText, pdfs, ...(images ? { images } : {}) }) };
+}
+
+/** The keyword fallback alone (no API key): low-confidence quotes, flagged for the agent. */
+export const heuristicExtractor: ExtractorPort = {
+  extract: async ({ request, bodyText }) => heuristicExtract({ request, bodyText }),
+};
+
+/**
+ * Claude first; when it fails (refusal, outage, rate limit) the reply is read by the keyword
+ * fallback instead of being dropped. Its quotes carry low confidence, so they're flagged.
+ */
+export function withHeuristicFallback(primary: ExtractorPort, log?: (event: string, data: Record<string, unknown>) => void): ExtractorPort {
+  return {
+    async extract(input) {
+      try {
+        return await primary.extract(input);
+      } catch (err) {
+        log?.("extractor_fallback", { error: (err as Error).message.slice(0, 200) });
+        return heuristicExtract({ request: input.request, bodyText: input.bodyText });
+      }
+    },
+  };
 }
 
 /** True only for Primitive's own hosts: the API key is never sent anywhere else. */

@@ -19,36 +19,49 @@ export interface RfqInput {
   shortCode: string;
   businessName: string;
   what: string;
-  quantity: number;
-  date: string; // YYYY-MM-DD
+  quantity?: number;
+  unit?: string;
+  date?: string; // YYYY-MM-DD; absent = flexible
   time?: string;
   location: string;
   requirements: string[]; // hard requirements, human-readable
   replyBy: Date;
   /** Only when the buyer's policy allows revealing it. */
   budgetHintCents?: number;
+  /** Facts the business should know (any kind of request). */
+  details?: { label: string; value: string }[];
+  /** Custom answers to ask for, by label; replaces the catering default ask (total, delivery, deposit). */
+  askLabels?: { label: string; required: boolean }[];
+}
+
+/** "40 people" (people is the default unit), "3 rooms", or null when nothing is counted. */
+export function quantityText(quantity: number | undefined, unit: string | undefined): string | null {
+  return quantity === undefined ? null : `${quantity} ${unit ?? "people"}`;
 }
 
 export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string } {
-  const subject = `[HG-${i.shortCode}] Quote request: ${i.what}, ${i.quantity} people, ${humanDate(i.date)}`;
+  const qty = quantityText(i.quantity, i.unit);
+  const subject = [`[HG-${i.shortCode}] Quote request: ${i.what}`, qty, i.date ? humanDate(i.date) : null].filter(Boolean).join(", ");
   const replyBy = `${humanDate(i.replyBy.toISOString().slice(0, 10))} ${String(i.replyBy.getUTCHours()).padStart(2, "0")}:${String(i.replyBy.getUTCMinutes()).padStart(2, "0")} UTC`;
+  const people = i.unit === undefined || i.unit === "people";
   const lines = [
     `Hi ${i.businessName},`,
     "",
     "I'm an AI assistant arranging this order for a client. Could you quote the following?",
     "",
     `- What: ${i.what}`,
-    `- Date: ${humanDate(i.date)}${i.time ? ` at ${i.time}` : ""}`,
-    `- People: ${i.quantity}`,
+    ...(i.date ? [`- Date: ${humanDate(i.date)}${i.time ? ` at ${i.time}` : ""}`] : []),
+    ...(i.quantity !== undefined ? [people ? `- People: ${i.quantity}` : `- Quantity: ${qty}`] : []),
     `- Location: ${i.location}`,
+    ...(i.details ?? []).map((d) => `- ${d.label}: ${d.value}`),
     ...(i.requirements.length ? ["- Must have:", ...i.requirements.map((r) => `  - ${r}`)] : []),
   ];
   if (i.budgetHintCents !== undefined) lines.push(`- Budget: up to $${(i.budgetHintCents / 100).toFixed(2)} total`);
-  lines.push(
-    "",
-    `Please reply by ${replyBy} with your total price, what it includes (delivery, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.`,
-    "",
-    "Thank you!",
-  );
+  if (i.askLabels?.length) {
+    lines.push("", `Could you reply by ${replyBy} with:`, ...i.askLabels.map((a) => `- ${a.label}${a.required ? "" : " (if you can)"}`), "", "A PDF or photo is fine.");
+  } else {
+    lines.push("", `Please reply by ${replyBy} with your total price, what it includes (delivery, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.`);
+  }
+  lines.push("", "Thank you!");
   return { subject, bodyText: lines.join("\n") };
 }

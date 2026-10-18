@@ -6,6 +6,7 @@ import { ModelContext, useCallTool, useOpenExternal, useSendFollowUp, useToolCon
 import { useState } from "react";
 import type { Approval as SharedApproval } from "@haggle/core";
 import { ChannelBadge, ErrorNote, Meter, ModeBadge, Shell, Skeleton, usd, viewTicket, type ViewTicket } from "../_shared/ui.tsx";
+import { toolErrorText } from "../_shared/format.ts";
 
 /** The shared Approval plus the server's additions (apps/mcp/src/views.ts ApprovalOut). */
 type Approval = Omit<SharedApproval, "channel"> & {
@@ -20,6 +21,12 @@ const STEPS = [
   { key: "pending_human", label: "Waiting on approver" },
   { key: "approved", label: "Approved" },
   { key: "paid", label: "Paid" },
+] as const;
+
+/** action "confirm": the human approves the order only; nothing is paid. */
+const CONFIRM_STEPS = [
+  { key: "pending_human", label: "Waiting on approver" },
+  { key: "confirmed", label: "Confirmed" },
 ] as const;
 
 export default function ApprovalView() {
@@ -55,12 +62,16 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
       const res = await call();
       if (res.structuredContent) setCard(res.structuredContent as Approval);
     } catch (e) {
-      setError((e as Error).message);
+      setError(toolErrorText(e));
     }
   };
 
+  const confirmOnly = card.action === "confirm";
+  // A confirm-only approval is done once approved: the business was told to go ahead.
+  const status = confirmOnly && card.status === "approved" ? "confirmed" : card.status;
+  const steps: readonly { key: string; label: string }[] = confirmOnly ? CONFIRM_STEPS : STEPS;
   // Paid means every step is done; a refusal leaves the approval step current.
-  const stepIndex = card.status === "paid" ? STEPS.length : card.status === "refused" ? 0 : STEPS.findIndex((s) => s.key === card.status);
+  const stepIndex = status === "paid" || status === "confirmed" ? steps.length : status === "refused" ? 0 : steps.findIndex((s) => s.key === status);
   const busy = approve.isPending || approveInView.isPending || pay.isPending;
 
   // The human's tap: with a view ticket, approve_in_view records the approval; otherwise re-request it.
@@ -70,10 +81,10 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
     try {
       const res = await approveInView.callTool(ticket);
       const r = res.structuredContent as { status: string; next: string };
-      if (r.status === "approved") setCard({ ...card, status: "approved", next: r.next, reason: undefined });
+      if (r.status === "approved") setCard({ ...card, status: confirmOnly ? "confirmed" : "approved", next: r.next, reason: undefined });
       else setError(`Approval is ${r.status}.`);
     } catch (e) {
-      setError((e as Error).message);
+      setError(toolErrorText(e));
     }
   };
   const payNow = card.deposit_usd ?? card.amount_usd;
@@ -82,13 +93,18 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
 
   return (
     <div className="ap">
-      <ModelContext content={`Haggle approval for ${card.business} ${usd(card.amount_usd)} on ${card.job_id}: ${card.status}.`} />
+      <ModelContext content={`Haggle approval for ${card.business} ${confirmOnly ? "(confirm the order, nothing paid)" : usd(card.amount_usd)} on ${card.job_id}: ${status}.`} />
       <header className="ap-head">
         <div>
           <p className="ap-who">
             {card.business} <ChannelBadge channel={card.quote_channel} /> <ModeBadge mode={card.mode} />
           </p>
-          {card.order_total_usd !== undefined && card.order_total_usd !== card.amount_usd ? (
+          {confirmOnly ? (
+            <>
+              <h1 className="ap-amount">Confirm order</h1>
+              <p className="ap-sub">{usd(card.order_total_usd ?? card.amount_usd)} order total · <strong>nothing paid</strong> now</p>
+            </>
+          ) : card.order_total_usd !== undefined && card.order_total_usd !== card.amount_usd ? (
             <>
               <h1 className="ap-amount">{usd(card.order_total_usd)}</h1>
               <p className="ap-sub">order total · <strong>{usd(card.amount_usd)}</strong> deposit due now</p>
@@ -99,7 +115,7 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
           {card.items.length > 0 && <p className="hg-muted">{card.items.join(", ")}</p>}
         </div>
         <ol className="ap-steps" aria-label="Approval progress">
-          {STEPS.map((s, i) => (
+          {steps.map((s, i) => (
             <li key={s.key} className={i < stepIndex ? "is-done" : i === stepIndex ? "is-now" : ""}>
               {s.label}
             </li>
@@ -109,8 +125,8 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
 
       <dl className="ap-facts">
         <div>
-          <dt>Deposit due now</dt>
-          <dd>{card.deposit_usd !== undefined ? usd(card.deposit_usd) : "None"}</dd>
+          <dt>{confirmOnly ? "Paid now" : "Deposit due now"}</dt>
+          <dd>{confirmOnly ? "Nothing" : card.deposit_usd !== undefined ? usd(card.deposit_usd) : "None"}</dd>
         </div>
         <div>
           <dt>Spending cap</dt>
@@ -129,38 +145,43 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
           </dd>
         </div>
       </dl>
-      <Meter
-        value={card.amount_usd}
-        max={Math.max(card.cap_usd, card.amount_usd)}
-        tone={card.amount_usd > card.cap_usd ? "risk" : "win"}
-        label={`${usd(card.amount_usd)} of a ${usd(card.cap_usd)} cap`}
-      />
-      <p className="ap-capnote hg-muted">
-        {card.amount_usd <= card.cap_usd
-          ? `${usd(card.cap_usd - card.amount_usd)} under the cap`
-          : `${usd(card.amount_usd - card.cap_usd)} over the cap; payment will be refused`}
-      </p>
+      {!confirmOnly && (
+        <>
+          <Meter
+            value={card.amount_usd}
+            max={Math.max(card.cap_usd, card.amount_usd)}
+            tone={card.amount_usd > card.cap_usd ? "risk" : "win"}
+            label={`${usd(card.amount_usd)} of a ${usd(card.cap_usd)} cap`}
+          />
+          <p className="ap-capnote hg-muted">
+            {card.amount_usd <= card.cap_usd
+              ? `${usd(card.cap_usd - card.amount_usd)} under the cap`
+              : `${usd(card.amount_usd - card.cap_usd)} over the cap; payment will be refused`}
+          </p>
+        </>
+      )}
 
 
-      {card.status === "refused" && card.reason && <p className="ap-refused">Payment refused: {card.reason}</p>}
-      {card.status === "pending_human" && card.reason && <p className="ap-waiting">{card.reason}</p>}
+      {status === "refused" && card.reason && <p className="ap-refused">{confirmOnly ? "Not approved" : "Payment refused"}: {card.reason}</p>}
+      {status === "pending_human" && card.reason && <p className="ap-waiting">{card.reason}</p>}
 
       <div className="ap-actions">
-        {card.status === "pending_human" && (
+        {status === "pending_human" && (
           <button
             className="hg-btn hg-btn-primary"
             disabled={busy}
             onClick={() => void onApprove()}
           >
-            {approve.isPending || approveInView.isPending ? "Approving…" : `Approve ${usd(card.amount_usd)}`}
+            {approve.isPending || approveInView.isPending ? "Approving…" : confirmOnly ? "Approve order" : `Approve ${usd(card.amount_usd)}`}
           </button>
         )}
-        {card.status === "approved" && (
+        {status === "approved" && (
           <button className="hg-btn hg-btn-primary" disabled={busy} onClick={() => void run(() => pay.callTool({ job_id: card.job_id, quote_id: card.quote_id }))}>
             {pay.isPending ? "Paying…" : `Pay ${usd(payNow)} deposit`}
           </button>
         )}
-        {card.status === "paid" && (
+        {status === "confirmed" && <p className="ap-paid">Confirmed — the business was told to go ahead (nothing paid).</p>}
+        {status === "paid" && (
           <p className="ap-paid">
             {usd(card.amount_usd)} deposit paid{card.paid_at ? ` ${new Date(card.paid_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}
             {simulatedPay ? " · simulated (demo), no money moved" : " · Stripe test mode"}

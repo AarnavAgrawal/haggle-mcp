@@ -3,7 +3,7 @@
 // payer; phone/A2A ports are absent until enabled, so those businesses are reported "unavailable".
 // Mock (labelled DEMO everywhere): SimFleet (email + simulated calls), inline attachments, StubBrain.
 import type { Brain } from "../contract.ts";
-import type { ExtractedFile, PdfFile } from "../inbound/attachments.ts";
+import { imageContentType, type ExtractedFile, type ImageFile, type PdfFile } from "../inbound/attachments.ts";
 import type { OutboundEmail, SendOutcome } from "../outbound/primitiveSender.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
@@ -13,6 +13,34 @@ import type { MessageRow, Mode, Repository } from "../store/types.ts";
 
 export interface EmailPort {
   send(msg: OutboundEmail): Promise<SendOutcome>;
+}
+
+/** Why a send failed, in the engine's terms; adapters map provider errors to it (live/inkbox.ts mapInkboxError). */
+export type SendFailureReason = "rate_limited" | "provider_error" | "invalid_address" | "opted_out" | "not_opted_in" | "channel_not_configured";
+
+/**
+ * A classified send failure. Retryable ones keep the business pending and the same channel is
+ * tried again after retryAfterMs (same idempotency key); the rest move on to the next channel.
+ */
+export class ChannelSendError extends Error {
+  override name = "ChannelSendError";
+  readonly reason: SendFailureReason;
+  readonly retryable: boolean;
+  readonly retryAfterMs: number;
+  constructor(reason: SendFailureReason, retryable: boolean, retryAfterMs: number, message: string) {
+    super(message);
+    this.reason = reason;
+    this.retryable = retryable;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/**
+ * The buyer identity's Voice AI answering instructions (inbound calls). The engine replaces them
+ * with the open requests so a business calling back is matched to its request. Optional.
+ */
+export interface VoiceContextPort {
+  setInstructions(instructions: string): Promise<void>;
 }
 
 /** A Voice AI call request. `reason` is the task brief (≤ 2,000 chars) and says it is an AI assistant. */
@@ -63,7 +91,7 @@ export interface IMessagePort {
 }
 
 export interface ExtractorPort {
-  extract(input: { request: ExtractionRequest; bodyText: string; pdfs: PdfFile[]; message: MessageRow }): Promise<QuoteExtraction>;
+  extract(input: { request: ExtractionRequest; bodyText: string; pdfs: PdfFile[]; images?: ImageFile[]; message: MessageRow }): Promise<QuoteExtraction>;
 }
 
 export interface AttachmentPort {
@@ -110,6 +138,16 @@ export interface EngineConfig {
   callDelayMs?: number;
   /** Call an email business with an allowlisted phone when its email is unanswered this long (needs the phone port). Off when unset. */
   escalateEmailToCallAfterMs?: number;
+  /** Local hours [start, end) in the workspace timezone when Haggle may place calls. Absent = any time. */
+  callHours?: { start: number; end: number };
+  /** No new call to a number within this long after the last one (either direction). Default 2 min. */
+  callCooldownMs?: number;
+  /** A business message keeps the window open at least this long, so a half-answered business can finish. */
+  replyGraceMs?: number;
+  /** Wrong approval codes before an approval locks. Default 5. */
+  maxApprovalAttempts?: number;
+  /** The buyer identity as businesses see it (get_identity; Voice AI instructions). */
+  identity?: { name: string; phone?: string | null };
 }
 
 export interface EngineDeps {
@@ -121,6 +159,8 @@ export interface EngineDeps {
   a2a?: A2APort;
   /** Optional: iMessage approval requests (live: only when enabled). */
   imessage?: IMessagePort;
+  /** Optional: keeps the buyer's Voice AI answering instructions in sync with open requests (inbound callbacks). */
+  voice?: VoiceContextPort;
   extractor: ExtractorPort;
   attachments: AttachmentPort;
   brain: Brain;
@@ -142,10 +182,11 @@ export const inlineAttachments: AttachmentPort = {
   async load(m) {
     return m.attachments
       .filter((a) => a.content_base64)
-      .map((a) => {
+      .map((a): ExtractedFile => {
         const name = (a.filename ?? "").toLowerCase();
-        const kind = a.content_type === "application/pdf" || name.endsWith(".pdf") ? ("pdf" as const) : ("json" as const);
-        return { kind, filename: a.filename ?? "attachment", data: Buffer.from(a.content_base64!, "base64") };
+        const image = imageContentType(a.content_type, a.filename);
+        const kind = a.content_type === "application/pdf" || name.endsWith(".pdf") ? ("pdf" as const) : image ? ("image" as const) : ("json" as const);
+        return { kind, filename: a.filename ?? "attachment", data: Buffer.from(a.content_base64!, "base64"), ...(kind === "image" ? { contentType: image! } : {}) };
       });
   },
 };

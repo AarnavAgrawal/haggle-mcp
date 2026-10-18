@@ -56,6 +56,15 @@ export const OpenQuestion = z.object({
 });
 export type OpenQuestion = z.infer<typeof OpenQuestion>;
 
+/** A custom answer asked of every business (any kind of request). */
+export const AskFieldView = z.object({
+  key: z.string(),
+  label: z.string(),
+  type: z.enum(["money", "number", "date", "time", "text", "boolean"]),
+  required: z.boolean(),
+});
+export type AskFieldView = z.infer<typeof AskFieldView>;
+
 export const DealBoard = z.object({
   job: z.object({
     id: z.string(),
@@ -64,6 +73,9 @@ export const DealBoard = z.object({
     state: JobState,
     budget_usd: usd.optional(),
     requirements: z.array(z.string()),
+    /** v6: the custom answers asked (columns on the board), and which one ranks the quotes. */
+    ask: z.array(AskFieldView).optional(),
+    compare_by: z.object({ field: z.string(), direction: z.enum(["min", "max"]) }).optional(),
   }),
   businesses: z.array(DealBoardBusiness),
   /** Ranked best first: compliant quotes by total, then the rest. */
@@ -103,7 +115,8 @@ export type DealBoardOrEmpty = z.infer<typeof DealBoardOrEmpty>;
 // ---------------------------------------------------------------------------
 // Approval card (approve, pay)
 
-export const ApprovalStatus = z.enum(["pending_human", "approved", "paid", "refused"]);
+/** v6: "confirmed" = a confirm-only approval went through and the business was told (nothing paid). */
+export const ApprovalStatus = z.enum(["pending_human", "approved", "paid", "refused", "confirmed"]);
 export type ApprovalStatus = z.infer<typeof ApprovalStatus>;
 
 export const Approval = z.object({
@@ -132,8 +145,61 @@ export const Approval = z.object({
   mode: Mode.optional(),
   approval_id: z.string().optional(),
   expires_at: z.string().optional(),
+  /** v6: what the human approves (confirm the order, pay, or both). Absent = confirm_and_pay. */
+  action: z.enum(["confirm", "pay", "confirm_and_pay"]).optional(),
 });
 export type Approval = z.infer<typeof Approval>;
+
+// ---------------------------------------------------------------------------
+// Conversation (get_conversation), v6
+
+export const ConversationEntry = z.object({
+  message_id: z.string(),
+  direction: z.enum(["in", "out"]),
+  channel: Channel,
+  /** rfq, reply, followup, answer, counter, message, confirmation, call, ... */
+  kind: z.string(),
+  at: z.string(),
+  subject: z.string().optional(),
+  /** Clipped; inbound text is the business's own words (untrusted data). Calls: the brief (out) or transcript (in). */
+  text: z.string(),
+  attachments: z.array(z.string()),
+  sender_verified: z.boolean().optional(),
+  quarantined: z.boolean().optional(),
+});
+export type ConversationEntry = z.infer<typeof ConversationEntry>;
+
+export const Conversation = z.object({
+  job_id: z.string(),
+  business_id: z.string(),
+  business: z.string(),
+  channel: Channel,
+  entries: z.array(ConversationEntry),
+  next: z.string(),
+  mode: Mode.optional(),
+});
+export type Conversation = z.infer<typeof Conversation>;
+
+// ---------------------------------------------------------------------------
+// Identity card (get_identity), v6
+
+export const ChannelReadiness = z.enum(["ready", "off"]);
+
+export const Identity = z.object({
+  /** How businesses see Haggle, e.g. "Haggle". */
+  identity_name: z.string(),
+  email: z.string(),
+  phone: z.string().nullable(),
+  channels: z.object({ email: ChannelReadiness, phone: ChannelReadiness, a2a: ChannelReadiness, imessage_approvals: ChannelReadiness }),
+  /** Masked approver contacts. */
+  approver: z.object({ phone: z.string().nullable(), email: z.string().nullable() }),
+  spend_cap_usd: usd,
+  workspace: z.object({ id: z.string(), name: z.string(), timezone: z.string() }),
+  call_hours: z.object({ start: z.number(), end: z.number() }).nullable(),
+  next: z.string(),
+  mode: Mode.optional(),
+});
+export type Identity = z.infer<typeof Identity>;
 
 // ---------------------------------------------------------------------------
 // Estimates (ask)

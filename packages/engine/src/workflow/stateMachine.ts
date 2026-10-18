@@ -8,17 +8,24 @@
 // deadline with no eligible quote fails the job with a reason.
 import type { JobState } from "../contract.ts";
 
-export const TERMINAL: ReadonlySet<JobState> = new Set(["paid", "cancelled", "failed"]);
+export const TERMINAL: ReadonlySet<JobState> = new Set(["paid", "confirmed", "cancelled", "failed"]);
 
 export type JobEvent =
   | { type: "rfqs_sent" }
   | { type: "window_closed" } // deadline passed or every contacted business answered
+  | { type: "negotiation_requested"; businessIds?: string[] } // the agent asked for a (further) counteroffer round
   | { type: "approval_requested" }
   | { type: "approval_verified" }
-  | { type: "approval_void" } // declined, expired, or the quote was revised
+  | { type: "approval_void" } // declined, expired, locked, or the quote was revised
   | { type: "payment_settled" }
   | { type: "payment_failed_final" }
   | { type: "cancelled" };
+
+/** What the human approves: confirm the order, pay, or both (ported from haggle-testing request_approval). */
+export type ApprovalAction = "confirm" | "pay" | "confirm_and_pay";
+
+/** Rounds are capped in the database (jobs.round ≤ 3): one manual round beyond max_rounds at most. */
+export const MAX_ROUND = 3;
 
 export interface MachineState {
   state: JobState;
@@ -43,12 +50,15 @@ export interface TransitionContext {
   negotiationWindowMs: number;
   /** A payment is signed or sent and not yet resolved. */
   paymentInFlight: boolean;
+  /** The action of the approval being verified (confirm-only approvals finish without a payment). */
+  approvalAction?: ApprovalAction;
 }
 
 export type Effect =
   | { type: "send_rfqs" }
-  | { type: "send_counteroffers"; round: number }
+  | { type: "send_counteroffers"; round: number; businessIds?: string[] }
   | { type: "send_accept" }
+  | { type: "send_confirmation" } // tell the winning business (and the approver) the order is confirmed / paid
   | { type: "notify_cancelled" };
 
 export type TransitionResult = { ok: true; next: MachineState; effects: Effect[] } | { ok: false; reason: string };
@@ -89,13 +99,27 @@ export function transition(s: MachineState, e: JobEvent, ctx: TransitionContext)
     case "negotiating":
       if (e.type === "window_closed") return s.ready ? to(s, {}) : closeWindow(s, ctx);
       if (e.type === "approval_requested") return (ctx.approvableQuotes ?? ctx.eligibleQuotes) > 0 ? to(s, { state: "awaiting_approval" }) : { ok: false, reason: "no eligible quote to approve" };
+      if (e.type === "negotiation_requested") {
+        // Manual round (negotiate tool): only once quotes are final, with something to counter, one round past max_rounds at most.
+        if (!s.ready) return { ok: false, reason: "quotes are still coming in; negotiation runs automatically" };
+        if (!ctx.counterable || ctx.eligibleQuotes < 2) return { ok: false, reason: "not comparable: needs two eligible priced quotes and a business above the best" };
+        if (s.round >= MAX_ROUND) return { ok: false, reason: "no negotiation rounds left" };
+        const round = s.round + 1;
+        return to(s, { state: "negotiating", round, ready: false, collect_until: new Date(ctx.now.getTime() + ctx.negotiationWindowMs).toISOString() }, [
+          { type: "send_counteroffers", round, ...(e.businessIds?.length ? { businessIds: e.businessIds } : {}) },
+        ]);
+      }
       return reject(s, e);
     case "awaiting_approval":
-      if (e.type === "approval_verified") return to(s, { state: "paying" }, [{ type: "send_accept" }]);
+      if (e.type === "approval_verified") {
+        // Confirm-only: the business is told and the deal is done; nothing is paid.
+        if (ctx.approvalAction === "confirm") return to(s, { state: "confirmed" }, [{ type: "send_confirmation" }]);
+        return to(s, { state: "paying" }, [{ type: "send_accept" }]);
+      }
       if (e.type === "approval_void") return to(s, { state: s.round > 1 ? "negotiating" : "collecting", ready: true });
       return reject(s, e);
     case "paying":
-      if (e.type === "payment_settled") return to(s, { state: "paid" });
+      if (e.type === "payment_settled") return to(s, { state: "paid" }, [{ type: "send_confirmation" }]);
       if (e.type === "payment_failed_final") return to(s, { state: "failed", failure_reason: "payment_failed" });
       return reject(s, e);
   }
