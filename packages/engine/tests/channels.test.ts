@@ -180,8 +180,9 @@ describe("iMessage approval (real engine, fake iMessage port)", () => {
     expect((await repo.getApproval(a.id))!).toMatchObject({ status: "pending", attempts: a.code === "0000" ? 0 : 1 });
     expect((await engine.ingestIMessage(msg(`yes ${a.code}`, { messageId: "in_ok" }))).outcome).toBe("approved");
     expect((await engine.ingestIMessage(msg(`yes ${a.code}`, { messageId: "in_ok" }))).outcome).toBe("duplicate");
-    expect(await repo.getApproval(a.id)).toMatchObject({ status: "approved", channel: "imessage", approver: APPROVER });
-    expect((await repo.getJob(deal.job_id))!.state).toBe("paying");
+    // Approved outside the chat: the approved deposit is charged at once (the approval is then used).
+    expect(await repo.getApproval(a.id)).toMatchObject({ status: "used", channel: "imessage", approver: APPROVER });
+    expect((await repo.getJob(deal.job_id))!.state).toBe("paid");
   });
 
   it("NO <code> declines; a failed send leaves the approval card as the fallback", async () => {

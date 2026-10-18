@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { inkboxSms } from "../src/live/inkbox.ts";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type EngineConfig, type SmsPort } from "../src/index.ts";
+import { simulatedStripe, type StripePort } from "../src/payments/stripe.ts";
 
 const HUMAN = "+14155550199";
 
@@ -31,7 +32,7 @@ const textExtractor = {
   },
 };
 
-function demoEngine(opts: { sms?: boolean; notifyPhone?: string | null; smsPort?: SmsPort; config?: Partial<EngineConfig> } = {}) {
+function demoEngine(opts: { sms?: boolean; notifyPhone?: string | null; smsPort?: SmsPort; config?: Partial<EngineConfig>; stripe?: StripePort } = {}) {
   let t = Date.now();
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const emails: { to: string; subject: string; bodyText: string }[] = [];
@@ -45,6 +46,7 @@ function demoEngine(opts: { sms?: boolean; notifyPhone?: string | null; smsPort?
     email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },
     phone: { async placeCall(r) { calls.push(r); return { callId: `call_${calls.length}` }; } },
     ...(opts.sms === false ? {} : { sms }),
+    ...(opts.stripe ? { stripe: opts.stripe } : {}),
     log: (event, data) => { logs.push({ event, data }); },
     config: {
       mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: "haggle@inkboxmail.test", collectionWindowMs: 30 * 60_000, negotiationWindowMs: 10 * 60_000, approvalTtlMs: 30 * 60_000,
@@ -382,6 +384,46 @@ describe("approval by text (SMS)", () => {
     expect(await engine.approvalReach(jobId)).toEqual({ text: false, email: false });
   });
 
+  // Live 2026-10-18: the card approved first; "YES 3845" arrived 12 s later and was sent to Sunset Kitchen as an answer.
+  it("YES <code> after the card already approved is never sent to a business; the human is told it's done", async () => {
+    const { engine, repo, texts, emails, jobId, quoteId } = await quoted();
+    const sunset = (await repo.getBusinesses(jobId)).find((b) => b.name === "Sunset Kitchen")!;
+    await engine.ingest({ providerEventId: "eq", eventType: "message.received", providerEmailId: "in_q", threadId: "tq", messageId: "<in_q@x>", inReplyTo: [sunset.rfq_message_id!], references: [sunset.rfq_message_id!], from: sunset.email!, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "Do you need plates, cutlery and napkins, or just the food?", attachments: [], attachmentsDownloadUrl: null }, trusted);
+    await engine.advanceJob(jobId);
+    const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
+    expect(await engine.decideApproval(a.id, "approve", "view", "human (approval view)")).toBe(true);
+    const sentBefore = emails.length;
+    expect(await engine.ingestText({ messageId: "late_yes", from: HUMAN, text: `YES ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "approval_already_decided" });
+    expect(emails.length).toBe(sentBefore); // nothing went to Sunset Kitchen
+    expect((await repo.listQuestions(jobId)).every((q) => q.status === "pending")).toBe(true);
+    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(/already approved/) });
+    // Redelivery of the same webhook: handled once.
+    expect((await engine.ingestText({ messageId: "late_yes", from: HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("duplicate");
+  });
+
+  it("a coded YES/NO that matches no approval is never sent to a business", async () => {
+    const { engine, repo, emails, jobId } = await quoted();
+    const sunset = (await repo.getBusinesses(jobId)).find((b) => b.name === "Sunset Kitchen")!;
+    await engine.ingest({ providerEventId: "eq2", eventType: "message.received", providerEmailId: "in_q2", threadId: "tq2", messageId: "<in_q2@x>", inReplyTo: [sunset.rfq_message_id!], references: [sunset.rfq_message_id!], from: sunset.email!, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "Is a drop-off fine?", attachments: [], attachmentsDownloadUrl: null }, trusted);
+    await engine.advanceJob(jobId);
+    const sentBefore = emails.length;
+    expect((await engine.ingestText({ messageId: "stray", from: HUMAN, text: "YES 4821", inbound: true })).outcome).toBe("no_matching_approval");
+    expect(emails.length).toBe(sentBefore);
+  });
+
+  it("approving by text charges the payment straight away (Stripe test mode) and texts the human", async () => {
+    const stripe = simulatedStripe();
+    const { engine, repo, texts, jobId, quoteId } = await quoted({ stripe });
+    const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
+    expect(await engine.ingestText({ messageId: "pay_yes", from: HUMAN, text: `YES ${a.code}`, inbound: true })).toMatchObject({ outcome: "approved" });
+    expect(stripe.charges.map((c) => c.amountCents)).toEqual([34_500]);
+    expect((await repo.getJob(jobId))!.state).toBe("paid");
+    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(/Paid \$345 to Harbor Table/) });
+    // The agent calling pay afterwards changes nothing (one charge).
+    await engine.pay(jobId, quoteId);
+    expect(stripe.charges).toHaveLength(1);
+  });
+
   it("a blocked number: the approval text is held and sent when the human texts back", async () => {
     const ink = inkboxLikeSms();
     const { engine, repo, jobId, quoteId } = await quoted({ smsPort: ink.port });
@@ -393,6 +435,24 @@ describe("approval by text (SMS)", () => {
     await engine.ingestText({ messageId: "hi", from: HUMAN, text: "hi", inbound: true });
     expect(ink.sent.at(-1)!.text).toMatch(new RegExp(`Reply YES ${a.code}`));
     expect(await engine.approvalOffers(a.id)).toMatchObject({ text: true });
+  });
+});
+
+describe("the human's texted answers", () => {
+  it("'answer <business> ...' goes to that business without the instruction, and covers its duplicate questions", async () => {
+    const { engine, repo, emails, jobId } = await quoted();
+    const sunset = (await repo.getBusinesses(jobId)).find((b) => b.name === "Sunset Kitchen")!;
+    for (const n of [1, 2]) await engine.ingest({ providerEventId: `dq${n}`, eventType: "message.received", providerEmailId: `in_dq${n}`, threadId: `tdq${n}`, messageId: `<in_dq${n}@x>`, inReplyTo: [sunset.rfq_message_id!], references: [sunset.rfq_message_id!], from: sunset.email!, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "Do you need plates, cutlery and napkins, or just the food?", attachments: [], attachmentsDownloadUrl: null }, trusted);
+    await engine.advanceJob(jobId);
+    expect((await repo.listQuestions(jobId)).filter((q) => q.status === "pending")).toHaveLength(2);
+    const before = emails.length;
+    expect((await engine.ingestText({ messageId: "ans", from: HUMAN, text: "answer sunset kitchen with no plates cutlery or napkins - just food", inbound: true })).outcome).toBe("answered");
+    const sent = emails.slice(before);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ to: "sunset@inkboxmail.test" });
+    expect(sent[0]!.bodyText).toContain("no plates cutlery or napkins - just food");
+    expect(sent[0]!.bodyText).not.toMatch(/answer sunset kitchen/i);
+    expect((await repo.listQuestions(jobId)).every((q) => q.status === "answered")).toBe(true);
   });
 });
 

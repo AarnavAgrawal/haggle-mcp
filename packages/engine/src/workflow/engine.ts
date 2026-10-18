@@ -1190,14 +1190,40 @@ export class HaggleEngine {
   private async ingestTextApproval(m: { messageId: string; text: string }, from: string, open: JobRow[]): Promise<{ jobId: string | null; outcome: string } | null> {
     const parsed = m.text.trim().match(TEXT_DECISION);
     if (!parsed) return null;
-    const pending: ApprovalRow[] = [];
+    const texted: ApprovalRow[] = [];
     for (const job of open) {
       if (from !== (await this.notifyTarget(job))) continue;
       const a = await this.repo.getLatestApproval(job.id);
-      if (a?.status === "pending" && (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`))) pending.push(a);
+      if (a && (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`))) texted.push(a);
+    }
+    const last = this.lastSms.get(from);
+    // The approval texted last may belong to a deal that has since closed (approved on the card and paid).
+    if (last?.approvalId && !texted.some((a) => a.id === last.approvalId)) {
+      const a = await this.repo.getApproval(last.approvalId);
+      if (a) texted.push(a);
+    }
+    const pending = texted.filter((a) => a.status === "pending");
+    const code = parsed[2];
+    if (code && !pending.some((a) => a.code === code)) {
+      // Already decided elsewhere (the card, email) or unknown: tell the human, never forward the code.
+      const decided = texted.find((a) => a.code === code);
+      if (decided || pending.length === 0) {
+        const job = await this.repo.getJob(decided?.job_id ?? last?.jobId ?? open.find(() => true)?.id ?? "");
+        const stored = job ? await this.repo.insertMessage({
+          job_id: job.id, business_id: null, approval_id: decided?.id ?? null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+          rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
+          sender_trusted: true, trust_reason: "sms-from-text-approver", matched_via: "approval_code", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+        }) : null;
+        if (job && !stored) return { jobId: job.id, outcome: "duplicate" };
+        if (job) {
+          const what = !decided ? `no approval is waiting for code ${code}, so nothing was done.`
+            : `that approval was already ${decided.status === "approved" || decided.status === "used" ? "approved" : decided.status}${decided.channel === "view" ? " on the card" : ""}. Nothing else to do.`;
+          await this.notifyHuman(job, `approval-ack:${m.messageId}`, what);
+        }
+        return { jobId: job?.id ?? null, outcome: decided ? "approval_already_decided" : "no_matching_approval" };
+      }
     }
     if (pending.length === 0) return null;
-    const last = this.lastSms.get(from);
     if (!parsed[2] && !(last?.approvalId && pending.some((a) => a.id === last.approvalId))) return null;
     return this.decideByText(pending, { providerId: `sms-in:${m.messageId}`, from, text: m.text, trustReason: "sms-from-text-approver" });
   }
@@ -1205,7 +1231,8 @@ export class HaggleEngine {
   private async routeText(m: { messageId: string; from: string; text: string }, from: string): Promise<{ jobId: string | null; outcome: string }> {
     const open = await this.repo.listOpenJobs();
     {
-      let isHuman = false;
+      // The human even when no deal is open any more (e.g. "YES <code>" after the card approved and paid).
+      let isHuman = (!!this.d.sms && from === this.d.config.notifyPhone?.replace(/[\s().-]/g, "")) || !!this.lastSms.get(from)?.approvalId;
       for (const job of open) if (from === (await this.notifyTarget(job))) isHuman = true;
       if (isHuman) {
         const decided = await this.ingestTextApproval(m, from, open);
@@ -1245,7 +1272,19 @@ export class HaggleEngine {
     // The human: answer the question Haggle texted them about, else the newest open one.
     const pending: QuestionRow[] = [];
     for (const job of open) if (from === (await this.notifyTarget(job))) pending.push(...(await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending"));
-    const target = pending.find((q) => q.id === last?.questionId) ?? pending.sort((x, y) => Date.parse(y.created_at) - Date.parse(x.created_at))[0];
+    let answer = m.text;
+    let named: QuestionRow | undefined;
+    const instruction = m.text.match(/^\s*(?:please\s+)?(?:answer|tell|reply(?:\s+to)?|respond(?:\s+to)?|for)\s+(.+)$/is);
+    if (instruction) {
+      for (const q of pending) {
+        const b = (await this.repo.getBusinesses(q.job_id)).find((x) => x.business_id === q.business_id);
+        if (!b || !instruction[1]!.toLowerCase().startsWith(b.name.toLowerCase())) continue;
+        named = q;
+        answer = instruction[1]!.slice(b.name.length).replace(/^\s*(?:with|that|saying|[:,\-–])\s*/i, "").trim() || m.text;
+        break;
+      }
+    }
+    const target = named ?? pending.find((q) => q.id === last?.questionId) ?? pending.sort((x, y) => Date.parse(y.created_at) - Date.parse(x.created_at))[0];
     const jobId = target?.job_id ?? last?.jobId ?? null;
     const stored = jobId ? await this.repo.insertMessage({
       job_id: jobId, business_id: null, approval_id: null, direction: "in", kind: "answer", channel: "phone", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
@@ -1254,7 +1293,7 @@ export class HaggleEngine {
     }) : null;
     if (jobId && !stored) return { jobId, outcome: "duplicate" };
     if (!target) return { jobId, outcome: "no_open_question" };
-    await this.answerSeller(target.job_id, target.id, m.text);
+    await this.answerSeller(target.job_id, target.id, answer);
     return { jobId: target.job_id, outcome: "answered" };
   }
 
@@ -2502,6 +2541,8 @@ export class HaggleEngine {
       throw err;
     }
     if (!(await this.repo.answerQuestion(q.id, text))) throw new EngineError("already_answered", "That question was already answered.", "Wait for the business's quote.", "wait_for_update");
+    // The same business asking again (a resent email) is covered by this one answer.
+    for (const other of await this.repo.listQuestions(jobId)) if (other.status === "pending" && other.business_id === q.business_id) await this.repo.answerQuestion(other.id, text);
     await this.repo.updateBusiness(jobId, b.business_id, { status: b.channel === "phone" && m ? "ringing" : "contacted" });
     await this.repo.appendEvent(jobId, "reply", { business_id: b.business_id, summary: `Answered ${b.name}'s question (${b.channel === "phone" ? (scheduledFor ? "call, scheduled" : "call") : b.channel === "imessage" ? "text" : b.channel})`, channel: b.channel });
     await this.repo.touchJob(jobId);
@@ -2916,8 +2957,29 @@ export class HaggleEngine {
     if (ok) {
       await this.repo.appendEvent(a.job_id, decision === "approve" ? "approval_verified" : "approval_declined", { approval_id: a.id, channel });
       await this.advanceJob(a.job_id);
+      // Decided outside the chat (a text or an email): nobody may be there to call pay, so pay now.
+      // On the card or the client's form the agent is in the conversation and calls pay itself.
+      if (decision === "approve" && (channel === "imessage" || channel === "email") && a.action !== "confirm" && a.payment_cents > 0 && this.d.stripe) await this.payApproved(a);
     }
     return ok;
+  }
+
+  /**
+   * The human approved paying this exact amount: charge it now instead of waiting for the agent to
+   * call pay (the chat may be idle). pay() re-checks every guard; a refusal is told to the human.
+   */
+  private async payApproved(a: ApprovalRow) {
+    const job = await this.repo.getJob(a.job_id);
+    if (!job) return;
+    const name = (await this.repo.getBusinesses(a.job_id)).find((b) => b.business_id === a.business_id)?.name ?? "the business";
+    try {
+      const p = await this.pay(a.job_id, a.quote_id);
+      if (p.status === "settled") await this.notifyHuman(job, `paid:${a.id}`, `Paid ${usdText(a.payment_cents)} to ${name} (Stripe test mode). The receipt is on the deal board.`);
+    } catch (err) {
+      const reason = err instanceof EngineError ? err.message : (err as Error).message;
+      this.log("auto_pay_failed", { job_id: a.job_id, approval_id: a.id, error: reason });
+      await this.notifyHuman(job, `pay-failed:${a.id}`, `approved, but the ${usdText(a.payment_cents)} payment to ${name} didn't go through: ${reason.slice(0, 120)}`);
+    }
   }
 
   async pay(jobId: string, quoteId: string): Promise<EnginePaymentStatus> {
