@@ -71,7 +71,7 @@ export function checkApprovedPayment(i: ApprovedPaymentInput, inFlight: Set<stri
       return deny("APPROVAL_EXPIRED");
   }
   // 4. Still within its time limit.
-  if (i.now.getTime() > Date.parse(approval.expires_at)) return deny("APPROVAL_EXPIRED");
+  if (i.now.getTime() >= Date.parse(approval.expires_at)) return deny("APPROVAL_EXPIRED"); // expired AT expires_at
   // 5. Exactly the quote revision, business, and amounts the human saw.
   if (!quote || quote.id !== approval.quote_id || quote.business_id !== approval.business_id || quote.status !== "current") return deny("QUOTE_CHANGED");
   // The payment is the quote's deposit; a quote with no deposit is paid in full (exactly its total).

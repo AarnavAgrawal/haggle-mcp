@@ -91,15 +91,18 @@ describe("Stripe test-mode port", () => {
 });
 
 describe("checkStripePaymentAllowed (pure)", () => {
+  // One fixed clock: the old test read the wall clock twice (base().now, then Date.now() - 1 for the
+  // expired case) and flaked under parallel load when more than 1 ms passed between the two reads.
+  const NOW = new Date("2026-10-18T03:00:00.000Z");
   const base = () => ({
     stripeConfigured: true,
     job: { id: "j", state: "paying" },
-    approval: { id: "ap", job_id: "j", quote_id: "q", business_id: "b", quote_total_cents: 99500, payment_cents: 500, status: "approved", expires_at: new Date(Date.now() + 60_000).toISOString() },
+    approval: { id: "ap", job_id: "j", quote_id: "q", business_id: "b", quote_total_cents: 99500, payment_cents: 500, status: "approved", expires_at: new Date(NOW.getTime() + 60_000).toISOString() },
     quote: { id: "q", business_id: "b", total_cents: 99500, deposit_cents: 500, status: "current" },
     payee: { business_id: "b", on_job: true, quoted_from_trusted_sender: true },
     existingPayment: null as { id: string; status: string } | null,
     spendCapCents: 50_000,
-    now: new Date(),
+    now: NOW,
   });
   it("passes only for the exact approved quote, amount and quoting payee under the cap", () => {
     expect(checkStripePaymentAllowed(base())).toEqual({ ok: true });
@@ -109,7 +112,8 @@ describe("checkStripePaymentAllowed (pure)", () => {
       ["APPROVAL_PENDING", { ...base(), approval: { ...base().approval, status: "pending" } }],
       ["APPROVAL_DECLINED", { ...base(), approval: { ...base().approval, status: "declined" } }],
       ["APPROVAL_EXPIRED", { ...base(), approval: { ...base().approval, status: "used" } }],
-      ["APPROVAL_EXPIRED", { ...base(), approval: { ...base().approval, expires_at: new Date(Date.now() - 1).toISOString() } }],
+      ["APPROVAL_EXPIRED", { ...base(), approval: { ...base().approval, expires_at: new Date(NOW.getTime() - 1).toISOString() } }],
+      ["APPROVAL_EXPIRED", { ...base(), approval: { ...base().approval, expires_at: NOW.toISOString() } }], // the boundary instant is expired
       ["QUOTE_CHANGED", { ...base(), quote: { ...base().quote, status: "superseded" } }],
       ["QUOTE_CHANGED", { ...base(), quote: { ...base().quote, id: "q2" } }],
       ["AMOUNT_MISMATCH", { ...base(), quote: { ...base().quote, deposit_cents: 600 } }],

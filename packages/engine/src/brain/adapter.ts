@@ -13,7 +13,7 @@ import type {
   Profile as CoreProfile, Request as CoreRequest,
 } from "@haggle/core/contracts";
 import type { Brain, Business, Estimate, Hints, ParsedReply, PriceVerdict, Profile, QuoteLike, ReplyMeta, Request } from "../contract.ts";
-import { businessIdForContact, slugify } from "../ids.ts";
+import { businessIdForContact, normalizeBusinessName, slugify } from "../ids.ts";
 
 /** A business the brain's directory knows (DirectoryEntry from @haggle/brain). */
 export interface DirectoryContact {
@@ -64,18 +64,20 @@ export class BrainAdapter implements Brain {
     const phone = norm(hint.phone ?? known?.phone);
     const name = norm(hint.name ?? known?.name);
     const simulated = hint.simulated ?? known?.simulated ?? false;
+    // A phone (often personal or shared) identifies a directory business only together with its name.
+    const sameName = (d: { name?: string }) => !name || normalizeBusinessName(d.name ?? "") === normalizeBusinessName(name);
     const hit =
       (email && this.directory.find((d) => norm(d.email) === email)) ||
-      (phone && this.directory.find((d) => norm(d.phone) === phone)) ||
+      (phone && this.directory.find((d) => norm(d.phone) === phone && sameName(d))) ||
       (simulated && name && this.directory.find((d) => norm(d.name) === name)) ||
       undefined;
     return hit ? hit.id : engineId;
   }
 
   /** Engine id for a business the brain returned (deterministic from its contact). */
-  engineIdFor(b: { id: string; email?: string | undefined; phone?: string | undefined; a2a_card_url?: string | undefined }): string {
+  engineIdFor(b: { id: string; name?: string | undefined; email?: string | undefined; phone?: string | undefined; a2a_card_url?: string | undefined }): string {
     try {
-      return businessIdForContact({ email: b.email ?? null, phone: b.phone ?? null, a2a_card_url: b.a2a_card_url ?? null });
+      return businessIdForContact({ email: b.email ?? null, phone: b.phone ?? null, a2a_card_url: b.a2a_card_url ?? null }, b.name ?? null);
     } catch {
       return b.id;
     }
@@ -85,7 +87,7 @@ export class BrainAdapter implements Brain {
     const phone = meta.business_email.startsWith("tel:") ? meta.business_email.slice(4) : undefined;
     const email = phone ? undefined : meta.business_email;
     const known = this.engine.get(businessId);
-    const brainId = this.brainIdFor(businessId, { ...(email ? { email } : {}), ...(phone ? { phone } : {}), simulated: meta.simulated });
+    const brainId = this.brainIdFor(businessId, { ...(email ? { email } : {}), ...(phone ? { phone } : {}), ...(meta.business_name ? { name: meta.business_name } : {}), simulated: meta.simulated });
     const name = known?.name ?? this.directory.find((d) => d.id === brainId)?.name ?? meta.business_name ?? brainId;
     let last: CoreProfile | null = null;
     if (meta.sender_trusted) {

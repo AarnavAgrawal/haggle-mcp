@@ -270,13 +270,13 @@ export class HaggleEngine {
     }
     if (!job) throw new Error("could not allocate a job code");
     await this.repo.insertBusinesses(planned.map(({ b, email, phone, card, channel, reachable }): JobBusinessRow => ({
-      job_id: job!.id, business_id: businessIdForContact({ email, phone, a2a_card_url: card }), name: b.name.slice(0, 120), email, phone, a2a_card_url: card, channel,
+      job_id: job!.id, business_id: businessIdForContact({ email, phone, a2a_card_url: card }, b.name), name: b.name.slice(0, 120), email, phone, a2a_card_url: card, channel,
       source: b.source ?? "agent", simulated: b.simulated ?? mode === "mock", status: reachable ? "pending" : "unavailable", thread_id: null, rfq_message_id: null,
       last_inbound_message_id: null, references: [], contacted_at: null, last_reply_at: null, followups_sent: 0, countered_round: 0,
     })));
     await this.repo.appendEvent(job.id, "state", { from: null, to: "created" });
     for (const p of planned.filter((x) => !x.reachable)) {
-      await this.repo.appendEvent(job.id, "reply", { business_id: businessIdForContact({ email: p.email, phone: p.phone, a2a_card_url: p.card }), summary: `${p.b.name} not contacted: ${p.reason}` });
+      await this.repo.appendEvent(job.id, "reply", { business_id: businessIdForContact({ email: p.email, phone: p.phone, a2a_card_url: p.card }, p.b.name), summary: `${p.b.name} not contacted: ${p.reason}` });
     }
     const started = start(this.machine(job));
     if (started.ok) await this.commit(job, started.next, started.effects, "deal");

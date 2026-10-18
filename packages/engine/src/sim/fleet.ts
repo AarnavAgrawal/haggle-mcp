@@ -147,7 +147,7 @@ export type FleetBusiness = Business & { phone?: string; a2a_card_url?: string }
 
 export function fleetBusinesses(personas = GOLDEN_PERSONAS): FleetBusiness[] {
   return personas.map((p) => ({
-    business_id: businessIdForContact({ email: p.email || null, phone: p.phone ?? null }), slug: p.name.toLowerCase().replace(/\s+/g, "-"), name: p.name, email: p.email,
+    business_id: businessIdForContact({ email: p.email || null, phone: p.phone ?? null }, p.name), slug: p.name.toLowerCase().replace(/\s+/g, "-"), name: p.name, email: p.email,
     ...(p.phone ? { phone: p.phone } : {}), ...(p.a2aCard ? { a2a_card_url: p.a2aCard } : {}), source: "fleet" as const, simulated: true, found_at: "DEMO simulated fleet",
   }));
 }
