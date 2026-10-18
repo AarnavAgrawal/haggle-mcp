@@ -16,6 +16,8 @@ export const ApprovalOut = Approval.extend({
   demo: z.string().optional(),
   /** The quote's order total; amount_usd is what is paid now (the deposit). */
   order_total_usd: z.number().nonnegative().optional(),
+  /** What amount_usd is: the stated deposit, or the full total because the business stated no deposit. */
+  pay_now_basis: z.enum(["deposit", "full_total"]).optional(),
   payment: z.looseObject({ status: z.string(), simulated: z.boolean() }).optional(),
 });
 export type ApprovalOut = z.infer<typeof ApprovalOut>;
@@ -135,14 +137,18 @@ export function toApproval(
   const q = b.quotes.find((x) => x.quote_id === quote_id);
   const a = b.approval?.quote_id === quote_id ? b.approval : null;
   const total = q?.total_usd ?? a?.quote_total_usd ?? 0;
-  const payNow = a?.payment_usd ?? q?.deposit_usd ?? 0;
+  // What is paid now: the stated deposit, or the full total when the business stated none (the engine's
+  // rule). Never "$0": an unstated deposit is not a free deposit.
+  const deposit = q?.deposit_usd;
+  const payNow = a?.payment_usd ?? deposit ?? total;
+  const basis = deposit !== undefined ? "deposit" as const : "full_total" as const;
   const business = q?.business ?? "unknown";
   const channel: Channel = q?.channel ?? b.businesses.find((x) => x.business_id === q?.business_id)?.channel ?? "email";
   const how = a?.channel === "elicitation" || a?.channel === "view" || a?.channel === "imessage" || a?.channel === "simulated" ? a.channel : "view";
   return ApprovalOut.parse({
     job_id: b.job.id, quote_id, business, quote_channel: channel,
-    summary: `${business}: ${money(total)} order total; pay ${money(payNow)} deposit now`,
-    items: q?.items ?? [], amount_usd: payNow, ...(q || a ? { order_total_usd: total } : {}), deposit_usd: payNow, cap_usd: a?.cap_usd ?? payNow,
+    summary: `${business}: ${money(total)} order total; ${basis === "deposit" ? `pay ${money(payNow)} deposit now` : `pay ${money(payNow)} now (full total: no deposit stated)`}`,
+    items: q?.items ?? [], amount_usd: payNow, ...(q || a ? { order_total_usd: total } : {}), ...(deposit !== undefined ? { deposit_usd: deposit } : {}), pay_now_basis: basis, cap_usd: a?.cap_usd ?? payNow,
     status, channel: how,
     ...(a?.approved_at ? { approved_at: a.approved_at } : {}),
     ...(a ? { approval_id: a.approval_id, expires_at: a.expires_at } : {}),

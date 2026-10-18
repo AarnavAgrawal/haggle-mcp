@@ -289,7 +289,7 @@ export const deal = server.tool(
       });
       const d = v.request_details!;
       const text = [
-        `Deal ${r.job_id} started: ${d.what} for ${d.headcount}, ${d.when}, ${d.place}; budget ${usd(d.budget_usd)}${d.requirements.length ? `; must have: ${d.requirements.join(", ")}` : ""}.`,
+        `Deal ${r.job_id} started: ${d.what} for ${d.headcount}, ${d.when}, ${d.place}; ${d.budget_usd === null ? "no budget given" : `budget ${usd(d.budget_usd)}`}${d.requirements.length ? `; must have: ${d.requirements.join(", ")}` : ""}.`,
         `Contacted ${r.contacted.length}: ${r.contacted.map((c) => `${c.business} [${c.channel}]`).join(", ") || "none"}.`,
         ...(r.not_contacted.length ? [`Not contacted: ${r.not_contacted.map((c) => `${c.business} (${c.reason})`).join("; ")}.`] : []),
         ...warnings,
@@ -318,8 +318,10 @@ export const waitForUpdate = server.tool(
   async ({ job_id, cursor, timeout_s }, ctx) =>
     run(async ({ engine }) => {
       const w = await engine.waitForUpdate(job_id, Number(cursor), timeout_s * 1000, ctx.signal);
+      // Name whose quote is whose (a bare quote id let the model attribute prices to the wrong business).
+      const names = w.updates.some((u) => u.type === "quote") ? new Map((await engine.getQuotes(job_id)).businesses.map((b) => [b.business_id, b.name])) : new Map<string, string>();
       const lines = w.updates.slice(-12).map((u) =>
-        u.type === "quote" ? `quote ${u.quote_id}: ${usd(u.total_usd)} (round ${u.round})` : u.type === "question" ? `question ${u.question_id}: "${u.text.slice(0, 120)}"` : u.type === "state" ? `state ${u.from} -> ${u.to}` : u.type === "flag" ? `flag ${u.flag}` : u.type === "reply" ? u.summary : `payment ${u.status}`);
+        u.type === "quote" ? `quote ${u.quote_id} from ${names.get(u.business_id) ?? "a business"}: ${usd(u.total_usd)} (round ${u.round})` : u.type === "question" ? `question ${u.question_id}: "${u.text.slice(0, 120)}"` : u.type === "state" ? `state ${u.from} -> ${u.to}` : u.type === "flag" ? `flag ${u.flag}` : u.type === "reply" ? u.summary : `payment ${u.status}`);
       const head = w.timed_out ? `No change in ${timeout_s}s (${w.state}).` : `${w.updates.length} update(s), state ${w.state}:`;
       return ok(w, [head, ...lines, `cursor=${w.cursor} · next: ${w.next}`].join("\n"));
     }),
@@ -616,8 +618,9 @@ export const listDeals = server.tool(
   async ({ limit }) =>
     run(async ({ engine, mode }) => {
       const deals = await engine.recentDeals(limit);
-      const line = (d: (typeof deals)[number]) => `${d.job_id}: ${d.what} for ${d.quantity}${d.unit && d.unit !== "people" ? ` ${d.unit}` : ""} on ${d.date} (${d.area}) · ${d.state}${d.ready ? ", quotes final" : ""} · ${d.quotes}/${d.businesses} quoted${d.leading ? ` · leading ${d.leading.business} $${d.leading.total_usd.toLocaleString("en-US")}` : ""}`;
-      const next = deals.length ? `Call get_quotes(job_id='${deals[0]!.job_id}') to open the board for the most relevant deal.` : "No deals yet. Start one with deal(request, budget_usd).";
+      const line = (d: (typeof deals)[number]) => `${d.job_id} (started ${d.created_at.slice(0, 16).replace("T", " ")} UTC): ${d.what} for ${d.quantity}${d.unit && d.unit !== "people" ? ` ${d.unit}` : ""} on ${d.date} (${d.area}) · ${d.state}${d.ready ? ", quotes final" : ""} · ${d.quotes}/${d.businesses} quoted${d.leading ? ` · leading ${d.leading.business} $${d.leading.total_usd.toLocaleString("en-US")}` : ""}`;
+      const newest = [...deals].sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+      const next = deals.length ? `If more than one deal could be the one the user means, ask which (by what, date and when it was started); otherwise get_quotes(job_id). The newest is ${newest!.job_id} (started ${newest!.created_at.slice(0, 16).replace("T", " ")} UTC).` : "No deals yet. Start one with deal(request).";
       return ok({ ok: true, mode, deals, next }, deals.length ? [...deals.map(line), `next: ${next}`].join("\n") : `No deals yet. next: ${next}`);
     }),
 );

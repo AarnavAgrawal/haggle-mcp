@@ -15,6 +15,9 @@ describe("request categories: demo caterers are never offered for other work", (
   it.each([
     ["drop-off catering", "catering"], ["hackathon lunch", "catering"], ["pizza for 30", "catering"], ["500 flyers", "printing"],
     ["fix a leaking kitchen pipe", "plumbing"], ["office move", "moving"], ["deep clean the office", "cleaning"], ["replace two outlets", "electrical"], ["office repairs", "repairs"],
+    // A food word elsewhere in the request never pulls in caterers (acceptance P2, 2026-10-18).
+    ["post-event cleaning crew for our catered dinner", "cleaning"], ["repair of a commercial pizza oven", "repairs"], ["photographer for a dinner party", "photography"],
+    ["catering for a cleaning company offsite", "catering"], ["DJ for the hackathon dinner", "entertainment"], ["tent rental for a lunch event", "rentals"],
   ])("%s → %s", (what, cat) => expect(requestCategory(what)).toBe(cat));
 });
 

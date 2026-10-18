@@ -15,6 +15,9 @@ import { businessRef, findVendors, type ChannelStatus, type RosterEntry } from "
 
 const CATEGORIES: [string, RegExp][] = [
   ["catering", /\b(cater\w*|lunch\w*|dinner\w*|breakfast|brunch|meals?|food|buffet|snacks?|pizza|tacos?|sandwich\w*|bento|boxed)\b/i],
+  ["photography", /\b(photograph\w*|videograph\w*|headshots?)\b/i],
+  ["entertainment", /\b(dj|band|musicians?|entertain\w*)\b/i],
+  ["rentals", /\b(rentals?|rent|tents?|furniture)\b/i],
   ["printing", /\b(print\w*|flyers?|banners?|posters?|stickers?|signage)\b/i],
   ["moving", /\b(movers?|moving|move|relocat\w*)\b/i],
   ["cleaning", /\b(clean\w*|janitor\w*)\b/i],
@@ -23,10 +26,19 @@ const CATEGORIES: [string, RegExp][] = [
   ["repairs", /\b(repairs?|handyman|fix\w*|maintenance)\b/i],
 ];
 
-/** "Drop-off catering for 25" → "catering"; "fix a leaking pipe" → "plumbing"; else the last word. */
+/**
+ * "Drop-off catering for 25" → "catering"; "fix a leaking pipe" → "plumbing"; else the last word.
+ * The service named FIRST wins ("cleaning crew for our catered dinner" is cleaning, "repair of a pizza
+ * oven" is repairs, "catering for a cleaning company" is catering), and a specific trade beats the
+ * generic "repairs" ("fix a leaking pipe" is plumbing): food words elsewhere never pull in caterers.
+ */
 export function requestCategory(what: string): string {
-  for (const [c, re] of CATEGORIES) if (re.test(what)) return c;
-  return what.trim().toLowerCase().split(/\s+/).at(-1) ?? what.toLowerCase();
+  const hits = CATEGORIES.map(([c, re]) => ({ c, at: re.exec(what)?.index ?? -1 })).filter((h) => h.at >= 0).sort((a, b) => a.at - b.at);
+  const first = hits[0];
+  if (!first) return what.trim().toLowerCase().split(/\s+/).at(-1) ?? what.toLowerCase();
+  // "fix a leaking pipe": a named trade refines the generic repair; a food word ("pizza oven") never does.
+  const trade = first.c === "repairs" ? hits.find((h) => h.c !== "repairs" && h.c !== "catering") : undefined;
+  return (trade ?? first).c;
 }
 
 // ───────────────────────────── discovered businesses ─────────────────────────────
