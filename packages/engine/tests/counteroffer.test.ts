@@ -87,3 +87,31 @@ describe("planCounteroffers", () => {
     expect(planCounteroffers(tied, DEADLINE)).toEqual([]);
   });
 });
+
+describe("buyer-target counters (budget as a target, not a hard limit)", () => {
+  // The live demo shape: every eligible quote above the buyer's $5,000 target.
+  const live: CounterQuote[] = [
+    q({ quoteId: "q-sunset", businessId: "b-sunset", businessName: "Sunset Kitchen", totalCents: 475_000, deliveryFeeCents: 25_000, depositCents: 100_000 }),
+    q({ quoteId: "q-harbor", businessId: "b-harbor", businessName: "Harbor Table", totalCents: 688_357 }),
+    q({ quoteId: "q-mission", businessId: "b-mission", businessName: "Mission Eats", totalCents: 700_000 }),
+  ];
+
+  it("over-target quotes stay negotiable: the others cite the real cheapest quote; the cheapest is asked about the target only if it's above it", () => {
+    const plan = planCounteroffers(live, DEADLINE, 3, null, 450_000);
+    expect(plan.map((p) => [p.businessName, p.basis, p.targetTotalCents])).toEqual([
+      ["Harbor Table", "competing_quote", 475_000], ["Mission Eats", "competing_quote", 475_000], ["Sunset Kitchen", "buyer_target", 450_000],
+    ]);
+    const t = plan.find((p) => p.basis === "buyer_target")!;
+    expect(t.text).toMatch(/Our client's budget target for this order is \$4,500\.00 total\. Is there anything you can do to get closer to it \(for example on the \$250\.00 delivery fee\)\?/);
+    // Truthful by construction: only their own total, the buyer's target and their own stated fee appear.
+    expect(new Set(figures(t.text))).toEqual(new Set([475_000, 450_000, 25_000]));
+    expect(t.shortText).toBe("Thanks! Our client's target is $4,500.00 total. Anything you can do to get closer (delivery or deposit)?");
+  });
+
+  it("no target counter under the target, under a hard limit, or with rounds used up; a single quote can still be asked about the target", () => {
+    expect(planCounteroffers(live, DEADLINE, 3, null, 500_000).some((p) => p.basis === "buyer_target")).toBe(false);
+    expect(planCounteroffers(live, DEADLINE, 3, 500_000, null).every((p) => p.basis === "competing_quote")).toBe(true); // a hard limit is not a negotiating target
+    expect(planCounteroffers(live.map((x) => ({ ...x, round: 3 })), DEADLINE, 3, null, 450_000)).toEqual([]);
+    expect(planCounteroffers([live[0]!], DEADLINE, 3, null, 450_000)).toEqual([expect.objectContaining({ businessName: "Sunset Kitchen", basis: "buyer_target" })]);
+  });
+});

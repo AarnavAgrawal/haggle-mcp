@@ -23,6 +23,9 @@ export interface CounterQuote {
   status: RankableQuote["status"];
   confidence: number;
   flags: string[];
+  /** The business's own stated extras (levers a target counter may mention). */
+  deliveryFeeCents?: number | null;
+  depositCents?: number | null;
 }
 
 export interface PlannedCounter {
@@ -31,8 +34,12 @@ export interface PlannedCounter {
   round: number; // the round this counter opens
   theirTotalCents: number;
   targetTotalCents: number;
-  basisQuoteId: string; // the real competing quote cited
+  basisQuoteId: string; // the real competing quote cited, or "buyer_target"
+  /** competing_quote: cites a real cheaper eligible quote. buyer_target: the buyer's stated target. */
+  basis: "competing_quote" | "buyer_target";
   text: string;
+  /** Short form for text messages (iMessage/RCS). */
+  shortText: string;
 }
 
 const usd = (cents: number) => `$${Math.floor(cents / 100).toLocaleString("en-US")}.${String(cents % 100).padStart(2, "0")}`;
@@ -58,21 +65,46 @@ export function counterofferText(businessName: string, theirCents: number, bestC
  * - Skip entirely with fewer than 2 such quotes.
  * - Cite the single best total; counter only businesses priced above it with rounds left.
  */
-export function planCounteroffers(quotes: CounterQuote[], deadline: Date, maxRounds = 2, budgetCents: number | null = null): PlannedCounter[] {
+export function targetCounterText(businessName: string, theirCents: number, targetCents: number, deadline: Date, levers: { deliveryFeeCents?: number | null; depositCents?: number | null } = {}): string {
+  const asks = [levers.deliveryFeeCents ? `the ${usd(levers.deliveryFeeCents)} delivery fee` : "", levers.depositCents && levers.depositCents > theirCents * 0.25 ? `the ${usd(levers.depositCents)} deposit` : ""].filter(Boolean);
+  return [
+    `Hi ${businessName},`,
+    "",
+    `Thanks for your quote of ${usd(theirCents)} total. Our client's budget target for this order is ${usd(targetCents)} total. Is there anything you can do to get closer to it${asks.length ? ` (for example on ${asks.join(" or ")})` : ""}? If so, please reply with your updated total and deposit by ${deadlineLabel(deadline)}.`,
+    "",
+    "Thank you!",
+  ].join("\n");
+}
+
+/**
+ * Who gets a counteroffer, and on what truthful basis.
+ * - competing_quote: only quotes the ranker accepts count, as basis or as target; the single best
+ *   total is cited to every business priced above it (needs at least 2 such quotes).
+ * - buyer_target: when the buyer gave a target (not a hard limit) and the best eligible quote is
+ *   still above it, that business is asked to get closer to the target. No competing price is
+ *   invented; only the buyer's own target and the business's own stated fees are mentioned.
+ * Rounds are capped per business.
+ */
+export function planCounteroffers(quotes: CounterQuote[], deadline: Date, maxRounds = 2, budgetCents: number | null = null, targetCents: number | null = null): PlannedCounter[] {
   const eligible = quotes.filter((q): q is CounterQuote & { totalCents: number } => rejectReason(q, budgetCents) === null);
-  if (eligible.length < 2) return [];
-
+  if (eligible.length === 0) return [];
   const best = eligible.reduce((a, b) => (b.totalCents < a.totalCents ? b : a));
-
-  return eligible
-    .filter((q) => q.businessId !== best.businessId && q.totalCents > best.totalCents && q.round < maxRounds)
-    .map((q) => ({
-      businessId: q.businessId,
-      businessName: q.businessName,
-      round: q.round + 1,
-      theirTotalCents: q.totalCents,
-      targetTotalCents: best.totalCents,
-      basisQuoteId: best.quoteId,
-      text: counterofferText(q.businessName, q.totalCents, best.totalCents, deadline),
-    }));
+  const out: PlannedCounter[] = [];
+  if (eligible.length >= 2) {
+    for (const q of eligible.filter((q) => q.businessId !== best.businessId && q.totalCents > best.totalCents && q.round < maxRounds)) {
+      out.push({
+        businessId: q.businessId, businessName: q.businessName, round: q.round + 1, theirTotalCents: q.totalCents, targetTotalCents: best.totalCents,
+        basisQuoteId: best.quoteId, basis: "competing_quote", text: counterofferText(q.businessName, q.totalCents, best.totalCents, deadline),
+        shortText: `Thanks! We have another quote of ${usd(best.totalCents)} total for the same order. Can you match or beat it?`,
+      });
+    }
+  }
+  if (targetCents !== null && best.totalCents > targetCents && best.round < maxRounds) {
+    out.push({
+      businessId: best.businessId, businessName: best.businessName, round: best.round + 1, theirTotalCents: best.totalCents, targetTotalCents: targetCents,
+      basisQuoteId: "buyer_target", basis: "buyer_target", text: targetCounterText(best.businessName, best.totalCents, targetCents, deadline, best),
+      shortText: `Thanks! Our client's target is ${usd(targetCents)} total. Anything you can do to get closer (delivery or deposit)?`,
+    });
+  }
+  return out;
 }

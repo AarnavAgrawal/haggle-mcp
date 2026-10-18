@@ -1,0 +1,125 @@
+// Quote integrity across revisions, approval correctness and budget semantics. Real engine, fake
+// Inkbox ports, an extractor that reads only what each text says. No network.
+// Live regression: job_dec51a570667400eae64 (2026-10-18), Sunset Kitchen by RCS.
+import { describe, expect, it } from "vitest";
+import { disabledPayer, HaggleEngine, InMemoryRepository, simulatedStripe, StubBrain } from "../src/index.ts";
+
+const extractor = {
+  async extract(i: { bodyText: string }) {
+    const t = i.bodyText;
+    const k = (s: string) => Math.round(Number(s.replace(/[,$]/g, "").replace(/k$/i, "")) * (/k$/i.test(s) ? 1000 : 1));
+    const total = /\$([\d.,]+k?)\s*total/i.exec(t)?.[1];
+    const deposit = /\$([\d.,]+k?)\s*deposit/i.exec(t)?.[1];
+    const fee = /\$?([\d.,]+)\s*extra for delivery/i.exec(t)?.[1];
+    const veg = /(\d+)\s*veg/i.exec(t)?.[1];
+    const sources = [
+      ...(total ? [{ field: "total" as const, source: "text", excerpt: `$${total} total` }] : []),
+      ...(deposit ? [{ field: "deposit" as const, source: "text", excerpt: `$${deposit} deposit` }] : []),
+      ...(fee ? [{ field: "delivery_fee" as const, source: "text", excerpt: `$${fee} extra for delivery` }] : []),
+    ];
+    return {
+      available: true, price_per_head_usd: null, headcount: null, subtotal_usd: null, delivery_fee_usd: fee ? k(fee) : null, delivery_included: fee ? false : /delivery included/i.test(t) ? true : null,
+      tax_usd: null, tax_included: null, total_usd: total ? k(total) : null, deposit_usd: deposit ? k(deposit) : null, menu_items: [],
+      dietary_coverage: veg ? [{ need: "vegetarian", covered: true, count_offered: Number(veg) }] : [], valid_until: null, questions: [], payment_request: "none" as const, instructions_to_agent: false,
+      ...(fee ? { requirement_answers: [{ requirement: "Total must include delivery and all fees", answer: "no" as const, excerpt: `$${fee} extra for delivery` }] } : {}),
+      sources, missing_fields: [], confidence: 0.9,
+    };
+  },
+};
+
+function engine(opts: { stripe?: boolean } = {}) {
+  let t = Date.now();
+  const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
+  const texts: { to: string; text: string }[] = [];
+  const sent: { to: string; bodyText: string }[] = [];
+  const repo = new InMemoryRepository();
+  const stripe = simulatedStripe();
+  const e = new HaggleEngine({
+    repo, now: clock.now, extractor: extractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("Payments are off"),
+    ...(opts.stripe ? { stripe } : {}),
+    email: { async send(m) { sent.push(m); return { providerId: `em_${sent.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${sent.length}@haggle.test>` }; } },
+    imessage: { async send(r) { texts.push(r); return { messageId: `im_${texts.length}` }; } },
+    config: { mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: "haggle@inkboxmail.test", collectionWindowMs: 30 * 60_000, negotiationWindowMs: 10 * 60_000, approvalTtlMs: 30 * 60_000, globalPaymentCapCents: 500_000, maxRounds: 3 },
+  });
+  return { engine: e, repo, clock, texts, sent, stripe };
+}
+
+const REQUEST = { what: "lunch catering", quantity: 200, unit: "people", date: "2026-10-24", area: "San Francisco, CA", requirements: [{ id: "veg40", kind: "dietary" as const, text: "At least 40 vegetarian meals", hard: true, need: "vegetarian", min_count: 40 }] };
+// The live deal also asked for an all-in total (a general requirement the business answers in words).
+const LIVE_REQUEST = { ...REQUEST, requirements: [...REQUEST.requirements, { id: "allin", kind: "other" as const, text: "Total must include delivery and all fees", hard: true }] };
+const SUNSET = { name: "Sunset Kitchen", phone: "+14155550111", channel: "imessage" as const };
+const text = (e: HaggleEngine, id: string, body: string) => e.ingestIMessage({ messageId: id, from: SUNSET.phone, text: body, isGroup: false });
+
+describe("quote revisions and approvals", () => {
+  it("the live Sunset Kitchen sequence: $4.5k, then '$250 extra for delivery' → $4,750 all-in, and an approval of the old version is voided", async () => {
+    const { engine: e, stripe } = engine({ stripe: true });
+    const deal = await e.deal({ request: LIVE_REQUEST, budget_usd: 5000, businesses: [SUNSET] });
+    await text(e, "im_1", "$4.5k total, $1k deposit");
+    await e.advanceJob(deal.job_id);
+    let board = await e.getQuotes(deal.job_id);
+    const v1 = board.quotes.find((q) => q.status === "current")!;
+    expect(v1).toMatchObject({ total_usd: 4500, deposit_usd: 1000, verdict: "incomplete" }); // veg not stated yet
+
+    // The human approves the $4,500 version (as happened live), then the business discloses the fee.
+    const a = await e.requestApproval(deal.job_id, v1.quote_id, "view");
+    expect(await e.decideApproval(a.id, "approve", "view", "human")).toBe(true);
+    await text(e, "im_2", "yes 40 veggie meals . $250 extra for delivery");
+    await e.advanceJob(deal.job_id);
+
+    board = await e.getQuotes(deal.job_id);
+    const v2 = board.quotes.find((q) => q.status === "current")!;
+    expect(v2).toMatchObject({ total_usd: 4750, deposit_usd: 1000, delivery_usd: 250, round: 2, negotiated_from: 4500, meets_requirements: true });
+    expect(v2.source).toMatch(/^computed from stated total \+ delivery fee/);
+    // The approval for the $4,500 version is void, the job is back to choosing, and nothing can be charged on it.
+    expect(board.approval).toMatchObject({ approval_id: a.id, status: "expired" });
+    expect(board.state).not.toBe("paying");
+    await expect(e.pay(deal.job_id, v1.quote_id)).rejects.toMatchObject({ code: expect.stringMatching(/approval_expired|not_payable|no_approval/) });
+    expect(stripe.charges).toHaveLength(0);
+    // A fresh, explicit approval of the current version is required and pays exactly its deposit.
+    const a2 = await e.requestApproval(deal.job_id, v2.quote_id, "view");
+    expect(a2).toMatchObject({ quote_total_cents: 475_000, payment_cents: 100_000 });
+    await e.decideApproval(a2.id, "approve", "view", "human");
+    expect(await e.pay(deal.job_id, v2.quote_id)).toMatchObject({ status: "settled", amount_usd: 1000 });
+    expect(stripe.charges).toEqual([expect.objectContaining({ amountCents: 100_000, metadata: expect.objectContaining({ quote_id: v2.quote_id }) })]);
+  });
+
+  it("a hard spending limit can't be approved past; a target budget stays comparable, negotiable and approvable with a caveat", async () => {
+    const hard = engine();
+    const d1 = await hard.engine.deal({ request: { ...REQUEST, budget_kind: "limit" }, budget_usd: 4000, businesses: [SUNSET] });
+    await text(hard.engine, "im_h", "$4.5k total, $1k deposit, 45 veg, delivery included");
+    await hard.engine.advanceJob(d1.job_id);
+    const q1 = (await hard.engine.getQuotes(d1.job_id)).quotes[0]!;
+    expect(q1).toMatchObject({ eligible: false, verdict: "rejected" });
+    await expect(hard.engine.requestApproval(d1.job_id, q1.quote_id, "view")).rejects.toBeTruthy();
+    expect(hard.texts.filter((x) => /target/.test(x.text))).toHaveLength(0); // a hard limit is never used as a negotiating claim
+
+    const soft = engine();
+    const d2 = await soft.engine.deal({ request: REQUEST, budget_usd: 4000, businesses: [SUNSET] });
+    await text(soft.engine, "im_s", "$4.5k total, $1k deposit, 45 veg, delivery included");
+    await soft.engine.advanceJob(d2.job_id);
+    const board = await soft.engine.getQuotes(d2.job_id);
+    expect(board.quotes[0]).toMatchObject({ eligible: true, total_usd: 4500 });
+    expect(board.quotes[0]!.flags).toContain("over_budget");
+    expect(await soft.engine.approvalCaveats(d2.job_id, board.quotes[0]!.quote_id)).toEqual(expect.arrayContaining(["$500 over the $4,000 budget"]));
+    // Haggle negotiates toward the buyer's target instead of declaring a winner.
+    expect(board.state).toBe("negotiating");
+    expect(soft.texts.at(-1)!.text).toBe("Thanks! Our client's target is $4,000.00 total. Anything you can do to get closer (delivery or deposit)? HG-" + (await soft.repo.getJob(d2.job_id))!.short_code);
+    // The business revises: the new price shows as negotiated, with the original kept as history.
+    await text(soft.engine, "im_s2", "Best we can do is $4.2k total, $800 deposit, 45 veg, delivery included");
+    await soft.engine.advanceJob(d2.job_id);
+    const after = await soft.engine.getQuotes(d2.job_id);
+    expect(after.quotes.find((q) => q.status === "current")).toMatchObject({ total_usd: 4200, negotiated_from: 4500, deposit_usd: 800, round: 2 });
+    // $4,200 is still above the target: one more (and last) bounded round; never past max_rounds.
+    expect(after.negotiation).toEqual([
+      expect.objectContaining({ business: "Sunset Kitchen", round: 2, target_total_usd: 4000, basis_quote_id: "buyer_target", outcome_total_usd: 4200 }),
+      expect.objectContaining({ business: "Sunset Kitchen", round: 3, target_total_usd: 4000, basis_quote_id: "buyer_target", outcome_total_usd: null }),
+    ]);
+    await text(soft.engine, "im_s3", "Final: $4.1k total, $800 deposit, 45 veg, delivery included");
+    await soft.engine.advanceJob(d2.job_id);
+    soft.clock.advance(11 * 60_000);
+    const done = await soft.engine.getQuotes(d2.job_id);
+    expect(done.quotes.find((q) => q.status === "current")).toMatchObject({ total_usd: 4100, round: 3 });
+    expect(done.ready).toBe(true); // rounds used up: Haggle stops and explains instead of pushing again
+    expect(soft.texts.filter((x) => /target/.test(x.text))).toHaveLength(2);
+  });
+});

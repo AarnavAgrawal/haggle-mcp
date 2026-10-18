@@ -239,7 +239,7 @@ export class HaggleEngine {
         job = await this.repo.insertJob({
           id: newId("job"), short_code: code, state: "created", mode, request: input.request, budget_cents: budgetCents,
           payment_cap_cents: paymentCapCents, approver_email: input.approver_email ? normalizeAddress(input.approver_email) : null,
-          inbox: this.d.config.sharedInbox ?? jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.min(input.max_rounds ?? this.d.config.maxRounds, 2),
+          inbox: this.d.config.sharedInbox ?? jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.min(input.max_rounds ?? this.d.config.maxRounds, 3),
           collect_until: replyBy.toISOString(), ready: false, pay_intent: false, failure_reason: null,
           client_request_id: input.client_request_id ?? null, version: 0, created_at: at, updated_at: at,
         });
@@ -353,13 +353,22 @@ export class HaggleEngine {
     return e ? { ...s, receipt_url: String(e.data.receipt_url) } : s;
   }
 
+  /** An authorized absolute ceiling (budget_kind "limit"), else null. */
+  private hardLimitCents(job: JobRow): number | null {
+    return job.request.budget_kind === "limit" ? job.budget_cents : null;
+  }
+  /** The buyer's target (the default meaning of a budget), else null. */
+  private targetCents(job: JobRow): number | null {
+    return job.request.budget_kind === "limit" ? null : job.budget_cents;
+  }
+
   private async rankRows(job: JobRow) {
     const quotes = (await this.repo.listQuotes(job.id)).filter((q) => q.status === "current");
     const rankable = quotes.map((q): RankableQuote => ({
       quoteId: q.id, businessId: q.business_id, totalCents: q.total_cents, available: q.record.available, compliant: q.compliant,
       senderTrusted: q.sender_trusted, status: q.status, confidence: q.record.confidence, flags: q.record.flags,
     }));
-    return { quotes, rankable, ranking: rankQuotes(rankable, job.budget_cents) };
+    return { quotes, rankable, ranking: rankQuotes(rankable, this.hardLimitCents(job)) };
   }
 
   /**
@@ -373,11 +382,12 @@ export class HaggleEngine {
   private approvability(job: JobRow, q: QuoteRow, spendingCapCents: number | null = null): { hard: string | null; caveats: string[] } {
     const hard = q.status !== "current" ? "not_current" : !q.record.available ? "unavailable" : !q.sender_trusted ? "unverified_sender"
       : q.record.flags.includes("external_payment_link") ? "external_payment_link" : q.record.flags.includes("prompt_injection") ? "prompt_injection"
-      : q.total_cents === null ? "no_total" : null;
+      : q.total_cents === null ? "no_total"
+      : this.hardLimitCents(job) !== null && q.total_cents > this.hardLimitCents(job)! ? "over_limit" : null;
     const caveats: string[] = [];
     const dollars = (c: number) => `$${centsToUsd(c).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
     if (q.total_cents !== null) {
-      if (job.budget_cents !== null && q.total_cents > job.budget_cents) caveats.push(`${dollars(q.total_cents - job.budget_cents)} over the ${dollars(job.budget_cents)} budget`);
+      if (job.budget_cents !== null && q.total_cents > job.budget_cents) caveats.push(`${dollars(q.total_cents - job.budget_cents)} over the ${dollars(job.budget_cents)} ${job.request.budget_kind === "limit" ? "limit" : "budget"}`);
       if (spendingCapCents !== null && q.total_cents > spendingCapCents) caveats.push(`${dollars(q.total_cents)} is over your ${dollars(spendingCapCents)} spending cap`);
     }
     const reqs = new Map(this.requirements(job).map((r) => [r.id, r]));
@@ -408,7 +418,7 @@ export class HaggleEngine {
   private async context(job: JobRow) {
     const { quotes, rankable, ranking } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
-    const plan = this.counterPlan(job, rankable, businesses);
+    const plan = this.counterPlan(job, rankable, businesses, quotes);
     const payment = await this.repo.getPaymentForJob(job.id);
     return {
       now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => this.approvability(job, q).hard === null).length, counterable: plan.length > 0,
@@ -420,11 +430,12 @@ export class HaggleEngine {
    * Honest counteroffers. Every eligible quote (any channel) can be the cited basis, but only
    * businesses reachable by email or in an open A2A context get a counter: no in-call negotiation yet.
    */
-  private counterPlan(job: JobRow, rankable: RankableQuote[], businesses: JobBusinessRow[]) {
+  private counterPlan(job: JobRow, rankable: RankableQuote[], businesses: JobBusinessRow[], quotes: QuoteRow[] = []) {
     const byId = new Map(businesses.map((b) => [b.business_id, b]));
+    const rows = new Map(quotes.map((q) => [q.id, q]));
     return planCounteroffers(
-      rankable.map((r) => ({ ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: this.quoteRound(r.quoteId) })),
-      new Date(job.collect_until), job.max_rounds, job.budget_cents,
+      rankable.map((r) => ({ ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: this.quoteRound(r.quoteId), deliveryFeeCents: rows.get(r.quoteId)?.record.delivery_fee_cents ?? null, depositCents: rows.get(r.quoteId)?.deposit_cents ?? null })),
+      new Date(job.collect_until), job.max_rounds, this.hardLimitCents(job), this.targetCents(job),
     ).filter((c) => { const b = byId.get(c.businessId); return b?.channel === "a2a" ? !!(this.d.a2a && b.thread_id && b.a2a_card_url) : b?.channel === "imessage" ? !!(this.d.imessage && b.phone) : !!b?.email; });
   }
 
@@ -905,23 +916,24 @@ export class HaggleEngine {
 
   private async sendCounteroffers(job: JobRow, round: number) {
     await this.refreshRounds(job);
-    const { rankable } = await this.rankRows(job);
+    const { rankable, quotes } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
     const byId = new Map(businesses.map((b) => [b.business_id, b]));
-    const plan = this.counterPlan(job, rankable, businesses);
+    const plan = this.counterPlan(job, rankable, businesses, quotes);
     let sent = 0;
     for (const c of plan) {
       const b = byId.get(c.businessId);
       if (!b) continue;
-      const counter = { haggle: "counter/1", protocol: "haggle.v0", type: "counter", job_id: job.id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis: "competing_quote", basis_quote_total_usd: centsToUsd(c.targetTotalCents), respond_by: job.collect_until };
+      const counter = { haggle: "counter/1", protocol: "haggle.v0", type: "counter", job_id: job.id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis: c.basis, ...(c.basis === "competing_quote" ? { basis_quote_total_usd: centsToUsd(c.targetTotalCents) } : { buyer_target_usd: centsToUsd(c.targetTotalCents) }), respond_by: job.collect_until };
+      const why = c.basis === "competing_quote" ? `match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})` : `get closer to the buyer's $${centsToUsd(c.targetTotalCents)} target`;
       if (b.channel === "imessage") {
         const key = sendKeys.counter(job.id, b.business_id, c.round);
         if (await this.repo.findMessageByIdempotencyKey(key)) continue;
         try {
-          await this.sendIMessageToBusiness(job, b, "counter", key, `Thanks! We have another quote of $${centsToUsd(c.targetTotalCents).toFixed(2)} total for the same order. Can you match or beat it? HG-${job.short_code}`, c.round);
+          await this.sendIMessageToBusiness(job, b, "counter", key, `${c.shortText} HG-${job.short_code}`, c.round);
           await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
-          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} by iMessage: match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})`, basis_quote_id: c.basisQuoteId });
-          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis_quote_id: c.basisQuoteId });
+          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} by iMessage: ${why}`, basis_quote_id: c.basisQuoteId });
+          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis_quote_id: c.basisQuoteId, basis: c.basis });
           sent++;
         } catch (err) {
           this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -936,8 +948,8 @@ export class HaggleEngine {
           const t = await this.d.a2a!.send({ cardUrl: b.a2a_card_url!, text: c.text, data: counter, messageId: `haggle-${key.replace(/:/g, "-")}`, contextId: b.thread_id! });
           await this.recordA2aOutbound(job, b, "counter", key, t.taskId, c.text, c.round);
           await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
-          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} over A2A: match ${counter.target_total_usd} (real quote ${c.basisQuoteId})`, basis_quote_id: c.basisQuoteId });
-          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId });
+          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} over A2A: ${why}`, basis_quote_id: c.basisQuoteId });
+          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis });
           sent++;
         } catch (err) {
           this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -949,8 +961,8 @@ export class HaggleEngine {
           to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, bodyText: c.text, attachments: [jsonPart("counter.json", counter)], inThread: true, round: c.round,
         });
         await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
-        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name}: match ${counter.target_total_usd} (real quote ${c.basisQuoteId})`, basis_quote_id: c.basisQuoteId });
-        await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name}: ${why}`, basis_quote_id: c.basisQuoteId });
+        await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis });
         sent++;
       } catch (err) {
         this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -1365,7 +1377,10 @@ export class HaggleEngine {
       if (pay && ["signed", "sent", "settled", "charging"].includes(pay.status)) return; // money already moving; guard protects anyway
       await this.repo.transitionApproval(a.id, a.status, { status: "expired", decided_at: this.now().toISOString() });
       if (pay && ["awaiting_invoice", "invoice_received"].includes(pay.status)) await this.repo.transitionPayment(pay.id, ["awaiting_invoice", "invoice_received"], { status: "failed", reason: "quote_revised" });
-      await this.repo.appendEvent(job.id, "approval_void", { approval_id: a.id, reason: "quote revised after approval" });
+      await this.repo.appendEvent(job.id, "approval_void", { approval_id: a.id, reason: "quote revised after approval", old_quote_id: old.id, old_total_usd: old.total_cents === null ? null : centsToUsd(old.total_cents) });
+      // Never charge an obsolete quote: the job goes back to choosing; a fresh approval is required.
+      const now = await this.repo.getJob(job.id);
+      if (now && (now.state === "paying" || now.state === "awaiting_approval")) await this.fire(job.id, { type: "approval_void" });
     }
   }
 
@@ -1641,7 +1656,8 @@ export class HaggleEngine {
       if (summary) lastEvent.set(bid, summary);
       if (typeof e.data.transcript_snippet === "string" && e.data.transcript_snippet) transcripts.set(bid, e.data.transcript_snippet);
     }
-    const wonBusiness = approval && ["approved", "used"].includes(approval.status) ? approval.business_id : job.state === "paid" && payment ? payment.business_id : null;
+    // "won" only once paid; an approved, unpaid quote is shown as chosen on its quote row instead.
+    const wonBusiness = job.state === "paid" && payment ? payment.business_id : null;
     const board: BoardBusiness[] = businesses.map((b) => {
       const transcript = transcripts.get(b.business_id);
       return {

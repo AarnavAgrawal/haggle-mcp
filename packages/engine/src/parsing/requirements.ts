@@ -46,6 +46,11 @@ export function evaluateRequirements(q: QuoteRecord, reqs: EngineRequirement[], 
         // own explicit answer counts, with its words as the reason.
         const a = q.requirement_answers?.[r.text.trim().toLowerCase()];
         if (!a) return { requirement_id: r.id, met: null, reason: "not stated" };
+        // "Total must include delivery/fees": a business that lists the extra separately is answered by the
+        // all-in total Haggle computed from those stated parts (never a guess).
+        if (!a.met && /\b(all[- ]?in|includ\w*\b.*\b(delivery|fees?|tax|charges))\b/i.test(r.text) && /^computed from stated/.test(q.sources.total?.source ?? "")) {
+          return { requirement_id: r.id, met: true, reason: `all-in total computed from the stated parts (${q.sources.total!.excerpt})` };
+        }
         return { requirement_id: r.id, met: a.met, reason: a.met ? `business said: "${a.excerpt}"` : `business said it can't: "${a.excerpt}"` };
       }
     }

@@ -146,7 +146,7 @@ export const deal = server.tool(
     title: "Get real quotes (start a purchase)",
     description:
       "START HERE for any purchase or procurement request: catering, food for an event or hackathon, print, rentals, services ('cater 200 people', 'get quotes', 'plan catering for…', 'find a vendor'). " +
-      "Haggle contacts the demo vendors this server is authorized and set up to reach, each on its own channel (email, iMessage, Voice AI call, A2A), and opens the live deal board right away; quotes arrive over minutes. " +
+      "Haggle contacts the demo vendors this server is authorized and set up to reach, each on its own channel (email, iMessage, Voice AI call, A2A), opens the live deal board right away, collects quotes over minutes, asks once about anything unconfirmed and negotiates by message using only real competing quotes or the buyer's own target. " +
       "Call it directly: no need for ask, discover or business_profile first. Omit businesses to use the configured vendors. Put the user's budget in budget_usd ('under 5k' = 5000), the headcount in request.quantity, " +
       "the event date as YYYY-MM-DD (resolve 'next Saturday' from today's date) and a time like '12:00' if given. Ask the user only if what/headcount/date is missing. " +
       "If no vendor can be contacted it starts nothing and returns the setup blockers to show the user. Side effect: one quote request per vendor (idempotent with client_request_id). Next: wait_for_update(job_id).",
@@ -155,7 +155,8 @@ export const deal = server.tool(
       businesses: z.array(businessInput).max(12).optional().describe("Specific businesses to contact; omit to use this server's configured demo vendors"),
       discover: z.boolean().optional().describe("Deprecated: omitting businesses already uses the configured vendors"),
       requirements: z.array(requirement).max(20).optional().describe("Extra requirements (merged with request.requirements)"),
-      budget_usd: z.number().positive().max(1_000_000).optional().describe("The user's budget for the whole order, in USD (e.g. 'under $5k' = 5000). Quotes above it can't win. Defaults to the settings spending cap only if the user gave none."),
+      budget_usd: z.number().positive().max(1_000_000).optional().describe("The user's budget for the whole order, in USD (e.g. 'under $5k' = 5000). By default a target: over-target quotes stay visible and Haggle negotiates toward it. Defaults to the settings spending cap only if the user gave none."),
+      budget_is_hard_limit: z.boolean().optional().describe("True only if the user said the budget is an absolute maximum they can't exceed (e.g. 'no more than', 'hard cap'). Then quotes above it can't be recommended or approved."),
       preferences: z.object({
         priority: z.enum(["lowest_price", "balanced", "quality"]).optional().describe("How the user trades price against reviews/track record/terms (default balanced). Use 'quality' only if the user says quality matters more than price."),
         weights: z.object({ price: z.number().min(0).max(1), reputation: z.number().min(0).max(1), reliability: z.number().min(0).max(1), completeness: z.number().min(0).max(1), terms: z.number().min(0).max(1) }).partial().optional().describe("Advanced: explicit best-value weights (normalized)"),
@@ -163,7 +164,7 @@ export const deal = server.tool(
       deadline: z.string().datetime({ offset: true }).optional().describe("ISO time the businesses should reply by"),
       approver_email: z.string().email().optional().describe("Stored with the deal; email approval isn't enabled (approve in the client's form or approval card)"),
       approver_phone: z.string().regex(/^\+[1-9]\d{6,14}$/).optional().describe("Ignored: the iMessage approver is set by the human in settings"),
-      max_rounds: z.number().int().min(1).max(2).optional().describe("Quote rounds including one negotiation round (default 2)"),
+      max_rounds: z.number().int().min(1).max(3).optional().describe("Quote rounds including negotiation rounds (default from the server, at most 3)"),
       client_request_id: z.string().max(64).optional().describe("Reuse to get the same job back instead of contacting businesses again"),
     }),
     outputSchema: DealBoardPlus,
@@ -202,6 +203,7 @@ export const deal = server.tool(
       const r = await engine.deal({
         request: {
           ...base, area, ...(input.request.time ? { time: input.request.time } : {}), ...(input.request.venue ? { venue: input.request.venue } : {}), requirements: reqs,
+          budget_kind: input.budget_is_hard_limit ? "limit" as const : "target" as const,
           ...(input.preferences ? { preferences: { weights: { ...PRIORITY_WEIGHTS[input.preferences.priority ?? "balanced"], ...input.preferences.weights } } } : {}),
         },
         businesses,

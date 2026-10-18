@@ -60,7 +60,8 @@ const reject = (s: MachineState, e: JobEvent): TransitionResult => ({ ok: false,
 function closeWindow(s: MachineState, ctx: TransitionContext): TransitionResult {
   // Fail only when nothing is approvable; over-budget or unconfirmed quotes go to the human.
   if ((ctx.approvableQuotes ?? ctx.eligibleQuotes) === 0) return to(s, { state: "failed", failure_reason: "no_eligible_quote" });
-  if (ctx.eligibleQuotes >= 2 && ctx.counterable && s.round < s.max_rounds) {
+  // Negotiate while a truthful counter exists (a real cheaper quote, or the buyer's target) and rounds remain.
+  if (ctx.eligibleQuotes >= 1 && ctx.counterable && s.round < s.max_rounds) {
     const round = s.round + 1;
     return to(s, { state: "negotiating", round, ready: false, collect_until: new Date(ctx.now.getTime() + ctx.negotiationWindowMs).toISOString() }, [
       { type: "send_counteroffers", round },
@@ -96,6 +97,8 @@ export function transition(s: MachineState, e: JobEvent, ctx: TransitionContext)
       return reject(s, e);
     case "paying":
       if (e.type === "payment_settled") return to(s, { state: "paid" });
+      // The approved quote changed (or the approval lapsed) before any money moved: back to choosing.
+      if (e.type === "approval_void") return ctx.paymentInFlight ? { ok: false, reason: "a payment is in flight" } : to(s, { state: s.round > 1 ? "negotiating" : "collecting", ready: true });
       if (e.type === "payment_failed_final") return to(s, { state: "failed", failure_reason: "payment_failed" });
       return reject(s, e);
   }

@@ -44,7 +44,10 @@ export interface Request {
   area: string;               // "San Francisco, CA"
   venue?: string;             // "Y Combinator office, Mountain View St" (delivery address or place); optional
   requirements: Requirement[];
-  budget_usd?: Usd;           // buyer's hard cap for the order total
+  budget_usd?: Usd;           // the buyer's budget for the order total
+  /** "target" (default): over-budget quotes stay comparable and negotiable, shown with a caveat.
+   *  "limit": an authorized absolute ceiling; quotes above it can't be recommended or approved. */
+  budget_kind?: "target" | "limit";
   /** How the buyer trades price against quality; weights are normalized (see ranking/value.ts). */
   preferences?: { weights?: Partial<import("./ranking/value.ts").ValueWeights>; note?: string };
 }

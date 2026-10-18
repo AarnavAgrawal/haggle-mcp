@@ -389,8 +389,14 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
         {winner && q.items.length > 0 && <p className="db-items">{q.items.join(", ")}</p>}
         {countered.map((n) => (
           <p key={`${n.business_id}-${n.round}`} className="db-neg">
-            Countered with a real {usd(n.target_total_usd)} quote
-            {basisName(board, n.basis_quote_id) ? ` from ${basisName(board, n.basis_quote_id)}` : ""}
+            {n.basis_quote_id === "buyer_target" ? (
+              <>Round {n.round}: asked to get closer to your {usd(n.target_total_usd)} target</>
+            ) : (
+              <>
+                Round {n.round}: countered with a real {usd(n.target_total_usd)} quote
+                {basisName(board, n.basis_quote_id) ? ` from ${basisName(board, n.basis_quote_id)}` : ""}
+              </>
+            )}
             {n.outcome_total_usd !== null ? ` → ${usd(n.outcome_total_usd)}` : " · waiting for the answer"}
           </p>
         ))}
