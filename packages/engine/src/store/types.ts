@@ -232,6 +232,8 @@ export interface Repository {
   getMessage(id: string): Promise<MessageRow | null>;
   updateMessage(id: string, patch: Partial<MessageRow>): Promise<void>;
   listMessages(jobId: string): Promise<MessageRow[]>;
+  /** Every message with this business across all jobs (contact-performance learning). */
+  listMessagesForBusiness(businessId: string): Promise<MessageRow[]>;
   getPendingMessages(jobId: string): Promise<MessageRow[]>;
   findOutboundByRfcIds(ids: string[]): Promise<MessageRow[]>;
 
@@ -240,6 +242,8 @@ export interface Repository {
   insertCurrentQuote(q: Omit<QuoteRow, "id" | "created_at" | "status">): Promise<QuoteRow | null>;
   getQuote(id: string): Promise<QuoteRow | null>;
   listQuotes(jobId: string): Promise<QuoteRow[]>;
+  /** Every quote from this business across all jobs. */
+  listQuotesForBusiness(businessId: string): Promise<QuoteRow[]>;
 
   // questions
   insertQuestion(q: Omit<QuestionRow, "id" | "created_at" | "status" | "answer" | "answered_at">): Promise<QuestionRow>;

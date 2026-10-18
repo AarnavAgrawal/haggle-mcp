@@ -128,6 +128,9 @@ export class PostgresRepository implements Repository {
   async listMessages(jobId: string) {
     return rows<MessageRow>(await this.sql`select * from messages where job_id = ${jobId} order by created_at, id`);
   }
+  async listMessagesForBusiness(businessId: string) {
+    return rows<MessageRow>(await this.sql`select * from messages where business_id = ${businessId} order by created_at, id limit 500`);
+  }
   async getPendingMessages(jobId: string) {
     return rows<MessageRow>(await this.sql`select * from messages where job_id = ${jobId} and parse_status = 'pending' order by created_at, id`);
   }
@@ -150,6 +153,9 @@ export class PostgresRepository implements Repository {
   }
   async listQuotes(jobId: string) {
     return rows<QuoteRow>(await this.sql`select * from quotes where job_id = ${jobId} order by created_at, id`);
+  }
+  async listQuotesForBusiness(businessId: string) {
+    return rows<QuoteRow>(await this.sql`select * from quotes where business_id = ${businessId} order by created_at, id limit 500`);
   }
 
   async insertQuestion(q: Omit<QuestionRow, "id" | "created_at" | "status" | "answer" | "answered_at">) {

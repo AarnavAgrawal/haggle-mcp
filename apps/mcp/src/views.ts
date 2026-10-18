@@ -85,6 +85,11 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
     stage: z.string(), negotiation: z.enum(["none", "countered", "vendor_revised", "held_firm"]),
     first_total_usd: z.number().optional(), current_total_usd: z.number().optional(), quote_version: z.number().int().optional(), saved_usd: z.number().optional(),
   })).optional(),
+  /** Per business: observed reply performance by channel across all jobs, and any stated contact preference. */
+  contact_learning: z.record(z.string(), z.looseObject({
+    channels: z.record(z.string(), z.looseObject({ contacted_jobs: z.number(), replied_jobs: z.number(), quotes: z.number(), response_rate: z.number(), confidence: z.number() })),
+    stated_preference: z.looseObject({ channel: z.string(), excerpt: z.string() }).optional(),
+  })).optional(),
   /** Per current quote: extra fees and commercial terms exactly as stated. */
   terms: z.record(z.string(), z.looseObject({
     fees: z.array(z.looseObject({ label: z.string(), amount_usd: z.number().optional(), included: z.boolean().nullable(), excerpt: z.string() })).optional(),
@@ -111,7 +116,7 @@ export function requestDetails(b: DealBoardData, budgetSource?: "request" | "set
 /** Board + request details + payment ceiling (+ setup blockers when given). */
 export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus> = {}): DealBoardPlus {
   return DealBoardPlus.parse({
-    ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...(b.stages ? { stages: b.stages } : {}), ...(b.terms && Object.keys(b.terms).length ? { terms: b.terms } : {}), ...extra,
+    ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...(b.stages ? { stages: b.stages } : {}), ...(b.terms && Object.keys(b.terms).length ? { terms: b.terms } : {}), ...(b.contact_learning ? { contact_learning: b.contact_learning } : {}), ...extra,
   });
 }
 

@@ -117,6 +117,9 @@ export class InMemoryRepository implements Repository {
   async listMessages(jobId: string) {
     return this.messages.filter((m) => m.job_id === jobId).map(clone);
   }
+  async listMessagesForBusiness(businessId: string) {
+    return this.messages.filter((m) => m.business_id === businessId).map(clone);
+  }
   async getPendingMessages(jobId: string) {
     return this.messages.filter((m) => m.job_id === jobId && m.parse_status === "pending").map(clone);
   }
@@ -138,6 +141,9 @@ export class InMemoryRepository implements Repository {
   }
   async listQuotes(jobId: string) {
     return this.quotes.filter((q) => q.job_id === jobId).map(clone);
+  }
+  async listQuotesForBusiness(businessId: string) {
+    return this.quotes.filter((q) => q.business_id === businessId).map(clone);
   }
 
   async insertQuestion(q: Omit<QuestionRow, "id" | "created_at" | "status" | "answer" | "answered_at">) {

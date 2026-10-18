@@ -159,6 +159,7 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
     dietary_coverage: dietary,
     ...(Object.keys(answers).length ? { requirement_answers: answers } : {}),
     ...(otherFees.length ? { other_fees: otherFees } : {}),
+    ...(x.preferred_contact?.excerpt.trim() ? { preferred_contact: { channel: x.preferred_contact.channel === "text" ? "imessage" as const : x.preferred_contact.channel, excerpt: x.preferred_contact.excerpt.trim().slice(0, 160) } } : {}),
     ...(terms ? { terms } : {}),
     valid_until: validUntil,
     questions: x.questions.slice(0, 5).map((q) => q.slice(0, 500)),
@@ -196,6 +197,7 @@ export function dropUnstatedDietaryRefusals(x: QuoteExtraction, text: string): Q
  * replies; PDFs can't be checked here). Unsupported answers become "not stated", never a yes or no.
  */
 export function dropUnsupportedRequirementAnswers(x: QuoteExtraction, text: string): QuoteExtraction {
+  if (x.preferred_contact && !text.toLowerCase().includes(x.preferred_contact.excerpt.trim().toLowerCase())) x = { ...x, preferred_contact: null };
   if (!x.requirement_answers?.length) return x;
   const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9$]+/g, " ").trim();
   const hay = norm(text);

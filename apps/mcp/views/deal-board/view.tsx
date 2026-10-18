@@ -54,6 +54,7 @@ type Extras = {
   };
   callbacks?: { business_id: string; business: string; their_total_usd: number; basis_total_usd: number; basis_business: string; why: string }[];
   stages?: Record<string, { stage: string; negotiation: string; first_total_usd?: number; current_total_usd?: number; quote_version?: number; saved_usd?: number }>;
+  contact_learning?: Record<string, { channels: Record<string, { contacted_jobs: number; replied_jobs: number; quotes: number; median_reply_minutes?: number }>; stated_preference?: { channel: string; excerpt: string } }>;
   terms?: Record<string, { fees?: { label: string; amount_usd?: number; included: boolean | null; excerpt: string }[]; deposit_terms?: string | null; cancellation?: string | null; exclusions?: string[] }>;
 };
 
@@ -298,7 +299,7 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
           {board.open_questions.map((q) => (
             <Question key={q.question_id} jobId={board.job.id} question={q} onChanged={onChanged} />
           ))}
-          <Businesses businesses={board.businesses} quotes={board.quotes} compact={!fullscreen} stages={board.stages} />
+          <Businesses businesses={board.businesses} quotes={board.quotes} compact={!fullscreen} stages={board.stages} learning={board.contact_learning} />
         </section>
       </div>
 
@@ -667,7 +668,15 @@ function Question({ jobId, question, onChanged }: { jobId: string; question: Ope
   );
 }
 
-function Businesses({ businesses, quotes, compact, stages }: { businesses: DealBoardBusiness[]; quotes: Quote[]; compact: boolean; stages?: Extras["stages"] }) {
+function Businesses({ businesses, quotes, compact, stages, learning }: { businesses: DealBoardBusiness[]; quotes: Quote[]; compact: boolean; stages?: Extras["stages"]; learning?: Extras["contact_learning"] }) {
+  /** "Replies: email 2/3 · text 1/1 (~4 min)"; only with history beyond this one deal. */
+  const history = (id: string) => {
+    const l = learning?.[id];
+    if (!l) return null;
+    const parts = Object.entries(l.channels).filter(([, r]) => r.contacted_jobs > 1).map(([c, r]) => `${c === "imessage" ? "text" : c} ${r.replied_jobs}/${r.contacted_jobs}${r.median_reply_minutes !== undefined ? ` (~${r.median_reply_minutes} min)` : ""}`);
+    const pref = l.stated_preference ? `Prefers ${l.stated_preference.channel === "imessage" ? "text" : l.stated_preference.channel}: "${l.stated_preference.excerpt}"` : null;
+    return [parts.length ? `Replies: ${parts.join(" · ")}` : null, pref].filter(Boolean).join(" · ") || null;
+  };
   const label = (b: DealBoardBusiness) => (stages?.[b.id] ? STAGE_LABEL[stages[b.id]!.stage] ?? stages[b.id]!.stage : STATUS_LABEL[b.status] ?? b.status);
   const quoted = new Set(quotes.map((q) => q.business_id));
   if (compact) {
@@ -714,6 +723,7 @@ function Businesses({ businesses, quotes, compact, stages }: { businesses: DealB
               {b.unavailable_reason ?? b.last_event}
               {b.last_event_at && <span className="hg-muted"> · {relativeTime(b.last_event_at)}</span>}
             </p>
+            {history(b.id) && <p className="hg-muted db-bizrow-event">{history(b.id)}</p>}
             {b.transcript_snippet && <p className={`db-said db-said-${b.channel}`}>{b.transcript_snippet}</p>}
           </li>
         ))}

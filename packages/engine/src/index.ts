@@ -22,6 +22,7 @@ export * from "./ranking/rank.ts";
 export * from "./ranking/value.ts";
 export * from "./negotiation/strategist.ts";
 export * from "./parsing/callSafety.ts";
+export * from "./routing/channelStats.ts";
 export * from "./reputation/places.ts";
 export * from "./outbound/primitiveSender.ts";
 export * from "./payments/x402Challenge.ts";

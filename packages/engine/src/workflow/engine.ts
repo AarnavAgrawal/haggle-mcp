@@ -35,6 +35,7 @@ import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts
 import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
 import { rankQuotes, rejectReason, type RankableQuote } from "../ranking/rank.ts";
 import { scoreQuotes, type ValueInput, type ValueRanking } from "../ranking/value.ts";
+import { chooseChannel, learnContact, type ContactLearning } from "../routing/channelStats.ts";
 import type { ApprovalRow, Channel, JobBusinessRow, JobRow, MessageRow, PaymentRow, QuoteRow, Repository, SettingsRow } from "../store/types.ts";
 import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
@@ -178,6 +179,8 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
   callbacks?: CallbackProposal[];
   /** Per business: stage, negotiation state, first vs current price, version, savings. */
   stages?: Record<string, BusinessStage>;
+  /** Per business: observed reply performance by channel (all jobs) and any contact preference it stated. */
+  contact_learning?: Record<string, ContactLearning>;
   /** Per current quote: extra fees (with inclusion) and commercial terms, as the business stated them. */
   terms?: Record<string, { fees?: { label: string; amount_usd?: number; included: boolean | null; excerpt: string }[]; deposit_terms?: string | null; cancellation?: string | null; exclusions?: string[] }>;
 };
@@ -219,8 +222,15 @@ export class HaggleEngine {
       if (existing) return this.dealResult(existing);
     }
     if (input.businesses.length === 0) throw new EngineError("no_businesses", "No businesses to contact.", "Pass businesses[] (name + email or phone), or call discover first.", "discover");
+    // What Haggle has learned about reaching each business (stated preference, observed replies).
+    const learned = await Promise.all(input.businesses.map(async (b) => {
+      const email = b.email ? normalizeAddress(b.email) : null;
+      const phone = b.phone ? b.phone.replace(/[\s().-]/g, "") : null;
+      if (!email && !phone && !b.a2a_card_url) return null;
+      return this.contactLearning(businessIdForContact({ email, phone, a2a_card_url: b.a2a_card_url?.trim() || null }, b.name)).catch(() => null);
+    }));
     const seen = new Set<string>();
-    const planned = input.businesses.map((b) => {
+    const planned = input.businesses.map((b, i) => {
       const email = b.email ? normalizeAddress(b.email) : null;
       const phone = b.phone ? b.phone.replace(/[\s().-]/g, "") : null;
       const card = b.a2a_card_url?.trim() || null;
@@ -235,7 +245,17 @@ export class HaggleEngine {
         if (seen.has(key)) throw new EngineError("duplicate_business", `Listed twice: ${key}`, "Remove the duplicate.", "deal");
         seen.add(key);
       }
-      return { b, email, phone, card, ...this.route({ email, phone, card, prefer: b.channel }) };
+      const base = this.route({ email, phone, card, prefer: b.channel });
+      // Learned channel: only among channels that are authorized and enabled; iMessage only with a prior
+      // two-way history (Inkbox reaches only connected people); an operator's explicit channel stands
+      // unless the business itself asked otherwise.
+      const L = learned[i] ?? null;
+      const available: Channel[] = [
+        ...(card && this.d.a2a ? ["a2a" as const] : []), ...(email ? ["email" as const] : []), ...(phone && this.d.phone ? ["phone" as const] : []),
+        ...(phone && this.d.imessage && ((L?.channels.imessage?.replied_jobs ?? 0) > 0 || L?.stated_preference?.channel === "imessage") ? ["imessage" as const] : []),
+      ];
+      const pick = base.reachable && (!b.channel || L?.stated_preference) ? chooseChannel(available, base.channel, L) : { channel: base.channel, reason: null };
+      return { b, email, phone, card, ...(pick.reason ? { channel: pick.channel, reachable: true, reason: pick.channel, learnedReason: pick.reason } : base) };
     });
     if (!planned.some((p) => p.reachable)) {
       throw new EngineError("no_usable_channel", "None of these businesses can be reached: phone and A2A outreach aren't enabled in this deployment.", "Give at least one business an email address.", "deal");
@@ -269,6 +289,7 @@ export class HaggleEngine {
       }
     }
     if (!job) throw new Error("could not allocate a job code");
+    for (const p of planned) if ("learnedReason" in p && p.learnedReason) this.log("channel_learned", { business: p.b.name, channel: p.channel, why: p.learnedReason });
     await this.repo.insertBusinesses(planned.map(({ b, email, phone, card, channel, reachable }): JobBusinessRow => ({
       job_id: job!.id, business_id: businessIdForContact({ email, phone, a2a_card_url: card }, b.name), name: b.name.slice(0, 120), email, phone, a2a_card_url: card, channel,
       source: b.source ?? "agent", simulated: b.simulated ?? mode === "mock", status: reachable ? "pending" : "unavailable", thread_id: null, rfq_message_id: null,
@@ -373,6 +394,11 @@ export class HaggleEngine {
   /** Does the buyer's request involve delivery (so an unstated delivery cost leaves the all-in total unknown)? */
   private needsDelivery(job: JobRow): boolean {
     return job.request.requirements.some((r) => r.kind === "delivery" || /\bdeliver|\ball[- ]?in\b/i.test(r.text));
+  }
+
+  /** What Haggle observed about reaching this business across all its jobs. */
+  async contactLearning(businessId: string): Promise<ContactLearning> {
+    return learnContact(await this.repo.listMessagesForBusiness(businessId), await this.repo.listQuotesForBusiness(businessId));
   }
 
   /** An authorized absolute ceiling (budget_kind "limit"), else null. */
@@ -1748,6 +1774,7 @@ export class HaggleEngine {
       ...(value.recommendedQuoteId ? { recommended_quote_id: value.recommendedQuoteId } : {}),
       ...(value.ranked.length ? { value } : {}),
       stages,
+      contact_learning: Object.fromEntries(await Promise.all(businesses.map(async (b) => [b.business_id, await this.contactLearning(b.business_id).catch(() => ({ channels: {} }))] as const))),
       terms: Object.fromEntries(quotes.filter((q) => q.record.terms || q.record.other_fees?.length).map((q) => [q.id, {
         ...(q.record.other_fees?.length ? { fees: q.record.other_fees.map((f) => ({ label: f.label, ...(f.amount_cents !== null ? { amount_usd: centsToUsd(f.amount_cents) } : {}), included: f.included_in_total, excerpt: f.excerpt })) } : {}),
         ...(q.record.terms ?? {}),

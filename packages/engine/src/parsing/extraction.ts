@@ -39,6 +39,8 @@ export const QuoteExtraction = z.object({
     .object({ deposit_terms: z.string().nullable(), cancellation: z.string().nullable(), exclusions: z.array(z.string()) })
     .optional()
     .describe("Commercial terms only as stated: when the deposit is due / refundable, the cancellation policy, what is excluded. null / [] if not stated"),
+  preferred_contact: z.object({ channel: z.enum(["email", "phone", "text"]), excerpt: z.string() }).nullable().optional()
+    .describe("Only if the business explicitly asked to be contacted a certain way ('text me instead', 'call me'), with its exact words; else null"),
   valid_until: z.string().nullable().describe("YYYY-MM-DD if stated"),
   questions: z.array(z.string()).describe("Questions the business asked the buyer before it can quote, verbatim"),
   payment_request: z
@@ -72,6 +74,8 @@ export interface QuoteRecord {
   dietary_coverage: Record<string, { covered: boolean; count_offered: number | null }>;
   /** Fees other than delivery/tax; `included_in_total` null = unclear (the all-in total is then unknown). */
   other_fees?: { label: string; amount_cents: number | null; included_in_total: boolean | null; excerpt: string }[];
+  /** A contact preference the business stated in its own words. */
+  preferred_contact?: { channel: "email" | "phone" | "imessage"; excerpt: string };
   /** Commercial terms exactly as stated (evidence only). */
   terms?: { deposit_terms: string | null; cancellation: string | null; exclusions: string[] };
   /** Other requirements the business explicitly answered, keyed by the requirement's text (lowercased). */
