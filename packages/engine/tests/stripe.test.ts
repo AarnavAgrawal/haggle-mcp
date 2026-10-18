@@ -22,6 +22,8 @@ function fakeFetch(respond: (c: Call) => { status: number; json: unknown } | Err
   return { f, calls };
 }
 const REQ: StripeChargeRequest = { amountCents: 500, idempotencyKey: "haggle-pay-ap_1", description: "Haggle deposit", metadata: { job_id: "job_1", approval_id: "ap_1", quote_id: "q_1", business_id: "biz_1", business: "Bay Catering" } };
+/** A succeeded test-mode PaymentIntent that matches REQ exactly. */
+const PI = { id: "pi_123", status: "succeeded", livemode: false, amount: 500, amount_received: 500, currency: "usd", customer: "cus_TEST123", metadata: { approval_id: "ap_1", quote_id: "q_1", job_id: "job_1" } };
 
 describe("Stripe test-mode port", () => {
   it("refuses anything but a test key and well-formed ids", () => {
@@ -34,10 +36,10 @@ describe("Stripe test-mode port", () => {
   });
 
   it("charges the approved amount once per idempotency key, test mode only", async () => {
-    const { f, calls } = fakeFetch(() => ({ status: 200, json: { id: "pi_123", status: "succeeded", livemode: false } }));
+    const { f, calls } = fakeFetch(() => ({ status: 200, json: PI }));
     const r = await stripeTestPayments({ ...CFG, fetchImpl: f }).charge(REQ);
     expect(r).toEqual({ ok: true, paymentIntentId: "pi_123" });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2); // the charge, then the independent read-back
     const c = calls[0]!;
     expect(c).toMatchObject({ url: "https://api.stripe.com/v1/payment_intents", method: "POST" });
     expect(c.headers["idempotency-key"]).toBe("haggle-pay-ap_1");
@@ -57,6 +59,19 @@ describe("Stripe test-mode port", () => {
     expect(await charge(409, { error: { type: "idempotency_error" } })).toMatchObject({ ok: false, retryable: true });
     expect(await charge(200, { id: "pi_p", status: "processing", livemode: false })).toMatchObject({ ok: false, reason: "processing", retryable: true });
     expect(await stripeTestPayments({ ...CFG, fetchImpl: fakeFetch(() => new Error("ECONNRESET")).f }).charge(REQ)).toEqual({ ok: false, reason: "stripe_unreachable", retryable: true });
+  });
+
+  it("confirms every charge with an independent GET before calling it paid; a mismatch is final, an unreachable check retries", async () => {
+    const charge = (get: (c: Call) => { status: number; json: unknown } | Error) =>
+      stripeTestPayments({ ...CFG, fetchImpl: fakeFetch((c) => (c.method === "POST" ? { status: 200, json: PI } : get(c))).f }).charge(REQ);
+    const { f, calls } = fakeFetch((c) => (c.method === "POST" ? { status: 200, json: PI } : { status: 200, json: PI }));
+    expect(await stripeTestPayments({ ...CFG, fetchImpl: f }).charge(REQ)).toEqual({ ok: true, paymentIntentId: "pi_123" });
+    expect(calls[1]).toMatchObject({ method: "GET", url: "https://api.stripe.com/v1/payment_intents/pi_123" });
+    for (const [field, value] of [["amount", 5000], ["amount_received", 0], ["currency", "eur"], ["status", "requires_action"], ["livemode", true], ["customer", "cus_OTHER"], ["metadata", { approval_id: "ap_2", quote_id: "q_1" }]] as const) {
+      expect(await charge(() => ({ status: 200, json: { ...PI, [field]: value } })), field).toMatchObject({ ok: false, reason: expect.stringMatching(/^verification_failed/), retryable: false, paymentIntentId: "pi_123" });
+    }
+    expect(await charge(() => new Error("ECONNRESET"))).toMatchObject({ ok: false, reason: "verification_unavailable", retryable: true, paymentIntentId: "pi_123" });
+    expect(await charge(() => ({ status: 503, json: {} }))).toMatchObject({ ok: false, reason: "verification_unavailable", retryable: true });
   });
 
   it("verifyStripeTestSetup only reads (GET), and checks the card belongs to the customer", async () => {
@@ -176,17 +191,12 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`en
   });
 
   it("refuses safely: over the settings cap at approval, a revised quote, and a final decline (no retry)", async () => {
-    // Settings cap $100 → Harbor's $300 deposit can't even be sent for approval.
-    const s1 = setup(scriptedStripe());
-    const before = await s1.engine.getSettings();
-    await s1.engine.updateSettings({ spending_cap_cents: 10_000 });
-    try {
-      const r1 = await ready(s1.engine, s1.clock);
-      const harbor = r1.board.quotes.find((q) => q.business === "Harbor Table")!;
-      await expect(s1.engine.requestApproval(r1.deal.job_id, harbor.quote_id, "simulated")).rejects.toMatchObject({ code: "over_cap" });
-    } finally {
-      await s1.engine.updateSettings({ spending_cap_cents: before.spending_cap_cents }); // settings are a shared row on Postgres
-    }
+    // Operator per-payment ceiling $100 → Harbor's $300 deposit can't even be sent for approval.
+    // (The settings spending cap is the human's preference: a caveat, see approvalCaveats.test.ts.)
+    const s1 = setup(scriptedStripe(), { globalPaymentCapCents: 10_000 });
+    const r1 = await ready(s1.engine, s1.clock);
+    const harbor = r1.board.quotes.find((q) => q.business === "Harbor Table")!;
+    await expect(s1.engine.requestApproval(r1.deal.job_id, harbor.quote_id, "simulated")).rejects.toMatchObject({ code: "over_cap" });
 
     // A decline is final: payment failed with the code, job failed, exactly one attempt.
     const stripe = scriptedStripe([{ ok: false, reason: "card_declined", retryable: false }]);

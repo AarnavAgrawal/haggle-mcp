@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "@haggle/sellers",
   "version": "0.1.0",
   "private": true,
@@ -10,6 +10,7 @@
     "setup": "tsx --env-file-if-exists=../../.env scripts/setup.ts",
     "fixtures": "tsx scripts/fixtures.ts",
     "status": "tsx --env-file-if-exists=../../.env scripts/status.ts",
+    "live": "tsx --env-file-if-exists=../../.env scripts/live.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

@@ -160,8 +160,8 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // Bay Catering wins at $995 after negotiating from $1,150.
     expect(board.recommended_quote_id).toBe(q("Bay Catering").quote_id);
     expect(q("Bay Catering")).toMatchObject({ total_usd: 995, negotiated_from: 1150, deposit_usd: 5, verdict: "compliant", channel: "a2a" }); // its Agent Card
-    // Golden Grill: only 6 vegetarian meals → rejected.
-    expect(q("Golden Grill")).toMatchObject({ verdict: "rejected", meets_requirements: false });
+    // Golden Grill: only 6 vegetarian meals → can't be recommended; approvable only with a caveat.
+    expect(q("Golden Grill")).toMatchObject({ verdict: "incomplete", eligible: false, meets_requirements: false });
     expect(board.rejected.find((r: { business_id: string }) => r.business_id === q("Golden Grill").business_id).reason).toBe("requirement_unmet");
     // Harbor Table: deposit found on page 2 of the PDF.
     expect(q("Harbor Table").flags).toContain("hidden_deposit");
@@ -189,7 +189,8 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const early = await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(errorOf(early)).toMatchObject({ error: { code: "no_approval" }, next: "approve" });
     const grill = await call("approve", { job_id: job, quote_id: q("Golden Grill").quote_id });
-    expect(errorOf(grill).error.code).toBe("quote_not_eligible");
+    // Approvable with a caveat, but with no deposit it would pay the full $860: above the mock server's per-payment ceiling.
+    expect(errorOf(grill).error.code).toBe("over_cap");
     const scam = await call("approve", { job_id: job, quote_id: q("QuickQuote Deli").quote_id });
     expect(errorOf(scam).error.code).toBe("quote_not_eligible");
     const ghost = await call("approve", { job_id: job, quote_id: "q_does_not_exist" });

@@ -84,11 +84,33 @@ export function stripeTestPayments(c: StripeTestConfig): StripePort {
         return { ok: false, reason: e.decline_code ?? e.code ?? e.type ?? `stripe_http_${res.status}`, retryable: false, ...(pi ? { paymentIntentId: pi } : {}) };
       }
       if (json.livemode !== false) return { ok: false, reason: "not_test_mode", retryable: false, ...(json.id ? { paymentIntentId: json.id } : {}) };
-      if (json.status === "succeeded" && json.id) return { ok: true, paymentIntentId: json.id };
+      if (json.status === "succeeded" && json.id) return verifyCharge(f, c, req, json.id);
       if (json.status === "processing") return { ok: false, reason: "processing", retryable: true, ...(json.id ? { paymentIntentId: json.id } : {}) };
       return { ok: false, reason: `payment_${json.status ?? "unknown"}`, retryable: false, ...(json.id ? { paymentIntentId: json.id } : {}) };
     },
   };
+}
+
+/**
+ * A charge counts only after Stripe itself confirms it: read the PaymentIntent back (GET, separate
+ * from the charge response) and check it is test mode, succeeded, for exactly the approved amount in
+ * USD, on our customer, and tagged with this approval and quote. A mismatch is final (never paid);
+ * an unreachable check is retryable (the same idempotency key replays the same PaymentIntent).
+ */
+async function verifyCharge(f: typeof fetch, c: StripeTestConfig, req: StripeChargeRequest, id: string): Promise<StripeChargeResult> {
+  let pi: { id?: string; status?: string; livemode?: boolean; amount?: number; amount_received?: number; currency?: string; customer?: string | { id?: string }; metadata?: Record<string, string> };
+  try {
+    const res = await f(`${API}/payment_intents/${encodeURIComponent(id)}`, { headers: { authorization: `Bearer ${c.secretKey}` }, signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) return { ok: false, reason: "verification_unavailable", retryable: true, paymentIntentId: id };
+    pi = (await res.json()) as typeof pi;
+  } catch {
+    return { ok: false, reason: "verification_unavailable", retryable: true, paymentIntentId: id };
+  }
+  const customer = typeof pi.customer === "string" ? pi.customer : pi.customer?.id;
+  const mismatch = pi.id !== id ? "id" : pi.livemode !== false ? "livemode" : pi.status !== "succeeded" ? "status"
+    : pi.amount !== req.amountCents ? "amount" : pi.amount_received !== req.amountCents ? "amount_received" : pi.currency !== "usd" ? "currency"
+    : customer !== c.customerId ? "customer" : pi.metadata?.approval_id !== req.metadata.approval_id || pi.metadata?.quote_id !== req.metadata.quote_id ? "metadata" : null;
+  return mismatch ? { ok: false, reason: `verification_failed:${mismatch}`, retryable: false, paymentIntentId: id } : { ok: true, paymentIntentId: id };
 }
 
 /** Mock mode: no network; deterministic DEMO PaymentIntent ids; same idempotency semantics. */

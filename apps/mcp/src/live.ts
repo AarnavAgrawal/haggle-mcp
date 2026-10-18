@@ -28,7 +28,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const cap = Number(env.HAGGLE_GLOBAL_PAYMENT_CAP_CENTS ?? (stripe ? "50000" : "500"));
   const capMax = stripe ? 1_000_000 : 1000;
   const ceiling = Number(env.HAGGLE_SPENDING_CAP_CEILING_CENTS ?? "500000");
-  const repo = new PostgresRepository(env.SUPABASE_DB_URL!);
+  const repo = new PostgresRepository(env.SUPABASE_DB_URL!, env.HAGGLE_DB_SCHEMA?.trim() ? { schema: env.HAGGLE_DB_SCHEMA.trim() } : {});
   // Each outbound channel is OFF unless explicitly enabled (real calls / iMessages / A2A tasks need
   // Yash's go-ahead). A2A cards and phone numbers must still be on the recipient allowlist; iMessage
   // only ever goes to the settings approver.

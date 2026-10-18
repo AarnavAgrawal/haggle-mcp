@@ -23,6 +23,19 @@ const AREA_ALIASES: Record<string, string> = {
   "san francisco, ca": "san francisco",
   "sf bay area": "san francisco",
   "bay area": "san francisco",
+  // SF venues and neighborhoods people name instead of the city ("YC HQ", "SoMa office").
+  yc: "san francisco",
+  "y combinator": "san francisco",
+  soma: "san francisco",
+  "mission district": "san francisco",
+  "mission bay": "san francisco",
+  "the mission": "san francisco",
+  fidi: "san francisco",
+  "financial district": "san francisco",
+  dogpatch: "san francisco",
+  "hayes valley": "san francisco",
+  presidio: "san francisco",
+  "union square": "san francisco",
   nyc: "new york",
   "new york city": "new york",
   "new york, ny": "new york",
@@ -30,10 +43,18 @@ const AREA_ALIASES: Record<string, string> = {
 
 const AREA_LABELS: Record<string, string> = { "san francisco": "SF", "new york": "NYC" };
 
+/** Longest alias first, so "sf bay area" wins over "bay area" and "san francisco, ca" over "sf". */
+const ALIASES_BY_LENGTH = Object.keys(AREA_ALIASES).sort((a, b) => b.length - a.length);
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** "YC HQ, 680 Folsom St, San Francisco, CA 94107" → "san francisco"; unknown places pass through. */
 export function normalizeArea(area: string | undefined): string | undefined {
   if (!area) return undefined;
   const a = area.trim().toLowerCase().replace(/\s+/g, " ");
-  return AREA_ALIASES[a] ?? a.replace(/,\s*[a-z]{2}$/, "");
+  if (AREA_ALIASES[a]) return AREA_ALIASES[a];
+  // A venue or street address that names a known city anywhere in it.
+  const hit = ALIASES_BY_LENGTH.find((k) => new RegExp(`(^|[^a-z])${escape(k)}([^a-z]|$)`).test(a));
+  return hit ? AREA_ALIASES[hit] : a.replace(/,\s*[a-z]{2}$/, "");
 }
 
 export function areaLabel(area: string | undefined): string {

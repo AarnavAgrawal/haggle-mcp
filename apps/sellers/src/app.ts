@@ -8,6 +8,7 @@ import { planReply, quoteJson, type Plan } from "./logic.ts";
 import { quotePdfBase64 } from "./pdf.ts";
 import { PERSONAS, type Persona } from "./personas.ts";
 import type { StateStore } from "./store.ts";
+import { drawTerms, type Terms } from "./variation.ts";
 
 export interface Attachment {
   filename: string;
@@ -33,6 +34,8 @@ export interface SellerAppOptions {
   fast?: boolean;
   /** Override waiting (tests pass `() => 0`). */
   delayMs?: (p: Persona) => number;
+  /** Terms for a new conversation (default: a fresh random draw; `baseTerms` = no variety). */
+  drawTerms?: (p: Persona) => Terms;
   log?: (msg: string) => void;
   now?: () => Date;
 }
@@ -46,6 +49,7 @@ export function createSellerApp(opts: SellerAppOptions) {
   const log = opts.log ?? ((m: string) => console.log(m));
   const now = opts.now ?? (() => new Date());
   const delayMs = opts.delayMs ?? ((p: Persona) => defaultDelay(p, opts.fast ?? false));
+  const draw = opts.drawTerms ?? ((p: Persona) => drawTerms(p));
 
   function later(p: Persona, label: string, work: () => Promise<void>) {
     const wait = delayMs(p);
@@ -85,12 +89,12 @@ export function createSellerApp(opts: SellerAppOptions) {
     const body = !msg.body || msg.body_truncated ? await opts.ports.getEmailBody(p.handle, msg.id) : msg.body;
     const text = `${msg.subject ?? ""}\n${body}`;
     const key = `${p.handle}:mail:${msg.thread_id ?? msg.id}`;
-    const { plan, state } = planReply(p, opts.state.get(key), text, findJsonPart(text));
+    const { plan, state, persona } = planReply(p, opts.state.get(key), text, findJsonPart(text), draw);
     opts.state.set(key, state);
 
     later(p, describePlan(plan), async () => {
-      const bodyText = await opts.composer.write(p, plan, text);
-      const attachments = await attachmentsFor(p, plan, now());
+      const bodyText = await opts.composer.write(persona, plan, text);
+      const attachments = await attachmentsFor(persona, plan, now());
       await opts.ports.replyEmail(p.handle, { messageId: msg.id, bodyText, attachments });
       log(`[sellers] ${p.name}: replied (${describePlan(plan)})`);
     });
@@ -104,12 +108,12 @@ export function createSellerApp(opts: SellerAppOptions) {
 
     const task = await opts.ports.getA2ATask(p.handle, taskId);
     const key = `${p.handle}:a2a:${task.contextId}`;
-    const { plan, state } = planReply(p, opts.state.get(key), task.text, task.data);
+    const { plan, state, persona } = planReply(p, opts.state.get(key), task.text, task.data, draw);
     opts.state.set(key, state);
 
     later(p, describePlan(plan), async () => {
-      const text = await opts.composer.write(p, plan, task.text, "a2a");
-      const structured = plan.kind === "question" ? undefined : quoteJson(p, plan.facts, now());
+      const text = await opts.composer.write(persona, plan, task.text, "a2a");
+      const structured = plan.kind === "question" ? undefined : quoteJson(persona, plan.facts, now());
       await opts.ports.replyA2A(p.handle, taskId, { text, ...(structured ? { data: structured } : {}) });
       log(`[sellers] ${p.name}: A2A ${describePlan(plan)} sent`);
     });

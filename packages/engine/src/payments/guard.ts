@@ -74,7 +74,9 @@ export function checkApprovedPayment(i: ApprovedPaymentInput, inFlight: Set<stri
   if (i.now.getTime() > Date.parse(approval.expires_at)) return deny("APPROVAL_EXPIRED");
   // 5. Exactly the quote revision, business, and amounts the human saw.
   if (!quote || quote.id !== approval.quote_id || quote.business_id !== approval.business_id || quote.status !== "current") return deny("QUOTE_CHANGED");
-  if (quote.total_cents !== approval.quote_total_cents || quote.deposit_cents !== approval.payment_cents || approval.payment_cents <= 0) return deny("AMOUNT_MISMATCH");
+  // The payment is the quote's deposit; a quote with no deposit is paid in full (exactly its total).
+  const due = quote.deposit_cents && quote.deposit_cents > 0 ? quote.deposit_cents : quote.total_cents;
+  if (quote.total_cents !== approval.quote_total_cents || due !== approval.payment_cents || approval.payment_cents <= 0) return deny("AMOUNT_MISMATCH");
   // 6. Under the hard spend cap.
   if (approval.payment_cents > i.spendCapCents) return deny("OVER_SPEND_CAP");
   // 7. The job is in a payable state.
