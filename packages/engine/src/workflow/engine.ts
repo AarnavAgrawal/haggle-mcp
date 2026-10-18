@@ -442,8 +442,10 @@ export class HaggleEngine {
   private async rankRows(job: JobRow) {
     const quotes = (await this.repo.listQuotes(job.id)).filter((q) => q.status === "current");
     const { compare, moneyCompare, required } = askInfo(job.request);
+    const hardIds = new Set(this.requirements(job).filter((r) => r.hard).map((r) => r.id));
     const rankable = quotes.map((q): RankableQuote => ({
       quoteId: q.id, businessId: q.business_id, totalCents: q.total_cents, available: q.record.available, compliant: q.compliant,
+      unmet: q.requirement_results.some((r) => hardIds.has(r.requirement_id) && r.met === false),
       senderTrusted: q.sender_trusted, status: q.status, confidence: q.record.confidence, flags: q.record.flags,
       // Custom requests: rank on compare_by (a non-money field needs no total), and a quote missing a required answer can't win.
       ...(compare && !moneyCompare ? { sortValue: sortable(compare, q.record.fields?.[compare.key] ?? null), needsTotal: false } : {}),
@@ -1570,7 +1572,12 @@ export class HaggleEngine {
         }
         const r = job.request;
         // Email: only what the business wrote this time (our quoted RFQ can't be read back as its quote).
-        const bodyText = msg.channel === "email" ? cleanEmailBody(msg.body_text ?? "") : msg.body_text ?? "";
+        let bodyText = msg.channel === "email" ? cleanEmailBody(msg.body_text ?? "") : msg.body_text ?? "";
+        // A text reply ("1454") answers the last thing Haggle texted that business: read them together.
+        if (msg.provider_email_id?.startsWith("sms-in:") || msg.provider_email_id?.startsWith("imsg-in:")) {
+          const asked = (await this.repo.listMessages(job.id)).filter((m) => m.business_id === b.business_id && m.direction === "out" && m.kind !== "call" && m.body_text && m.created_at <= msg.created_at).at(-1);
+          if (asked) bodyText = `[Haggle's last text to the business, for context only; these are not the business's words]: ${asked.body_text}\n[The business's reply]: ${bodyText}`;
+        }
         const images = files.filter((f): f is typeof f & { kind: "image"; contentType: string } => f.kind === "image" && typeof f.contentType === "string");
         extraction ??= await this.d.extractor.extract({
           request: {
@@ -2077,7 +2084,7 @@ export class HaggleEngine {
       out.push({
         ...cq, total_usd: q.total_cents === null ? null : cq.total_usd, channel: b.channel, eligible: order.has(q.id),
         // "rejected" only for safety (or a business that declined); every other gap is "incomplete" (flagged, still approvable).
-        verdict: order.has(q.id) ? "compliant" : this.approvability(job, q).hard && this.approvability(job, q).hard !== "no_total" ? "rejected" : "incomplete",
+        verdict: order.has(q.id) ? (ranking.caveats.some((c) => c.quoteId === q.id) ? "incomplete" : "compliant") : this.approvability(job, q).hard && this.approvability(job, q).hard !== "no_total" ? "rejected" : "incomplete",
         ...(reason ? { excluded_reason: REJECT_TEXT[reason] } : {}),
         ...(fields ? { fields, missing_fields: missingFields } : {}),
       });

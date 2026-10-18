@@ -139,21 +139,23 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
   // phone: add the stated, sourced parts instead of dropping the quote, and label the total as
   // computed. Only when no total was said at all (a stated total that failed a check stays null and
   // Haggle asks); with delivery unknown the total covers the food only and says so. Tax is added
-  // only when stated: as an amount, or as a plausible rate ("10 percent tax") on food + delivery.
+  // only when stated: as an amount, or as a plausible rate ("10 percent tax") on the food.
   if (x.total_usd === null && cents.total === null) {
-    const fromHeads = cents.subtotal === null && cents.price_per_head !== null && quotedHeadcount !== null && quotedHeadcount > 0;
-    const subtotal = cents.subtotal ?? (fromHeads ? cents.price_per_head! * quotedHeadcount! : null);
+    // A per-person price without a headcount is for the headcount we asked for.
+    const heads = quotedHeadcount ?? requestedHeadcount ?? null;
+    const fromHeads = cents.subtotal === null && cents.price_per_head !== null && heads !== null && heads > 0;
+    const subtotal = cents.subtotal ?? (fromHeads ? cents.price_per_head! * heads! : null);
     const deliveryKnown = cents.delivery_fee !== null || x.delivery_included === true;
     if (subtotal !== null) {
       const rate = x.tax_rate_percent ?? null;
       let taxFromRate = false;
       if (cents.tax === null && x.tax_included !== true && rate !== null && rate > 0 && rate <= MAX_TAX_RATE_PERCENT) {
-        cents.tax = Math.round(((subtotal + (cents.delivery_fee ?? 0)) * rate) / 100);
+        cents.tax = Math.round((subtotal * rate) / 100); // on the food; a separately stated delivery fee is usually untaxed
         taxFromRate = true;
       }
       const taxAdded = cents.tax !== null && (x.tax_included === false || taxFromRate);
       cents.total = subtotal + (cents.delivery_fee ?? 0) + (taxAdded ? cents.tax! : 0);
-      const parts = [fromHeads ? "price per head x headcount" : "subtotal", ...(cents.delivery_fee !== null ? ["delivery fee"] : []), ...(taxAdded ? [taxFromRate ? `${rate}% tax` : "tax"] : [])];
+      const parts = [fromHeads ? (quotedHeadcount !== null ? "price per head x headcount" : "price per head x requested headcount") : "subtotal", ...(cents.delivery_fee !== null ? ["delivery fee"] : []), ...(taxAdded ? [taxFromRate ? `${rate}% tax` : "tax"] : [])];
       const from = sources.subtotal ?? sources.price_per_head;
       sources.total = { source: `computed from stated ${parts.join(" + ")}${deliveryKnown ? "" : "; delivery not stated"}${from ? ` (${from.source})` : ""}`, excerpt: (from?.excerpt ?? "").slice(0, 200) };
       missing.delete("total");

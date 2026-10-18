@@ -350,13 +350,13 @@ function Ladder({ board, winnerId, onChanged }: { board: DealBoard; winnerId?: s
 }
 
 function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: Quote; rank: number; scale: number; board: DealBoard; winner: boolean; onChanged: () => Promise<void> }) {
-  const out = !q.meets_requirements || q.flags.some(isRiskFlag);
+  const rejected = board.rejected?.find((r) => r.quote_id === q.quote_id);
+  const out = !!rejected || q.flags.some(isRiskFlag);
   const known = knownTotal(q);
   const overBudget = known && board.job.budget_usd !== undefined && q.total_usd > board.job.budget_usd;
   const followUp = useSendFollowUp();
   const flash = useFlashOnChange(q.total_usd);
   const said = board.businesses.find((b) => b.id === q.business_id)?.transcript_snippet;
-  const rejected = board.rejected?.find((r) => r.quote_id === q.quote_id);
   const countered = board.negotiation?.filter((n) => n.business_id === q.business_id) ?? [];
 
   return (
@@ -392,7 +392,7 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
           {q.per_unit_usd !== undefined && <span>{usd(q.per_unit_usd)} per person</span>}
           {q.deposit_usd !== undefined && <span>{usd(q.deposit_usd)} deposit</span>}
           <VerdictChip verdict={q.price_check} />
-          {overBudget && <FlagChip flag="over_budget" />}
+          {overBudget && !q.flags.includes("over_budget") && <FlagChip flag="over_budget" />}
           {q.flags.map((f) => (
             <FlagChip key={f} flag={f} />
           ))}
@@ -530,19 +530,22 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
   );
 }
 
+/** Why this quote is on top, said truthfully: what it meets or misses, its price among the options, the budget. */
 function whyWinner(q: Quote, board: DealBoard): string {
-  const eligible = board.quotes.filter((x) => x.meets_requirements && !x.flags.some(isRiskFlag));
+  // Options = every quote that isn't unsafe or unusable (preferences are soft).
+  const options = board.quotes.filter((x) => !board.rejected?.some((r) => r.quote_id === x.quote_id) && !x.flags.some(isRiskFlag) && knownTotal(x));
   // A custom compare_by field ranks the ladder instead of the total.
   const rankBy = board.job.compare_by && board.job.ask?.find((f) => f.key === board.job.compare_by!.field);
   const best = rankBy ? `${board.job.compare_by!.direction === "min" ? "lowest" : "highest"} ${rankBy.label.toLowerCase()}` : "lowest total";
+  const n = board.job.requirements.length;
   const parts = [
-    board.job.requirements.length ? `Meets all ${board.job.requirements.length} requirements` : "Meets the request",
-    eligible.length > 1 ? `${best} of ${eligible.length} eligible quotes` : "the only eligible quote",
+    q.meets_requirements ? (n ? `Meets all ${n} requirements` : "Meets the request")
+      : q.flags.includes("requirement_unmet") ? "Misses a requirement (see flags)" : "Requirements not all confirmed by the business",
   ];
   const known = knownTotal(q);
-  if (known && board.job.budget_usd !== undefined && q.total_usd <= board.job.budget_usd) parts.push(`${usd(board.job.budget_usd - q.total_usd)} under budget`);
-  const excluded = known ? board.quotes.filter((x) => knownTotal(x) && x.total_usd < q.total_usd && !eligible.includes(x)).length : 0;
-  if (excluded) parts.push(`${excluded} cheaper quote${excluded > 1 ? "s" : ""} excluded`);
+  const cheaper = known ? options.filter((x) => x.total_usd < q.total_usd).length : 0;
+  parts.push(options.length > 1 ? (cheaper === 0 ? `${best} of ${options.length} options` : `${options.length} options, ${cheaper} cheaper but missing more of what you asked`) : "the only option so far");
+  if (known && board.job.budget_usd !== undefined) parts.push(q.total_usd <= board.job.budget_usd ? `${usd(board.job.budget_usd - q.total_usd)} under budget` : `${usd(q.total_usd - board.job.budget_usd)} over budget`);
   return `${parts.join(" · ")}.`;
 }
 

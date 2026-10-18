@@ -44,27 +44,34 @@ describe("rankQuotes (golden scenario, after negotiation)", () => {
     quote({ quoteId: "q-deli-1", businessId: "b-deli", totalCents: 70000, flags: ["external_payment_link", "prompt_injection"] }),
   ];
 
-  it("recommends Bay Catering's revised $995 and orders the rest by total", () => {
+  it("recommends Bay Catering's revised $995; quotes that meet everything come first, by total", () => {
     const r = rankQuotes(quotes, 120000);
     expect(r.recommendedQuoteId).toBe("q-bay-2");
-    expect(r.ranked.map((q) => q.quoteId)).toEqual(["q-bay-2", "q-harbor-2", "q-mission-2", "q-sunset-1"]);
+    // The cheaper Golden Grill misses a requirement: still an option, listed after the ones that meet everything.
+    expect(r.ranked.map((q) => q.quoteId)).toEqual(["q-bay-2", "q-harbor-2", "q-mission-2", "q-sunset-1", "q-grill-1"]);
+    expect(r.caveats).toEqual([{ quoteId: "q-grill-1", businessId: "b-grill", reasons: ["requirement_unmet"] }]);
   });
 
-  it("rejects the cheap non-compliant and scam quotes with reasons, and hides superseded revisions", () => {
-    expect(rankQuotes(quotes, 120000).rejected).toEqual([
-      { quoteId: "q-grill-1", businessId: "b-grill", reason: "requirement_unmet" },
-      { quoteId: "q-deli-1", businessId: "b-deli", reason: "external_payment_link" },
-    ]);
+  it("rejects only what is unsafe (the scam quote) and hides superseded revisions", () => {
+    expect(rankQuotes(quotes, 120000).rejected).toEqual([{ quoteId: "q-deli-1", businessId: "b-deli", reason: "external_payment_link" }]);
   });
 
-  it("rejects over-budget, unpriced, unverified and unavailable quotes; nothing qualifies -> no recommendation", () => {
+  it("preferences are soft: an over-budget or unconfirmed quote is still an option; unpriced, unverified and unavailable ones are not", () => {
     const r = rankQuotes([
       quote({ quoteId: "a", businessId: "1", totalCents: 130000 }),
       quote({ quoteId: "b", businessId: "2", totalCents: null }),
       quote({ quoteId: "c", businessId: "3", senderTrusted: false }),
       quote({ quoteId: "d", businessId: "4", available: false }),
+      quote({ quoteId: "e", businessId: "5", totalCents: 125000, compliant: false, unmet: false }),
     ], 120000);
-    expect(r.recommendedQuoteId).toBeNull();
-    expect(r.rejected.map((x) => x.reason)).toEqual(["over_budget", "no_total", "unverified_sender", "unavailable"]);
+    expect(r.recommendedQuoteId).toBe("e"); // both over budget, neither misses a requirement for sure: cheapest first
+    expect(r.ranked.map((x) => x.quoteId)).toEqual(["e", "a"]);
+    expect(r.caveats).toEqual(expect.arrayContaining([{ quoteId: "a", businessId: "1", reasons: ["over_budget"] }, { quoteId: "e", businessId: "5", reasons: ["requirement_unknown", "over_budget"] }]));
+    expect(r.rejected.map((x) => x.reason)).toEqual(["no_total", "unverified_sender", "unavailable"]);
+  });
+
+  it("all quotes over budget: the cheapest is still recommended", () => {
+    const r = rankQuotes([quote({ quoteId: "x", businessId: "1", totalCents: 176000 }), quote({ quoteId: "y", businessId: "2", totalCents: 302500 })], 150000);
+    expect(r.recommendedQuoteId).toBe("x");
   });
 });

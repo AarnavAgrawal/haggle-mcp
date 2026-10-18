@@ -7,9 +7,10 @@
 // v3: cites order totals (not per-head), only quotes that are compliant AND from a trusted
 // sender can be cited or countered, every plan carries the cited quote's id for the audit trail
 // (a counter can't exist without a real basis quote), and rounds are capped. Eligibility is the
-// ranker's own `rejectReason`, so a quote that can't win (scam link, injection, unverified, over
-// budget, superseded) can never be cited either.
-import { rejectReason, type RankableQuote } from "../ranking/rank.ts";
+// ranker's own `rejectReason`, so an unsafe quote (scam link, injection, unverified, superseded)
+// can never be cited. Preferences are soft: a quote over budget or missing a requirement is still a
+// real option, so it is countered too; the cited basis meets every requirement when any quote does.
+import { missesRequirement, rejectReason, type RankableQuote } from "../ranking/rank.ts";
 
 export interface CounterQuote {
   quoteId: string;
@@ -18,6 +19,7 @@ export interface CounterQuote {
   totalCents: number | null;
   available: boolean;
   compliant: boolean; // every hard requirement met === true
+  unmet?: boolean; // a hard requirement the business said it doesn't meet (default: !compliant)
   senderTrusted: boolean;
   round: number; // this business's current quote round (1 = first quote)
   status: RankableQuote["status"];
@@ -42,11 +44,11 @@ function deadlineLabel(d: Date): string {
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} UTC`;
 }
 
-export function counterofferText(businessName: string, theirCents: number, bestCents: number, deadline: Date): string {
+export function counterofferText(businessName: string, theirCents: number, bestCents: number, deadline: Date, sameRequirements = true): string {
   return [
     `Hi ${businessName},`,
     "",
-    `Thanks for your quote of ${usd(theirCents)} total. We've received another quote of ${usd(bestCents)} total for the same order and requirements. Are you able to match or beat that? If so, please reply with your updated total and deposit by ${deadlineLabel(deadline)}.`,
+    `Thanks for your quote of ${usd(theirCents)} total. We've received another quote of ${usd(bestCents)} total for the same order${sameRequirements ? " and requirements" : ""}. Are you able to match or beat that? If so, please reply with your updated total and deposit by ${deadlineLabel(deadline)}.`,
     "",
     "Thank you!",
   ].join("\n");
@@ -54,15 +56,18 @@ export function counterofferText(businessName: string, theirCents: number, bestC
 
 /**
  * Who gets a counteroffer, and which real quote it cites.
- * - Only quotes the ranker would accept count, as basis or as target.
+ * - Only safe, priced quotes count (the ranker's rejectReason), as basis or as target.
  * - Skip entirely with fewer than 2 such quotes.
- * - Cite the single best total; counter only businesses priced above it with rounds left.
+ * - Cite the lowest total among quotes that meet every requirement (the lowest overall when none
+ *   does, then without claiming the same requirements); counter every business priced above it.
  */
 export function planCounteroffers(quotes: CounterQuote[], deadline: Date, maxRounds = 2, budgetCents: number | null = null): PlannedCounter[] {
   const eligible = quotes.filter((q): q is CounterQuote & { totalCents: number } => rejectReason(q, budgetCents) === null);
   if (eligible.length < 2) return [];
 
-  const best = eligible.reduce((a, b) => (b.totalCents < a.totalCents ? b : a));
+  const meeting = eligible.filter((q) => !missesRequirement(q));
+  const best = (meeting.length ? meeting : eligible).reduce((a, b) => (b.totalCents < a.totalCents ? b : a));
+  const sameRequirements = best.compliant;
 
   return eligible
     .filter((q) => q.businessId !== best.businessId && q.totalCents > best.totalCents && q.round < maxRounds)
@@ -73,6 +78,6 @@ export function planCounteroffers(quotes: CounterQuote[], deadline: Date, maxRou
       theirTotalCents: q.totalCents,
       targetTotalCents: best.totalCents,
       basisQuoteId: best.quoteId,
-      text: counterofferText(q.businessName, q.totalCents, best.totalCents, deadline),
+      text: counterofferText(q.businessName, q.totalCents, best.totalCents, deadline, sameRequirements),
     }));
 }

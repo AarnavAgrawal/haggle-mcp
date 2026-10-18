@@ -32,8 +32,8 @@ describe("planCounteroffers", () => {
     expect(plan.map((p) => p.businessId).sort()).toEqual(["b-bay", "b-sunset"]);
   });
 
-  it("every dollar figure in the text is a stored eligible quote total", () => {
-    const stored = new Set(round1.filter((x) => x.compliant && x.senderTrusted && x.totalCents !== null).map((x) => x.totalCents));
+  it("every dollar figure in the text is a stored, safe quote total", () => {
+    const stored = new Set(round1.filter((x) => x.senderTrusted && x.totalCents !== null).map((x) => x.totalCents));
     for (const p of plan) {
       const f = figures(p.text);
       expect(f).toEqual([p.theirTotalCents, p.targetTotalCents]);
@@ -66,10 +66,28 @@ describe("planCounteroffers", () => {
     for (const p of planCounteroffers(withInjection, DEADLINE)) expect(p.basisQuoteId).toBe("q-harbor-1");
   });
 
-  it("never cites a superseded revision or an over-budget quote", () => {
+  it("never cites a superseded revision; an over-budget quote is still real and is negotiated", () => {
     const stale = [...round1, q({ quoteId: "q-old", businessId: "b-old", businessName: "Old", totalCents: 50000, status: "superseded" })];
     for (const p of planCounteroffers(stale, DEADLINE)) expect(p.basisQuoteId).toBe("q-harbor-1");
-    expect(planCounteroffers(round1, DEADLINE, 2, 111000)).toEqual([]);
+    expect(planCounteroffers(round1, DEADLINE, 2, 111000).map((p) => p.businessId).sort()).toEqual(["b-bay", "b-sunset"]);
+  });
+
+  it("counters a business that misses a requirement too, citing a quote that meets them", () => {
+    const pricey = [...round1.slice(0, 3), q({ quoteId: "q-grill-2", businessId: "b-grill", businessName: "Golden Grill", totalCents: 130000, compliant: false })];
+    const grill = planCounteroffers(pricey, DEADLINE).find((p) => p.businessId === "b-grill")!;
+    expect(grill).toMatchObject({ basisQuoteId: "q-harbor-1", targetTotalCents: 112000 });
+  });
+
+  it("when no quote is confirmed to meet every requirement it still negotiates, without claiming the same requirements", () => {
+    const unconfirmed = [
+      q({ quoteId: "q-a", businessId: "b-a", businessName: "Mission Eats", totalCents: 176000, compliant: false, unmet: false }),
+      q({ quoteId: "q-b", businessId: "b-b", businessName: "Sunset Kitchen", totalCents: 302500, compliant: false, unmet: false }),
+    ];
+    const plan = planCounteroffers(unconfirmed, DEADLINE, 2, 150000);
+    expect(plan).toHaveLength(1);
+    expect(plan[0]).toMatchObject({ businessId: "b-b", basisQuoteId: "q-a", targetTotalCents: 176000 });
+    expect(plan[0]!.text).toContain("for the same order.");
+    expect(plan[0]!.text).not.toContain("requirements");
   });
 
   it("stops at the round cap", () => {

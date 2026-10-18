@@ -187,3 +187,29 @@ describe("texting a business over SMS (no iMessage port)", () => {
     expect((await engine.getQuotes(deal.job_id)).quotes[0]).toMatchObject({ business: "Mission Eats", total_usd: 880 });
   });
 });
+
+describe("preferences are soft (budget, requirements); only unsafe quotes are refused", () => {
+  it("every quote over budget: the cheapest is recommended, the others are negotiated, and the human can approve any of them", async () => {
+    const { engine, repo, clock, emails } = demoEngine({ notifyPhone: null });
+    const deal = await engine.deal({ request, budget_usd: 1000, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Sunset Kitchen", email: "sunset@inkboxmail.test" }] });
+    const reply = async (name: string, n: number, bodyText: string) => {
+      const b = (await repo.getBusinesses(deal.job_id)).find((x) => x.name === name)!;
+      await engine.ingest({ providerEventId: `e${n}`, eventType: "message.received", providerEmailId: `in_${n}`, threadId: `t${n}`, messageId: `<in_${n}@x>`, inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: b.email!, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText, attachments: [], attachmentsDownloadUrl: null }, trusted);
+    };
+    await reply("Harbor Table", 1, "$1,150 total, 12 vegetarian, delivered, $200 deposit.");
+    await reply("Sunset Kitchen", 2, "$1,300 total, 12 vegetarian, delivered, $250 deposit.");
+    for (let i = 0; i < 4; i++) { clock.advance(31 * 60_000); await engine.advanceJob(deal.job_id); }
+    const board = await engine.getQuotes(deal.job_id);
+    const by = (n: string) => board.quotes.find((q) => q.business === n)!;
+    expect(board.recommended_quote_id).toBe(by("Harbor Table").quote_id);
+    expect(board.rejected).toEqual([]);
+    expect(by("Sunset Kitchen")).toMatchObject({ eligible: true });
+    expect(by("Sunset Kitchen").flags).toContain("over_budget");
+    // Negotiation: Sunset is asked to match Harbor's real, over-budget $1,150.
+    expect(board.negotiation.map((n) => [n.business, n.target_total_usd])).toEqual([["Sunset Kitchen", 1150]]);
+    expect(emails.some((m) => m.to === "sunset@inkboxmail.test" && /another quote of \$1,150\.00 total/.test(m.bodyText))).toBe(true);
+    // The human can approve the over-budget quote they prefer; the budget is a caveat on the approval.
+    const a = await engine.requestApproval(deal.job_id, by("Sunset Kitchen").quote_id, "view");
+    expect(a).toMatchObject({ status: "pending", payment_cents: 25_000 });
+  });
+});

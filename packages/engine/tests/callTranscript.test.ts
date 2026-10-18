@@ -52,11 +52,18 @@ describe("call transcript with spoken prices", () => {
 
   it("works out the total with the tax rate and labels it as computed", () => {
     const record = validateQuote(dropAgentOnlyAmounts(extraction(), transcript), 40);
-    expect(record.tax_cents).toBe(7_800); // 10% of $680 food + $100 delivery
-    expect(record.total_cents).toBe(85_800);
+    expect(record.tax_cents).toBe(6_800); // 10% of the $680 food (delivery untaxed)
+    expect(record.total_cents).toBe(84_800);
     expect(record.deposit_cents).toBe(25_000);
     expect(record.sources.total?.source).toMatch(/^computed from stated price per head x headcount \+ delivery fee \+ 10% tax/);
     expect(record.flags).not.toContain("tax_excluded");
+  });
+
+  it("a texted per-person price without a headcount is for the requested headcount (Golden Grill: $13 x 100 + $50 + 8% on food = $1,454)", () => {
+    const record = validateQuote(extraction({ price_per_head_usd: 13, headcount: null, delivery_fee_usd: 50, tax_rate_percent: 8, deposit_usd: null,
+      sources: [src("price_per_head", "$13/person"), src("delivery_fee", "$50 delivery fee")] }), 100);
+    expect(record.total_cents).toBe(145_400);
+    expect(record.sources.total?.source).toMatch(/price per head x requested headcount/);
   });
 
   it("ignores an implausible tax rate instead of guessing", () => {

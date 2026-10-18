@@ -1,5 +1,7 @@
-// PURE: rank recorded quotes. Only genuine, current, compliant, trusted, priced quotes within
-// budget can rank; everything else is listed with the reason it can't win.
+// PURE: rank recorded quotes. Only what is unsafe or unusable is excluded (superseded, declined,
+// unverified sender, payment-link scam, prompt injection, no price). The human's preferences
+// (hard requirements, budget, required answers) are soft: a quote that misses one still ranks,
+// after the quotes that don't, and carries the miss as a caveat. The human decides.
 //
 // Adapted from quote-broker@8a68559 src/tools/best.ts `pickBest` (Partner): lowest total among
 // complete, available, requirement-covering quotes, unknown coverage = not covered. Changes for
@@ -24,30 +26,53 @@ export interface RankableQuote {
   needsTotal?: boolean;
   /** A required ask answer is missing (a follow-up asks for it). */
   missingRequired?: boolean;
+  /** A hard requirement the business said it does NOT meet (vs. merely not confirmed). Default: !compliant. */
+  unmet?: boolean;
 }
 
 export type RejectReason = "not_current" | "unavailable" | "unverified_sender" | "external_payment_link" | "prompt_injection" | "requirement_unmet" | "missing_info" | "no_total" | "over_budget";
 
+/** A preference a ranked quote misses: shown with it, never a reason to hide it. */
+export type SoftReason = "requirement_unmet" | "requirement_unknown" | "missing_info" | "over_budget";
+
 export interface Ranking {
-  ranked: RankableQuote[]; // best first
+  ranked: RankableQuote[]; // best first: every safe, priced quote
   recommendedQuoteId: string | null;
+  /** Unsafe or unusable quotes, with the reason (never ranked, approved or cited). */
   rejected: { quoteId: string; businessId: string; reason: RejectReason }[];
+  /** Ranked quotes that miss a preference, and which. */
+  caveats: { quoteId: string; businessId: string; reasons: SoftReason[] }[];
 }
 
-/** Why a quote can't rank (or be cited in negotiation); null = eligible. Shared by ranking and negotiation. */
-export function rejectReason(q: RankableQuote, budgetCents: number | null): RejectReason | null {
+/** A hard requirement the business said it doesn't meet (unknown = not confirmed, which is milder). */
+export const missesRequirement = (q: Pick<RankableQuote, "compliant" | "unmet">) => q.unmet ?? !q.compliant;
+
+/** Why a quote can't rank (or be cited in negotiation): only safety or no comparable price; null = an option. */
+export function rejectReason(q: RankableQuote, _budgetCents: number | null = null): RejectReason | null {
   if (q.status !== "current") return "not_current";
   if (!q.available) return "unavailable";
   if (!q.senderTrusted) return "unverified_sender";
   if (q.flags.includes("external_payment_link")) return "external_payment_link";
   if (q.flags.includes("prompt_injection")) return "prompt_injection";
-  if (!q.compliant) return "requirement_unmet";
-  if (q.missingRequired) return "missing_info";
   if (q.needsTotal === false) {
     if (q.sortValue === null || q.sortValue === undefined) return "missing_info";
   } else if (q.totalCents === null) return "no_total";
-  if (budgetCents !== null && q.totalCents !== null && q.totalCents > budgetCents) return "over_budget";
   return null;
+}
+
+/** The preferences an option misses (empty = meets everything that was asked). */
+export function softReasons(q: RankableQuote, budgetCents: number | null): SoftReason[] {
+  const out: SoftReason[] = [];
+  if (!q.compliant) out.push(missesRequirement(q) ? "requirement_unmet" : "requirement_unknown");
+  if (q.missingRequired) out.push("missing_info");
+  if (budgetCents !== null && q.totalCents !== null && q.totalCents > budgetCents) out.push("over_budget");
+  return out;
+}
+
+/** Order of preference: a quote that meets what was asked beats one that misses it; then the value. */
+function tier(q: RankableQuote, budgetCents: number | null): number {
+  const soft = softReasons(q, budgetCents);
+  return (soft.includes("requirement_unmet") ? 2 : 0) + (soft.includes("missing_info") ? 1 : 0) + (soft.includes("over_budget") ? 1 : 0);
 }
 
 /** Ascending order of the comparable value (total cents, or the custom compare value). */
@@ -67,6 +92,7 @@ export function rankQuotes(quotes: RankableQuote[], budgetCents: number | null):
       if (reason !== "not_current") rejected.push({ quoteId: q.quoteId, businessId: q.businessId, reason });
     } else ranked.push(q);
   }
-  ranked.sort((a, b) => (a.direction === "max" ? -compareKey(a, b) : compareKey(a, b)) || b.confidence - a.confidence || a.quoteId.localeCompare(b.quoteId));
-  return { ranked, recommendedQuoteId: ranked[0]?.quoteId ?? null, rejected };
+  ranked.sort((a, b) => tier(a, budgetCents) - tier(b, budgetCents) || (a.direction === "max" ? -compareKey(a, b) : compareKey(a, b)) || b.confidence - a.confidence || a.quoteId.localeCompare(b.quoteId));
+  const caveats = ranked.map((q) => ({ quoteId: q.quoteId, businessId: q.businessId, reasons: softReasons(q, budgetCents) })).filter((c) => c.reasons.length > 0);
+  return { ranked, recommendedQuoteId: ranked[0]?.quoteId ?? null, rejected, caveats };
 }
