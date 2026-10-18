@@ -33,6 +33,11 @@ export interface TransitionContext {
   now: Date;
   /** Quotes the ranker would accept right now (current, compliant, trusted, priced, in budget). */
   eligibleQuotes: number;
+  /**
+   * Quotes the human may still knowingly approve: eligible ones plus those held back only by the
+   * budget or a requirement the business didn't confirm. Defaults to eligibleQuotes.
+   */
+  approvableQuotes?: number;
   /** Some business priced above the best eligible quote and has rounds left. */
   counterable: boolean;
   negotiationWindowMs: number;
@@ -53,7 +58,8 @@ const reject = (s: MachineState, e: JobEvent): TransitionResult => ({ ok: false,
 
 /** Close a collection/negotiation window: negotiate another round, finish, or fail. */
 function closeWindow(s: MachineState, ctx: TransitionContext): TransitionResult {
-  if (ctx.eligibleQuotes === 0) return to(s, { state: "failed", failure_reason: "no_eligible_quote" });
+  // Fail only when nothing is approvable; over-budget or unconfirmed quotes go to the human.
+  if ((ctx.approvableQuotes ?? ctx.eligibleQuotes) === 0) return to(s, { state: "failed", failure_reason: "no_eligible_quote" });
   if (ctx.eligibleQuotes >= 2 && ctx.counterable && s.round < s.max_rounds) {
     const round = s.round + 1;
     return to(s, { state: "negotiating", round, ready: false, collect_until: new Date(ctx.now.getTime() + ctx.negotiationWindowMs).toISOString() }, [
@@ -82,7 +88,7 @@ export function transition(s: MachineState, e: JobEvent, ctx: TransitionContext)
     case "collecting":
     case "negotiating":
       if (e.type === "window_closed") return s.ready ? to(s, {}) : closeWindow(s, ctx);
-      if (e.type === "approval_requested") return ctx.eligibleQuotes > 0 ? to(s, { state: "awaiting_approval" }) : { ok: false, reason: "no eligible quote to approve" };
+      if (e.type === "approval_requested") return (ctx.approvableQuotes ?? ctx.eligibleQuotes) > 0 ? to(s, { state: "awaiting_approval" }) : { ok: false, reason: "no eligible quote to approve" };
       return reject(s, e);
     case "awaiting_approval":
       if (e.type === "approval_verified") return to(s, { state: "paying" }, [{ type: "send_accept" }]);

@@ -13,7 +13,7 @@
 // v5 additions: channel routing (A2A card > email > phone; a channel without an enabled port is
 // "unavailable", never faked), Voice AI call results via ingestCall, one shared Inkbox mailbox,
 // the deal-board read model, approval from the approval view, settings, and the launcher.
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type {
   ApprovalRecord, Business, DealResult, JobState, JobUpdate, PaymentStatus, Profile, Quote, QuotesResult, Request, WaitResult,
 } from "../contract.ts";
@@ -205,9 +205,9 @@ export class HaggleEngine {
     const replyBy = input.reply_by ? new Date(input.reply_by) : new Date(this.now().getTime() + this.d.config.collectionWindowMs);
     if (Number.isNaN(replyBy.getTime()) || replyBy <= this.now()) throw new EngineError("bad_deadline", "reply_by must be a future ISO time.", "Pass a future reply_by or omit it.", "deal");
 
-    // Stripe rail: the per-job payment cap is the settings spending cap, never above the operator's
-    // per-payment ceiling. x402 keeps its fixed testnet ceiling.
-    const paymentCapCents = this.d.stripe ? Math.min(this.d.config.globalPaymentCapCents, (await this.getSettings()).spending_cap_cents) : this.d.config.globalPaymentCapCents;
+    // The per-job payment cap is the operator's per-payment ceiling. The settings spending cap and
+    // the budget are the human's preferences: shown as caveats on the approval, never a refusal.
+    const paymentCapCents = this.d.config.globalPaymentCapCents;
     let job: JobRow | null = null;
     for (let i = 0; i < 5 && !job; i++) {
       const code = newShortCode();
@@ -304,13 +304,56 @@ export class HaggleEngine {
     return { quotes, rankable, ranking: rankQuotes(rankable, job.budget_cents) };
   }
 
+  /**
+   * Can the human approve (and pay) this quote, and what are they knowingly accepting? Only safety
+   * and impossibility refuse: a superseded quote, a business that declined, an unverified sender, a
+   * pay-elsewhere link, instructions aimed at the agent, or no amount at all. Everything else (over
+   * budget, over the spending cap, a requirement failed or not confirmed, a computed total, no
+   * deposit, fine-print deposit) is a caveat the approval shows. The operator's per-payment ceiling
+   * is checked separately in requestApproval.
+   */
+  private approvability(job: JobRow, q: QuoteRow, spendingCapCents: number | null = null): { hard: string | null; caveats: string[] } {
+    const hard = q.status !== "current" ? "not_current" : !q.record.available ? "unavailable" : !q.sender_trusted ? "unverified_sender"
+      : q.record.flags.includes("external_payment_link") ? "external_payment_link" : q.record.flags.includes("prompt_injection") ? "prompt_injection"
+      : q.total_cents === null ? "no_total" : null;
+    const caveats: string[] = [];
+    const dollars = (c: number) => `$${centsToUsd(c).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+    if (q.total_cents !== null) {
+      if (job.budget_cents !== null && q.total_cents > job.budget_cents) caveats.push(`${dollars(q.total_cents - job.budget_cents)} over the ${dollars(job.budget_cents)} budget`);
+      if (spendingCapCents !== null && q.total_cents > spendingCapCents) caveats.push(`${dollars(q.total_cents)} is over your ${dollars(spendingCapCents)} spending cap`);
+    }
+    const reqs = new Map(this.requirements(job).map((r) => [r.id, r]));
+    for (const r of q.requirement_results) {
+      const req = reqs.get(r.requirement_id);
+      if (!req?.hard) continue;
+      if (r.met === false) caveats.push(`Doesn't meet: ${req.text} (${r.reason})`);
+      else if (r.met === null) caveats.push(`Not confirmed by the business: ${req.text}`);
+    }
+    const totalSource = q.record.sources.total?.source ?? "";
+    if (/^computed/.test(totalSource)) caveats.push(`Total worked out by Haggle, not stated by the business (${totalSource})`);
+    const FLAG_TEXT: Record<string, string> = {
+      hidden_deposit: "The deposit was only in the fine print (PDF page 2+)", delivery_unclear: "Delivery cost wasn't stated",
+      tax_excluded: "Tax isn't included", conflicting_numbers: "Some numbers in the reply didn't add up", low_confidence: "Haggle wasn't confident reading this reply",
+    };
+    for (const f of q.record.flags) if (FLAG_TEXT[f]) caveats.push(FLAG_TEXT[f]!);
+    if (q.total_cents !== null && !(q.deposit_cents && q.deposit_cents > 0)) caveats.push(`No deposit stated: the full ${dollars(q.total_cents)} is charged now`);
+    return { hard, caveats };
+  }
+
+  /** What the human is knowingly accepting by approving this quote (empty for a clean quote). */
+  async approvalCaveats(jobId: string, quoteId: string): Promise<string[]> {
+    const job = await this.loadJob(jobId);
+    const q = await this.repo.getQuote(quoteId);
+    return q && q.job_id === jobId ? this.approvability(job, q, (await this.getSettings()).spending_cap_cents).caveats : [];
+  }
+
   private async context(job: JobRow) {
-    const { rankable, ranking } = await this.rankRows(job);
+    const { quotes, rankable, ranking } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
     const plan = this.counterPlan(job, rankable, businesses);
     const payment = await this.repo.getPaymentForJob(job.id);
     return {
-      now: this.now(), eligibleQuotes: ranking.ranked.length, counterable: plan.length > 0,
+      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => this.approvability(job, q).hard === null).length, counterable: plan.length > 0,
       negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent"].includes(payment.status),
     };
   }
@@ -704,7 +747,8 @@ export class HaggleEngine {
     });
     if (!stored) return { jobId: job.id, outcome: "duplicate" };
     if (TERMINAL.has(job.state)) return { jobId: job.id, outcome: "job_closed" };
-    await this.repo.updateBusiness(job.id, b.business_id, completed ? { status: "replied", last_reply_at: this.now().toISOString() } : { status: call.outcome === "declined" ? "declined" : "no_reply" });
+    // Conditional: a concurrent parse of this transcript may already have set "quoted".
+    await this.repo.updateBusiness(job.id, b.business_id, completed ? { status: "replied", last_reply_at: this.now().toISOString() } : { status: call.outcome === "declined" ? "declined" : "no_reply" }, { ifStatus: ["pending", "contacted", "ringing", "question"] });
     await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call with ${b.name} ended: ${call.outcome}`, channel: "phone", transcript_snippet: transcriptSnippet(transcript, b.name) });
     await this.repo.touchJob(job.id);
     return { jobId: job.id, outcome: completed ? "stored" : `call:${call.outcome}` };
@@ -903,8 +947,10 @@ export class HaggleEngine {
     await this.repo.updateBusiness(b.job_id, b.business_id, {
       last_reply_at: this.now().toISOString(), ...(msg.threadId ? { thread_id: msg.threadId } : {}),
       ...(msg.messageId ? { last_inbound_message_id: msg.messageId, references: [...b.references, msg.messageId].slice(-20) } : {}),
-      ...(b.status === "contacted" || b.status === "question" ? { status: "replied" as const } : {}),
     });
+    // Conditional in the store: a concurrent parse (wait_for_update, the tick) may already have set
+    // "quoted" from this very message; `b` was read before the insert and must not overwrite it.
+    await this.repo.updateBusiness(b.job_id, b.business_id, { status: "replied" }, { ifStatus: ["contacted", "question"] });
     await this.repo.appendEvent(b.job_id, "reply", { business_id: b.business_id, summary: `Email from ${b.name}${trust.trusted ? "" : " (sender NOT verified)"}`, ...(trust.trusted ? snippet(messageSnippet(msg.bodyText, { pricedOnly: true })) : {}) });
     await this.repo.touchJob(b.job_id);
     return { jobId: b.job_id, outcome: "stored" };
@@ -912,7 +958,25 @@ export class HaggleEngine {
 
   // ───────────────────────────── advance ─────────────────────────────
 
+  private readonly advancing = new Map<string, Promise<void>>();
+
+  /**
+   * One advance per job at a time. The webhook, every wait_for_update and the backup tick all call
+   * this; run concurrently, two of them parse the same reply (a slow LLM call) and store it twice:
+   * duplicate questions, duplicate quotes. Callers queue behind the running advance instead.
+   */
   async advanceJob(jobId: string): Promise<void> {
+    const prev = this.advancing.get(jobId) ?? Promise.resolve();
+    const run = prev.catch(() => {}).then(() => this.advanceJobOnce(jobId));
+    this.advancing.set(jobId, run);
+    try {
+      await run;
+    } finally {
+      if (this.advancing.get(jobId) === run) this.advancing.delete(jobId);
+    }
+  }
+
+  private async advanceJobOnce(jobId: string): Promise<void> {
     const first = await this.repo.getJob(jobId);
     if (!first || TERMINAL.has(first.state)) return;
     await this.pollA2a(first);
@@ -1040,7 +1104,10 @@ export class HaggleEngine {
       await this.repo.appendEvent(job.id, "question", { question_id: q.id, business_id: b.business_id, text });
     }
     let quoteRow: QuoteRow | null = null;
-    if (record.total_cents !== null || !record.available) {
+    // Every priced reply is reported as a quote, even without a single stated total (flagged; Haggle
+    // asks for the exact total below when it can).
+    const priced = record.total_cents !== null || record.subtotal_cents !== null || record.price_per_head_cents !== null || record.deposit_cents !== null;
+    if (priced || !record.available) {
       const source = record.sources.total?.source ?? (kind === "quote.json" ? "quote.json" : kind);
       quoteRow = await this.repo.insertCurrentQuote({
         job_id: job.id, business_id: b.business_id, message_id: msg.id, round: prior.length + 1, record, total_cents: record.total_cents,
@@ -1052,6 +1119,21 @@ export class HaggleEngine {
         for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
         if (!compliant) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "requirement_unmet" });
         if (priorCurrent) await this.onRevision(job, priorCurrent);
+        // No stated total (missing or worked out from parts): ask once for the exact figure, by email.
+        const stated = record.total_cents !== null && !/^computed/.test(record.sources.total?.source ?? "");
+        if (record.available && !stated && record.questions.length === 0 && b.followups_sent < 1 && b.email) {
+          const read = record.total_cents !== null ? ` We read your quote as $${centsToUsd(record.total_cents).toLocaleString("en-US")} in total.` : "";
+          try {
+            await this.sendRecorded(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), {
+              to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
+              bodyText: `Hi ${b.name},\n\nThanks for the quote!${read} Could you tell us the exact all-in total for ${job.request.quantity} people, including delivery, and the deposit?`,
+            });
+            await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
+            await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} for the exact total` });
+          } catch (err) {
+            this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+          }
+        }
       }
     } else if (record.questions.length === 0) {
       for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
@@ -1068,7 +1150,7 @@ export class HaggleEngine {
         try {
           await this.sendRecorded(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), {
             to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
-            bodyText: `Hi ${b.name},\n\nThanks! Could you confirm an exact total for ${job.request.quantity} people, including delivery, and any deposit? We can't compare estimates.`,
+            bodyText: `Hi ${b.name},\n\nThanks! Could you send the exact total for ${job.request.quantity} people, including delivery, and any deposit? We can't compare estimates.`,
           });
           await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
           await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} for an exact total` });
@@ -1355,10 +1437,10 @@ export class HaggleEngine {
       }
       const cq = toContractQuote(q, b, { budgetCents: job.budget_cents, ...(prev?.total_cents != null && prev.total_cents !== q.total_cents ? { negotiatedFromCents: prev.total_cents } : {}), ...(price_check ? { price_check } : {}) });
       const reason = rejectedBy.get(q.id);
-      const incomplete = reason === "no_total" || (q.total_cents === null) || cq.requirement_results.some((r) => r.met === null);
       out.push({
         ...cq, total_usd: q.total_cents === null ? null : cq.total_usd, channel: b.channel, eligible: order.has(q.id),
-        verdict: order.has(q.id) ? "compliant" : incomplete && reason !== "external_payment_link" && reason !== "prompt_injection" && reason !== "unverified_sender" ? "incomplete" : "rejected",
+        // "rejected" only for safety (or a business that declined); every other gap is "incomplete" (flagged, still approvable).
+        verdict: order.has(q.id) ? "compliant" : this.approvability(job, q).hard && this.approvability(job, q).hard !== "no_total" ? "rejected" : "incomplete",
         ...(reason ? { excluded_reason: REJECT_TEXT[reason] } : {}),
       });
     }
@@ -1431,9 +1513,20 @@ export class HaggleEngine {
     const text = answer.trim().slice(0, 2000);
     if (!text) throw new EngineError("empty_answer", "Answer is empty.", "Pass the answer text.", "answer_business");
     const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id)!;
-    const m = b.channel === "imessage"
-      ? await this.sendIMessageToBusiness(job, b, "answer", sendKeys.answer(q.id), `${text.slice(0, 120)} Could you send your full total and deposit?`, null)
-      : await this.sendRecorded(job, b, "answer", sendKeys.answer(q.id), { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\nThanks for asking. ${text}\n\nCould you send your full quote (total, deposit, delivery) when ready?` });
+    // The key covers the answer text: a retry of the same answer is idempotent, a corrected answer
+    // (after a refused send) is a new message rather than a reused key.
+    const key = `${sendKeys.answer(q.id)}:${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
+    let m: MessageRow | null;
+    try {
+      m = b.channel === "imessage"
+        ? await this.sendIMessageToBusiness(job, b, "answer", key, `${text.slice(0, 120)} Could you send your full total and deposit?`, null)
+        : await this.sendRecorded(job, b, "answer", key, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\nThanks for asking. ${text}\n\nCould you send your full quote (total, deposit, delivery) when ready?` });
+    } catch (err) {
+      const detail = (err as Error).message;
+      if (/conversation_unhealthy|identical body/i.test(detail)) throw new EngineError("send_limited", `Inkbox held this message: ${b.name} already got the same text without replying.`, "Reword the answer (it must differ from what you sent), or wait for the business to reply.", "answer_business");
+      if (/\b(403|409|429)\b/.test(detail)) throw new EngineError("send_refused", `The message to ${b.name} wasn't sent (${detail.slice(0, 120)}).`, "Wait a minute and answer again with the same question_id.", "answer_business");
+      throw err;
+    }
     if (!(await this.repo.answerQuestion(q.id, text))) throw new EngineError("already_answered", "That question was already answered.", "Wait for the business's quote.", "wait_for_update");
     await this.repo.updateBusiness(jobId, b.business_id, { status: "contacted" });
     await this.repo.appendEvent(jobId, "reply", { business_id: b.business_id, summary: `Answered ${b.name}'s question` });
@@ -1452,15 +1545,21 @@ export class HaggleEngine {
     }
     const q = await this.repo.getQuote(quoteId);
     if (!q || q.job_id !== jobId) throw new EngineError("quote_not_found", "No such quote on this job.", "Use a quote_id from get_quotes.", "get_quotes");
-    const reason = rejectReason({ quoteId: q.id, businessId: q.business_id, totalCents: q.total_cents, available: q.record.available, compliant: q.compliant, senderTrusted: q.sender_trusted, status: q.status, confidence: q.record.confidence, flags: q.record.flags }, job.budget_cents);
-    if (reason) throw new EngineError("quote_not_eligible", `That quote can't be approved: ${reason}.`, reason === "over_budget" ? "Raise budget_usd or pick another quote." : "Pick a compliant quote from get_quotes.", "get_quotes");
-    if (!q.deposit_cents || q.deposit_cents <= 0) throw new EngineError("no_deposit", "This quote has no deposit to pay now.", "Ask the business for deposit terms first.", "get_quotes");
-    const cap = Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents);
-    if (q.deposit_cents > cap) throw new EngineError("over_cap", `Deposit $${centsToUsd(q.deposit_cents).toFixed(2)} is over the $${centsToUsd(cap).toFixed(2)} payment cap.`, "Lower the deposit with the business or raise the cap.", "get_quotes");
+    // Only safety (or no amount at all) refuses; everything else is a caveat on the approval.
+    const { hard: reason } = this.approvability(job, q);
+    if (reason) {
+      const fix = reason === "no_total" ? "Ask the business for its total (answer_business, or wait for the follow-up Haggle sent), then approve." : "Pick another quote from get_quotes.";
+      throw new EngineError("quote_not_eligible", `That quote can't be approved: ${reason}.`, fix, "get_quotes");
+    }
+    // Pay the deposit; with no deposit stated, the full total (the approval says so).
+    const payment = q.deposit_cents && q.deposit_cents > 0 ? q.deposit_cents : q.total_cents!;
+    // The operator's per-payment ceiling is the one hard money limit (CLAUDE.md §7: amount ≤ approved ≤ cap).
+    const cap = this.d.config.globalPaymentCapCents;
+    if (payment > cap) throw new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this server's $${centsToUsd(cap).toFixed(2)} per-payment safety ceiling.`, "Ask the business for a smaller deposit, or ask the operator to raise HAGGLE_GLOBAL_PAYMENT_CAP_CENTS.", "get_quotes");
     if (channel === "email" && !job.approver_email) throw new EngineError("no_approver", "No approver_email on this job.", "Use a client that supports approval forms, or start the deal with approver_email.", "deal");
     if (channel === "imessage" && (!this.d.imessage || !(await this.getSettings()).approver_phone)) throw new EngineError("no_imessage_approver", "iMessage approval isn't available: no approver phone in settings, or iMessage is off.", "Set the approver phone in settings (they must text `connect @haggle` first), or approve on the approval card.", "settings");
     const approval = await this.repo.insertApproval({
-      id: newId("ap"), job_id: jobId, quote_id: q.id, business_id: q.business_id, quote_total_cents: q.total_cents!, payment_cents: q.deposit_cents, cap_cents: cap,
+      id: newId("ap"), job_id: jobId, quote_id: q.id, business_id: q.business_id, quote_total_cents: q.total_cents!, payment_cents: payment, cap_cents: cap,
       approver: channel === "email" ? job.approver_email : null, channel, status: "pending", code: newApprovalCode(),
       expires_at: new Date(this.now().getTime() + this.d.config.approvalTtlMs).toISOString(), decided_at: null, outbound_message_id: null, thread_id: null,
     });

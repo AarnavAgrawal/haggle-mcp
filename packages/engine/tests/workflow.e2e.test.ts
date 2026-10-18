@@ -119,8 +119,9 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
     const { engine, clock } = setup();
     const deal = await startDeal(engine);
     const ready = await runUntil(engine, clock, deal.job_id, (q) => q.ready);
-    const grill = ready.quotes.find((q) => q.business === "Golden Grill")!;
-    await expect(engine.requestApproval(deal.job_id, grill.quote_id, "simulated")).rejects.toMatchObject({ code: "quote_not_eligible" });
+    // Only safety refuses an approval: the pay-now scam (a requirement shortfall is a caveat).
+    const deli = ready.quotes.find((q) => q.business === "QuickQuote Deli")!;
+    await expect(engine.requestApproval(deal.job_id, deli.quote_id, "simulated")).rejects.toMatchObject({ code: "quote_not_eligible" });
     await expect(engine.answerSeller(deal.job_id, "qn_missing", "hi")).rejects.toMatchObject({ code: "question_not_found" });
     await expect(engine.deal({ request: { ...GOLDEN_REQUEST, requirements: [] }, businesses: [] })).rejects.toMatchObject({ code: "no_businesses" });
   });
@@ -178,7 +179,8 @@ describe("v5 channels and deal board (mock mode)", { timeout: 60_000 }, () => {
     expect(biz("Bay Catering")).toMatchObject({ channel: "email", status: "quoted" });
     const q = (name: string) => ready.quotes.find((x) => x.business === name)!;
     expect(q("Bay Catering")).toMatchObject({ verdict: "compliant", eligible: true });
-    expect(q("Golden Grill")).toMatchObject({ verdict: "rejected", eligible: false, excluded_reason: "does not meet every hard requirement" });
+    // Flagged and not recommended, but not "rejected": only safety rejects.
+    expect(q("Golden Grill")).toMatchObject({ verdict: "incomplete", eligible: false, excluded_reason: "does not meet every hard requirement" });
     expect(q("QuickQuote Deli")).toMatchObject({ verdict: "rejected", eligible: false });
     expect(q("QuickQuote Deli").excluded_reason).toMatch(/external link/);
     // Every counteroffer cites a real, eligible, current quote; the phone business is cited, not countered.

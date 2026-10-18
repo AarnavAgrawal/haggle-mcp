@@ -22,18 +22,33 @@ export function routeChannel(e: Pick<DirectoryEntry, "a2a_card_url" | "email" | 
   return "email";
 }
 
-export function loadDirectory(overridePath: string | undefined = process.env.HAGGLE_DIRECTORY_FILE): DirectoryEntry[] {
+const Overrides = z.array(DirectoryEntry.partial().extend({ id: z.string() }));
+
+/**
+ * Overrides come from HAGGLE_DIRECTORY_FILE (local runs) or HAGGLE_DIRECTORY_JSON (the same JSON
+ * inline, for hosted deploys that have no data folder); the inline one wins.
+ */
+export function loadDirectory(
+  overridePath: string | undefined = process.env.HAGGLE_DIRECTORY_FILE,
+  inline: string | undefined = process.env.HAGGLE_DIRECTORY_JSON,
+): DirectoryEntry[] {
   const base = z.array(DirectoryEntry).parse(defaults);
-  if (!overridePath) return base;
-  let overrides: DirectoryEntry[] = [];
-  try {
-    overrides = z.array(DirectoryEntry.partial().extend({ id: z.string() })).parse(
-      JSON.parse(readFileSync(overridePath, "utf8")),
-    ) as DirectoryEntry[];
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return base;
-    throw new Error(`Bad directory override at ${overridePath}: ${(e as Error).message}`);
+  const overrides: DirectoryEntry[] = [];
+  if (overridePath) {
+    try {
+      overrides.push(...(Overrides.parse(JSON.parse(readFileSync(overridePath, "utf8"))) as DirectoryEntry[]));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`Bad directory override at ${overridePath}: ${(e as Error).message}`);
+    }
   }
+  if (inline?.trim()) {
+    try {
+      overrides.push(...(Overrides.parse(JSON.parse(inline)) as DirectoryEntry[]));
+    } catch (e) {
+      throw new Error(`Bad HAGGLE_DIRECTORY_JSON: ${(e as Error).message}`);
+    }
+  }
+  if (!overrides.length) return base;
   const byId = new Map(base.map((b) => [b.id, b]));
   for (const o of overrides) byId.set(o.id, DirectoryEntry.parse({ ...byId.get(o.id), ...o }));
   return [...byId.values()];

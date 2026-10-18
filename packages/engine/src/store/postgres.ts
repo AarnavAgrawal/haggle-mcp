@@ -26,8 +26,13 @@ const settingsRow = (s: SettingsRow | null): SettingsRow | null => (s ? { ...s, 
 export class PostgresRepository implements Repository {
   private readonly sql: Sql;
 
-  constructor(url: string, opts: { max?: number } = {}) {
-    this.sql = postgres(url, { max: opts.max ?? 5, idle_timeout: 20, connect_timeout: 15, prepare: false, onnotice: () => {} }) as unknown as Sql;
+  /** `schema`: where the migrations were applied when not `public` (a database shared with another app). */
+  constructor(url: string, opts: { max?: number; schema?: string } = {}) {
+    if (opts.schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(opts.schema)) throw new Error(`invalid database schema name: ${opts.schema}`);
+    this.sql = postgres(url, {
+      max: opts.max ?? 5, idle_timeout: 20, connect_timeout: 15, prepare: false, onnotice: () => {},
+      ...(opts.schema ? { connection: { search_path: opts.schema } } : {}),
+    }) as unknown as Sql;
   }
 
   async close() {
@@ -80,10 +85,14 @@ export class PostgresRepository implements Repository {
   async getBusinesses(jobId: string) {
     return rows<JobBusinessRow>(await this.sql`select * from job_businesses where job_id = ${jobId} order by name`);
   }
-  async updateBusiness(jobId: string, businessId: string, patch: Partial<JobBusinessRow>) {
+  async updateBusiness(jobId: string, businessId: string, patch: Partial<JobBusinessRow>, opts: { ifStatus?: JobBusinessRow["status"][] } = {}) {
     const { business_id: _a, name: _b, email: _c, job_id: _d, phone: _e, ...rest } = patch;
     const set = this.vals(rest);
     if (Object.keys(set).length === 0) return;
+    if (opts.ifStatus) {
+      await this.sql`update job_businesses set ${this.sql(set)} where job_id = ${jobId} and business_id = ${businessId} and status in ${this.sql(opts.ifStatus)}`;
+      return;
+    }
     await this.sql`update job_businesses set ${this.sql(set)} where job_id = ${jobId} and business_id = ${businessId}`;
   }
   async findBusinessCandidates(q: { shortCodes: string[]; threadId: string | null; messageIds: string[] }) {
