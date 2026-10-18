@@ -3,8 +3,8 @@
 // parse failed ("compiled grammar is too large"). These are the real Claude extractions of those exact
 // replies with the split schema (scripts/acceptance/extract-eval.mts); the engine must turn them into
 // quotes, show what is missing, and move on to comparison and negotiation by itself (clock only).
-import { describe, expect, it } from "vitest";
-import { createMockEngine, type Persona } from "../src/index.ts";
+import { afterAll, describe, expect, it } from "vitest";
+import { createMockEngine, PostgresRepository, type Persona } from "../src/index.ts";
 import live from "./fixtures/live-replies-2026-10-18.json" with { type: "json" };
 
 const R = Object.fromEntries(live.replies.map((r) => [r.business, r]));
@@ -14,10 +14,16 @@ const PERSONAS: Persona[] = [
   { name: "Mission Eats", email: "", phone: "+14155550104", delayMs: 1_000, reply: (t) => (t === "call" ? { text: R["Mission Eats"]!.text, extraction: R["Mission Eats"]!.extraction as never } : null) },
 ];
 
-describe("the live rehearsal replies become quotes and the deal moves on by itself", { timeout: 60_000 }, () => {
+// Also on Postgres with the production migrations (the CHECK constraints behind two outages are enforced there).
+const PG_URL = process.env.HAGGLE_TEST_DATABASE_URL;
+const repos: PostgresRepository[] = [];
+afterAll(async () => { await Promise.all(repos.map((r) => r.close())); });
+
+describe.each(PG_URL ? ["memory", "postgres"] : ["memory"])("the live rehearsal replies become quotes and the deal moves on by itself (%s)", { timeout: 120_000 }, (backend) => {
   it("three quotes from the vendors' own words, missing details shown, counters citing 'about $1,200', then an approvable recommendation", async () => {
     let t = Date.now();
-    const { engine, fleet } = createMockEngine({ now: () => new Date(t), personas: PERSONAS, config: { maxRounds: 2 } });
+    const repo = backend === "postgres" ? (repos.push(new PostgresRepository(PG_URL!, { max: 2 })), repos.at(-1)!) : undefined;
+    const { engine, fleet } = createMockEngine({ now: () => new Date(t), personas: PERSONAS, config: { maxRounds: 3, mode: "live" }, ...(repo ? { repo } : {}) });
     const deal = await engine.deal({ request: { what: "catering", quantity: 50, unit: "people", date: "2030-10-24", area: "San Francisco, CA", requirements: [] }, businesses: PERSONAS.map((p) => ({ name: p.name, ...(p.email ? { email: p.email } : {}), ...(p.phone ? { phone: p.phone } : {}), simulated: true })) });
     let b = await engine.getQuotes(deal.job_id);
     for (let i = 0; i < 400 && !b.ready; i++) {

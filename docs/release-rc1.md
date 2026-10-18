@@ -28,3 +28,5 @@ Production job job_868e… is left untouched (no reset/replay); a fresh rehearsa
   live-readonly.mjs + agent-scenarios.mjs (dry-run) on the hosted server. Rollback: previous deployment 99a000c6 (70f003e).
 - After deploy (separate approval): one fresh rehearsal (exact one-sentence request; contacts the 3 demo vendors), then
   one Stripe test charge only after the human approves the current quote and taps Pay.
+- rc1-3: deployed 50d25a3 to calm-spark (deployment 4964d51c; rollback 99a000c6 = 70f003e). Hosted read-only 34/34; real-Claude hosted scenarios 7/7 (dry runs); nothing sent, 0 PaymentIntents. Post-deploy (test/docs only, not deployed): liveReplies also runs on Postgres in live config; .env.example completed; docs/contracts-rc1.md and docs/integration-readiness-live-demo.md.
+- Note: a rollback-only end-to-end proof inside one PRODUCTION transaction was stopped after 10 min (too many remote round-trips); it was rolled back (no rows, no open transactions verified). Not to be repeated; the same pipeline runs on local Postgres with identical constraints instead.

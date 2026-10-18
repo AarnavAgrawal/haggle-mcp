@@ -1,3 +1,5 @@
+> Superseded by `integration-readiness-live-demo.md` (analysis against rc1 50d25a3). Kept for history.
+
 # Integration risks: feat/live-demo → release/rc1 (read-only note)
 
 Analyzed: `origin/feat/live-demo` @ `9b91a645850a3278f3ad211cfd3c8d38941f93a5` vs `release/rc1` @ `272dbd0`. Merge bases (criss-cross): `7934438`, `22ee9ea`. Not merged; nothing integrated. A trial merge (discarded) conflicted in 12 files, 27 hunks in `engine.ts` alone: both sides rewrote the engine in parallel.
