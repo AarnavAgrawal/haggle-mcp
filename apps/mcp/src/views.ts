@@ -76,7 +76,8 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   payments_enabled: z.boolean().optional(),
   /** deal(dry_run): who would be contacted; nothing was sent. */
   dry_run: z.boolean().optional(),
-  would_contact: z.array(z.looseObject({ name: z.string(), channel: z.string() })).optional(),
+  would_contact: z.array(z.looseObject({ name: z.string(), channel: z.string().optional() })).optional(),
+  blocked: z.array(z.looseObject({ name: z.string(), contact_state: z.string() })).optional(),
   /** Best-value ranking of eligible quotes: per-quote factors with evidence, weights and the why. */
   value: z.looseObject({
     method: z.literal("best_value"), weights: z.record(z.string(), z.number()), recommendedQuoteId: z.string().nullable(),

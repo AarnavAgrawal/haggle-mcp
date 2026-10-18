@@ -128,6 +128,10 @@ export class PostgresRepository implements Repository {
   async listMessages(jobId: string) {
     return rows<MessageRow>(await this.sql`select * from messages where job_id = ${jobId} order by created_at, id`);
   }
+  async listJobBusinessesByContact(c: { email?: string | null; phone?: string | null }) {
+    if (!c.email && !c.phone) return [];
+    return rows<JobBusinessRow>(await this.sql`select * from job_businesses where (${c.email ?? null}::text is not null and email = ${c.email ?? null}) or (${c.phone ?? null}::text is not null and phone = ${c.phone ?? null}) order by job_id limit 500`);
+  }
   async listMessagesForBusiness(businessId: string) {
     return rows<MessageRow>(await this.sql`select * from messages where business_id = ${businessId} order by created_at, id limit 500`);
   }

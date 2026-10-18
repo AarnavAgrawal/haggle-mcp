@@ -34,9 +34,17 @@ export function observedOnly(p: Profile | null): Profile | null {
   const quotes = history.filter((h) => h.kind === "quote");
   const perUnits = quotes.map((h) => h.per_unit_usd).filter((n): n is number => n !== undefined);
   const typical = median(perUnits);
-  const { per_unit_usd: _p, ...rest } = p;
+  // Fields the brain accumulated from replies without per-row provenance (menu, minimums, deposit and
+  // discount habits, flags) can't be told apart from seed text, so a mixed profile drops them: unknown,
+  // never sample. Channels are recomputed from the real rows.
+  const { per_unit_usd: _p, menu: _m, minimum_order_usd: _mo, minimum_quantity: _mq, deposit_pct: _d, discount_pct: _dp, discount_needs_competing_quote: _dn, flags_seen: _f, ...rest } = p;
+  const channels = [...new Set(history.map((h) => h.channel))];
+  const counts = new Map<string, number>();
+  for (const h of quotes) counts.set(h.channel, (counts.get(h.channel) ?? 0) + 1);
   return {
-    ...rest, history, n_quotes: quotes.length,
+    ...rest, menu: [], flags_seen: [], channels_seen: channels,
+    best_channel: ([...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? channels[0] ?? p.best_channel) as Profile["best_channel"],
+    history, n_quotes: quotes.length,
     confidence: round2(Math.min(0.95, Math.max(0.2, 0.3 + 0.18 * quotes.length))),
     ...(typical === undefined ? {} : { per_unit_usd: { low: round2(Math.min(...perUnits)), typical: round2(typical), high: round2(Math.max(...perUnits)) } }),
   };

@@ -117,6 +117,9 @@ export class InMemoryRepository implements Repository {
   async listMessages(jobId: string) {
     return this.messages.filter((m) => m.job_id === jobId).map(clone);
   }
+  async listJobBusinessesByContact(c: { email?: string | null; phone?: string | null }) {
+    return this.businesses.filter((b) => (!!c.email && b.email === c.email) || (!!c.phone && b.phone === c.phone)).map(clone);
+  }
   async listMessagesForBusiness(businessId: string) {
     return this.messages.filter((m) => m.business_id === businessId).map(clone);
   }

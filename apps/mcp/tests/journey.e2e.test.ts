@@ -98,7 +98,7 @@ describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
     expect(t.deal.inputSchema.required).toEqual(["request"]); // businesses optional
     expect(JSON.stringify(t.deal._meta)).toContain("deal-started");
     expect(t.ask.description).toMatch(/If the user wants to buy, cater, book or plan a purchase, call deal instead/);
-    expect(t.discover.description).toMatch(/Not needed before deal/);
+    expect(t.discover.description).toMatch(/Not needed before a deal with the configured vendors/);
   });
 
   it("the exact prompt: one deal call starts the job on all six demo vendors and returns the live board", async () => {
@@ -206,7 +206,7 @@ describe("named vendors: 'Use Mission Eats ONLY'", () => {
     const before = await dealCount();
     const r = await call(ready, "deal", missionOnly({ dry_run: true }));
     expect(r.isError).toBeFalsy();
-    expect(r.structuredContent).toMatchObject({ dry_run: true, job: null, would_contact: [{ name: "Mission Eats", business_ref: "mission_eats", known_vendor: true }] });
+    expect(r.structuredContent).toMatchObject({ dry_run: true, job: null, would_contact: [{ name: "Mission Eats", business_ref: "mission_eats", contact_state: expect.stringMatching(/^(authorized|verified_responsive)$/), ready: true }] });
     expect(r.structuredContent.would_contact).toHaveLength(1);
     expect(r.content[0].text).toMatch(/DRY RUN \(nothing sent\): deal would contact exactly 1: Mission Eats/);
     expect(await dealCount()).toBe(before);

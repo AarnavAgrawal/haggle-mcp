@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: the witnessed Claude.ai purchase on calm-spark 850b399 (routes READY, Stripe test mode on); waiting for Yash + Aarnav to say ready · Aarnav: live Haggle in the Claude app (`haggle-aarnav` on Manufact, branch `aarnav-live-e2e`), then the first live call to Mission Eats
+**Now working on:** Yash: the witnessed Claude.ai purchase on calm-spark (real-world discovery release) (routes READY, Stripe test mode on); waiting for Yash + Aarnav to say ready · Aarnav: live Haggle in the Claude app (`haggle-aarnav` on Manufact, branch `aarnav-live-e2e`), then the first live call to Mission Eats
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -111,6 +111,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 07:30 · Yash · real-world discovery on the same contract: discover (Places, evidence-ranked, explicit failures, no demo substitution), website evidence (robots, SSRF-safe), evidence-grounded business_profile, four contact states, discovered businesses selectable by name/ref with fail-closed scoping, category-scoped roster; memory: record-based aliases (Harbor Table found), aliases in channel learning, mixed-profile cleanup; 413 tests + 261 Postgres, real-Claude 7/7 (no key) and 7/7 (fixture)
 - 06:15 · Yash · calm-spark 850b399: agents name vendors (deal(businesses=['Mission Eats']), resolved server-side, exact scoping, dry_run preview), one identity across discover/profile/deal incl. pre-0f1835f memory, live memory observed-only (no seed samples), 'next week' as a flexible window; real-Claude scenarios 6/6 hosted, live read-only 30/30, nothing sent
 - 05:30 · Yash · calm-spark ac3095a: identity isolation, payment concurrency/idempotency tests (guard expiry off-by-one fixed), public discovery (Places, found ≠ authorized), learned contact preferences, strategist eval 4/4 on real Claude, simulated purchase over MCP with restarts, board stage fix; hosted 26/26, 0 PaymentIntents; traceability in docs/traceability.md
 - 04:30 · Yash · calm-spark c1d4516: per-vendor stages + negotiation outcomes, fees/terms in the all-in total, list_deals / get_quotes() without ids, estimate freshness, call safety ported from feat/live-demo (screener calls, agent-only amounts), board polish (over-target is a caveat); hosted acceptance 26/26 (no outreach, 0 PaymentIntents); 360 tests + 241 on Postgres

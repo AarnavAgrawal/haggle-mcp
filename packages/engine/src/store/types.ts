@@ -234,6 +234,8 @@ export interface Repository {
   listMessages(jobId: string): Promise<MessageRow[]>;
   /** Every message with this business across all jobs (contact-performance learning). */
   listMessagesForBusiness(businessId: string): Promise<MessageRow[]>;
+  /** Every job row that addressed this email or phone (any job), for identity aliases. */
+  listJobBusinessesByContact(c: { email?: string | null; phone?: string | null }): Promise<JobBusinessRow[]>;
   getPendingMessages(jobId: string): Promise<MessageRow[]>;
   findOutboundByRfcIds(ids: string[]): Promise<MessageRow[]>;
 

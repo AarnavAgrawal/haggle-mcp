@@ -14,16 +14,18 @@ export interface DemoVendor {
   channel: Channel;
   /** Who plays it, shown so nobody mistakes a demo vendor for a real business. */
   played_by: string;
+  /** What it sells: a request in another category never uses it by default. */
+  category: string;
 }
 
 /** The predefined roster (names match the seller personas so the brain's learning lines up). */
 export const DEMO_VENDORS: DemoVendor[] = [
-  { key: "harbor_table", name: "Harbor Table", channel: "email", played_by: "seller persona mailbox" },
-  { key: "sunset_kitchen", name: "Sunset Kitchen", channel: "imessage", played_by: "a teammate's iPhone" },
-  { key: "mission_eats", name: "Mission Eats", channel: "phone", played_by: "a teammate answering a Voice AI call" },
-  { key: "bay_catering", name: "Bay Catering", channel: "a2a", played_by: "agent-ready seller (A2A)" },
-  { key: "golden_grill", name: "Golden Grill", channel: "email", played_by: "seller persona mailbox" },
-  { key: "quickquote_deli", name: "QuickQuote Deli", channel: "email", played_by: "seller persona mailbox (scam-bait test)" },
+  { key: "harbor_table", name: "Harbor Table", channel: "email", played_by: "seller persona mailbox", category: "catering" },
+  { key: "sunset_kitchen", name: "Sunset Kitchen", channel: "imessage", played_by: "a teammate's iPhone", category: "catering" },
+  { key: "mission_eats", name: "Mission Eats", channel: "phone", played_by: "a teammate answering a Voice AI call", category: "catering" },
+  { key: "bay_catering", name: "Bay Catering", channel: "a2a", played_by: "agent-ready seller (A2A)", category: "catering" },
+  { key: "golden_grill", name: "Golden Grill", channel: "email", played_by: "seller persona mailbox", category: "catering" },
+  { key: "quickquote_deli", name: "QuickQuote Deli", channel: "email", played_by: "seller persona mailbox (scam-bait test)", category: "catering" },
 ];
 
 export interface VendorContact {
@@ -32,6 +34,7 @@ export interface VendorContact {
   a2a_card_url?: string;
   channel?: Channel;
   name?: string;
+  category?: string;
 }
 
 export interface RosterEntry extends DemoVendor {
@@ -85,6 +88,7 @@ export function parseVendorConfig(raw: string | undefined): { contacts: Record<s
     if (typeof v?.a2a_card_url === "string") /^https:\/\//.test(v.a2a_card_url) ? (c.a2a_card_url = v.a2a_card_url) : errors.push(`${key}: a2a_card_url must be https`);
     if (typeof v?.channel === "string" && ["email", "phone", "imessage", "a2a"].includes(v.channel)) c.channel = v.channel as Channel;
     if (typeof v?.name === "string" && v.name.trim()) c.name = v.name.trim().slice(0, 120);
+    if (typeof v?.category === "string" && v.category.trim()) c.category = v.category.trim().toLowerCase().slice(0, 40);
     contacts[key] = c;
   }
   return { contacts, errors };
@@ -104,7 +108,7 @@ function rosterEntries(contacts: Record<string, VendorContact>, ch: ChannelStatu
   const extra = Object.keys(contacts).filter((k) => !DEMO_VENDORS.some((v) => v.key === k) && contacts[k]!.name);
   const base: DemoVendor[] = [
     ...DEMO_VENDORS,
-    ...extra.map((k) => ({ key: k, name: contacts[k]!.name!, channel: contacts[k]!.channel ?? (contacts[k]!.email ? "email" : "phone"), played_by: "operator-configured demo vendor" }) as DemoVendor),
+    ...extra.map((k) => ({ key: k, name: contacts[k]!.name!, channel: contacts[k]!.channel ?? (contacts[k]!.email ? "email" : "phone"), played_by: "operator-configured demo vendor", category: contacts[k]!.category ?? "catering" }) as DemoVendor),
   ];
   return base.map((v) => {
     const c = contacts[v.key] ?? {};

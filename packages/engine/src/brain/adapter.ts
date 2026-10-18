@@ -49,6 +49,13 @@ export class BrainAdapter implements Brain {
   private readonly directory: DirectoryContact[];
   private readonly engine = new Map<string, EngineContact>();
   private readonly discovery: Business[] | undefined;
+  /** Older ids of a business from Haggle's own job records (engine.businessAliases); see useAliases. */
+  private aliases: ((b: { business_id: string; name: string; email?: string | null; phone?: string | null }) => Promise<string[]>) | null = null;
+
+  /** Wire the engine's record-based aliases (the brain is built before the engine). */
+  useAliases(fn: (b: { business_id: string; name: string; email?: string | null; phone?: string | null }) => Promise<string[]>): void {
+    this.aliases = fn;
+  }
 
   constructor(opts: BrainAdapterOptions) {
     this.core = opts.brain;
@@ -90,6 +97,14 @@ export class BrainAdapter implements Brain {
     const phone = hint.phone ?? known?.phone;
     const name = hint.name ?? known?.name;
     if (!name || !(email || phone)) return id;
+    // Haggle's own records first: the same name on the same contact in an earlier job is the same
+    // business, whatever name the brain profile carries (e.g. a mailbox's old display name).
+    if (this.aliases) {
+      for (const alias of (await this.aliases({ business_id: engineId, name, email: email ?? null, phone: phone ?? null }).catch(() => [])).filter((a) => a !== engineId)) {
+        const p = await this.core.getProfile(alias);
+        if (p && p.business_id === alias) return alias;
+      }
+    }
     const legacy = businessIdForContact({ email: email ?? null, phone: email ? null : phone ?? null });
     if (legacy === engineId) return id;
     const old = await this.core.getProfile(legacy);

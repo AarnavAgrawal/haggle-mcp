@@ -10,7 +10,7 @@ import {
 } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
-import { buildRoster, DEMO_VENDORS, parseVendorConfig, rosterRecipients, type VendorContact } from "./vendors.ts";
+import { buildRoster, DEMO_VENDORS, parseVendorConfig, rosterRecipients, type ChannelStatus, type VendorContact } from "./vendors.ts";
 
 const TICK_MS = 30_000;
 
@@ -84,6 +84,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     },
     log: (event, data) => console.log(JSON.stringify({ level: "info", event, ...data })),
   });
+  brain.useAliases((b) => engine.businessAliases(b));
   // Backup tick: deadlines advance even when no agent is calling.
   setInterval(() => {
     void repo.listOpenJobs().then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
@@ -91,12 +92,13 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, payments: stripe ? "stripe-test" : "disabled", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
   // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
   let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };
-  const roster = async () => {
+  const channels = async (): Promise<ChannelStatus> => {
     if (imessagePort || phonePort) {
       if (Date.now() - connected.at > 20_000) connected = { at: Date.now(), set: await connectedNumbers().catch(() => null) };
     }
-    return buildRoster(contacts, { email: true, imessage: imessagePort !== null, phone: phonePort !== null, a2a: a2aPort !== null, connectCommand, connected: connected.set, callsViaSharedLine: callOrigin === "shared_imessage_number" });
+    return { email: true, imessage: imessagePort !== null, phone: phonePort !== null, a2a: a2aPort !== null, connectCommand, connected: connected.set, callsViaSharedLine: callOrigin === "shared_imessage_number" };
   };
+  const roster = async () => buildRoster(contacts, await channels());
   if (vendorConfig.errors.length) console.error(JSON.stringify({ level: "warn", event: "demo_vendors_config", errors: vendorConfig.errors }));
-  return { mode: "live", engine, brain, missing: [], roster, configErrors: vendorConfig.errors, ...(env.GOOGLE_PLACES_API_KEY ? { placesKey: env.GOOGLE_PLACES_API_KEY } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript } };
+  return { mode: "live", engine, brain, missing: [], roster, channels, configErrors: vendorConfig.errors, ...(env.GOOGLE_PLACES_API_KEY ? { placesKey: env.GOOGLE_PLACES_API_KEY } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript } };
 });

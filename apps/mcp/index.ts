@@ -2,12 +2,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { inputRequired, inputResponse, MCPServer } from "mcp-use";
 import { z } from "zod";
-import { EngineError, eventWhen, normalizeBusinessName, placesDiscover, type DealBoardData } from "@haggle/engine";
+import { businessIdForContact, EngineError, eventWhen, normalizeBusinessName, placesDiscover, PlacesError, type DealBoardData, type PlacesFailure } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
 import { ApprovalOut, BusinessProfile, DealBoardOrEmpty, DealBoardPlus, emptyBoard, Estimates, requestDetails, toApproval, toDealBoardPlus } from "./src/views.ts";
-import { blockerLines, businessRef, findVendors, resolveVendors, rosterBusinessId, type RosterEntry } from "./src/vendors.ts";
+import { blockerLines, businessRef, findVendors, rosterBusinessId, type RosterEntry } from "./src/vendors.ts";
+import { contactEvidence, contactStatus, discovered, discoveredRoutes, e164, historyEvidence, learningFor, listingEvidence, requestCategory, resolveSelection, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered } from "./src/businesses.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
 import "./src/live.ts";
 
@@ -190,30 +191,58 @@ export const deal = server.tool(
       if (input.request.date < today) {
         return fail(rt.mode, "date_in_past", `${eventWhen(input.request.date, input.request.time)} is in the past (today is ${eventWhen(today)}).`, "Resolve relative dates ('next Saturday') from today's date and pass the future YYYY-MM-DD.", "deal");
       }
-      // Who to contact: exactly the businesses named (known vendors resolved server-side by name, new
-      // ones by the contact given), else every configured vendor that is ready now. A named vendor that
-      // can't be resolved stops the deal: it never falls back to, or adds, other vendors.
-      const roster = await rt.roster();
+      // Who to contact: exactly the businesses named (configured vendors and businesses from discover,
+      // resolved server-side by name or ref; new ones by the contact given), else the configured vendors
+      // for this kind of request that are ready now. A named business that can't be resolved or reached
+      // stops the deal: it never falls back to, or adds, other businesses.
+      const fullRoster = await rt.roster();
+      const category = requestCategory(input.request.what);
+      const roster = fullRoster.filter((r) => r.category === category);
       const blockers = roster.filter((r) => !r.ready).map((r) => ({ vendor: r.name, channel: r.channel, reason: r.blocker!, fix: r.fix! }));
       const fromRoster = !input.businesses?.length;
       const fromVendor = (r: RosterEntry) => ({ name: r.name, channel: r.channel, simulated: true, ...(r.email ? { email: r.email } : {}), ...(r.phone ? { phone: r.phone } : {}), ...(r.a2a_card_url ? { a2a_card_url: r.a2a_card_url } : {}) });
-      let businesses: z.infer<typeof businessInput>[];
-      if (fromRoster) businesses = roster.filter((r) => r.ready).map(fromVendor);
-      else {
+      let businesses: (z.infer<typeof businessInput> & { simulated?: boolean; source?: "web" | "agent" })[];
+      let preview: { name: string; business_ref?: string; channel?: string; contact_state: string; ready: boolean; reason?: string }[] = [];
+      if (fromRoster) {
+        if (fullRoster.length && !roster.length) {
+          // The configured vendors sell something else (e.g. demo caterers for a plumbing job): never substitute them.
+          const sells = [...new Set(fullRoster.map((r) => r.category))].join(", ");
+          return fail(rt.mode, "no_vendors_for_category", `This server's configured vendors are ${sells} vendors; none offer ${category}. Nothing was sent.`,
+            rt.placesKey ? `Call discover(category='${category}', area) to find real ${category} businesses, then deal(businesses=['<name>']) for the ones the user picks.` : `Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY), so Haggle can't find ${category} businesses here. Tell the user; don't substitute other vendors.`,
+            rt.placesKey ? "discover" : "none");
+        }
+        businesses = roster.filter((r) => r.ready).map(fromVendor);
+        preview = roster.map((r) => ({ name: r.name, business_ref: businessRef(r), channel: r.channel, contact_state: r.ready ? "authorized" : "contact_found", ready: r.ready, ...(r.blocker ? { reason: r.blocker } : {}) }));
+      } else {
         const given = input.businesses!.map((b) => (typeof b === "string" ? { name: b } : b));
         const named = given.filter((b) => !hasContact(b));
-        const resolved = resolveVendors(named.map((b) => b.name), roster);
-        if (!resolved.ok) return fail(rt.mode, resolved.code, resolved.message, resolved.fix, "Ask the user, then call deal again with the vendor's exact name.");
-        // Each name resolved to exactly one ready vendor; its configured contact and channel are used.
-        const vendorFor = (name: string) => (resolveVendors([name], roster) as { ok: true; vendors: RosterEntry[] }).vendors[0]!;
-        businesses = given.map((b) => (hasContact(b) ? b : fromVendor(vendorFor(b.name))));
-        // One vendor named twice ("Mission Eats", "mission_eats") is contacted once.
-        businesses = businesses.filter((b, i) => businesses.findIndex((x) => x.name === b.name && x.email === b.email && x.phone === b.phone && x.a2a_card_url === b.a2a_card_url) === i);
+        const sel = await resolveSelection(named.map((b) => b.name), rt);
+        if (!sel.ok) return fail(rt.mode, sel.code, sel.message, sel.fix, "Ask the user, then call deal again with the business's exact name.");
+        const unreachable = sel.selected.filter((x) => !x.send);
+        if (unreachable.length && !input.dry_run) {
+          const u = unreachable[0]!;
+          const code = u.kind === "vendor" ? "vendor_not_ready" : u.status.state === "discovered" ? "no_contact_route" : u.status.routes.some((r) => r.authorized) ? "vendor_not_ready" : "not_authorized";
+          return fail(rt.mode, code, `${unreachable.map((x) => `${x.name}: ${x.status.summary}`).join(" ")} Nothing was sent (no other business was contacted instead).`,
+            "Tell the user which business can't be reached and why; contact others only if the user says so. Use deal(dry_run=true) to preview who can be reached.", "none");
+        }
+        const toInput = (x: (typeof sel.selected)[number]) => x.kind === "vendor" ? fromVendor(x.vendor) : { name: x.name, channel: x.send!.channel, simulated: false, source: "web" as const, ...(x.send!.email ? { email: x.send!.email } : {}), ...(x.send!.phone ? { phone: x.send!.phone } : {}) };
+        let i = 0;
+        businesses = given.flatMap((b) => { if (hasContact(b)) return [b]; const x = sel.selected[i++]!; return x.send ? [toInput(x)] : []; });
+        // One business named twice ("Mission Eats", "mission_eats") is contacted once.
+        businesses = businesses.filter((b, j) => businesses.findIndex((x) => x.name === b.name && x.email === b.email && x.phone === b.phone && x.a2a_card_url === b.a2a_card_url) === j);
+        preview = [
+          ...sel.selected.filter((x, j) => sel.selected.findIndex((y) => y.business_ref === x.business_ref) === j).map((x) => ({ name: x.name, business_ref: x.business_ref, ...(x.send ? { channel: x.send.channel } : {}), contact_state: x.status.state, ready: !!x.send, ...(x.send ? {} : { reason: x.status.summary }) })),
+          ...given.filter(hasContact).map((b) => { const allowed = rt.engine.canContact({ ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}) }); return { name: b.name, channel: b.channel ?? (b.a2a_card_url ? "a2a" : b.email ? "email" : "phone"), contact_state: allowed ? "authorized" : "contact_found", ready: allowed, ...(allowed ? {} : { reason: "this contact isn't on the server's recipient allowlist" }) }; }),
+        ];
       }
       if (input.dry_run) {
-        const would = businesses.map((b) => { const v = roster.find((r) => r.name === b.name && (r.email ?? r.phone ?? r.a2a_card_url) === (b.email ?? b.phone ?? b.a2a_card_url)); return { name: b.name, channel: b.channel ?? (b.a2a_card_url ? "a2a" : b.email ? "email" : "phone"), ...(v ? { business_ref: businessRef(v), known_vendor: true } : { known_vendor: false, allowed: rt.engine.canContact({ ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}) }) }) }; });
-        const v = DealBoardPlus.parse({ ok: true, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode: rt.mode, dry_run: true, would_contact: would, next: "Dry run: nothing was sent and no deal was started. Call deal again without dry_run to contact exactly these businesses." });
-        return ok(v, `DRY RUN (nothing sent): deal would contact exactly ${would.length}: ${would.map((w) => `${w.name} [${w.channel}]`).join(", ") || "nobody"}.\nnext: ${v.next}`);
+        const would = preview.filter((p) => p.ready);
+        const blocked = preview.filter((p) => !p.ready);
+        const next = blocked.length
+          ? `Dry run: nothing was sent. ${blocked.length} selected business(es) can't be contacted (see blocked); a real deal with them selected starts nothing. Ask the user whether to proceed with only: ${would.map((w) => w.name).join(", ") || "nobody"}.`
+          : "Dry run: nothing was sent and no deal was started. Call deal again without dry_run to contact exactly these businesses.";
+        const v = DealBoardPlus.parse({ ok: true, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode: rt.mode, dry_run: true, would_contact: would, blocked, next });
+        return ok(v, [`DRY RUN (nothing sent): deal would contact exactly ${would.length}: ${would.map((w) => `${w.name} [${w.channel}]`).join(", ") || "nobody"}.`, ...blocked.map((b) => `Can't contact ${b.name} (${b.contact_state.replace(/_/g, " ")}): ${b.reason}`), `next: ${next}`].join("\n"));
       }
       const setup = fromRoster ? { ready: businesses.length, total: roster.length, blockers } : undefined;
       if (fromRoster && businesses.length === 0) {
@@ -581,45 +610,79 @@ export const listDeals = server.tool(
 export const discover = server.tool(
   {
     name: "discover",
-    title: "Demo vendors and readiness",
+    title: "Find businesses",
     description:
-      "List the vendors this server may contact (demo vendors played by teammates or seller personas, clearly labelled), each with its channel and whether Haggle can contact it right now, plus (when public discovery is configured) real businesses found in public listings for the category and area, which are NOT authorized to contact. " +
-      "for any that can't, the exact setup blocker and fix. Read-only; contacts nobody. Not needed before deal (deal uses the ready vendors itself, and takes vendor names directly); use it when the user asks who Haggle would contact or why a vendor wasn't contacted.",
-    inputSchema: z.object({ category: z.string().min(2).max(100).optional(), area: z.string().min(2).max(200).optional(), count: z.number().int().min(1).max(12).default(6) }),
+      "Find businesses for a request: real businesses from public listings (Google Places, when configured on this server) ranked by relevance and credible reviews, plus this server's configured demo vendors. " +
+      "Each comes with how Haggle can reach it: discovered (no contact), contact found (published, but NOT authorized: finding a phone or email is not permission), authorized, or verified responsive. " +
+      "Use it when the user wants options or a kind of business Haggle has no vendors for (a plumber, a print shop, a repair), or asks who Haggle would contact. Then business_profile(name) for the evidence, and deal(businesses=['<name>', …], dry_run=true) to check who can actually be contacted. " +
+      "If public discovery isn't configured it says so; it never substitutes demo vendors for real results. Read-only; contacts nobody. Not needed before a deal with the configured vendors.",
+    inputSchema: z.object({
+      category: z.string().min(2).max(100).optional().describe("What kind of business, in the user's words: 'catering', 'plumber', 'print shop', 'office repairs'"),
+      area: z.string().min(2).max(200).optional().describe("City or address (defaults to the settings area)"),
+      count: z.number().int().min(1).max(12).default(6),
+    }),
     outputSchema: z.looseObject({
       ok: z.boolean(), mode: z.enum(["mock", "live"]), next: z.string(), ready: z.number().int(), total: z.number().int(),
       businesses: z.array(z.looseObject({ name: z.string(), best_channel: z.string(), simulated: z.boolean(), ready: z.boolean(), played_by: z.string(), blocker: z.string().optional(), fix: z.string().optional() })),
+      public_discovery: z.looseObject({ status: z.string(), message: z.string() }),
+      found: z.array(z.looseObject({ name: z.string(), business_ref: z.string(), contact_state: z.string() })),
     }),
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, openWorldHint: true },
   },
   async ({ count, category, area }) =>
     run(async (rt) => {
-      // Real businesses from a public listing (when configured): FOUND is not AUTHORIZED. A published
-      // phone or website never means Haggle may contact it; deal still refuses anything not allowlisted.
-      let publicDiscovery: string = rt.placesKey ? "google-places" : "off (no GOOGLE_PLACES_API_KEY)";
-      let found: Awaited<ReturnType<typeof placesDiscover>> = null;
-      if (rt.placesKey && category) {
-        try { found = await placesDiscover({ apiKey: rt.placesKey }, category, area ?? (await rt.engine.getSettings()).default_area ?? "", count); } catch (e) { publicDiscovery = `error: ${(e as Error).message.slice(0, 80)}`; }
+      const where = area ?? (await rt.engine.getSettings()).default_area ?? "";
+      // Real businesses from a public listing: FOUND is not AUTHORIZED. A published phone or website
+      // never means Haggle may contact it; deal refuses anything not on the operator's allowlist.
+      let found: Discovered[] = [];
+      let pub: { status: "ok" | "not_requested" | "not_configured" | "no_area" | PlacesFailure; message: string };
+      if (!category) pub = { status: "not_requested", message: rt.placesKey ? "Pass a category (and area) to search public listings for real businesses." : "Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY)." };
+      else if (!rt.placesKey) pub = { status: "not_configured", message: `Real-business discovery is off on this server: GOOGLE_PLACES_API_KEY isn't set, so Haggle did not search for ${category} businesses. No demo vendors were substituted.` };
+      else if (!where) pub = { status: "no_area", message: "Pass an area (city or address) to search public listings." };
+      else {
+        try {
+          found = ((await placesDiscover({ apiKey: rt.placesKey, ...(rt.placesFetch ? { fetch: rt.placesFetch } : {}) }, category, where, count)) ?? []).map((b) => ({ ...b, category, area: where }));
+          discovered.remember(found);
+          pub = { status: "ok", message: `${found.length} ${category} business(es) found near ${where} in Google Maps listings.` };
+        } catch (e) {
+          if (!(e instanceof PlacesError)) throw e;
+          pub = { status: e.code, message: `${e.message} Nothing was substituted.` };
+        }
       }
-      const foundOut = (found ?? []).map((f) => {
-        const allowed = !!f.phone && rt.engine.canContact({ phone: f.phone.replace(/[^\d+]/g, "") });
-        return { ...f, contactable: allowed, status: allowed ? "found and on this server's allowlist" : "found — not authorized to contact (the operator must add it)" };
+      const ch = await rt.channels();
+      const foundOut = found.map((b) => {
+        const st = contactStatus(discoveredRoutes(b, rt, ch).routes, null);
+        return {
+          name: b.name, business_ref: b.business_ref, ...(b.address ? { address: b.address } : {}), ...(b.rating !== undefined ? { rating: b.rating, review_count: b.review_count ?? 0 } : {}),
+          ...(b.website ? { website: b.website } : {}), ...(b.maps_url ? { maps_url: b.maps_url } : {}), phone_published: !!b.phone, in_area: b.in_area, score: b.score, rank_reasons: b.rank_reasons,
+          contact_state: st.state, contact_summary: st.summary, source: b.source, attribution: b.attribution, fetched_at: b.fetched_at,
+        };
       });
-      // Every vendor deal could contact is listed (ready first); count only matters for very large rosters.
+      // Every configured vendor (ready first); contacts stay server-side, phone numbers are never echoed.
       const roster = (await rt.roster()).sort((a, b) => Number(b.ready) - Number(a.ready)).slice(0, Math.max(count, 12));
-      // Contacts stay server-side (deal uses them); phone numbers are never echoed.
+      const wanted = category ? requestCategory(category) : null;
       const businesses = roster.map((r) => ({
-        name: r.name, business_ref: businessRef(r), best_channel: r.channel, simulated: true, ready: r.ready, played_by: r.played_by,
+        name: r.name, business_ref: businessRef(r), category: r.category, best_channel: r.channel, simulated: true, ready: r.ready, played_by: r.played_by,
         ...(r.email ? { email: r.email } : {}), ...(r.phone ? { phone: `${r.phone.slice(0, 2)}•••${r.phone.slice(-2)}` } : {}),
         ...(r.blocker ? { blocker: r.blocker, fix: r.fix } : {}),
       }));
       const ready = roster.filter((r) => r.ready).length;
-      const next = ready ? "Call deal(request, budget_usd) without businesses to contact every ready vendor, or with businesses=['<name>', ...] to contact only the vendors the user chose (names are enough: Haggle has their contact details)." : "No vendor is ready: show the user the blockers; nothing can be sent until one is fixed.";
+      const rosterFits = !wanted || roster.some((r) => r.category === wanted);
+      const next = found.length
+        ? `Show the user these options. For the evidence on one, call business_profile('<name>'); to see which chosen businesses Haggle may actually contact, call deal(request, businesses=['<name>', ...], dry_run=true). Found businesses are contacted only if the operator authorized them.`
+        : !rosterFits ? `None of the configured vendors offer ${wanted}, and ${pub.message} Tell the user; don't start a deal with other vendors.`
+        : ready ? "Call deal(request, budget_usd) without businesses to contact every ready vendor, or with businesses=['<name>', ...] to contact only the vendors the user chose (names are enough: Haggle has their contact details)."
+        : "No vendor is ready: show the user the blockers; nothing can be sent until one is fixed.";
       return ok(
-        { ok: true, mode: rt.mode, ready, total: roster.length, businesses, next, public_discovery: publicDiscovery, ...(found ? { found: foundOut } : {}), ...(rt.configErrors?.length ? { config_errors: rt.configErrors } : {}) },
-        [`${ready} of ${roster.length} demo vendors ready: ${roster.map((r) => `${r.name} [${r.channel}] ${r.ready ? "ready" : "NOT READY"}`).join("; ")}.`, ...blockerLines(roster),
-          ...(found ? [`Public listings (Google Places; found, NOT authorized to contact): ${found.map((f) => `${f.name}${f.rating !== undefined ? ` ${f.rating}★ (${f.review_count ?? 0} reviews)` : ""}${f.in_area ? "" : " [outside area]"}`).join("; ") || "none"}.`] : [`Public discovery: ${publicDiscovery}.`]),
-          `next: ${next}`].join("\n"),
+        { ok: true, mode: rt.mode, ready, total: roster.length, businesses, found: foundOut, public_discovery: pub, next, ...(rt.configErrors?.length ? { config_errors: rt.configErrors } : {}) },
+        [
+          category ? `Public discovery (${pub.status}): ${pub.message}` : `Public discovery: ${pub.message}`,
+          ...foundOut.map((f, i) => `${i + 1}. ${f.name}${f.rating !== undefined ? ` ${f.rating}★ (${f.review_count} reviews)` : ""}${f.address ? `, ${f.address}` : ""} [${f.business_ref}] · ${f.rank_reasons.join("; ")} · contact: ${f.contact_state.replace(/_/g, " ")}`),
+          ...(found.length ? ["Listings: Google Maps."] : []),
+          `Configured demo vendors (${roster[0]?.category ?? "none"}${rosterFits ? "" : `; none offer ${wanted}`}): ${ready} of ${roster.length} ready: ${roster.map((r) => `${r.name} [${r.channel}] ${r.ready ? "ready" : "NOT READY"}`).join("; ")}.`,
+          ...(rosterFits ? blockerLines(roster) : []),
+          `next: ${next}`,
+        ].join("\n"),
       );
     }),
 );
@@ -651,39 +714,87 @@ export const businessProfile = server.tool(
   {
     name: "business_profile",
     title: "Business profile",
-    description: "What Haggle has learned about one business (its 'API'): menu, price per unit, minimum, deposit rule, discount behaviour, best channel, reply speed and quote history (only quotes Haggle really collected; samples are labelled). Read-only. Takes the same names deal does; not needed before deal (deal(businesses=['<name>']) works directly). Use when the user asks about a business or to explain a quote.",
-    inputSchema: z.object({ business: z.string().min(2).max(200).describe("business_id, slug (bay-catering) or name") }),
+    description:
+      "Everything Haggle knows about one business, each fact with its source, date and kind: verified (what Haggle itself saw: quotes it received, replies, response speed), " +
+      "third-party listing and reviews (Google Maps), vendor claims (the business's own website; an advertised price is not a quote), Haggle's estimates, and what is still unknown (availability, capacity, today's price). " +
+      "Also how Haggle can reach it (discovered / contact found / authorized / verified responsive). Takes the same names deal does: a configured vendor, or a business from discover. Read-only. " +
+      "Not needed before deal (deal(businesses=['<name>']) works directly); use it when the user asks about a business or to compare options.",
+    inputSchema: z.object({ business: z.string().min(2).max(200).describe("Business name, business_ref ('mission_eats', 'place:…') or id") }),
     outputSchema: BusinessProfile,
-    annotations: { readOnlyHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, openWorldHint: true },
     ...viewIf({ name: "business-profile", description: "Haggle business profile: what Haggle learned about a business" }),
   },
   async ({ business }) =>
     run(async (rt) => {
       const { brain, mode } = rt;
-      // The same identity deal uses: a configured vendor by name / business_ref / id, then its memory.
+      const now = Date.now();
+      const byName = async (n: string) => { const x = await brain.core.getProfile(n); return x && normalizeBusinessName(x.name) === normalizeBusinessName(n) ? x : null; };
+      // The same identity deal uses: a configured vendor by name / business_ref / id, else a business
+      // from discover (name or place ref), else one Haggle only knows from earlier deals.
       const hits = findVendors(business, await rt.roster());
       if (hits.length > 1) return fail(mode, "ambiguous_business", `"${business}" could be ${hits.map((h) => h.name).join(" or ")}.`, "Ask the user which one they meant, then pass that exact name.", "business_profile");
       const vendor = hits[0];
-      const engineId = vendor ? rosterBusinessId(vendor) : null;
-      const hint = vendor ? { name: vendor.name, ...(vendor.email ? { email: vendor.email } : {}), ...(vendor.phone ? { phone: vendor.phone } : {}) } : {};
-      const byName = async (n: string) => { const x = await brain.core.getProfile(n); return x && normalizeBusinessName(x.name) === normalizeBusinessName(n) ? x : null; };
-      const p = vendor
-        ? (engineId ? await brain.coreProfile(engineId, hint) : null) ?? (await byName(vendor.name))
-        : (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business)));
-      const dealHint = vendor
-        ? vendor.ready
-          ? `For a real quote from ${vendor.name}, call deal(request, budget_usd, businesses=['${vendor.name}']): Haggle already has its contact details and channel (${vendor.channel}); only ${vendor.name} is contacted.`
-          : `${vendor.name} can't be contacted yet: ${vendor.blocker}. Fix: ${vendor.fix}`
-        : "This business isn't one of this server's configured vendors, so deal can contact it only with its email/phone and only if the operator authorized that contact. For an instant estimate call ask(what, quantity, date, area).";
-      const who = vendor ? { business_ref: businessRef(vendor), configured_vendor: true, ready: vendor.ready, channel: vendor.channel } : { configured_vendor: false };
-      if (!p) return fail(mode, "NOT_LEARNED", `Haggle has no real quotes from ${vendor?.name ?? business} yet${mode === "live" ? " (sample data is never shown as history)" : ""}.`, dealHint, vendor && !vendor.ready ? "none" : "deal");
-      const counts = quoteCounts(p.history);
-      const seeded = seedRows(p.history);
-      const view = toBusinessProfileView(p);
-      const v = { ...view, ...(vendor ? { name: vendor.name } : {}), ...who, history: view.history.map((h, i) => (seeded[i] ? { ...h, note: `${h.note} (seed sample)` } : h)), mode, next: dealHint };
-      return ok(v, `${v.name}: ${honestBasis(`${p.n_quotes} real quotes`, counts)}, confidence ${Math.round(p.confidence * 100)}%. next: ${v.next}`);
+      let found: Discovered | null = null;
+      if (!vendor && (/^place:/.test(business) || discovered.find(business).length)) {
+        const sel = await resolveSelection([business], rt);
+        if (!sel.ok) return fail(mode, sel.code, sel.message.replace(" Nothing was sent.", ""), sel.fix, "business_profile");
+        const x = sel.selected[0]!;
+        if (x.kind === "discovered") found = await withWebsite(x.found, rt);
+      }
+      const name = vendor?.name ?? found?.name ?? business;
+      const contact = vendor ? { email: vendor.email ?? null, phone: vendor.phone ?? null } : found ? { email: found.website_evidence?.emails[0] ?? null, phone: e164(found.phone) } : { email: null, phone: null };
+      const engineId = vendor ? rosterBusinessId(vendor) : contact.email || contact.phone ? businessIdForContact({ email: contact.email, phone: contact.email ? null : contact.phone }, name) : null;
+      const hint = { name, ...(contact.email ? { email: contact.email } : {}), ...(contact.phone ? { phone: contact.phone } : {}) };
+      const p = engineId ? (await brain.coreProfile(engineId, hint)) ?? (vendor ? await byName(vendor.name) : null)
+        : !found ? (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business))) : null;
+      if (!vendor && !found && !p) {
+        return fail(mode, "NOT_LEARNED", `Haggle doesn't know ${business}: it isn't a configured vendor, wasn't in a recent discover result, and Haggle has no quotes from it${mode === "live" ? " (sample data is never shown as history)" : ""}.`,
+          rt.placesKey ? "Call discover(category, area) to find real businesses, then ask about one by name." : "Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY); configured vendors are listed by discover.", "deal");
+      }
+      const learning = await learningFor(rt, name, contact);
+      const ch = await rt.channels();
+      const status = contactStatus(vendor ? vendorRoutes(vendor) : found ? discoveredRoutes(found, rt, ch).routes : [], learning);
+      const evidence = [
+        ...(vendor ? [{ kind: "verified" as const, statement: `Configured ${vendor.category} vendor on this server (${vendor.played_by}), reached by ${vendor.channel}`, source: "operator configuration (HAGGLE_DEMO_VENDORS)", observed_at: new Date(now).toISOString(), freshness: "fresh" as const, confidence: 1, caveat: "a controlled demo vendor, not a public business" }] : []),
+        ...(found ? [...listingEvidence(found, now), ...websiteItems(found.website_evidence, now)] : []),
+        ...historyEvidence(p, now),
+        ...contactEvidence(learning, now),
+      ];
+      const who = vendor
+        ? { business_ref: businessRef(vendor), configured_vendor: true, ready: vendor.ready, channel: vendor.channel }
+        : found ? { business_ref: found.business_ref, configured_vendor: false, public_listing: { source: found.source, attribution: found.attribution, ...(found.maps_url ? { maps_url: found.maps_url } : {}) } }
+        : { configured_vendor: false };
+      const next = status.state === "authorized" || status.state === "verified_responsive"
+        ? `For a real quote from ${name}, call deal(request, budget_usd, businesses=['${name}']): Haggle already has its contact details; only ${name} is contacted.`
+        : `${name} can't be contacted from this server: ${status.summary}${vendor?.fix ? ` Fix: ${vendor.fix}` : ""} Don't substitute another business without asking the user.`;
+      const extra = { ...who, contact_status: status, evidence, unknowns: unknowns(!!p && p.n_quotes > 0), mode, next };
+      if (p) {
+        const counts = quoteCounts(p.history);
+        const seeded = seedRows(p.history);
+        const view = toBusinessProfileView(p);
+        const v = { ...view, name, ...extra, history: view.history.map((h, i) => (seeded[i] ? { ...h, note: `${h.note} (seed sample)` } : h)) };
+        return ok(v, profileText(v, `${honestBasis(`${p.n_quotes} real quotes`, counts)}, confidence ${Math.round(p.confidence * 100)}%`));
+      }
+      // No quotes yet: what is known comes from configuration, the listing and the website only.
+      const claim = found?.website_evidence?.price_claims[0];
+      const v = {
+        business_id: vendor ? businessRef(vendor) : found!.business_ref, name, category: vendor?.category ?? found?.category ?? found?.primary_type ?? "unknown", ...(found?.address ? { area: found.address } : {}),
+        best_channel: (status.routes.find((r) => r.ready) ?? status.routes[0])?.channel ?? "phone", channels: [...new Set(status.routes.map((r) => r.channel))],
+        menu: [], price_model: claim ? `${claim.text} (the business's website: a claim, not a quote)` : "Unknown until the business quotes", discount_behavior: "Unknown: Haggle hasn't negotiated with it",
+        reply_speed: "Unknown: Haggle hasn't contacted it", history: [], n_quotes: 0, confidence: 0, ...extra,
+      };
+      return ok(v, profileText(v, "no quotes from it yet"));
     }),
 );
+
+function profileText(v: { name: string; next: string; contact_status: { state: string; summary: string }; evidence: { kind: string; statement: string; source: string; observed_at: string; caveat?: string }[]; unknowns: string[] }, basis: string): string {
+  return [
+    `${v.name}: ${basis}. Contact: ${v.contact_status.state.replace(/_/g, " ")}: ${v.contact_status.summary}`,
+    ...v.evidence.map((e) => `- [${e.kind.replace(/_/g, " ")}] ${e.statement} (${e.source}, ${e.observed_at.slice(0, 10)})${e.caveat ? `; ${e.caveat}` : ""}`),
+    `Unknown: ${v.unknowns.join("; ")}.`,
+    `next: ${v.next}`,
+  ].join("\n");
+}
 
 // ───────────────────────────── launcher, settings, mentions ─────────────────────────────
 

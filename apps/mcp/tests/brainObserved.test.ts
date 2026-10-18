@@ -74,3 +74,36 @@ describe("one identity from profile to deal", () => {
     expect(await a2.coreProfile(other)).toBeNull();
   });
 });
+
+describe("residual memory defects (2026-10-18)", () => {
+  it("a mixed seed + real profile keeps no seed-derived menu, minimums, deposit habits or flags", async () => {
+    const base = await seededStore();
+    const writer = createBrain({ store: base });
+    const r = reply("job_real_2", 7000, 200);
+    await writer.learnFromReply("biz_quickquote_deli", r.parsed, { ...r.meta, business_name: "QuickQuote Deli" });
+    const raw = await base.get("biz_quickquote_deli");
+    expect(raw!.flags_seen).toContain("external_payment_link"); // from the seed sample
+    const mixed = observedOnly(raw)!;
+    expect(mixed).toMatchObject({ menu: [], flags_seen: [], channels_seen: ["phone"], best_channel: "phone", n_quotes: 1 });
+    expect(mixed.deposit_pct).toBeUndefined();
+  });
+
+  it("Harbor Table: its real quote, stored under an older id whose brain profile carries the mailbox's old name, is found through Haggle's own job records", async () => {
+    const MAIL = "haggle-test-seller@inkboxmail.com";
+    const legacyId = businessIdForContact({ email: MAIL });
+    const base = new MemoryStore();
+    const r = reply("job_dec51a", 6883.57, 200, "Haggle Test Seller"); // what the old fleet config called the mailbox
+    await createBrain({ store: base }).learnFromReply(legacyId, r.parsed, { ...r.meta, channel: "email" });
+    const engineId = businessIdForContact({ email: MAIL }, "Harbor Table");
+    const { BrainAdapter } = await import("@haggle/engine");
+    const adapter = new BrainAdapter({ brain: createBrain({ store: observedStore(base) }), directory: [], fleet: [{ business_id: engineId, name: "Harbor Table", email: MAIL, simulated: true }] });
+    expect(await adapter.profileIdFor(engineId)).toBe(engineId); // the name differs: no guess
+    // The engine's records show that job addressed "Harbor Table" at this mailbox under the older id.
+    adapter.useAliases(async (b) => (b.name === "Harbor Table" ? [b.business_id, legacyId] : [b.business_id]));
+    expect(await adapter.profileIdFor(engineId)).toBe(legacyId);
+    expect((await adapter.coreProfile(engineId))?.n_quotes).toBe(1);
+    // A different business on the same mailbox gets nothing from it.
+    const other = businessIdForContact({ email: MAIL }, "Golden Grill");
+    expect(await adapter.profileIdFor(other, { name: "Golden Grill", email: MAIL })).toBe(other);
+  });
+});

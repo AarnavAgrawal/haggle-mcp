@@ -17,7 +17,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type {
   ApprovalRecord, Business, DealResult, JobState, JobUpdate, PaymentStatus, Profile, Quote, QuotesResult, Request, WaitResult,
 } from "../contract.ts";
-import { businessIdForContact, newApprovalCode, newId, newShortCode, slugify } from "../ids.ts";
+import { businessIdForContact, newApprovalCode, newId, newShortCode, normalizeBusinessName, slugify } from "../ids.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, subjectShortCode } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
@@ -227,7 +227,8 @@ export class HaggleEngine {
       const email = b.email ? normalizeAddress(b.email) : null;
       const phone = b.phone ? b.phone.replace(/[\s().-]/g, "") : null;
       if (!email && !phone && !b.a2a_card_url) return null;
-      return this.contactLearning(businessIdForContact({ email, phone, a2a_card_url: b.a2a_card_url?.trim() || null }, b.name)).catch(() => null);
+      const id = businessIdForContact({ email, phone, a2a_card_url: b.a2a_card_url?.trim() || null }, b.name);
+      return this.contactLearning(id, await this.businessAliases({ business_id: id, name: b.name, email, phone })).catch(() => null);
     }));
     const seen = new Set<string>();
     const planned = input.businesses.map((b, i) => {
@@ -396,9 +397,22 @@ export class HaggleEngine {
     return job.request.requirements.some((r) => r.kind === "delivery" || /\bdeliver|\ball[- ]?in\b/i.test(r.text));
   }
 
-  /** What Haggle observed about reaching this business across all its jobs. */
-  async contactLearning(businessId: string): Promise<ContactLearning> {
-    return learnContact(await this.repo.listMessagesForBusiness(businessId), await this.repo.listQuotesForBusiness(businessId));
+  /**
+   * Every id this business has had in Haggle's own records: job rows on the same email or phone whose
+   * business name is the same (normalized). Ids changed when identity started including the name
+   * (0f1835f); a different business on a shared phone or mailbox never matches (its name differs).
+   */
+  async businessAliases(b: { business_id: string; name: string; email?: string | null; phone?: string | null }): Promise<string[]> {
+    const key = normalizeBusinessName(b.name);
+    const rows = await this.repo.listJobBusinessesByContact({ email: b.email ? normalizeAddress(b.email) : null, phone: b.phone ?? null }).catch(() => []);
+    return [...new Set([b.business_id, ...rows.filter((r) => normalizeBusinessName(r.name) === key).map((r) => r.business_id)])];
+  }
+
+  /** What Haggle observed about reaching this business across all its jobs (and its older ids). */
+  async contactLearning(businessId: string, aliases: string[] = []): Promise<ContactLearning> {
+    const ids = [...new Set([businessId, ...aliases])];
+    const [messages, quotes] = await Promise.all([Promise.all(ids.map((id) => this.repo.listMessagesForBusiness(id))), Promise.all(ids.map((id) => this.repo.listQuotesForBusiness(id)))]);
+    return learnContact(messages.flat(), quotes.flat());
   }
 
   /** An authorized absolute ceiling (budget_kind "limit"), else null. */
@@ -1783,7 +1797,7 @@ export class HaggleEngine {
       ...(value.recommendedQuoteId ? { recommended_quote_id: value.recommendedQuoteId } : {}),
       ...(value.ranked.length ? { value } : {}),
       stages,
-      contact_learning: Object.fromEntries(await Promise.all(businesses.map(async (b) => [b.business_id, await this.contactLearning(b.business_id).catch(() => ({ channels: {} }))] as const))),
+      contact_learning: Object.fromEntries(await Promise.all(businesses.map(async (b) => [b.business_id, await this.contactLearning(b.business_id, await this.businessAliases(b)).catch(() => ({ channels: {} }))] as const))),
       terms: Object.fromEntries(quotes.filter((q) => q.record.terms || q.record.other_fees?.length).map((q) => [q.id, {
         ...(q.record.other_fees?.length ? { fees: q.record.other_fees.map((f) => ({ label: f.label, ...(f.amount_cents !== null ? { amount_usd: centsToUsd(f.amount_cents) } : {}), included: f.included_in_total, excerpt: f.excerpt })) } : {}),
         ...(q.record.terms ?? {}),

@@ -61,6 +61,15 @@ if (by.deal?.inputSchema?.properties?.dry_run) {
   const prof = await call("business_profile", { business: "Mission Eats" });
   const pc = prof.structuredContent ?? {};
   check("business_profile(Mission Eats): same business_ref deal takes, real quotes only (no seed samples)", pc.business_ref === "mission_eats" && pc.configured_vendor === true && pc.n_quotes > 0 && !/seed/i.test(prof.content?.[0]?.text ?? "") && !(pc.history ?? []).some((h) => /seed/i.test(h.note ?? "")), `${pc.n_quotes} real quotes, confidence ${pc.confidence}`);
+  // Real-world discovery and evidence (read-only; dry runs only).
+  const plumb = await call("discover", { category: "plumber", area: "Oakland, CA" });
+  const pd = plumb.structuredContent?.public_discovery;
+  check("discover(plumber): real listings or an explicit limitation; never demo caterers as results", !plumb.isError && ["ok", "not_configured", "rate_limited", "key_rejected", "unavailable"].includes(pd?.status) && !(plumb.structuredContent?.found ?? []).some((f) => /Mission Eats|Harbor Table|Sunset Kitchen/.test(f.name)), `${pd?.status}: ${(pd?.message ?? "").slice(0, 60)}`);
+  const plumbDeal = await call("deal", { request: { ...req, what: "fix a leaking kitchen pipe", quantity: 1, unit: "job", area: "Oakland, CA" }, budget_usd: 400, dry_run: true });
+  check("a plumbing deal never falls back to the catering demo vendors", err(plumbDeal)?.error?.code === "no_vendors_for_category");
+  check("Mission Eats: verified responsive, evidence carries kinds and sources", ["verified_responsive", "authorized"].includes(pc.contact_status?.state) && (pc.evidence ?? []).some((e) => e.kind === "verified" && /Quoted Haggle/.test(e.statement)), pc.contact_status?.state);
+  const harbor = (await call("business_profile", { business: "Harbor Table" })).structuredContent ?? {};
+  check("Harbor Table: its real quote (stored under the mailbox's old name) is found via Haggle's own job records", harbor.n_quotes >= 1 && harbor.name === "Harbor Table", `${harbor.n_quotes ?? 0} real quote(s)`);
 } else check("deal supports dry_run (named-vendor checks)", false, "server predates dry_run: named-vendor checks skipped, deal NOT called");
 const cb = latest.structuredContent?.callbacks?.[0];
 if (cb) check("call_back can't be authorized by a headless client (no call placed)", ["NO_HUMAN_CHANNEL", "callback_not_justified"].includes(err(await call("call_back", { job_id: latest.structuredContent.job_id, business_id: cb.business_id }))?.error?.code));

@@ -1,15 +1,42 @@
-# Haggle MVP: requirement traceability (calm-spark `0.5.0+850b399`, 2026-10-18)
+# Haggle MVP: requirement traceability (calm-spark, 2026-10-18)
 
-Hosted: https://calm-spark-ck3qm.run.mcp-use.com/mcp (Manufact deployment `c2d7a0c4` = 850b399; rollback `3ff49544` = ac3095a).
-Automated evidence: 386 unit/e2e tests (+1 skipped), 254 on Postgres (3 consecutive clean runs), simulated purchase over MCP HTTP with two
-restarts (`scripts/acceptance/sim-journey.sh`) 1/1, real-Claude strategist eval 4/4
-(`scripts/acceptance/strategy-eval.mts`), real-model agent scenarios 6/6 on the hosted contract
-(`scripts/acceptance/agent-scenarios.mjs`, deal forced to dry_run), hosted read-only acceptance 30/30
-(`scripts/acceptance/live-readonly.mjs`; no outreach, 0 Stripe PaymentIntents, no new jobs, calls or texts).
+Deployed build: the commit that contains this file (`/mcp` reports `0.5.0+<sha>`; HAGGLE_BUILD_SHA). Rollback: the
+previous deployment (850b399). Automated evidence for this release: 413 unit/e2e tests (+1 skipped), 261 on Postgres,
+simulated purchase over MCP HTTP with restarts 1/1, real-Claude agent scenarios 7/7 against a mock server without a
+Places key and 7/7 against one with the recorded discovery fixture (`scripts/acceptance/agent-scenarios.mjs`, deal forced
+to dry_run), hosted read-only acceptance `scripts/acceptance/live-readonly.mjs` (no outreach, no charges).
 
 Status key: **DONE** = built, tested, and seen working on the hosted server with real channels.
 **BUILT, NOT LIVE** = built and tested (mock/Postgres/real-Claude), not yet witnessed live.
 **BLOCKED** = code done; waiting on a person, an authorization or a credential. **NOT IMPLEMENTED** = no code.
+
+## 00. P1 2026-10-18: real-world discovery and evidence synthesis
+
+One contract for configured demo vendors and real discovered businesses: `discover` finds them, `business_profile`
+explains them, `deal(businesses=['<name>' | '<business_ref>'])` selects them, and the same engine quotes,
+negotiates, ranks, learns, approves and pays. Demo vendors are fixtures: category `catering`, never offered for
+other work.
+
+| Requirement | Implementation | Tests | Status / gap |
+|---|---|---|---|
+| Discover real businesses for any category without vendor names | `placesDiscover` / `placeDetails` (`packages/engine/src/reputation/places.ts`): stable `place:<id>` refs, dedupe (place id, phone, website, name), operational only | `discovery.test.ts`, `discovery.e2e.test.ts` | BUILT, NOT LIVE: needs `GOOGLE_PLACES_API_KEY` |
+| Rank on evidence, not search order or bare stars | score = 0.6 relevance (service terms + area) + 0.3 volume-weighted rating (prior 4.0 over 20 reviews) + 0.1 reachability; `rank_reasons` | 5.0★/3 reviews and an irrelevant 4.9★ pizzeria rank below a 4.7★/318 plumber | BUILT, NOT LIVE |
+| No key / provider failure is explicit; nothing substituted | `public_discovery.status`: `not_configured`, `key_rejected`, `rate_limited`, `unavailable`, `no_area`; a request outside the roster's category fails `no_vendors_for_category` | e2e (both servers) | DONE (not_configured verified on the hosted server) |
+| Official website evidence | `websiteEvidence` (`reputation/website.ts`): robots.txt, public hosts only (no IP literals, localhost or private ranges, also after redirects), 4 s, 400 KB; extracts title, description, mailto/own-domain emails, tel links, advertised prices | `discovery.test.ts` (injection text never extracted) | BUILT, NOT LIVE (runs for businesses found via Places) |
+| One evidence-grounded profile | `business_profile` evidence items `{kind, statement, source, observed_at, freshness, confidence, caveat}`, kinds `verified` / `third_party_listing` / `third_party_reputation` / `vendor_claim` / `inferred_estimate`, plus `unknowns` (availability, capacity, today's price) | `businesses.test.ts`, e2e | DONE for configured vendors; BUILT, NOT LIVE for discovered |
+| Advertised price ≠ quote; reviews ≠ capacity; history ≠ guarantee | caveats on each item; `price_model` says "a claim, not a quote" | unit + e2e | DONE |
+| Four contact states; found is not authorized | `contactStatus`: discovered → contact_found → authorized (allowlist + channel can send) → verified_responsive (replied before) | `businesses.test.ts`, e2e | DONE |
+| Same selection contract; strict scoping; fail closed | `resolveSelection`: roster first, then recent discoveries (in memory 30 min) or `place:` ref re-fetched; unknown/ambiguous refuse; a real deal with any unreachable choice refuses (`not_authorized`, `no_contact_route`, `vendor_not_ready`); `dry_run` previews `would_contact` + `blocked` | e2e, real Claude | DONE (roster); BUILT, NOT LIVE (discovered) |
+| Google terms | "Google Maps" attribution on results; Places content in memory only (discovery 30 min, reputation 1 h); only place ids in refs; nothing written to Supabase or the brain | review | DONE |
+| Memory: Harbor Table under "Haggle Test Seller" | `engine.businessAliases`: Haggle's own job rows with the same contact **and** same normalized name link older ids; the brain adapter reads/extends that profile. No production data was changed | `brainObserved.test.ts`, `discovery.test.ts` (memory + Postgres), read-only live check: Harbor 1 quote, Mission Eats 4, Sunset 2 | DONE |
+| Memory: older ids in channel learning | `contactLearning(id, aliases)` in deal routing, board and profiles | `discovery.test.ts` | DONE |
+| Memory: mixed seed/real profiles | `observedOnly` drops menu, minimums, deposit/discount habits and flags (no row provenance), recomputes channels | `brainObserved.test.ts` | DONE |
+
+**Blockers for real-world discovery in production:**
+1. `GOOGLE_PLACES_API_KEY` (Places API (New) enabled).
+2. **Authorization per business.** A discovered business is contacted only after the operator adds its contact to `HAGGLE_ALLOWED_RECIPIENTS`, once the business agrees.
+3. **Voice AI to real numbers.** Calls currently go over Inkbox's shared iMessage line, which requires the callee to have connected. A real business's published phone can't be called until the buyer identity has its own Inkbox phone number.
+4. **Email.** Email needs a published address (from the website) on the allowlist.
 
 ## 0. P0 2026-10-18: an agent couldn't buy from a named vendor
 

@@ -119,7 +119,10 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(found.structuredContent).toMatchObject({ ready: 6, total: 6 });
     expect(found.structuredContent.businesses.every((b: { simulated: boolean; ready: boolean }) => b.simulated && b.ready)).toBe(true);
     expect(JSON.stringify(found.structuredContent)).not.toMatch(/\+1415555\d{4}/); // phone numbers never echoed
-    expect(found.content[0].text).toMatch(/^\[DEMO\] 6 of 6 demo vendors ready/);
+    expect(found.content[0].text).toMatch(/Configured demo vendors \(catering\): 6 of 6 ready/);
+    // No Places key in this server: it says so, and never passes demo vendors off as real results.
+    expect(found.structuredContent.public_discovery.status).toBe("not_configured");
+    expect(found.structuredContent.found).toEqual([]);
     const businesses = undefined; // deal without businesses uses the ready vendors
 
     const deal = await call("deal", { request: REQUEST, businesses, budget_usd: 1200, client_request_id: "e2e-1" });

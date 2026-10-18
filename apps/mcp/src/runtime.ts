@@ -2,7 +2,8 @@
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
 import { createMockEngine, fleetBusinesses, PostgresRepository, type BrainAdapter, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
-import { buildRoster, type RosterEntry } from "./vendors.ts";
+import { fixtureFetchers, type PlacesFetch, type WebFetch } from "./fixtures.ts";
+import { buildRoster, type ChannelStatus, type RosterEntry } from "./vendors.ts";
 
 export type Runtime = {
   mode: "mock" | "live";
@@ -18,6 +19,11 @@ export type Runtime = {
   roster: () => Promise<RosterEntry[]>;
   /** Google Places key for public discovery/reputation (absent = off; never invented). */
   placesKey?: string;
+  /** Mock rehearsals only: a recorded Places/website fixture instead of the network (HAGGLE_PLACES_FIXTURE). */
+  placesFetch?: PlacesFetch;
+  webFetch?: { fetch: WebFetch; resolve: (host: string) => Promise<string[]> };
+  /** Which channels can send right now (the same checks the roster uses), for discovered businesses. */
+  channels: () => Promise<ChannelStatus>;
   /** Operator configuration problems worth showing (bad HAGGLE_DEMO_VENDORS entries). */
   configErrors?: string[];
 };
@@ -56,17 +62,27 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   // Rehearsals of restarts: HAGGLE_MOCK_DATABASE_URL (a throwaway Postgres) and HAGGLE_MOCK_BRAIN_FILE keep
   // simulated state across a restart. Never point these at the live database: mock data is DEMO only.
   const brain = makeBrain(fleet, env.HAGGLE_MOCK_BRAIN_FILE ? { HAGGLE_BRAIN_FILE: env.HAGGLE_MOCK_BRAIN_FILE } : { HAGGLE_BRAIN_STORE: "memory" }, { discovery: fleet });
+  // HAGGLE_PLACES_FIXTURE rehearses public discovery from recorded responses; then, like live, only the
+  // fleet and HAGGLE_ALLOWED_RECIPIENTS may be contacted (found is not authorized).
+  const fx = env.HAGGLE_PLACES_FIXTURE ? fixtureFetchers(env.HAGGLE_PLACES_FIXTURE) : null;
+  const allow = fx ? [...fleet.flatMap((b) => [b.email, b.phone, b.a2a_card_url].filter((x): x is string => !!x)), ...(env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim()).filter(Boolean)] : null;
   const m = createMockEngine({
     delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain,
     ...(env.HAGGLE_MOCK_DATABASE_URL ? { repo: new PostgresRepository(env.HAGGLE_MOCK_DATABASE_URL) } : {}),
+    ...(allow ? { config: { recipientAllowlist: allow } } : {}),
   });
   // Mock: the simulated fleet plays all six demo vendors; every one is reachable (DEMO).
   // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board).
   const roster = env.HAGGLE_MOCK_VENDORS === "none" ? buildRoster({}, { email: true, imessage: false, phone: false, a2a: false, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false }) : fleet.map((b): RosterEntry => ({
-    key: b.slug, name: b.name, channel: b.a2a_card_url && m.engine.a2aEnabled ? "a2a" : b.email ? "email" : "phone", played_by: "simulated seller (DEMO)", simulated: true, ready: true,
+    key: b.slug, name: b.name, category: "catering", channel: b.a2a_card_url && m.engine.a2aEnabled ? "a2a" : b.email ? "email" : "phone", played_by: "simulated seller (DEMO)", simulated: true, ready: true,
     ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}),
   }));
-  runtime = Promise.resolve({ mode: "mock", engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster });
+  brain.useAliases((b) => m.engine.businessAliases(b));
+  const channels = async (): Promise<ChannelStatus> => ({ email: true, imessage: false, phone: true, a2a: m.engine.a2aEnabled, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false });
+  runtime = Promise.resolve({
+    mode: "mock", engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster, channels,
+    ...(fx ? { placesKey: "fixture", placesFetch: fx.places, webFetch: { fetch: fx.web, resolve: fx.resolve } } : {}),
+  });
   return runtime;
 }
 
