@@ -19,9 +19,12 @@ export const QuoteExtraction = z.object({
   subtotal_usd: z.number().nullable(),
   delivery_fee_usd: z.number().nullable(),
   delivery_included: z.boolean().nullable().describe("True only if the business said delivery is included in the total"),
-  tax_usd: z.number().nullable(),
-  tax_included: z.boolean().nullable(),
-  tax_rate_percent: z.number().nullable().describe("Tax as a percentage when the business gave a rate instead of an amount (\"10 percent tax\" -> 10)"),
+  tax_usd: z.number().nullable().describe("A tax amount the business itself stated; never computed by you"),
+  tax_status: z
+    .enum(["included", "added_on_top", "not_mentioned"])
+    .describe("Your judgement of how tax relates to total_usd (or, with no total, to the prices you set): included = that total already includes tax; added_on_top = tax is charged on top of it; not_mentioned = nothing in the conversation says anything about tax"),
+  tax_rate_percent: z.number().nullable().describe("The tax rate the business named or confirmed (\"10 percent tax\" -> 10), whether or not the total includes it; null if none"),
+  tax_evidence: z.string().describe("The business's exact short words about tax, or the read-back it confirmed; empty when not_mentioned"),
   total_usd: z.number().nullable(),
   deposit_usd: z.number().nullable(),
   menu_items: z.array(z.string()).describe("Up to 20 menu items the business named"),
@@ -59,15 +62,35 @@ export const QuoteExtraction = z.object({
 /** One requirement judged from the conversation (Claude), stored on the quote record. */
 export type RequirementCheckExtraction = z.infer<typeof QuoteExtraction>["requirement_checks"][number];
 
+export type TaxStatus = z.infer<typeof QuoteExtraction>["tax_status"];
+
 /**
  * `answers` is only produced for requests with custom ask fields; older extractions, quote.json,
- * the simulated fleet and the keyword fallback omit it, `tax_rate_percent` and `requirement_checks`.
+ * the simulated fleet and the keyword fallback omit it, the tax judgement (`tax_status`,
+ * `tax_rate_percent`, `tax_evidence`) and `requirement_checks`. They may say `tax_included`
+ * instead (true = included, false = added on top, null = not stated); Claude no longer does.
  */
-export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers" | "tax_rate_percent" | "requirement_checks"> & {
+export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers" | "tax_status" | "tax_rate_percent" | "tax_evidence" | "requirement_checks"> & {
   answers?: z.infer<typeof QuoteExtraction>["answers"];
+  tax_status?: TaxStatus;
   tax_rate_percent?: number | null;
+  tax_evidence?: string;
+  tax_included?: boolean | null;
   requirement_checks?: RequirementCheckExtraction[];
 };
+
+/**
+ * How tax relates to the stored total, as validated. `on_delivery`: the business's own figures
+ * show the rate applies to delivery too (learned from a confirmed total); `carried`: stated in an
+ * earlier reply from this business and not contradicted since.
+ */
+export interface TaxInfo {
+  status: TaxStatus;
+  rate_percent: number | null;
+  evidence: string;
+  on_delivery?: boolean;
+  carried?: boolean;
+}
 
 /** A validated requirement judgement on the record; `carried` when it came from an earlier reply. */
 export interface RequirementCheck {
@@ -89,7 +112,10 @@ export interface QuoteRecord {
   delivery_fee_cents: number | null;
   delivery_included: boolean | null;
   tax_cents: number | null;
+  /** Derived from `tax.status`: true = the total includes tax, false = tax is on top, null = not stated. */
   tax_included: boolean | null;
+  /** The tax judgement behind the total (absent on records stored before it existed). */
+  tax?: TaxInfo;
   total_cents: number | null;
   deposit_cents: number | null;
   menu_items: string[];

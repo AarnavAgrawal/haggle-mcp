@@ -38,7 +38,7 @@ import { isUnansweredLimitError, TextBudget } from "./textBudget.ts";
 import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
 import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
 import { rankQuotes, rejectReason, type RankableQuote } from "../ranking/rank.ts";
-import { DEFAULT_WORKSPACE_ID, type ApprovalRow, type Channel, type JobBusinessRow, type JobRow, type MessageRow, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow } from "../store/types.ts";
+import { DEFAULT_WORKSPACE_ID, type ApprovalRow, type Channel, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow } from "../store/types.ts";
 import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
 import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
@@ -98,6 +98,11 @@ const DEFAULT_CALL_COOLDOWN_MS = 2 * 60_000;
  */
 const DEFAULT_COUNTER_CALL_GAP_MS = 60_000;
 const MIN_CALL_GAP_MS = 30_000;
+/** A scheduled call whose placement failed (e.g. 503 hosted_agent_at_capacity) is retried after this long, at most CALL_MAX_ATTEMPTS times. */
+const CALL_RETRY_MS = 60_000;
+const CALL_MAX_ATTEMPTS = 3;
+/** A counteroffer call still on the line when the negotiation window ends may finish within this long. */
+const COUNTER_CALL_GRACE_MS = 4 * 60_000;
 /** Business questions wait at most this long for others to be batched into one text to the human. */
 const DEFAULT_QUESTION_BATCH_MS = 45_000;
 const DEFAULT_MAX_APPROVAL_ATTEMPTS = 5;
@@ -303,13 +308,22 @@ export function mergeCarryOver(next: QuoteRecord, prev: QuoteRecord | null): Quo
   const money = [["total_cents", "total"], ["deposit_cents", "deposit"], ["price_per_head_cents", "price_per_head"], ["subtotal_cents", "subtotal"], ["delivery_fee_cents", "delivery_fee"], ["tax_cents", "tax"]] as const;
   for (const [k, field] of money) {
     if (out[k] !== null || prev[k] === null) continue;
+    // An earlier tax amount belongs to the earlier total: not carried onto a new price.
+    if (field === "tax" && out.total_cents !== prev.total_cents) continue;
     out[k] = prev[k];
     if (prev.sources[field]) out.sources[field] = prev.sources[field];
     out.missing_fields = out.missing_fields.filter((m) => m !== field);
     if (field === "deposit" && prev.flags.includes("hidden_deposit")) out.flags.push("hidden_deposit");
   }
   if (out.delivery_included === null) out.delivery_included = prev.delivery_included;
+  // A tax decision the business stated earlier holds for the same total until it says something new
+  // about tax (a new price was already worked out with it in validateQuote).
+  if (prev.tax && prev.tax.status !== "not_mentioned" && (!out.tax || (out.tax.status === "not_mentioned" && out.total_cents === prev.total_cents))) {
+    out.tax = { ...prev.tax, carried: true };
+    out.tax_included = prev.tax.status === "included" ? true : false;
+  }
   if (out.tax_included === null) out.tax_included = prev.tax_included;
+  if (out.tax?.status === "included" || out.tax_cents !== null) out.flags = out.flags.filter((f) => f !== "tax_excluded");
   if (out.headcount === null) out.headcount = prev.headcount;
   if (out.valid_until === null) out.valid_until = prev.valid_until;
   for (const [need, d] of Object.entries(prev.dietary_coverage)) if (!out.dietary_coverage[need]) out.dietary_coverage[need] = d;
@@ -623,14 +637,11 @@ export class HaggleEngine {
     const byId = new Map(businesses.map((b) => [b.business_id, b]));
     const only = manual?.businessIds?.length ? new Set(manual.businessIds) : null;
     return planCounteroffers(
-      rankable.map((r) => ({ ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: this.quoteRound(r.quoteId) })),
+      // A business's negotiation round is how far it has been countered (1 = not yet), never how
+      // many replies it sent: a clarification (the exact total, a confirmed requirement) is still round 1.
+      rankable.map((r) => ({ ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: Math.max(1, byId.get(r.businessId)?.countered_round ?? 0) })),
       new Date(manual ? this.now().getTime() + this.d.config.negotiationWindowMs : job.collect_until), manual ? MAX_ROUND : job.max_rounds, job.budget_cents,
     ).filter((c) => { const b = byId.get(c.businessId); return (!only || only.has(c.businessId)) && !!b && this.canReach(b); });
-  }
-
-  private roundCache = new Map<string, number>();
-  private quoteRound(quoteId: string): number {
-    return this.roundCache.get(quoteId) ?? 1;
   }
 
   /** CAS-commit a transition, record it, then run its effects. Returns the committed row or null on conflict. */
@@ -660,17 +671,12 @@ export class HaggleEngine {
     for (let attempt = 0; attempt < 4; attempt++) {
       const job = await this.repo.getJob(jobId);
       if (!job) return { ok: false, reason: "job not found" };
-      await this.refreshRounds(job);
       const r = transition(this.machine(job), event, await this.context(job, event));
       if (!r.ok) return { ok: false, reason: r.reason };
       const committed = await this.commit(job, r.next, r.effects, cause);
       if (committed) return { ok: true, job: committed };
     }
     return { ok: false, reason: "conflict" };
-  }
-
-  private async refreshRounds(job: JobRow) {
-    for (const q of await this.repo.listQuotes(job.id)) this.roundCache.set(q.id, q.round);
   }
 
   // ───────────────────────────── effects (after commit) ─────────────────────────────
@@ -1010,22 +1016,49 @@ export class HaggleEngine {
     if (!scheduled.length) return;
     const now = this.now().getTime();
     const businesses = await this.repo.getBusinesses(job.id);
-    for (const e of scheduled) {
+    const events = await this.repo.listEvents(job.id);
+    const dropped = new Set(events.filter((e) => e.type === "call_dropped").map((e) => String(e.data.key)));
+    // One entry per key: the latest schedule wins (a failed placement re-schedules its key).
+    const latest = new Map<string, (typeof scheduled)[number]>();
+    for (const e of scheduled) latest.set(String(e.data.key), e);
+    for (const e of latest.values()) {
       const d = e.data;
       const key = String(d.key);
-      if (Date.parse(String(d.at)) > now || (d.kind === "counter" && job.state !== "negotiating")) continue;
+      if (dropped.has(key) || Date.parse(String(d.at)) > now) continue;
       if (await this.repo.findMessageByIdempotencyKey(key)) continue;
       const b = businesses.find((x) => x.business_id === d.business_id);
       if (!b?.phone) continue;
+      const what = d.kind === "counter" ? "Counteroffer call" : d.kind === "answer" ? "Call with the answer" : "Call";
+      // A counteroffer call only makes sense while its round is open: once quotes are final it is
+      // never placed, and the board says so (never silently dropped).
+      if (d.kind === "counter" && (job.state !== "negotiating" || job.ready)) {
+        await this.dropScheduledCall(job, b, key, `${what} to ${b.name} not placed: the negotiation round had closed`);
+        continue;
+      }
+      const failures = events.filter((x) => x.type === "call_failed" && x.data.key === key);
+      const lastFailure = failures.at(-1);
+      if (lastFailure && now - Date.parse(String(lastFailure.data.failed_at ?? lastFailure.at)) < CALL_RETRY_MS) continue;
       try {
         const r = await this.callBusiness(job, b, { key, kind: d.kind as MessageRow["kind"], reason: String(d.reason), body: String(d.body), round: d.round == null ? null : Number(d.round), approvalId: d.approval_id == null ? null : String(d.approval_id) });
         if (!r.placed) continue;
         if (!["quoted", "declined"].includes(b.status)) await this.repo.updateBusiness(job.id, b.business_id, { status: "ringing" });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} (Voice AI, ${d.kind === "counter" ? "counteroffer" : d.kind === "answer" ? "answer to its question" : d.kind})`, channel: "phone" });
       } catch (err) {
-        this.log("call_failed", { job_id: job.id, business_id: b.business_id, key, error: (err as Error).message });
+        const error = clip((err as Error).message, 160);
+        this.log("call_failed", { job_id: job.id, business_id: b.business_id, key, error });
+        await this.repo.appendEvent(job.id, "call_failed", { business_id: b.business_id, key, error, failed_at: this.now().toISOString() });
+        if (failures.length + 1 >= CALL_MAX_ATTEMPTS) await this.dropScheduledCall(job, b, key, `${what} to ${b.name} not placed after ${failures.length + 1} tries (${clip(error, 100)})`);
+        else await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${what} to ${b.name} couldn't be placed (${clip(error, 100)}); retrying in a minute`, channel: "phone" });
       }
     }
+  }
+
+  /** A scheduled call that will never be placed: recorded once (call_dropped) and shown on the board with the reason. */
+  private async dropScheduledCall(job: JobRow, b: JobBusinessRow, key: string, summary: string) {
+    if ((await this.repo.listEvents(job.id)).some((e) => e.type === "call_dropped" && e.data.key === key)) return;
+    this.log("call_dropped", { job_id: job.id, business_id: b.business_id, key, reason: summary });
+    await this.repo.appendEvent(job.id, "call_dropped", { business_id: b.business_id, key, reason: summary });
+    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary, channel: "phone" });
   }
 
   /** An A2A message task in the business's open context (follow-up, answer, message), recorded once per key. */
@@ -1720,7 +1753,6 @@ export class HaggleEngine {
 
 
   private async sendCounteroffers(job: JobRow, round: number, businessIds?: string[]) {
-    await this.refreshRounds(job);
     const { rankable } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
     const byId = new Map(businesses.map((b) => [b.business_id, b]));
@@ -1736,13 +1768,19 @@ export class HaggleEngine {
         const key = sendKeys.counter(job.id, b.business_id, c.round);
         if (await this.repo.findMessageByIdempotencyKey(key)) continue;
         try {
-          await this.sendIMessageToBusiness(job, b, "counter", key, `Thanks! We have another quote of $${centsToUsd(c.targetTotalCents).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total for the same order. Can you match or beat it? Ref HG-${job.short_code}`, c.round);
+          const textSent = await this.sendIMessageToBusiness(job, b, "counter", key, `Thanks! AI assistant for ${this.customer(job)} again. We have another quote of $${centsToUsd(c.targetTotalCents).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total for the same order. Can you match or beat it? Ref HG-${job.short_code}`, c.round);
+          if (!textSent) {
+            // Never counted as countered: the round doesn't wait for an answer to a text that never went out.
+            await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer text to ${b.name} not sent (no text channel or number)`, channel: "imessage" });
+            continue;
+          }
           await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
           await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} by text: match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})`, basis_quote_id: c.basisQuoteId });
           await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis_quote_id: c.basisQuoteId });
           sent++;
         } catch (err) {
-          this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+          this.log("counter_failed", { job_id: job.id, business_id: b.business_id, channel: "imessage", error: (err as Error).message });
+          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer text to ${b.name} failed: ${clip((err as Error).message, 120)}`, channel: "imessage" });
         }
         continue;
       }
@@ -1768,19 +1806,31 @@ export class HaggleEngine {
         // call, and an amount only our voice agent said is never taken as the business's price.
         const key = sendKeys.counter(job.id, b.business_id, c.round);
         if (await this.repo.findMessageByIdempotencyKey(key)) continue;
+        const call = {
+          key, kind: "counter" as const, round: c.round, body: `Counteroffer call: we have another quote of ${usdText(c.targetTotalCents)} total; can you match or beat it?`,
+          reason: this.taskBrief(job, b, "counter", undefined, { theirCents: c.theirTotalCents, targetCents: c.targetTotalCents }),
+        };
+        let r: { placed: MessageRow | null; scheduledFor?: string };
         try {
-          const r = await this.callBusiness(job, b, {
-            key, kind: "counter", round: c.round, body: `Counteroffer call: we have another quote of ${usdText(c.targetTotalCents)} total; can you match or beat it?`,
-            reason: this.taskBrief(job, b, "counter", undefined, { theirCents: c.theirTotalCents, targetCents: c.targetTotalCents }),
-          });
-          if (!r.placed && !r.scheduledFor) continue;
-          await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
-          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} by call${r.placed ? "" : " (scheduled)"}: match ${counter.target_total_usd} (real quote ${c.basisQuoteId})`, basis_quote_id: c.basisQuoteId, channel: "phone" });
-          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId });
-          sent++;
+          r = await this.callBusiness(job, b, call);
         } catch (err) {
-          this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+          // Not dropped: e.g. 503 hosted_agent_at_capacity. Retried by dueScheduledCalls in a minute
+          // (a few times, while the round is open), and shown on the board.
+          const at = new Date(this.now().getTime() + CALL_RETRY_MS).toISOString();
+          this.log("counter_failed", { job_id: job.id, business_id: b.business_id, channel: "phone", error: (err as Error).message });
+          await this.repo.appendEvent(job.id, "call_failed", { business_id: b.business_id, key, error: clip((err as Error).message, 160), failed_at: this.now().toISOString() });
+          await this.repo.appendEvent(job.id, "call_scheduled", { business_id: b.business_id, ...call, approval_id: null, at });
+          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer call to ${b.name} couldn't be placed (${clip((err as Error).message, 100)}); retrying at ${at}`, channel: "phone" });
+          r = { placed: null, scheduledFor: at };
         }
+        if (!r.placed && !r.scheduledFor) {
+          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer call to ${b.name} not placed (calls are off or it has no number)`, channel: "phone" });
+          continue;
+        }
+        await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} by call${r.placed ? "" : ` (scheduled for ${r.scheduledFor})`}: match ${counter.target_total_usd} (real quote ${c.basisQuoteId})`, basis_quote_id: c.basisQuoteId, channel: "phone" });
+        await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId });
+        sent++;
         continue;
       }
       try {
@@ -1795,7 +1845,17 @@ export class HaggleEngine {
         this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
       }
     }
-    await this.repo.appendEvent(job.id, "counteroffers_sent", { round, sent, planned: plan.length });
+    // Say on the board who isn't countered and why: the business with the best price is the figure
+    // cited to the others, so it gets no counteroffer (no call back, no text) by design.
+    const basisId = plan[0] ? rankable.find((r) => r.quoteId === plan[0]!.basisQuoteId)?.businessId : undefined;
+    const basis = basisId ? byId.get(basisId) : undefined;
+    if (basis && plan[0]) {
+      await this.repo.appendEvent(job.id, "reply", {
+        business_id: basis.business_id, channel: basis.channel, kind: "counter_basis",
+        summary: `${basis.name} has the best price (${usdText(plan[0].targetTotalCents)}): it's the real quote cited to the others, so it isn't countered`,
+      });
+    }
+    await this.repo.appendEvent(job.id, "counteroffers_sent", { round, sent, planned: plan.length, ...(basisId ? { basis_business_id: basisId } : {}) });
   }
 
   private async sendAccept(job: JobRow) {
@@ -2063,14 +2123,10 @@ export class HaggleEngine {
         const events = await this.repo.listEvents(job.id);
         const sent = events.some((e) => e.type === "counteroffers_sent" && e.data.round === job.round);
         if (sent) {
-          const quotes = (await this.repo.listQuotes(job.id)).filter((q) => q.status === "current");
-          // Who was countered in this round: a business's counter round is its own quote round + 1,
-          // which in a manual round (negotiate) can be below the job's round.
-          const start = events.findLastIndex((e) => e.type === "state" && e.data.to === "negotiating");
-          const counteredIds = new Set(events.slice(start + 1).filter((e) => e.type === "counteroffer").map((e) => String(e.data.business_id)));
-          const countered = businesses.filter((b) => b.countered_round === job.round || counteredIds.has(b.business_id));
-          const answered = countered.every((b) => b.status === "bounced" || quotes.some((q) => q.business_id === b.business_id && q.round >= b.countered_round));
-          if (answered) return { type: "window_closed" };
+          const outstanding = await this.awaitingCounterAnswers(job, businesses, events);
+          if (outstanding.waiting.length === 0) return { type: "window_closed" };
+          // A counteroffer call already ringing when the window ends gets a short grace to finish.
+          if (deadlinePassed && outstanding.onCall && now - Date.parse(job.collect_until) < COUNTER_CALL_GRACE_MS) return null;
         }
       }
       return deadlinePassed ? { type: "window_closed" } : null;
@@ -2098,6 +2154,44 @@ export class HaggleEngine {
    * requests hold the window for them (a missing required answer blocks nothing else); catering
    * gaps are caveats on the approval, so the follow-up goes out without delaying the deal.
    */
+  /**
+   * Countered businesses this negotiation round still waits for. The round closes when every
+   * countered business answered or the window ends, whichever is first. A counteroffer that never
+   * went out (a dropped call, a call scheduled past the window) waits for nothing.
+   */
+  private async awaitingCounterAnswers(job: JobRow, businesses: JobBusinessRow[], events: JobEventRow[]): Promise<{ waiting: JobBusinessRow[]; onCall: boolean }> {
+    // Who was countered in this round (a manual round may counter only some businesses).
+    const start = events.findLastIndex((e) => e.type === "state" && e.data.to === "negotiating");
+    const roundEvents = events.slice(start + 1);
+    const counteredIds = new Set(roundEvents.filter((e) => e.type === "counteroffer").map((e) => String(e.data.business_id)));
+    const countered = businesses.filter((b) => counteredIds.has(b.business_id) || (b.countered_round > 0 && b.countered_round === job.round));
+    const msgs = await this.repo.listMessages(job.id);
+    const quotes = (await this.repo.listQuotes(job.id)).filter((q) => q.status === "current");
+    const dropped = new Set(events.filter((e) => e.type === "call_dropped").map((e) => String(e.data.key)));
+    const waiting: JobBusinessRow[] = [];
+    let onCall = false;
+    for (const b of countered) {
+      if (b.status === "bounced" || b.status === "declined") continue;
+      const key = sendKeys.counter(job.id, b.business_id, b.countered_round);
+      const out = msgs.find((m) => m.direction === "out" && m.idempotency_key === key);
+      if (!out) {
+        // A counteroffer call not placed yet waits only while it can still be placed in this window.
+        if (dropped.has(key)) continue;
+        const sched = roundEvents.filter((e) => e.type === "call_scheduled" && e.data.key === key).at(-1);
+        if (sched && Date.parse(String(sched.data.at)) <= Date.parse(job.collect_until)) waiting.push(b);
+        continue;
+      }
+      // Answered: the business replied (any parsed reply: a new total, a "can't do better", the
+      // counter call's transcript) after the counteroffer actually went out.
+      const replied = msgs.some((m) => m.direction === "in" && m.business_id === b.business_id && m.kind === "reply" && m.created_at > out.created_at && (m.parse_status === "done" || m.parse_status === "failed"))
+        || quotes.some((q) => q.business_id === b.business_id && q.round >= b.countered_round && q.created_at > out.created_at);
+      if (replied) continue;
+      waiting.push(b);
+      if (out.channel === "phone") onCall = true;
+    }
+    return { waiting, onCall };
+  }
+
   private async owingFollowUp(job: JobRow): Promise<Set<string>> {
     if (!job.request.ask?.length) return new Set();
     const msgs = await this.repo.listMessages(job.id);
@@ -2209,7 +2303,8 @@ export class HaggleEngine {
     // A reply that answers only part (e.g. the follow-up) keeps everything stated before: unstated
     // facts carry over from the business's current quote (never across a decline).
     const needs = reqs.filter((r) => r.kind === "dietary" && r.need).map((r) => r.need!);
-    const record = mergeCarryOver(validateQuote(x, job.request.quantity, ask, { needs, requirementIds: reqs.map((r) => r.id) }), priorCurrent?.sender_trusted ? priorCurrent.record : null);
+    const priorRecord = priorCurrent?.sender_trusted ? priorCurrent.record : null;
+    const record = mergeCarryOver(validateQuote(x, job.request.quantity, ask, { needs, requirementIds: reqs.map((r) => r.id), prior: priorRecord }), priorRecord);
     // Custom requests: a money compare_by field IS the total that ranks and negotiates (after the
     // carry-over, so a revised price wins over the old one); payable_field is what approval pays.
     if (compare && moneyCompare) {
@@ -2241,12 +2336,15 @@ export class HaggleEngine {
     const statedField = Object.values(record.fields ?? {}).some((v) => v !== null);
     if (priced || !record.available || statedField) {
       const source = record.sources.total?.source ?? (kind === "quote.json" ? "quote.json" : kind);
+      // The quote's round is the negotiation round it answers (1 until the business is countered),
+      // not its reply count: a clarification before any counteroffer (the exact total, a confirmed
+      // requirement) stays round 1, so it never uses up the business's negotiation round.
+      const counteredRound = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === b.business_id)?.countered_round ?? b.countered_round;
       quoteRow = await this.repo.insertCurrentQuote({
-        job_id: job.id, business_id: b.business_id, message_id: msg.id, round: prior.length + 1, record, total_cents: record.total_cents,
+        job_id: job.id, business_id: b.business_id, message_id: msg.id, round: Math.max(1, counteredRound), record, total_cents: record.total_cents,
         deposit_cents: record.deposit_cents, compliant, requirement_results: results, sender_trusted: msg.sender_trusted === true, source,
       });
       if (quoteRow) {
-        this.roundCache.set(quoteRow.id, quoteRow.round);
         // No text to the human per quote: the deal board and wait_for_update show it; the human is
         // texted once quotes are final (offerReady) or when they must answer something.
         await this.repo.appendEvent(job.id, "quote", { quote_id: quoteRow.id, business_id: b.business_id, total_usd: record.total_cents === null ? null : centsToUsd(record.total_cents), round: quoteRow.round });
@@ -2730,6 +2828,12 @@ export class HaggleEngine {
       return job.pay_intent ? "Payment in progress. Call wait_for_update." : "Approved. Call pay(job_id, quote_id) to pay the deposit.";
     }
     if (job.ready) return "Quotes are final. Call get_quotes, then approve(job_id, quote_id) for the recommended quote.";
+    if (job.state === "negotiating") {
+      const { waiting } = await this.awaitingCounterAnswers(job, await this.repo.getBusinesses(job.id), await this.repo.listEvents(job.id));
+      const by = `${new Date(job.collect_until).toISOString().slice(11, 16)} UTC`;
+      const who = waiting.length ? `waiting for ${waiting.map((b) => b.name).join(", ")} to answer the counteroffer` : "counteroffers answered";
+      return `Negotiating round ${job.round}: ${who}; quotes are final when every countered business has answered or at ${by}, whichever is first (Haggle then texts the user the recommendation). The user may already approve any current quote (approve). Call wait_for_update.`;
+    }
     return "Still collecting. Call wait_for_update again (cursor from this response).";
   }
 
@@ -2754,7 +2858,7 @@ export class HaggleEngine {
     const out: BoardQuote[] = [];
     for (const q of sorted) {
       const b = byId.get(q.business_id)!;
-      const prev = all.filter((x) => x.business_id === q.business_id && x.id !== q.id && x.total_cents !== null).sort((x, y) => y.round - x.round)[0];
+      const prev = all.filter((x) => x.business_id === q.business_id && x.id !== q.id && x.total_cents !== null).sort((x, y) => y.round - x.round || y.created_at.localeCompare(x.created_at))[0];
       let price_check: Quote["price_check"];
       if (q.total_cents !== null) {
         try {
@@ -2800,8 +2904,8 @@ export class HaggleEngine {
     const negotiation: NegotiationStep[] = events.filter((e) => e.type === "counteroffer").map((e) => {
       const bid = String(e.data.business_id);
       const round = Number(e.data.round);
-      const answer = all.filter((q) => q.business_id === bid && q.round >= round).sort((x, y) => x.round - y.round)[0];
-      const before = all.filter((q) => q.business_id === bid && q.round < round && q.total_cents !== null).sort((x, y) => y.round - x.round)[0];
+      const answer = all.filter((q) => q.business_id === bid && q.round >= round).sort((x, y) => x.round - y.round || y.created_at.localeCompare(x.created_at))[0];
+      const before = all.filter((q) => q.business_id === bid && q.round < round && q.total_cents !== null).sort((x, y) => y.round - x.round || y.created_at.localeCompare(x.created_at))[0];
       const counterKey = sendKeys.counter(jobId, bid, round);
       const key = sentKeys.has(counterKey) ? null : counterKey;
       const scheduled = key ? events.find((x) => x.type === "call_scheduled" && x.data.key === key) : undefined;

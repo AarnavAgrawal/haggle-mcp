@@ -168,18 +168,31 @@ export function spokenAmounts(text: string): number[] {
 const CONFIRM_REQUEST = /\b(to confirm|confirming|is that (?:right|correct)|that right\?|sounds? (?:right|good)\?|correct\?)/i;
 const AFFIRM = /^\s*(?:[^:]{1,60}:\s*)?(?:yes|yeah|yep|yup|correct|right|that'?s (?:right|correct)|exactly|sounds (?:right|good)|mhm|uh-huh|perfect)\b/i;
 
-/** Amounts (cents) in an agent read-back that asked for confirmation and that the business's very next line affirmed. */
-function confirmedReadBacks(lines: string[]): number[] {
-  const out: number[] = [];
+/** Percentages said in a text, in digits ("8%", "8 percent") or words ("ten percent"). */
+export function percentsIn(text: string): number[] {
+  const out = new Set<number>();
+  for (const m of text.matchAll(/(\d+(?:\.\d+)?)\s*(?:%|per\s?cent)/gi)) out.add(Number(m[1]));
+  for (const m of text.matchAll(/((?:[a-z-]+[\s,]+){1,3})per\s?cent/gi)) for (const n of spokenAmounts(m[1]!)) out.add(n);
+  return [...out];
+}
+
+/** The text of each agent read-back that asked for confirmation and that the business's very next line affirmed. */
+function confirmedReadBackTexts(lines: string[]): string[] {
+  const out: string[] = [];
   for (let i = 0; i < lines.length; ) {
     if (!isAgentLine(lines[i]!)) { i++; continue; }
     const block: string[] = [];
     while (i < lines.length && (isAgentLine(lines[i]!) || !lines[i]!.trim())) block.push(lines[i++]!);
     const reply = lines[i];
     const text = block.join(" ").replace(/\s+/g, " ");
-    if (reply !== undefined && CONFIRM_REQUEST.test(text) && AFFIRM.test(reply)) out.push(...findDollarAmounts(text));
+    if (reply !== undefined && CONFIRM_REQUEST.test(text) && AFFIRM.test(reply)) out.push(text);
   }
   return out;
+}
+
+/** Amounts (cents) in an agent read-back that asked for confirmation and that the business's very next line affirmed. */
+function confirmedReadBacks(lines: string[]): number[] {
+  return confirmedReadBackTexts(lines).flatMap(findDollarAmounts);
 }
 
 /**
@@ -187,13 +200,20 @@ function confirmedReadBacks(lines: string[]): number[] {
  * competing price it cited) is never the business's price. Such values are nulled and listed as
  * missing, in the catering fields and in money ask answers. The business's figures count however
  * they were said (digits or words), and so does a read-back the business explicitly confirmed
- * ("Just to confirm, $858 all in. Is that right?" -> "Yes").
+ * ("Just to confirm, $858 all in. Is that right?" -> "Yes"). The same holds for a tax rate.
  */
 export function dropAgentOnlyAmounts(x: QuoteExtraction, transcript: string, ask: AskField[] = []): QuoteExtraction {
   const lines = transcript.split("\n");
+  const businessLines = lines.filter((l) => !isAgentLine(l)).join("\n");
+  // A tax rate only the agent said ("is that with 8 percent tax?") is not the business's rate either.
+  const rate = x.tax_rate_percent ?? null;
+  if (rate !== null) {
+    const agentRates = new Set(percentsIn(lines.filter(isAgentLine).join(" ")));
+    const businessRates = new Set([...percentsIn(businessLines), ...confirmedReadBackTexts(lines).flatMap(percentsIn)]);
+    if (agentRates.has(rate) && !businessRates.has(rate)) x = { ...x, tax_rate_percent: null };
+  }
   const agent = new Set(findDollarAmounts(lines.filter(isAgentLine).join("\n")));
   if (agent.size === 0) return x;
-  const businessLines = lines.filter((l) => !isAgentLine(l)).join("\n");
   const business = new Set(findDollarAmounts(businessLines));
   for (const n of businessLines.match(/\d[\d,]*(?:\.\d{1,2})?/g) ?? []) business.add(Math.round(Number(n.replace(/,/g, "")) * 100));
   for (const usd of spokenAmounts(businessLines)) business.add(usd * 100);
