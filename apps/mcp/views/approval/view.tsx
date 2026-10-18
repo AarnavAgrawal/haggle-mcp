@@ -113,7 +113,7 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
           <dd>{card.deposit_usd !== undefined ? usd(card.deposit_usd) : "None"}</dd>
         </div>
         <div>
-          <dt>Spending cap</dt>
+          <dt>Payment ceiling</dt>
           <dd>{usd(card.cap_usd)}</dd>
         </div>
         <div>

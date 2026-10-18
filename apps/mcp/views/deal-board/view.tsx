@@ -377,7 +377,7 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
         <div className="db-quote-meta">
           {q.per_unit_usd !== undefined && <span>{usd(q.per_unit_usd)} per person</span>}
           {q.deposit_usd !== undefined && <span>{usd(q.deposit_usd)} deposit</span>}
-          <VerdictChip verdict={q.price_check} />
+          {!q.flags.some(isRiskFlag) && <VerdictChip verdict={q.price_check} />}
           {overBudget && <FlagChip flag="over_budget" />}
           {q.flags.map((f) => (
             <FlagChip key={f} flag={f} />
@@ -685,6 +685,7 @@ function Businesses({ businesses, quotes, compact }: { businesses: DealBoardBusi
 /** "paying" starts at approval; until a charge exists it reads as approved, waiting for Pay. */
 function stateLabel(board: DealBoard): string {
   if (board.job.state === "paying" && !board.payment) return "Approved · ready to pay";
+  if (board.ready && (board.job.state === "collecting" || board.job.state === "negotiating")) return "Ready to approve";
   return STATE_LABEL[board.job.state] ?? board.job.state;
 }
 
