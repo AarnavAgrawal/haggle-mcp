@@ -10,6 +10,27 @@ Status key: **DONE** = built, tested, and seen working on the hosted server with
 **BUILT, NOT LIVE** = built and tested (mock/Postgres/real-Claude), not yet witnessed live.
 **BLOCKED** = code done; waiting on a person, an authorization or a credential. **NOT IMPLEMENTED** = no code.
 
+## 000. Demo hardening 2026-10-18
+
+| Check | How | Result |
+|---|---|---|
+| Three-vendor journey: request → outreach → quotes → negotiation → best value → approval → payment → receipt → memory | MCP HTTP, mock server: Harbor Table (email PDF), Sunset Kitchen (question → held firm), Mission Eats (Voice AI call) | Harbor $1,120 → **$1,008** after a counter citing Mission Eats' real $1,070; recommended; approval $300 deposit; payment $300; board Paid; `ask` estimates afterwards (SIMULATED) |
+| A price cut changes the quote, comparison, approval and charge consistently; stale approvals can't pay | `stripe.test.ts` "a price cut flows through everywhere" (memory + Postgres) | stale approval refused, 0 charges; board shows $950 (from $995) recommended; fresh approval 400¢; one Stripe call of 400¢ with the new quote id (SIMULATED) |
+| Decline, silence, a reply without a price, unavailable vendors | `roughDeal.test.ts` | deal completes on its deadline; only the real quote is recommended; nothing invented; declined / no reply shown; no substitutes |
+| **Fixed:** a vendor that never answered showed "waiting" after quotes were final | stage and status become "no reply" once the deal is ready | test |
+| **Fixed:** the board's approve button read "Approve $1,008" next to a $300 payment | now "Approve $1,008 quote · Then pay the $300 deposit" | screenshot |
+| **Fixed:** the paid approval card still said "deposit due now"; its first step read "Waiting on approver" | "deposit paid" / "Sent for approval" | screenshot |
+| **Fixed (cosmetic):** "replies in ~0 min" | "replies in under a minute" | test suite |
+
+**Before recording (manual):**
+1. Confirm the three routes are ready: `discover` reports Harbor Table, Sunset Kitchen and Mission Eats ready.
+2. Have the Sunset Kitchen phone (RCS) and the Mission Eats phone (to answer the Voice AI call) in hand.
+3. Have someone ready to reply as Harbor Table from the Inkbox console.
+4. In a fresh Claude.ai chat, ask for the order and let the board run.
+5. Reply to the counteroffer with a lower price.
+6. Aarnav taps **Approve** on the current quote, then **Pay** once: one Stripe test charge.
+7. Don't tap "Call … back" unless you intend a second live call.
+
 ## 00. P1 2026-10-18: real-world discovery and evidence synthesis
 
 One contract for configured demo vendors and real discovered businesses: `discover` finds them, `business_profile`

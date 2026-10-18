@@ -530,7 +530,7 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
     body = (
       <>
         <button className="hg-btn hg-btn-primary" disabled={busy} onClick={() => void onApprove()}>
-          {approve.isPending || approveInView.isPending ? "Approving…" : `Approve ${usd(q.total_usd)}`}
+          {approve.isPending || approveInView.isPending ? "Approving…" : `Approve ${usd(q.total_usd)} quote`}
         </button>
         <span className="hg-muted db-approve-hint">{deposit !== undefined ? `Then pay the ${usd(deposit)} deposit. ` : ""}Only you can approve; your agent can't.</span>
       </>

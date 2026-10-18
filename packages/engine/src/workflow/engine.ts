@@ -1853,6 +1853,7 @@ export class HaggleEngine {
         : b.status === "replied" ? "responded"
         : current && excluded.has(b.business_id) ? "excluded"
         : current ? (negotiationState === "vendor_revised" ? "vendor_revised" : negotiationState === "held_firm" ? "held_firm" : job.ready ? "final" : "quoted")
+        : job.ready && b.status === "contacted" ? "no_reply" // the deadline passed without an answer
         : "waiting";
       out[b.business_id] = {
         stage, negotiation: negotiationState,
@@ -1875,7 +1876,9 @@ export class HaggleEngine {
       case "declined": case "bounced": return "declined";
       case "silent": case "no_reply": return "no_reply";
       case "unavailable": return "unavailable";
-      default: return "contacted"; // pending (sending now), contacted, replied, question
+      // Once quotes are final, a business that never answered is "no reply", not still "contacted".
+      case "contacted": return job.ready && !quotes.some((q) => q.business_id === b.business_id) ? "no_reply" : "contacted";
+      default: return "contacted"; // pending (sending now), replied, question
     }
   }
 

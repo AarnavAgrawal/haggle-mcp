@@ -17,7 +17,7 @@ type Approval = Omit<SharedApproval, "channel"> & {
 import "./view.css";
 
 const STEPS = [
-  { key: "pending_human", label: "Waiting on approver" },
+  { key: "pending_human", label: "Sent for approval" },
   { key: "approved", label: "Approved" },
   { key: "paid", label: "Paid" },
 ] as const;
@@ -91,7 +91,7 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
           {card.order_total_usd !== undefined && card.order_total_usd !== card.amount_usd ? (
             <>
               <h1 className="ap-amount">{usd(card.order_total_usd)}</h1>
-              <p className="ap-sub">order total · <strong>{usd(card.amount_usd)}</strong> deposit due now</p>
+              <p className="ap-sub">order total · <strong>{usd(card.amount_usd)}</strong> deposit {card.status === "paid" ? "paid" : "due now"}</p>
             </>
           ) : (
             <h1 className="ap-amount">{usd(card.amount_usd)}</h1>
@@ -109,7 +109,7 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
 
       <dl className="ap-facts">
         <div>
-          <dt>Deposit due now</dt>
+          <dt>{card.status === "paid" ? "Deposit paid" : "Deposit due now"}</dt>
           <dd>{card.deposit_usd !== undefined ? usd(card.deposit_usd) : "None"}</dd>
         </div>
         <div>

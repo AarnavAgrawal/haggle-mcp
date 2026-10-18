@@ -92,8 +92,10 @@ async function runAgent(prompt) {
       // A real (non-preview) deal with any blocked business starts nothing and refuses (fail closed,
       // pinned by discovery.e2e.test.ts). Show the model that outcome instead of the preview.
       const blocked = r?.structuredContent?.blocked ?? [];
-      if (name === "deal" && !u.input.dry_run && !r?.isError && blocked.length) {
-        const text = JSON.stringify({ ok: false, error: { code: "not_authorized", message: `${blocked.map((b) => `${b.name}: ${b.reason}`).join(" ")} Nothing was sent (no other business was contacted instead).`, fix: "Tell the user which business can't be reached and why; contact others only if the user says so. Use deal(dry_run=true) to preview who can be reached." }, next: "none" });
+      // (Only for named businesses: a deal without businesses contacts the ready vendors and warns about the rest.)
+      if (name === "deal" && !u.input.dry_run && !r?.isError && blocked.length && u.input.businesses?.length) {
+        const code = blocked.every((b) => rosterNames.includes(b.name)) ? "vendor_not_ready" : blocked.some((b) => b.contact_state === "discovered") ? "no_contact_route" : "not_authorized";
+        const text = JSON.stringify({ ok: false, error: { code, message: `${blocked.map((b) => `${b.name}: ${b.reason}`).join(" ")} Nothing was sent (no other business was contacted instead).`, fix: "Tell the user which business can't be reached and why; contact others only if the user says so. Use deal(dry_run=true) to preview who can be reached." }, next: "none" });
         r = { isError: true, content: [{ type: "text", text }] };
       }
       step.isError = !!r?.isError;

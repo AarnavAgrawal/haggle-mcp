@@ -136,7 +136,9 @@ afterAll(async () => { for (const r of pgRepos) await r.close(); });
 /** A port that records every call and answers from a script (default: success). */
 function scriptedStripe(script: StripeChargeResult[] = []): StripePort & { calls: StripeChargeRequest[] } {
   const calls: StripeChargeRequest[] = [];
-  return { simulated: true, calls, async charge(req) { calls.push(req); return script.shift() ?? { ok: true, paymentIntentId: `pi_DEMO${calls.length}` }; } };
+  // PaymentIntent ids are unique (as Stripe's are): tests share one Postgres, whose unique index would otherwise refuse the settle.
+  const run = Math.random().toString(36).slice(2, 10);
+  return { simulated: true, calls, async charge(req) { calls.push(req); return script.shift() ?? { ok: true, paymentIntentId: `pi_DEMO${run}${calls.length}` }; } };
 }
 
 for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`engine on the Stripe rail (mock, ${backend})`, { timeout: 60_000 }, () => {
@@ -176,7 +178,7 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`en
     expect(stripe.calls).toHaveLength(0); // approval alone charges nothing
     expect(fleet.sent.some((s) => s.idempotencyKey.startsWith("accept:"))).toBe(false); // no x402 invoice request email
     const p = await engine.pay(deal.job_id, bay.quote_id);
-    expect(p).toMatchObject({ status: "settled", rail: "stripe", network: "stripe-test", amount_usd: 5, payment_intent_id: "pi_DEMO1", simulated: true });
+    expect(p).toMatchObject({ status: "settled", rail: "stripe", network: "stripe-test", amount_usd: 5, payment_intent_id: expect.stringMatching(/^pi_DEMO[a-z0-9]+1$/), simulated: true });
     expect(p.receipt_url).toBeUndefined(); // never a dashboard link for a simulated charge
     expect(stripe.calls).toEqual([expect.objectContaining({ amountCents: 500, idempotencyKey: `haggle-pay-${a.id}`, metadata: expect.objectContaining({ approval_id: a.id, quote_id: bay.quote_id, business: "Bay Catering" }) })]);
     expect((await repo.getJob(deal.job_id))!.state).toBe("paid");
@@ -235,6 +237,40 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`en
     await engine.advanceJob(deal.job_id);
     await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: expect.stringMatching(/^(approval_expired|payment_refused_quote_changed|not_payable)$/) });
     expect(stripe.calls).toHaveLength(0);
+  });
+
+  it("a price cut flows through everywhere: the board compares the revised quote, the stale approval is refused, and the new approval and Stripe charge use the new amounts", async () => {
+    const stripe = scriptedStripe();
+    const { engine, clock, repo } = setup(stripe);
+    const { deal, board } = await ready(engine, clock);
+    const bay = board.quotes.find((q) => q.business === "Bay Catering")!;
+    expect(bay).toMatchObject({ total_usd: 995, deposit_usd: 5 });
+    const stale = await engine.requestApproval(deal.job_id, bay.quote_id, "simulated");
+    await engine.decideApproval(stale.id, "approve", "simulated", "DEMO human");
+    const b = (await repo.getBusinesses(deal.job_id)).find((x) => x.name === "Bay Catering")!;
+    await engine.ingest(
+      { providerEventId: `e-cut-${deal.job_id}`, eventType: "email.received", providerEmailId: `stripe-cut-${deal.job_id}`, threadId: b.thread_id, messageId: `<stripe-cut-${deal.job_id}@bay>`, inReplyTo: [], references: [], from: b.email, to: [deal.inbox], subject: "Re: x", bodyText: "We can do $950, deposit $4.", attachments: [], attachmentsDownloadUrl: null },
+      (expected) => ({ trusted: true, address: expected, reason: "trusted", evidence: { dmarc: "simulated", dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } }),
+      { simulated: true, inlineAttachments: [{ filename: "quote.json", contentType: "application/json", data: new TextEncoder().encode(JSON.stringify({ haggle: "quote/1", job_id: deal.job_id, business: "Bay Catering", total_usd: 950, deposit_usd: 4, items: [], requirements_met: [{ requirement_id: "veg12", met: true }, { requirement_id: "delivery", met: true }], valid_until: "2026-10-21" })) }] },
+    );
+    await engine.advanceJob(deal.job_id);
+    // The stale approval (for $995) can't pay the $950 version, and nothing is charged.
+    await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toBeTruthy();
+    expect(stripe.calls).toHaveLength(0);
+    // The board compares the revised quote, shows where it came from, and recommends it.
+    const after = await engine.getQuotes(deal.job_id);
+    const cut = after.quotes.find((q) => q.business === "Bay Catering")!;
+    expect(cut.quote_id).not.toBe(bay.quote_id);
+    expect(cut).toMatchObject({ total_usd: 950, deposit_usd: 4, negotiated_from: 995 });
+    expect(after.recommended_quote_id).toBe(cut.quote_id);
+    expect(after.approval?.status ?? "none").not.toBe("approved");
+    // A fresh approval of the new version, and the charge Stripe receives, are the new numbers.
+    const fresh = await engine.requestApproval(deal.job_id, cut.quote_id, "simulated");
+    expect(fresh.payment_cents).toBe(400);
+    await engine.decideApproval(fresh.id, "approve", "simulated", "DEMO human");
+    expect(await engine.pay(deal.job_id, cut.quote_id)).toMatchObject({ status: "settled", amount_usd: 4 });
+    expect(stripe.calls).toHaveLength(1);
+    expect(stripe.calls[0]).toMatchObject({ amountCents: 400, idempotencyKey: `haggle-pay-${fresh.id}`, metadata: expect.objectContaining({ quote_id: cut.quote_id, approval_id: fresh.id }) });
   });
 
   it("a retryable error leaves the charge resumable under the same key; the next advance settles it", async () => {

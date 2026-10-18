@@ -152,7 +152,7 @@ export function scoreQuotes(quotes: ValueInput[], weights: Partial<ValueWeights>
       : { name: "reputation", score: NEUTRAL, weight: w.reputation, neutral: true, note: reputationNote(q) });
 
     factors.push(q.reliability && (q.reliability.past_quotes > 0 || q.reliability.safety_flags_seen > 0)
-      ? { name: "reliability", score: round(reliabilityScore(q.reliability)), weight: w.reliability, neutral: false, note: `${q.reliability.past_quotes} earlier quote${q.reliability.past_quotes === 1 ? "" : "s"} with Haggle${q.reliability.median_reply_minutes !== undefined ? `, replies in ~${Math.round(q.reliability.median_reply_minutes)} min` : ""}${q.reliability.safety_flags_seen ? `, ${q.reliability.safety_flags_seen} safety flag(s) before` : ""}` }
+      ? { name: "reliability", score: round(reliabilityScore(q.reliability)), weight: w.reliability, neutral: false, note: `${q.reliability.past_quotes} earlier quote${q.reliability.past_quotes === 1 ? "" : "s"} with Haggle${q.reliability.median_reply_minutes !== undefined ? `, replies in ${q.reliability.median_reply_minutes < 1 ? "under a minute" : `~${Math.round(q.reliability.median_reply_minutes)} min`}` : ""}${q.reliability.safety_flags_seen ? `, ${q.reliability.safety_flags_seen} safety flag(s) before` : ""}` }
       : { name: "reliability", score: NEUTRAL, weight: w.reliability, neutral: true, note: "no track record with Haggle yet (neutral)" });
 
     const stated = [true, q.depositCents !== null, q.deliveryStated, q.taxStated, q.dietaryStated, q.itemsListed];
