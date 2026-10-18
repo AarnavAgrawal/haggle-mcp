@@ -193,7 +193,8 @@ describe("iMessage approval (real engine, fake iMessage port)", () => {
     const broken = await approvable({ send: async () => { throw new InkboxAPIError(403, "recipient has not connected"); } });
     const b = await broken.engine.requestApproval(broken.deal.job_id, broken.bay.quote_id, "imessage");
     expect(await broken.engine.approvalIMessageSent(b.id)).toBe(false);
-    expect((await broken.engine.approveWithViewCode(b.id, b.code)).status).toBe("approved");
+    expect((await broken.engine.approveWithViewCode(b.id, b.code)).status).toBe("used"); // approved on the card, and the approved deposit charged at once
+    expect((await broken.repo.getJob(broken.deal.job_id))!.state).toBe("paid");
   });
 
   it("refuses an iMessage approval without an approver phone or with iMessage off", async () => {

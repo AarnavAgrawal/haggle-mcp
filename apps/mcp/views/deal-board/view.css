@@ -390,14 +390,10 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-.db-keep {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  user-select: none;
+.db-chat-hint {
+  font-size: 12px;
+  align-self: center;
 }
-.db-keep input { margin: 0; accent-color: var(--ch-email); }
 .db-link {
   background: none;
   border: none;
@@ -409,6 +405,44 @@
   text-underline-offset: 2px;
 }
 .db-link:disabled { color: var(--ink-3); cursor: default; }
+
+/* Recommendation vs choice */
+.db-rec-label { color: var(--win); }
+.db-ladder-note {
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.db-blocked {
+  color: var(--warn);
+  flex-basis: 100%;
+}
+
+/* Inline conversation panel (get_conversation, opened from a quote or a business) */
+.db-convo {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px;
+  border-radius: var(--radius-m);
+  border: 1px solid var(--rule);
+  background: var(--panel);
+  max-height: 460px;
+  overflow-y: auto;
+  min-width: 0;
+}
+.db-full .db-convo { max-height: 640px; }
+.db-convo-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 12.5px;
+}
+.db-convo-head strong { margin-right: auto; }
+.db-convo .cv { gap: 8px; }
+.db-convo .cv-entry.is-in { margin-right: 12px; }
+.db-convo .cv-entry.is-out { margin-left: 12px; }
+.db-waiting .db-convo { margin-bottom: 6px; }
 
 /* Inline businesses: chips + who we're still waiting on */
 .db-biz-inline {

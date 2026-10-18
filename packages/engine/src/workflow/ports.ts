@@ -7,6 +7,7 @@ import { imageContentType, type ExtractedFile, type ImageFile, type PdfFile } fr
 import type { OutboundEmail, SendOutcome } from "../outbound/primitiveSender.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
+import type { QuestionAnswerInput } from "../parsing/answerQuestion.ts";
 import type { PayerClient } from "../payments/x402Challenge.ts";
 import type { StripePort } from "../payments/stripe.ts";
 import type { MessageRow, Mode, Repository } from "../store/types.ts";
@@ -105,6 +106,11 @@ export interface SmsPort {
 
 export interface ExtractorPort {
   extract(input: { request: ExtractionRequest; bodyText: string; pdfs: PdfFile[]; images?: ImageFile[]; message: MessageRow }): Promise<QuoteExtraction>;
+  /**
+   * Optional (Claude): answer a business's question from the request's own facts, or null to leave
+   * it for the human. Without it every question goes to the human.
+   */
+  answerQuestion?(input: QuestionAnswerInput): Promise<{ answer: string; basis: string } | null>;
 }
 
 export interface AttachmentPort {
@@ -157,6 +163,16 @@ export interface EngineConfig {
   callCooldownMs?: number;
   /** A business message keeps the window open at least this long, so a half-answered business can finish. */
   replyGraceMs?: number;
+  /**
+   * Business questions Haggle can't answer from the request are texted to the human together: as
+   * soon as no other business is still to reply, or once the oldest has waited this long. Default 3 min.
+   */
+  questionBatchMs?: number;
+  /**
+   * An unanswered question holds the collection window for its business at most this long (the rest
+   * keep quoting meanwhile); answering it reopens the wait for that business. Default replyGraceMs, else min(window, 15 min).
+   */
+  questionHoldMs?: number;
   /**
    * The human texted on updates (new quote, a business question, a finished call, quotes ready) when
    * the SMS port is on; their reply answers the open question. Falls back to the settings approver.

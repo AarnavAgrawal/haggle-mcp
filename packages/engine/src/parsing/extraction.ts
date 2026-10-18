@@ -44,13 +44,38 @@ export const QuoteExtraction = z.object({
   answers: z
     .array(z.object({ key: z.string(), value: z.string().nullable(), source: z.string(), excerpt: z.string() }))
     .describe("One entry per requested custom field (by key): the business's answer as text, or null if it didn't say. source is 'email body', 'pdf p.N', 'image' or 'call transcript'"),
+  requirement_checks: z
+    .array(
+      z.object({
+        requirement_id: z.string().describe("The id of a requirement listed in the request"),
+        met: z.boolean().nullable().describe("true: the business meets it (said so, or quoted for a fact of the request without contradicting it); false: it said it can't or offered less; null: the conversation doesn't address it"),
+        evidence: z.string().describe("The business's exact short words that show it (empty when met is null)"),
+        note: z.string().describe("One short line: why (e.g. 'said 20 vegetarian or more', 'quoted for the requested date, not contradicted')"),
+      }),
+    )
+    .describe("One entry per listed requirement: your judgement from what the business said in this reply and the earlier conversation"),
 });
 
-/** `answers` is only produced for requests with custom ask fields; older extractions (and the heuristic) omit it and `tax_rate_percent`. */
-export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers" | "tax_rate_percent"> & {
+/** One requirement judged from the conversation (Claude), stored on the quote record. */
+export type RequirementCheckExtraction = z.infer<typeof QuoteExtraction>["requirement_checks"][number];
+
+/**
+ * `answers` is only produced for requests with custom ask fields; older extractions, quote.json,
+ * the simulated fleet and the keyword fallback omit it, `tax_rate_percent` and `requirement_checks`.
+ */
+export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers" | "tax_rate_percent" | "requirement_checks"> & {
   answers?: z.infer<typeof QuoteExtraction>["answers"];
   tax_rate_percent?: number | null;
+  requirement_checks?: RequirementCheckExtraction[];
 };
+
+/** A validated requirement judgement on the record; `carried` when it came from an earlier reply. */
+export interface RequirementCheck {
+  met: boolean | null;
+  evidence: string;
+  note: string;
+  carried?: boolean;
+}
 
 /** A validated custom answer: money in cents, dates YYYY-MM-DD, times HH:MM. */
 export type FieldValue = number | string | boolean | null;
@@ -79,4 +104,6 @@ export interface QuoteRecord {
   fields?: Record<string, FieldValue>;
   /** Ask keys the business didn't answer (or answered with an invalid value). */
   fields_missing?: string[];
+  /** Claude's per-requirement judgement by requirement id (absent from the keyword fallback). */
+  requirement_checks?: Record<string, RequirementCheck>;
 }

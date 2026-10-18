@@ -251,7 +251,8 @@ describe("v5 channels and deal board (mock mode)", { timeout: 60_000 }, () => {
     const bay = ready.quotes.find((x) => x.business === "Bay Catering")!;
     const a = await engine.requestApproval(deal.job_id, bay.quote_id, "view");
     await expect(engine.approveWithViewCode(a.id, a.code === "0000" ? "1111" : "0000")).rejects.toMatchObject({ code: "bad_code" });
-    expect((await engine.approveWithViewCode(a.id, a.code)).status).toBe("approved");
+    expect((await engine.approveWithViewCode(a.id, a.code)).status).toBe("used"); // approved and charged in one tap
+    expect((await engine.loadJob(deal.job_id)).state).toBe("paid");
     expect((await engine.getQuotes(deal.job_id)).businesses.find((b) => b.name === "Bay Catering")!.status).toBe("won");
   });
 });

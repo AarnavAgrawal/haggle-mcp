@@ -358,8 +358,9 @@ describe("approval lockout, waits, workspaces, voice context", { timeout: 120_00
     const job = await engine.loadJob(deal.job_id);
     expect(job.state === "collecting" || job.state === "negotiating").toBe(true);
     const fresh = await engine.requestApproval(deal.job_id, bay.quote_id, "view");
-    expect((await engine.approveWithViewCode(fresh.id, fresh.code)).status).toBe("approved");
-    expect((await engine.waitForUpdate(deal.job_id, 0, 0, undefined, "approval_decided")).state).toBe("paying");
+    // Approving on the card charges the approved deposit straight away (approval "used", job paid).
+    expect((await engine.approveWithViewCode(fresh.id, fresh.code)).status).toBe("used");
+    expect((await engine.waitForUpdate(deal.job_id, 0, 0, undefined, "approval_decided")).state).toBe("paid");
   });
 
   it("workspaces: jobs, settings, approvals and client_request_id are scoped; other ids read as not found", async () => {

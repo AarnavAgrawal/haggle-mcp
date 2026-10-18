@@ -31,6 +31,7 @@ import type { FieldValue, QuoteRecord } from "../parsing/extraction.ts";
 import { businessText, dropAgentOnlyAmounts } from "../parsing/heuristic.ts";
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
 import { validateQuote } from "../parsing/validate.ts";
+import type { ExtractionRequest } from "../parsing/parseReply.ts";
 import { firstReplyLine, verifyApproval } from "../approvals/verifyApproval.ts";
 import { isUnansweredLimitError, ROUTINE_TEXT_LIMIT, TextBudget } from "./textBudget.ts";
 import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
@@ -123,6 +124,26 @@ export function customerOf(request: { details?: { label: string; value: string }
 }
 
 /** Clip a text to `limit` chars, keeping a trailing reference code ("Ref HG-AB12") intact. */
+/**
+ * "1: drop-off is fine. 2) no dessert" -> [{n:1,text:"drop-off is fine."},{n:2,text:"no dessert"}]: the
+ * human's answers to a numbered question list. Null unless the reply starts with a number in 1..count
+ * followed by ":", ".", ")" or "-" (not "5:00" or "1.5"), numbers increasing.
+ */
+export function splitNumberedAnswers(text: string, count: number): { n: number; text: string }[] | null {
+  const t = text.trim();
+  const marks: { n: number; start: number; end: number }[] = [];
+  for (const m of t.matchAll(/(^|[\s;,])(\d{1,2})\s*[:.)\]-](?!\d)\s*/g)) {
+    const n = Number(m[2]);
+    const start = m.index! + m[1]!.length;
+    if (marks.length === 0 && start !== 0) return null;
+    if (n < 1 || n > count || (marks.length && n <= marks.at(-1)!.n)) continue;
+    marks.push({ n, start, end: m.index! + m[0].length });
+  }
+  if (!marks.length) return null;
+  const out = marks.map((mk, i) => ({ n: mk.n, text: t.slice(mk.end, marks[i + 1]?.start ?? t.length).replace(/[\s;,]+$/, "").trim() }));
+  return out.filter((p) => p.text).length ? out.filter((p) => p.text) : null;
+}
+
 export function fitText(text: string, limit: number): string {
   const t = text.replace(/\s+/g, " ").trim();
   if (t.length <= limit) return t;
@@ -282,6 +303,15 @@ export function mergeCarryOver(next: QuoteRecord, prev: QuoteRecord | null): Quo
     const fields = { ...(prev.fields ?? {}), ...Object.fromEntries(Object.entries(out.fields ?? {}).filter(([, v]) => v !== null)) };
     out.fields = fields;
     out.fields_missing = Object.entries(fields).filter(([, v]) => v === null).map(([k]) => k);
+  }
+  // A requirement the business settled earlier (on any channel) stays settled until it says otherwise.
+  if (prev.requirement_checks) {
+    const checks = { ...(out.requirement_checks ?? {}) };
+    for (const [id, c] of Object.entries(prev.requirement_checks)) {
+      if (c.met === null || (checks[id] && checks[id]!.met !== null)) continue;
+      checks[id] = { ...c, carried: true };
+    }
+    out.requirement_checks = checks;
   }
   out.flags = [...new Set(out.flags)];
   return out;
@@ -594,7 +624,14 @@ export class HaggleEngine {
       await this.repo.appendEvent(job.id, "ready", { round: updated.round });
       await this.notifyReady(updated);
     }
-    if (updated.state === "failed" && job.state !== "failed") await this.notifyHuman(updated, "failed", `the deal for ${updated.request.what} ended without a usable quote${updated.failure_reason ? ` (${updated.failure_reason})` : ""}.`);
+    const pay = updated.state !== job.state && (updated.state === "paid" || updated.failure_reason === "payment_failed") ? await this.repo.getPaymentForJob(job.id) : null;
+    if (updated.state === "paid" && job.state !== "paid" && pay) {
+      // However the charge settled (at approval, the agent's pay, a later retry): tell the human once.
+      const rail = pay.simulated ? "simulated, DEMO: no money moved" : pay.rail === "stripe" ? "Stripe test mode" : `x402, ${pay.network}`;
+      await this.notifyHuman(updated, `paid:${pay.approval_id}`, `Paid ${usdText(pay.amount_cents)} to ${await this.businessName(job.id, pay.business_id)} (${rail}). The receipt is on the deal board.`);
+    } else if (updated.state === "failed" && job.state !== "failed" && pay) {
+      await this.notifyPayFailed(updated, { id: pay.approval_id, business_id: pay.business_id, payment_cents: pay.amount_cents }, pay.reason ?? pay.status);
+    } else if (updated.state === "failed" && job.state !== "failed") await this.notifyHuman(updated, "failed", `the deal for ${updated.request.what} ended without a usable quote${updated.failure_reason ? ` (${updated.failure_reason})` : ""}.`);
     for (const e of effects) await this.runEffect(updated, e);
     if (TERMINAL.has(updated.state) && !TERMINAL.has(job.state)) this.syncVoiceContext();
     return updated;
@@ -1216,9 +1253,13 @@ export class HaggleEngine {
         }) : null;
         if (job && !stored) return { jobId: job.id, outcome: "duplicate" };
         if (job) {
-          const what = !decided ? `no approval is waiting for code ${code}, so nothing was done.`
-            : `that approval was already ${decided.status === "approved" || decided.status === "used" ? "approved" : decided.status}${decided.channel === "view" ? " on the card" : ""}. Nothing else to do.`;
+          const what = !decided ? `no approval is waiting for code ${code}, so nothing was done.` : await this.alreadyDecidedText(job, decided);
           await this.notifyHuman(job, `approval-ack:${m.messageId}`, what);
+          // Approved (e.g. on the card) but not charged yet: the human's YES means pay, so pay now.
+          if (decided && decided.status === "approved" && /^(yes|y|approve|approved)$/i.test(parsed[1]!) && this.autoPays(decided)) {
+            const p = await this.repo.getPaymentForJob(decided.job_id);
+            if (!p || p.approval_id !== decided.id || p.status === "charging") await this.payApproved(decided);
+          }
         }
         return { jobId: job?.id ?? null, outcome: decided ? "approval_already_decided" : "no_matching_approval" };
       }
@@ -1269,28 +1310,62 @@ export class HaggleEngine {
       return { jobId: job.id, outcome: "stored" };
     }
     if (!human) return { jobId: null, outcome: "unknown_sender" };
-    // The human: answer the question Haggle texted them about, else the newest open one.
+    // The human: numbered answers to the question list Haggle texted ("1: drop-off is fine. 2: no
+    // dessert"), an answer naming the business ("answer Sunset Kitchen with ..." / "Sunset Kitchen: ..."),
+    // else the question Haggle texted them about. Each answer goes to its business on its own channel.
     const pending: QuestionRow[] = [];
     for (const job of open) if (from === (await this.notifyTarget(job))) pending.push(...(await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending"));
-    let answer = m.text;
-    let named: QuestionRow | undefined;
-    const instruction = m.text.match(/^\s*(?:please\s+)?(?:answer|tell|reply(?:\s+to)?|respond(?:\s+to)?|for)\s+(.+)$/is);
-    if (instruction) {
-      for (const q of pending) {
-        const b = (await this.repo.getBusinesses(q.job_id)).find((x) => x.business_id === q.business_id);
-        if (!b || !instruction[1]!.toLowerCase().startsWith(b.name.toLowerCase())) continue;
-        named = q;
-        answer = instruction[1]!.slice(b.name.length).replace(/^\s*(?:with|that|saying|[:,\-–])\s*/i, "").trim() || m.text;
-        break;
-      }
-    }
-    const target = named ?? pending.find((q) => q.id === last?.questionId) ?? pending.sort((x, y) => Date.parse(y.created_at) - Date.parse(x.created_at))[0];
-    const jobId = target?.job_id ?? last?.jobId ?? null;
-    const stored = jobId ? await this.repo.insertMessage({
+    const storeAnswer = (jobId: string) => this.repo.insertMessage({
       job_id: jobId, business_id: null, approval_id: null, direction: "in", kind: "answer", channel: "phone", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
       rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 2000) || null, attachments: [], attachments_download_url: null,
       sender_trusted: true, trust_reason: "sms-from-notify-number", matched_via: "sms_number", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
-    }) : null;
+    });
+    const batch = await this.lastQuestionBatch(open, from);
+    const numbered = batch ? splitNumberedAnswers(m.text, batch.numbers.length) : null;
+    if (batch && numbered) {
+      if (!(await storeAnswer(batch.jobId))) return { jobId: batch.jobId, outcome: "duplicate" };
+      const problems: string[] = [];
+      let answered = 0;
+      for (const part of numbered) {
+        const q = pending.find((p) => batch.numbers[part.n - 1]!.includes(p.id));
+        if (!q) { problems.push(`${part.n}: already answered`); continue; }
+        try {
+          await this.answerSeller(q.job_id, q.id, part.text);
+          answered++;
+        } catch (err) {
+          if (!(err instanceof EngineError)) throw err;
+          problems.push(`${part.n}: not sent (${err.message.slice(0, 80)})`);
+        }
+      }
+      const job = await this.repo.getJob(batch.jobId);
+      if (job && problems.length) await this.notifyHuman(job, `answers:${m.messageId}`, `${answered ? `sent ${answered} answer${answered === 1 ? "" : "s"}; ` : ""}${problems.join("; ")}.`);
+      return { jobId: batch.jobId, outcome: answered ? "answered" : "no_open_question" };
+    }
+    let answer = m.text;
+    let named: QuestionRow | undefined;
+    const instruction = m.text.match(/^\s*(?:please\s+)?(?:answer|tell|reply(?:\s+to)?|respond(?:\s+to)?|for)\s+(.+)$/is);
+    const lead = (instruction?.[1] ?? m.text).trimStart();
+    for (const q of pending) {
+      const b = (await this.repo.getBusinesses(q.job_id)).find((x) => x.business_id === q.business_id);
+      if (!b || !lead.toLowerCase().startsWith(b.name.toLowerCase())) continue;
+      // Without "answer ...", the name must be followed by a separator ("Sunset Kitchen: just food").
+      const rest = lead.slice(b.name.length);
+      if (!instruction && !/^\s*[:,\-–]/.test(rest)) continue;
+      named = q;
+      answer = rest.replace(/^\s*(?:with|that|saying|[:,\-–])\s*/i, "").trim() || m.text;
+      break;
+    }
+    // Several businesses asked and the reply doesn't say which: ask the human, never guess.
+    const lastListed = batch ? pending.filter((p) => batch.numbers.some((g) => g.includes(p.id))) : [];
+    if (!named && batch && batch.numbers.length > 1 && new Set(lastListed.map((p) => p.business_id)).size > 1) {
+      if (!(await storeAnswer(batch.jobId))) return { jobId: batch.jobId, outcome: "duplicate" };
+      const job = await this.repo.getJob(batch.jobId);
+      if (job) await this.notifyHuman(job, `which:${m.messageId}`, `which question is that for? Reply with its number, e.g. "1: ${m.text.replace(/\s+/g, " ").slice(0, 60)}".`, lastListed[0]!.id);
+      return { jobId: batch.jobId, outcome: "ambiguous_answer" };
+    }
+    const target = named ?? pending.find((q) => q.id === last?.questionId) ?? pending.sort((x, y) => Date.parse(y.created_at) - Date.parse(x.created_at))[0];
+    const jobId = target?.job_id ?? last?.jobId ?? null;
+    const stored = jobId ? await storeAnswer(jobId) : null;
     if (jobId && !stored) return { jobId, outcome: "duplicate" };
     if (!target) return { jobId, outcome: "no_open_question" };
     await this.answerSeller(target.job_id, target.id, answer);
@@ -1847,6 +1922,7 @@ export class HaggleEngine {
     await this.dueScheduledCalls(first);
     await this.parsePending(first);
     await this.runDueContacts((await this.repo.getJob(jobId)) ?? first);
+    await this.surfaceQuestions((await this.repo.getJob(jobId)) ?? first);
     await this.processPayment(jobId);
     for (let step = 0; step < 6; step++) {
       const job = await this.repo.getJob(jobId);
@@ -1868,7 +1944,12 @@ export class HaggleEngine {
         // Still waiting on: anyone contacted and silent, a call or a retry/deferred call that is due,
         // and a business that owes the answer to Haggle's follow-up (it keeps the window open).
         const owesFollowUp = await this.owingFollowUp(job);
-        const waiting = businesses.filter((b) => b.status === "contacted" || b.status === "replied" || b.status === "question" || b.status === "ringing"
+        // A business waiting on the human's answer holds the window only for a while: everyone else
+        // keeps quoting and the question goes to the human; once answered, the business is "contacted" again.
+        const holdMs = this.d.config.questionHoldMs ?? this.d.config.replyGraceMs ?? Math.min(this.d.config.collectionWindowMs, 15 * 60_000);
+        const questions = (await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending");
+        const askingRecently = new Set(questions.filter((q) => now - Date.parse(q.created_at) < holdMs).map((q) => q.business_id));
+        const waiting = businesses.filter((b) => b.status === "contacted" || b.status === "replied" || (b.status === "question" && (askingRecently.has(b.business_id) || !questions.some((q) => q.business_id === b.business_id))) || b.status === "ringing"
           || (b.status === "pending" && b.next_attempt_at !== null) || owesFollowUp.has(b.business_id));
         if (businesses.length > 0 && waiting.length === 0) return { type: "window_closed" };
       } else {
@@ -1967,6 +2048,8 @@ export class HaggleEngine {
             what: r.what, ...(r.date ? { date: r.date } : {}), ...(r.quantity !== undefined ? { headcount: r.quantity } : {}), location: r.area,
             dietary: reqs.filter((x) => x.kind === "dietary" && x.need).map((x) => ({ need: x.need!, count: x.min_count ?? 0 })), requirements: r.requirements.map((x) => x.text),
             ...(r.details?.length ? { details: r.details } : {}), ...(r.ask?.length ? { ask: r.ask } : {}), channel: msg.channel,
+            ...(r.requirements.length ? { requirementList: r.requirements.map((x) => ({ id: x.id, kind: x.kind, text: x.text, ...(x.min_count !== undefined ? { min_count: x.min_count } : {}) })) } : {}),
+            ...(await this.conversationHistory(job, b, msg)),
           },
           bodyText, pdfs: files.filter((f): f is typeof f & { kind: "pdf" } => f.kind === "pdf"), ...(images.length ? { images } : {}), message: msg,
         });
@@ -1983,6 +2066,22 @@ export class HaggleEngine {
     }
   }
 
+  /**
+   * What this business and Haggle said before this reply, on every channel (email, texts, call
+   * transcripts, A2A), oldest first: Claude judges each requirement from the whole conversation,
+   * so "20 veg or more" on a text and a later "correct" on a call both count. The RFQ and our call
+   * briefs are left out (the request itself is given separately).
+   */
+  private async conversationHistory(job: JobRow, b: JobBusinessRow, msg: MessageRow): Promise<{ history?: NonNullable<ExtractionRequest["history"]> }> {
+    const earlier = (await this.repo.listMessages(job.id)).filter((m) => m.business_id === b.business_id && m.id !== msg.id && m.created_at <= msg.created_at && m.body_text?.trim()
+      && (m.direction === "in" ? m.kind === "reply" && m.sender_trusted === true : m.kind !== "rfq" && !isPlacedCall(m)));
+    const history = earlier.slice(-8).map((m) => ({
+      from: m.direction === "in" ? ("business" as const) : ("haggle" as const), channel: m.channel,
+      text: m.direction === "in" && m.channel === "email" ? cleanEmailBody(m.body_text ?? "") : m.body_text ?? "",
+    }));
+    return history.length ? { history } : {};
+  }
+
   private async storeExtraction(job: JobRow, b: JobBusinessRow, msg: MessageRow, x: Parameters<typeof validateQuote>[0], kind: string) {
     // Mail that fails sender authentication never becomes a quote or a question: it can't win, and
     // it must not supersede (knock out) the business's genuine quote either. Kept for audit only.
@@ -1997,7 +2096,8 @@ export class HaggleEngine {
     const priorCurrent = prior.find((q) => q.status === "current");
     // A reply that answers only part (e.g. the follow-up) keeps everything stated before: unstated
     // facts carry over from the business's current quote (never across a decline).
-    const record = mergeCarryOver(validateQuote(x, job.request.quantity, ask), priorCurrent?.sender_trusted ? priorCurrent.record : null);
+    const needs = reqs.filter((r) => r.kind === "dietary" && r.need).map((r) => r.need!);
+    const record = mergeCarryOver(validateQuote(x, job.request.quantity, ask, { needs, requirementIds: reqs.map((r) => r.id) }), priorCurrent?.sender_trusted ? priorCurrent.record : null);
     // Custom requests: a money compare_by field IS the total that ranks and negotiates (after the
     // carry-over, so a revised price wins over the old one); payable_field is what approval pays.
     if (compare && moneyCompare) {
@@ -2011,12 +2111,16 @@ export class HaggleEngine {
     }
     const results = evaluateRequirements(record, reqs, job.request.quantity);
     const compliant = meetsHardRequirements(results, reqs);
+    // A business question never stops the deal: it is recorded here, answered from the request when
+    // the request plainly answers it (below), and otherwise texted to the human together with the
+    // other open questions (surfaceQuestions) while every business keeps quoting.
     const questionIds: string[] = [];
+    const asked: QuestionRow[] = [];
     for (const text of record.questions) {
       const q = await this.repo.insertQuestion({ job_id: job.id, business_id: b.business_id, message_id: msg.id, text });
       questionIds.push(q.id);
+      asked.push(q);
       await this.repo.appendEvent(job.id, "question", { question_id: q.id, business_id: b.business_id, text });
-      await this.notifyHuman(job, `question:${q.id}`, `${b.name} asks: "${text.replace(/\s+/g, " ").slice(0, 180)}" Reply to this text to answer.`, q.id);
     }
     let quoteRow: QuoteRow | null = null;
     // Every priced reply is reported as a quote, even without a single stated total (flagged; Haggle
@@ -2059,6 +2163,7 @@ export class HaggleEngine {
     }
     const status = !record.available ? "declined" : quoteRow ? "quoted" : record.questions.length ? "question" : b.followups_sent >= 1 ? "silent" : "replied";
     await this.repo.updateBusiness(job.id, b.business_id, { status });
+    if (asked.length && record.available && !record.flags.some((f) => f === "external_payment_link" || f === "prompt_injection")) await this.answerFromRequest(job, b, asked);
     // One automatic follow-up for whatever the quote still lacks (required answers, unstated hard
     // requirements). The window stays open until the business answers it or the deadline passes.
     if (quoteRow && record.available && job.request.auto_follow_up !== false && !TERMINAL.has(job.state) && !job.ready) {
@@ -2077,6 +2182,107 @@ export class HaggleEngine {
       this.log("brain_learn_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
     }
     await this.repo.touchJob(job.id);
+  }
+
+  /**
+   * What the customer already told every business (the request) and answered on this deal: the only
+   * facts Haggle may answer a business's question from. Never the budget, the cap or contact details.
+   */
+  private async questionFacts(job: JobRow): Promise<{ label: string; value: string }[]> {
+    const r = job.request;
+    const facts: { label: string; value: string }[] = [
+      { label: "What", value: r.what },
+      ...(r.quantity !== undefined ? [{ label: "Quantity", value: `${r.quantity}${r.unit ? ` ${r.unit}` : ""}` }] : []),
+      ...(r.date ? [{ label: "Date", value: r.date }] : []),
+      { label: "Location", value: r.area },
+      ...(r.details ?? []).filter((d) => !/budget|price|cap|pay|card|phone|email/i.test(d.label)),
+      ...r.requirements.map((x) => ({ label: x.hard ? "Must have" : "Preferred", value: x.text })),
+    ];
+    for (const q of await this.repo.listQuestions(job.id)) {
+      if (q.status === "answered" && q.answer) facts.push({ label: `The customer's earlier answer to "${q.text.replace(/\s+/g, " ").slice(0, 160)}"`, value: q.answer.slice(0, 300) });
+    }
+    return facts;
+  }
+
+  /**
+   * Answer what the request plainly answers (Claude decides, from the listed facts only), on the
+   * business's own channel. Anything else (a preference nobody stated, a refusal, an error) is left
+   * for the human: surfaceQuestions texts it with the other open questions.
+   */
+  private async answerFromRequest(job: JobRow, b: JobBusinessRow, asked: QuestionRow[]) {
+    if (!this.d.extractor.answerQuestion || TERMINAL.has(job.state)) return;
+    for (const q of asked) {
+      try {
+        const facts = await this.questionFacts(job);
+        const a = await this.d.extractor.answerQuestion({ business: b.name, question: q.text, facts });
+        if (!a) continue;
+        await this.answerSeller(job.id, q.id, a.answer);
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "question_auto_answered", question_id: q.id, summary: `Answered ${b.name}'s question from the request: "${a.answer.slice(0, 160)}" (from: ${a.basis.slice(0, 120)})`, channel: b.channel });
+      } catch (err) {
+        // Not sent (guard, channel, model): the human answers it instead.
+        this.log("auto_answer_skipped", { job_id: job.id, question_id: q.id, error: (err as Error).message.slice(0, 200) });
+      }
+    }
+  }
+
+  /**
+   * Text the human the open business questions together (one text, numbered, with how to reply),
+   * once no other business is still to reply, the oldest unsent one has waited questionBatchMs, or
+   * the quotes are final. The same list goes on the deal (wait_for_update / get_quotes) for the agent.
+   * Collection never waits on it.
+   */
+  private async surfaceQuestions(job: JobRow) {
+    if (TERMINAL.has(job.state)) return;
+    const pending = (await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending");
+    if (!pending.length) return;
+    const events = await this.repo.listEvents(job.id);
+    const surfaced = new Set(events.filter((e) => e.type === "reply" && e.data.kind === "questions_surfaced").flatMap((e) => (Array.isArray(e.data.question_ids) ? e.data.question_ids.map(String) : [])));
+    const fresh = pending.filter((q) => !surfaced.has(q.id));
+    if (!fresh.length) return;
+    const businesses = await this.repo.getBusinesses(job.id);
+    const asking = new Set(pending.map((q) => q.business_id));
+    const othersWaiting = businesses.some((x) => !asking.has(x.business_id) && ["pending", "contacted", "ringing", "replied"].includes(x.status));
+    const now = this.now().getTime();
+    const oldest = Math.min(...fresh.map((q) => Date.parse(q.created_at)));
+    const due = !othersWaiting || job.ready || now - oldest >= (this.d.config.questionBatchMs ?? 3 * 60_000) || now >= Date.parse(job.collect_until);
+    if (!due) return;
+    // One entry per business and question (a resent email asks the same thing twice).
+    const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const groups: { business: string; business_id: string; text: string; ids: string[] }[] = [];
+    for (const q of pending) {
+      const name = businesses.find((x) => x.business_id === q.business_id)?.name ?? "A business";
+      const g = groups.find((x) => x.business_id === q.business_id && norm(x.text) === norm(q.text));
+      if (g) g.ids.push(q.id);
+      else groups.push({ business: name, business_id: q.business_id, text: q.text.replace(/\s+/g, " ").trim(), ids: [q.id] });
+    }
+    const shown = groups.slice(0, 3);
+    const quote = (t: string, n: number) => (t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t);
+    // Fits one SMS (320 with the "Haggle: " prefix and the HG reference): the questions share what's left.
+    const more = groups.length > shown.length ? ` (+${groups.length - shown.length} more on the deal board)` : "";
+    const head = `${groups.length} questions from businesses${othersWaiting ? " (other quotes keep coming in)" : ""}: `;
+    const tail = `${more} Reply with the number and your answer, e.g. "1: ... 2: ...".`;
+    const frame = shown.map((g, i) => `${i + 1}) ${quote(g.business, 18)}: ""`).join(" ").length;
+    const per = Math.max(30, Math.floor((300 - head.length - tail.length - frame) / shown.length));
+    const text = groups.length === 1
+      ? `${shown[0]!.business} asks: "${quote(shown[0]!.text, 180)}" Reply to this text to answer.`
+      : `${head}${shown.map((g, i) => `${i + 1}) ${quote(g.business, 18)}: "${quote(g.text, per)}"`).join(" ")}${tail}`;
+    await this.repo.appendEvent(job.id, "reply", {
+      business_id: null, kind: "questions_surfaced", question_ids: pending.map((q) => q.id), numbers: shown.map((g) => g.ids),
+      summary: `${groups.length} open question${groups.length === 1 ? "" : "s"} for the user: ${groups.map((g, i) => `${i + 1}) ${g.business}: "${quote(g.text, 120)}"`).join(" ")}. Ask the user, then answer_business for each; collection continues.`,
+    });
+    await this.notifyHuman(job, `questions:${createHash("sha256").update(pending.map((q) => q.id).join(",")).digest("hex").slice(0, 12)}`, text, shown[0]!.ids[0]);
+  }
+
+  /** The numbered question list Haggle texted this human last (for "1: ..., 2: ..." replies). */
+  private async lastQuestionBatch(open: JobRow[], from: string): Promise<{ jobId: string; numbers: string[][]; at: string } | null> {
+    let best: { jobId: string; numbers: string[][]; at: string } | null = null;
+    for (const job of open) {
+      if (from !== (await this.notifyTarget(job))) continue;
+      const e = (await this.repo.listEvents(job.id)).filter((x) => x.type === "reply" && x.data.kind === "questions_surfaced").at(-1);
+      if (!e || !Array.isArray(e.data.numbers)) continue;
+      if (!best || e.at > best.at) best = { jobId: job.id, numbers: (e.data.numbers as unknown[]).map((g) => (Array.isArray(g) ? g.map(String) : [])), at: e.at };
+    }
+    return best;
   }
 
   /** What a stored quote still lacks: required custom answers, or hard requirements the business didn't address. */
@@ -2397,9 +2603,17 @@ export class HaggleEngine {
   private async nextHint(job: JobRow): Promise<string> {
     const pending = (await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending");
     if (TERMINAL.has(job.state)) return job.state === "paid" ? "Done. get_quotes shows the receipt." : job.state === "confirmed" ? "Done: the business was told to go ahead (nothing was paid)." : `Job ${job.state}${job.failure_reason ? ` (${job.failure_reason})` : ""}.`;
-    if (pending.length) return `A business asked a question: answer with answer_business(job_id, question_id='${pending[0]!.id}', answer) or ask the user.`;
+    if (pending.length && job.state !== "awaiting_approval" && job.state !== "paying") {
+      const n = pending.length;
+      const after = job.ready ? "Quotes are final otherwise: get_quotes, then approve." : "The other businesses keep quoting; call wait_for_update.";
+      return `${n} business question${n === 1 ? "" : "s"} Haggle couldn't answer from the request (open_questions in get_quotes). Ask the user (they were texted the list when a text number is set), then answer_business(job_id, question_id='${pending[0]!.id}', answer)${n > 1 ? " for each" : ""}; each answer goes to that business on its own channel. ${after}`;
+    }
     if (job.state === "awaiting_approval") return "Waiting for the human to approve (a text reply YES <code>, an email reply APPROVE <code>, the approval card or form, whichever they got). Call wait_for_update.";
-    if (job.state === "paying") return job.pay_intent ? "Payment in progress. Call wait_for_update." : "Approved. Call pay(job_id, quote_id) to pay the deposit.";
+    if (job.state === "paying") {
+      // On the Stripe rail the human's approval already started the charge; pay is only a retry.
+      if (this.d.stripe) return (await this.repo.getPaymentForJob(job.id)) ? "Approved; Haggle is charging the approved amount (no pay call needed). Call wait_for_update." : "Approved, but the charge didn't start (see get_quotes). Call pay(job_id, quote_id) to retry.";
+      return job.pay_intent ? "Payment in progress. Call wait_for_update." : "Approved. Call pay(job_id, quote_id) to pay the deposit.";
+    }
     if (job.ready) return "Quotes are final. Call get_quotes, then approve(job_id, quote_id) for the recommended quote.";
     return "Still collecting. Call wait_for_update again (cursor from this response).";
   }
@@ -2541,9 +2755,19 @@ export class HaggleEngine {
       throw err;
     }
     if (!(await this.repo.answerQuestion(q.id, text))) throw new EngineError("already_answered", "That question was already answered.", "Wait for the business's quote.", "wait_for_update");
-    // The same business asking again (a resent email) is covered by this one answer.
-    for (const other of await this.repo.listQuestions(jobId)) if (other.status === "pending" && other.business_id === q.business_id) await this.repo.answerQuestion(other.id, text);
-    await this.repo.updateBusiness(jobId, b.business_id, { status: b.channel === "phone" && m ? "ringing" : "contacted" });
+    // The same business asking the same thing again (a resent email) is covered by this one answer;
+    // its other questions stay open for their own answers.
+    const same = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    for (const other of await this.repo.listQuestions(jobId)) if (other.status === "pending" && other.business_id === q.business_id && same(other.text) === same(q.text)) await this.repo.answerQuestion(other.id, text);
+    // A business that already quoted stays "quoted" (its revision is a new quote); otherwise Haggle waits for its quote again.
+    await this.repo.updateBusiness(jobId, b.business_id, { status: b.channel === "phone" && m ? "ringing" : b.status === "quoted" ? "quoted" : "contacted" });
+    {
+      // Keep the window open long enough for the business to quote after the answer.
+      const grace = this.d.config.replyGraceMs ?? Math.min(this.d.config.collectionWindowMs, 15 * 60_000);
+      const until = new Date(this.now().getTime() + grace).toISOString();
+      const fresh = await this.repo.getJob(jobId);
+      if (fresh && !fresh.ready && ["collecting", "negotiating"].includes(fresh.state) && fresh.collect_until < until) await this.repo.touchJob(jobId, { collect_until: until });
+    }
     await this.repo.appendEvent(jobId, "reply", { business_id: b.business_id, summary: `Answered ${b.name}'s question (${b.channel === "phone" ? (scheduledFor ? "call, scheduled" : "call") : b.channel === "imessage" ? "text" : b.channel})`, channel: b.channel });
     await this.repo.touchJob(jobId);
     return {
@@ -2718,7 +2942,7 @@ export class HaggleEngine {
     if (job.state !== "collecting" && job.state !== "negotiating") {
       const latest = await this.repo.getLatestApproval(jobId);
       if (job.state === "awaiting_approval" && latest?.status === "pending" && latest.quote_id === quoteId && (!action || latest.action === action)) return latest;
-      throw new EngineError("not_approvable", `Job is ${job.state}.`, job.state === "paying" ? "Already approved; call pay." : job.state === "awaiting_approval" ? "An approval is already waiting for the human; wait for it or let it expire." : "Wait until quotes are in.", job.state === "paying" ? "pay" : "wait_for_update");
+      throw new EngineError("not_approvable", `Job is ${job.state}.`, job.state === "paying" ? (this.d.stripe ? "Already approved; approving charged it (get_quotes shows the payment; pay retries a failed charge)." : "Already approved; call pay.") : job.state === "awaiting_approval" ? "An approval is already waiting for the human; wait for it or let it expire." : "Wait until quotes are in.", job.state === "paying" ? "pay" : "wait_for_update");
     }
     const q = await this.repo.getQuote(quoteId);
     if (!q || q.job_id !== jobId) throw new EngineError("quote_not_found", "No such quote on this job.", "Use a quote_id from get_quotes.", "get_quotes");
@@ -2957,29 +3181,80 @@ export class HaggleEngine {
     if (ok) {
       await this.repo.appendEvent(a.job_id, decision === "approve" ? "approval_verified" : "approval_declined", { approval_id: a.id, channel });
       await this.advanceJob(a.job_id);
-      // Decided outside the chat (a text or an email): nobody may be there to call pay, so pay now.
-      // On the card or the client's form the agent is in the conversation and calls pay itself.
-      if (decision === "approve" && (channel === "imessage" || channel === "email") && a.action !== "confirm" && a.payment_cents > 0 && this.d.stripe) await this.payApproved(a);
+      // The human approved paying this exact amount (card, client form, text, email, or the mock
+      // stand-in for a human): charge it now. Approving is the human's decision to pay; nobody has to
+      // press Pay or wait for the agent (the chat may be idle). pay() re-checks every guard, and the
+      // agent calling pay afterwards is an idempotent no-op (one charge per approval).
+      if (decision === "approve" && this.autoPays(a)) await this.payApproved(a);
     }
     return ok;
   }
 
+  /** A paying approval on the Stripe rail: approving it charges it. */
+  private autoPays(a: ApprovalRow): boolean {
+    return a.action !== "confirm" && a.payment_cents > 0 && this.d.stripe !== undefined;
+  }
+
   /**
-   * The human approved paying this exact amount: charge it now instead of waiting for the agent to
-   * call pay (the chat may be idle). pay() re-checks every guard; a refusal is told to the human.
+   * Charge an approved payment through the guarded pay() path. The result reaches the human by
+   * text: "Paid ..." when it settles (sent from commit, so a later retry that settles says so too),
+   * or why it didn't go through. Never throws.
    */
   private async payApproved(a: ApprovalRow) {
     const job = await this.repo.getJob(a.job_id);
     if (!job) return;
-    const name = (await this.repo.getBusinesses(a.job_id)).find((b) => b.business_id === a.business_id)?.name ?? "the business";
     try {
       const p = await this.pay(a.job_id, a.quote_id);
-      if (p.status === "settled") await this.notifyHuman(job, `paid:${a.id}`, `Paid ${usdText(a.payment_cents)} to ${name} (Stripe test mode). The receipt is on the deal board.`);
+      if (p.status === "failed" || p.status === "rejected") await this.notifyPayFailed(job, a, p.reason ?? p.status);
     } catch (err) {
       const reason = err instanceof EngineError ? err.message : (err as Error).message;
       this.log("auto_pay_failed", { job_id: a.job_id, approval_id: a.id, error: reason });
-      await this.notifyHuman(job, `pay-failed:${a.id}`, `approved, but the ${usdText(a.payment_cents)} payment to ${name} didn't go through: ${reason.slice(0, 120)}`);
+      await this.notifyPayFailed(job, a, reason);
     }
+  }
+
+  private async businessName(jobId: string, businessId: string) {
+    return (await this.repo.getBusinesses(jobId)).find((b) => b.business_id === businessId)?.name ?? "the business";
+  }
+
+  private async notifyPayFailed(job: JobRow, a: Pick<ApprovalRow, "id" | "business_id" | "payment_cents">, reason: string) {
+    await this.notifyHuman(job, `pay-failed:${a.id}`, `approved, but the ${usdText(a.payment_cents)} payment to ${await this.businessName(job.id, a.business_id)} didn't go through: ${reason.slice(0, 120)}. Nothing was charged; see the deal board.`);
+  }
+
+  /** "6:45 PM" in the workspace's timezone (for texts to the human). */
+  private async clockTime(iso: string | null, workspaceId: string): Promise<string> {
+    const d = iso ? new Date(iso) : this.now();
+    const tz = (await this.repo.getWorkspace(workspaceId))?.timezone ?? "America/Los_Angeles";
+    try {
+      return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz }).replace(/\s/g, " ");
+    } catch {
+      return d.toISOString().slice(11, 16) + " UTC";
+    }
+  }
+
+  /**
+   * The truthful answer to a YES/NO the human texted for an approval that was already decided
+   * (usually on the card a few seconds earlier). A paying approval that isn't paid yet is charged
+   * now (the human just said yes to it twice), and the reply says what actually happened.
+   */
+  private async alreadyDecidedText(job: JobRow, a: ApprovalRow): Promise<string> {
+    const where = a.channel === "view" ? " on the card" : a.channel === "elicitation" ? " in the chat's approval form" : a.channel === "email" ? " by email" : a.channel === "imessage" ? " by text" : a.channel === "simulated" ? " (simulated, DEMO)" : "";
+    const at = await this.clockTime(a.decided_at, job.workspace_id);
+    if (a.status !== "approved" && a.status !== "used") return `that approval was already ${a.status}${where}${a.decided_at ? ` at ${at}` : ""}. Nothing was paid.`;
+    if (a.action === "confirm" || a.payment_cents <= 0) return `that order was already confirmed${where} at ${at}; the business was told to go ahead. Nothing to pay.`;
+    const amount = usdText(a.payment_cents);
+    const name = await this.businessName(job.id, a.business_id);
+    const pay = await this.repo.getPaymentForJob(job.id);
+    const mine = pay && pay.approval_id === a.id ? pay : null;
+    if (mine?.status === "settled") return `already approved${where} at ${at} and paid ${amount} to ${name}${mine.simulated ? " (simulated, DEMO: no money moved)" : " (Stripe test mode)"}. Nothing else to do.`;
+    if (mine && ["failed", "rejected", "expired"].includes(mine.status)) return `approved${where} at ${at}, but the ${amount} payment to ${name} didn't go through (${(mine.reason ?? mine.status).slice(0, 80)}). See the deal board.`;
+    if (!mine) {
+      // The guard refused the approval-time charge (nothing was charged): say so, never "paying".
+      const refused = (await this.repo.listEvents(job.id)).filter((e) => e.type === "payment_refused" && e.data.approval_id === a.id).at(-1);
+      if (refused) return `approved${where} at ${at}, but the ${amount} payment to ${name} was refused (${String(refused.data.code).slice(0, 40)}); nothing was charged. See the deal board.`;
+    }
+    if (this.autoPays(a) && a.status === "approved") return `approved${where} at ${at}; paying ${amount} to ${name} now. You'll get a text when it goes through.`;
+    return `already approved${where} at ${at}. The ${amount} payment to ${name} is on the deal board.`;
   }
 
   async pay(jobId: string, quoteId: string): Promise<EnginePaymentStatus> {

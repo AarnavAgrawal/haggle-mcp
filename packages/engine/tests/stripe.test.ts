@@ -155,7 +155,7 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`en
     throw new Error("did not converge");
   }
 
-  it("human approval of the exact quote → one test-mode charge of the approved deposit → paid", async () => {
+  it("human approval of the exact quote → one test-mode charge of the approved deposit at approval time → paid", async () => {
     const stripe = scriptedStripe();
     const { engine, clock, fleet, repo } = setup(stripe);
     const { deal, board } = await ready(engine, clock);
@@ -165,8 +165,11 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`en
     expect(await engine.pay(deal.job_id, bay.quote_id)).toMatchObject({ status: "awaiting_approval", rail: "stripe" });
     expect(stripe.calls).toHaveLength(0); // nothing charged before the human decides
     await engine.decideApproval(a.id, "approve", "simulated", "DEMO human");
-    expect(stripe.calls).toHaveLength(0); // approval alone charges nothing
+    // The human's approval is the decision to pay: it charges at once, no separate pay step.
+    expect(stripe.calls).toHaveLength(1);
+    expect((await repo.getJob(deal.job_id))!.state).toBe("paid");
     expect(fleet.sent.some((s) => s.idempotencyKey.startsWith("accept:"))).toBe(false); // no x402 invoice request email
+    // The agent calling pay afterwards reports the settled charge and charges nothing new.
     const p = await engine.pay(deal.job_id, bay.quote_id);
     expect(p).toMatchObject({ status: "settled", rail: "stripe", network: "stripe-test", amount_usd: 5, payment_intent_id: "pi_DEMO1", simulated: true });
     expect(p.receipt_url).toBeUndefined(); // never a dashboard link for a simulated charge
@@ -204,40 +207,62 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`en
     const r2 = await ready(s2.engine, s2.clock);
     const bay = r2.board.quotes.find((q) => q.business === "Bay Catering")!;
     const a = await s2.engine.requestApproval(r2.deal.job_id, bay.quote_id, "simulated");
-    await s2.engine.decideApproval(a.id, "approve", "simulated", "DEMO human");
-    expect(await s2.engine.pay(r2.deal.job_id, bay.quote_id)).toMatchObject({ status: "failed", reason: "card_declined" });
-    await s2.engine.pay(r2.deal.job_id, bay.quote_id).catch(() => undefined);
+    await s2.engine.decideApproval(a.id, "approve", "simulated", "DEMO human"); // charges at approval: declined
+    expect(await s2.repo.getPaymentForJob(r2.deal.job_id)).toMatchObject({ status: "failed", reason: "card_declined" });
+    await expect(s2.engine.pay(r2.deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: "not_payable" }); // no retry of a final decline
     expect(stripe.calls).toHaveLength(1);
     expect((await s2.repo.getJob(r2.deal.job_id))!.state).toBe("failed");
   });
 
-  it("a revised quote after approval is never charged", async () => {
+  // The charge happens when the human approves, so the guard that matters is at approval time: a
+  // revision while the human is deciding voids the approval (nothing to approve or charge), and a
+  // revision after the charge can't move more money (one payment per approval, exact approved quote).
+  async function revise(engine: HaggleEngine, repo: Repository, jobId: string, inbox: string, n: string, total: number, deposit: number) {
+    const b = (await repo.getBusinesses(jobId)).find((x) => x.name === "Bay Catering")!;
+    await engine.ingest(
+      { providerEventId: `e-rev-${n}-${jobId}`, eventType: "email.received", providerEmailId: `stripe-rev-${n}-${jobId}`, threadId: b.thread_id, messageId: `<stripe-rev-${n}-${jobId}@bay>`, inReplyTo: [], references: [], from: b.email, to: [inbox], subject: "Re: x", bodyText: `Correction: $${total}`, attachments: [], attachmentsDownloadUrl: null },
+      (expected) => ({ trusted: true, address: expected, reason: "trusted", evidence: { dmarc: "simulated", dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } }),
+      { simulated: true, inlineAttachments: [{ filename: "quote.json", contentType: "application/json", data: new TextEncoder().encode(JSON.stringify({ haggle: "quote/1", job_id: jobId, business: "Bay Catering", total_usd: total, deposit_usd: deposit, items: [], requirements_met: [{ requirement_id: "veg12", met: true }, { requirement_id: "delivery", met: true }], valid_until: "2026-10-21" })) }] },
+    );
+    await engine.advanceJob(jobId);
+  }
+
+  it("a quote revised while the human is deciding voids the approval: the late approval charges nothing", async () => {
+    const stripe = scriptedStripe();
+    const { engine, clock, repo } = setup(stripe);
+    const { deal, board } = await ready(engine, clock);
+    const bay = board.quotes.find((q) => q.business === "Bay Catering")!;
+    const a = await engine.requestApproval(deal.job_id, bay.quote_id, "simulated");
+    await revise(engine, repo, deal.job_id, deal.inbox, "pending", 1050, 6);
+    expect((await repo.getApproval(a.id))!.status).toBe("expired");
+    expect(await engine.decideApproval(a.id, "approve", "simulated", "DEMO human")).toBe(false);
+    await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: expect.stringMatching(/^(approval_expired|payment_refused_quote_changed|not_payable)$/) });
+    expect(stripe.calls).toHaveLength(0);
+  });
+
+  it("a revision after the approval-time charge moves no more money", async () => {
     const stripe = scriptedStripe();
     const { engine, clock, repo } = setup(stripe);
     const { deal, board } = await ready(engine, clock);
     const bay = board.quotes.find((q) => q.business === "Bay Catering")!;
     const a = await engine.requestApproval(deal.job_id, bay.quote_id, "simulated");
     await engine.decideApproval(a.id, "approve", "simulated", "DEMO human");
-    const b = (await repo.getBusinesses(deal.job_id)).find((x) => x.name === "Bay Catering")!;
-    await engine.ingest(
-      { providerEventId: `e-rev-${deal.job_id}`, eventType: "email.received", providerEmailId: `stripe-rev-${deal.job_id}`, threadId: b.thread_id, messageId: `<stripe-rev-${deal.job_id}@bay>`, inReplyTo: [], references: [], from: b.email, to: [deal.inbox], subject: "Re: x", bodyText: "Correction: $1,050", attachments: [], attachmentsDownloadUrl: null },
-      (expected) => ({ trusted: true, address: expected, reason: "trusted", evidence: { dmarc: "simulated", dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } }),
-      { simulated: true, inlineAttachments: [{ filename: "quote.json", contentType: "application/json", data: new TextEncoder().encode(JSON.stringify({ haggle: "quote/1", job_id: deal.job_id, business: "Bay Catering", total_usd: 1050, deposit_usd: 5, items: [], requirements_met: [{ requirement_id: "veg12", met: true }, { requirement_id: "delivery", met: true }], valid_until: "2026-10-21" })) }] },
-    );
-    await engine.advanceJob(deal.job_id);
-    await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: expect.stringMatching(/^(approval_expired|payment_refused_quote_changed|not_payable)$/) });
-    expect(stripe.calls).toHaveLength(0);
+    await revise(engine, repo, deal.job_id, deal.inbox, "after", 1050, 6);
+    const revised = (await repo.listQuotes(deal.job_id)).find((q) => q.business_id === a.business_id && q.id !== bay.quote_id);
+    if (revised) await expect(engine.pay(deal.job_id, revised.id)).rejects.toMatchObject({ code: "no_approval" }); // the new quote was never approved
+    expect(await engine.pay(deal.job_id, bay.quote_id)).toMatchObject({ status: "settled", amount_usd: 5 });
+    expect(stripe.calls.map((c) => c.amountCents)).toEqual([500]); // exactly the approved deposit, once
   });
 
   it("a retryable error leaves the charge resumable under the same key; the next advance settles it", async () => {
-    // pay() itself retries once (it advances right after the first attempt); two failures leave it charging.
+    // The approval-time pay() retries once (it advances right after the first attempt); two failures leave it charging.
     const stripe = scriptedStripe([{ ok: false, reason: "stripe_unreachable", retryable: true }, { ok: false, reason: "stripe_http_503", retryable: true }]);
     const { engine, clock, repo } = setup(stripe);
     const { deal, board } = await ready(engine, clock);
     const bay = board.quotes.find((q) => q.business === "Bay Catering")!;
     const a = await engine.requestApproval(deal.job_id, bay.quote_id, "simulated");
-    await engine.decideApproval(a.id, "approve", "simulated", "DEMO human");
-    expect(await engine.pay(deal.job_id, bay.quote_id)).toMatchObject({ status: "charging" });
+    await engine.decideApproval(a.id, "approve", "simulated", "DEMO human"); // charges at approval: both attempts fail retryably
+    expect((await repo.getPaymentForJob(deal.job_id))!.status).toBe("charging");
     await engine.advanceJob(deal.job_id);
     expect(stripe.calls.map((c) => c.idempotencyKey)).toEqual([`haggle-pay-${a.id}`, `haggle-pay-${a.id}`, `haggle-pay-${a.id}`]);
     expect((await repo.getPaymentForJob(deal.job_id))!.status).toBe("settled");

@@ -14,6 +14,7 @@ export * from "./parsing/validate.ts";
 export * from "./parsing/requirements.ts";
 export * from "./parsing/parseReply.ts";
 export * from "./parsing/heuristic.ts";
+export * from "./parsing/answerQuestion.ts";
 export * from "./inbound/emailBody.ts";
 export * from "./negotiation/messageGuard.ts";
 export * from "./approvals/verifyApproval.ts";

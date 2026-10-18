@@ -89,7 +89,57 @@ export function validateFields(answers: QuoteExtraction["answers"], ask: AskFiel
   return { fields, missing, failures, unsourced };
 }
 
-export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | undefined, ask: AskField[] = []): QuoteRecord {
+const DIET_ALIASES: Record<string, RegExp> = {
+  vegetarian: /\b(vegetarian|veggie|veg)\b/i,
+  vegan: /\bvegan\b/i,
+  "gluten-free": /\bgluten[- ]?free\b|\bgf\b/i,
+  "dairy-free": /\bdairy[- ]?free\b/i,
+  "nut-free": /\bnut[- ]?free\b/i,
+  halal: /\bhalal\b/i,
+  kosher: /\bkosher\b/i,
+  pescatarian: /\bpescatarian\b/i,
+};
+
+/**
+ * The requested need a business's wording refers to ("20 vegetarian", "veg meals" -> "vegetarian"),
+ * so a count is never lost to a key mismatch. Unknown wording stays as written (lowercased).
+ */
+export function canonicalNeed(raw: string, needs: string[]): string {
+  const t = raw.trim().toLowerCase();
+  if (needs.includes(t)) return t;
+  // "vegan" is not "vegetarian": check the more specific needs first.
+  const ordered = [...needs].sort((a, b) => (a === "vegetarian" ? 1 : 0) - (b === "vegetarian" ? 1 : 0));
+  for (const n of ordered) {
+    const re = DIET_ALIASES[n] ?? new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i");
+    if (re.test(t) && !(n === "vegetarian" && /\bvegan\b/i.test(t) && needs.includes("vegan"))) return n;
+  }
+  return t;
+}
+
+/** Claude's per-requirement judgements, keyed by id: only listed ids; an unexplained yes/no is not trusted. */
+export function validateRequirementChecks(checks: QuoteExtraction["requirement_checks"], requirementIds?: string[]): QuoteRecord["requirement_checks"] {
+  if (!checks?.length) return undefined;
+  const known = requirementIds ? new Set(requirementIds) : null;
+  const out: NonNullable<QuoteRecord["requirement_checks"]> = {};
+  for (const c of checks) {
+    const id = String(c.requirement_id ?? "").trim();
+    if (!id || (known && !known.has(id)) || out[id]) continue;
+    const evidence = String(c.evidence ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+    const note = String(c.note ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+    const met = typeof c.met === "boolean" && (evidence || note) ? c.met : null;
+    out[id] = { met, evidence, note };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+export interface ValidateOptions {
+  /** The requested dietary needs (canonical names), so the business's wording maps onto them. */
+  needs?: string[];
+  /** The request's requirement ids; checks for anything else are dropped. */
+  requirementIds?: string[];
+}
+
+export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | undefined, ask: AskField[] = [], opts: ValidateOptions = {}): QuoteRecord {
   const missing = new Set(x.missing_fields);
   const flags = new Set<string>();
   let failures = 0;
@@ -209,7 +259,15 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
   if (confidence < 0.6) flags.add("low_confidence");
 
   const dietary: QuoteRecord["dietary_coverage"] = {};
-  for (const d of x.dietary_coverage) dietary[d.need.trim().toLowerCase()] = { covered: d.covered, count_offered: d.count_offered };
+  for (const d of x.dietary_coverage) {
+    const key = canonicalNeed(d.need, opts.needs ?? []);
+    const prev = dietary[key];
+    // Two entries for one need ("vegetarian" and "20 vegetarian"): the one that says more wins.
+    const rank = (e: { covered: boolean; count_offered: number | null }) => (e.count_offered !== null ? 2 : 0) + (e.covered ? 1 : 0);
+    const next = { covered: d.covered, count_offered: d.count_offered };
+    if (!prev || rank(next) > rank(prev)) dietary[key] = next;
+  }
+  const checks = validateRequirementChecks(x.requirement_checks, opts.requirementIds);
 
   return {
     available: x.available,
@@ -231,5 +289,6 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
     missing_fields: [...missing],
     confidence,
     ...(custom ? { fields: custom.fields, fields_missing: custom.missing } : {}),
+    ...(checks ? { requirement_checks: checks } : {}),
   };
 }

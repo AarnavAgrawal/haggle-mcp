@@ -76,18 +76,18 @@ deploys; `servers env` commands take the server id, not the slug. Copy the MCP U
 | `discover` | | brain.discover (mock mode: the simulated fleet only) |
 | `check_price` | | brain.checkPrice |
 | `get_identity` | identity-card | engine (name, email, phone, channel readiness, masked approver, cap, workspace) |
-| `deal` | | engine (Inkbox email; phone when enabled; email→call escalation). Catering default, or any request via `ask[]` + `compare_by` + `payable_field` |
+| `deal` | deal-live (the deal board, drawn once per deal; it refreshes itself) | engine (Inkbox email; phone when enabled; email→call escalation). Catering default, or any request via `ask[]` + `compare_by` + `payable_field` |
 | `wait_for_update` | | engine (≤ 60 s long-poll, cursor, `until`: any_change / ready / approval_decided / done) |
-| `get_quotes` | deal-board | engine (deal board read model → shared `DealBoard`, `src/views.ts`; custom answers in `fields`) |
+| `get_quotes` | none (data only; the board polls it) | engine (deal board read model → shared `DealBoard`, `src/views.ts`; custom answers in `fields`) |
 | `answer_business` | | engine (message guard) |
 | `send_message` | | engine: free text or `ask_missing`, email thread / short call / A2A; message guard (real amounts only, no other names, no commitments) |
 | `negotiate` | | engine: one more honest counteroffer round once quotes are final |
 | `get_conversation` | conversation | engine: one business's messages and calls |
 | `cancel_deal` | | engine: voids the approval, polite cancel notes |
-| `approve` | approval | engine (`action`: confirm / pay / confirm_and_pay; human: client form, iMessage "YES <code>" to the settings approver, or the approval card; 5 wrong codes lock it; NO_HUMAN_CHANNEL otherwise; DEMO sim in mock) |
-| `pay` | payment (same card) | engine: Stripe TEST MODE deposit (opt-in `HAGGLE_ENABLE_PAYMENTS=true`); exact approved quote + amount, cap, quoting payee, one charge per approval; simulated in mock; the business then gets a confirmation with the payment reference |
+| `approve` | approval | engine (`action`: confirm / pay / confirm_and_pay; human: client form, iMessage "YES <code>" to the settings approver, or the approval card; 5 wrong codes lock it; NO_HUMAN_CHANNEL otherwise; DEMO sim in mock). The human's approval charges the approved amount at once (no separate pay step) and texts them "Paid $X to <business>" |
+| `pay` | payment (same card) | engine: usually not needed (approval already charged); idempotent status/retry. Stripe TEST MODE deposit (opt-in `HAGGLE_ENABLE_PAYMENTS=true`); exact approved quote + amount, cap, quoting payee, one charge per approval; simulated in mock; the business then gets a confirmation with the payment reference |
 | `business_profile` | business-profile | brain.getProfile |
-| `open_haggle` `{}` | launcher (global + thread entrypoints) | engine |
+| `open_haggle` `{}` / `{job_id}` | deal-board (global + thread entrypoints; re-opens the board only when asked) | engine |
 | `settings.read` / `settings.update` | native | engine (cap ≤ operator ceiling) |
 | `mention_businesses` + `business://{slug}` | native | engine |
 | `approve_in_view` | app-only | the human's tap on the approval card / deal board (one-time code in `_meta`, never model-visible) |

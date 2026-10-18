@@ -65,8 +65,10 @@ export function heuristicExtract(input: { request: ExtractionRequest; bodyText: 
   const deliveryIncluded = /delivery (?:is )?(?:included|free)|free delivery|\bdelivered\b/i.test(text) ? true : /no delivery|pick[- ]?up only/i.test(text) ? false : null;
   const delivery = deliveryIncluded ? null : amountNear(text, "delivery");
   const dietary = input.request.dietary.flatMap((d) => {
-    if (!new RegExp(escapeRegex(d.need), "i").test(text)) return [];
-    const m = text.match(new RegExp(String.raw`(\d+)\s*(?:of them\s*)?(?:are\s*)?${escapeRegex(d.need)}`, "i"));
+    // "veg" / "veggie" in texts and calls mean vegetarian.
+    const word = /^vegetarian$/i.test(d.need) ? String.raw`(?:vegetarian|veggie|veg)\b` : escapeRegex(d.need);
+    if (!new RegExp(String.raw`\b${word}`, "i").test(text)) return [];
+    const m = text.match(new RegExp(String.raw`(\d+)\+?\s*(?:of them\s*)?(?:are\s*)?${word}`, "i"));
     return [{ need: d.need, covered: true, count_offered: m ? Number(m[1]) : null }];
   });
   const questions = (text.match(/[^.!?\n]*\?/g) ?? []).map((q) => q.trim()).filter((q) => q && !PLEASANTRIES.test(q));

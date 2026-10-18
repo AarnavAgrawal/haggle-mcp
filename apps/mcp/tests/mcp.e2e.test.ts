@@ -58,7 +58,7 @@ afterAll(() => {
 });
 
 describe("Haggle MCP over HTTP (mock mode)", () => {
-  it("initializes and lists the v5 tools; deal board bound to get_quotes; helpers hidden from the model", async () => {
+  it("initializes and lists the v5 tools; one deal board per deal (deal draws it, open_haggle re-opens it); helpers hidden from the model", async () => {
     const init = await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "haggle-e2e", version: "1" } });
     expect(init.serverInfo.name).toBe("haggle");
     const { tools } = await rpc("tools/list");
@@ -66,13 +66,23 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     for (const n of ["ask", "discover", "check_price", "deal", "wait_for_update", "get_quotes", "answer_business", "approve", "pay", "business_profile", "open_haggle", "settings.read", "settings.update", "mention_businesses",
       "get_identity", "send_message", "negotiate", "get_conversation", "cancel_deal"]) expect(names).toContain(n);
     const byName = Object.fromEntries(tools.map((t: { name: string }) => [t.name, t]));
-    expect(JSON.stringify(byName.get_quotes._meta)).toContain("deal-board");
-    expect(byName.get_quotes.outputSchema).toBeTruthy();
-    // deal opens the live board the moment outreach starts; wait_for_update stays view-less (a board per poll would flood the chat).
+    // deal draws the live board once; it refreshes itself. get_quotes and wait_for_update are data only
+    // (the board polls them), so a model call never draws a second board in the chat.
     expect(byName.deal._meta.ui.resourceUri).toBe("ui://views/deal-live.html");
     expect(byName.deal.outputSchema).toBeTruthy();
+    expect(byName.get_quotes._meta?.ui).toBeUndefined();
+    expect(JSON.stringify(byName.get_quotes._meta ?? {})).not.toContain("deal-board");
+    expect(byName.get_quotes.outputSchema).toBeTruthy(); // structured data for the model and the board's refresh
+    expect(byName.get_quotes.description).toMatch(/draws no new board/);
     expect(byName.wait_for_update._meta?.ui).toBeUndefined();
+    // open_haggle is the explicit way to show the board again (launcher entrypoints; optional job_id).
+    expect(byName.open_haggle._meta.ui.resourceUri).toBe("ui://views/deal-board.html");
+    expect(byName.open_haggle.inputSchema.properties).toHaveProperty("job_id");
+    expect(byName.open_haggle.description).toMatch(/only when the user asks/);
+    const boundToBoard = tools.filter((t: { _meta?: { ui?: { resourceUri?: string } } }) => /deal-(board|live)/.test(t._meta?.ui?.resourceUri ?? "")).map((t: { name: string }) => t.name).sort();
+    expect(boundToBoard).toEqual(["deal", "open_haggle"]);
     expect(byName.approve_in_view._meta.ui.visibility).toEqual(["app"]);
+    expect(byName.choose_in_view._meta.ui.visibility).toEqual(["app"]); // the board's Choose button only
     expect(names).not.toContain("answer_seller"); // views call answer_business now
     expect(byName.open_haggle.inputSchema.required ?? []).toEqual([]);
     const health = await (await fetch(`${BASE}/health`)).json();
@@ -215,10 +225,13 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // Approval (simulated human in mock mode: this client has no approval card or form).
     const ap = await call("approve", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(Approval.safeParse(ap.structuredContent).success).toBe(true);
-    expect(ap.structuredContent).toMatchObject({ status: "approved", amount_usd: 5, deposit_usd: 5, business: "Bay Catering", quote_channel: "email", channel: "simulated", mode: "mock" });
+    // The human's approval charges the approved deposit at once: the approve result is already paid.
+    expect(ap.structuredContent).toMatchObject({ status: "paid", amount_usd: 5, deposit_usd: 5, business: "Bay Catering", quote_channel: "email", channel: "simulated", mode: "mock" });
     expect(ap.structuredContent.summary).toMatch(/\$995 order total/);
     expect(ap.structuredContent.demo).toMatch(/DEMO MODE/);
+    expect(ap.structuredContent.next).toMatch(/no pay call needed/);
 
+    // An agent that still calls pay changes nothing (idempotent: one charge per approval).
     await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
     let final;
     for (let i = 0; i < 30; i++) {
@@ -241,9 +254,47 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // The launcher now opens this deal.
     const home = await call("open_haggle", {});
     expect(home.structuredContent).toMatchObject({ empty: false, job: { id: job } });
+    // ...or a named deal, explicitly.
+    const named = await call("open_haggle", { job_id: job });
+    expect(named.structuredContent).toMatchObject({ empty: false, job: { id: job } });
+    expect(errorOf(await call("open_haggle", { job_id: "job_nope" }))).toMatchObject({ error: { code: "job_not_found" } });
     // @-mentions find businesses from this deal.
     const m = await call("mention_businesses", { query: "bay" });
     expect(m.structuredContent.items[0]).toMatchObject({ uri: "business://bay-catering", name: "Bay Catering" });
+  }, 120_000);
+
+  it("the board's Choose button: a board-only approval, one at a time, charged on the confirm click", async () => {
+    const found = await call("discover", { category: "catering", area: "San Francisco", count: 6 });
+    const businesses = found.structuredContent.businesses.map((b: { name: string; email?: string; phone?: string }) => ({ name: b.name, ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}) }));
+    const job = (await call("deal", { request: REQUEST, businesses, budget_usd: 1200, client_request_id: "e2e-choose" })).structuredContent.job_id;
+    let cursor = "0";
+    let board;
+    for (let i = 0; i < 60; i++) {
+      const w = await call("wait_for_update", { job_id: job, cursor, timeout_s: 1 });
+      cursor = w.structuredContent.cursor;
+      board = (await call("get_quotes", { job_id: job })).structuredContent;
+      for (const q of board.open_questions) await call("answer_business", { job_id: job, question_id: q.question_id, answer: "Yes, plates for 40." });
+      if (board.ready) break;
+    }
+    expect(board.ready).toBe(true);
+    const q = (name: string) => board.quotes.find((x: { business: string }) => x.business === name);
+
+    // The board gets the one-time code in _meta only; nothing model-visible carries it.
+    const started = await call("choose_in_view", { job_id: job, quote_id: q("Bay Catering").quote_id });
+    expect(started.structuredContent).toMatchObject({ status: "pending", mode: "mock" });
+    const ticket = started._meta["haggle/approval"];
+    expect(ticket.code).toMatch(/^\d{4}$/);
+    expect(JSON.stringify(started.structuredContent) + started.content[0].text).not.toContain(ticket.code);
+    // One approval per job: choosing another option now is refused with a fix, not silently swapped.
+    const other = await call("choose_in_view", { job_id: job, quote_id: q("Mission Eats").quote_id });
+    expect(errorOf(other)).toMatchObject({ error: { code: "not_approvable" } });
+    // Choosing the same quote again reuses the waiting approval.
+    expect((await call("choose_in_view", { job_id: job, quote_id: q("Bay Catering").quote_id }))._meta["haggle/approval"]).toEqual(ticket);
+    // Unsafe quotes can't be chosen from the board either.
+    expect(errorOf(await call("choose_in_view", { job_id: job, quote_id: q("QuickQuote Deli").quote_id }))).toBeTruthy();
+    // The human's confirm click: approved and charged at once (no Pay step).
+    const yes = await call("approve_in_view", ticket);
+    expect(yes.structuredContent).toMatchObject({ status: "approved", outcome: "paid" });
   }, 120_000);
 
   it("the Inkbox webhook route is off in mock mode", async () => {

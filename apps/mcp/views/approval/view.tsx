@@ -74,20 +74,25 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
   const stepIndex = status === "paid" || status === "confirmed" ? steps.length : status === "refused" ? 0 : steps.findIndex((s) => s.key === status);
   const busy = approve.isPending || approveInView.isPending || pay.isPending;
 
-  // The human's tap: with a view ticket, approve_in_view records the approval; otherwise re-request it.
+  // Only the human's tap on the button below calls this (never on render or from an effect). With a
+  // view ticket, approve_in_view records the approval and the server charges the approved amount at
+  // once; without one, the tap re-requests the approval (the human then approves by text/email/form).
   const onApprove = async () => {
     if (!ticket) return run(() => approve.callTool({ job_id: card.job_id, quote_id: card.quote_id }));
     setError(null);
     try {
       const res = await approveInView.callTool(ticket);
-      const r = res.structuredContent as { status: string; next: string };
-      if (r.status === "approved") setCard({ ...card, status: confirmOnly ? "confirmed" : "approved", next: r.next, reason: undefined });
-      else setError(`Approval is ${r.status}.`);
+      // status "approved" = the human's decision is recorded; card / outcome = what the approval-time charge did.
+      const r = res.structuredContent as { status: string; outcome?: Approval["status"]; next: string; reason?: string; card?: Approval };
+      if (r.status !== "approved") setError(`Approval is ${r.status}.`);
+      else if (r.card) setCard(r.card);
+      else setCard({ ...card, status: confirmOnly ? "confirmed" : r.outcome ?? "approved", next: r.next, reason: r.reason });
     } catch (e) {
       setError(toolErrorText(e));
     }
   };
   const payNow = card.deposit_usd ?? card.amount_usd;
+  const charging = card.payment?.status === "charging";
   const simulatedPay = card.payment?.simulated === true;
   const followUp = useSendFollowUp();
 
@@ -172,12 +177,16 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
             disabled={busy}
             onClick={() => void onApprove()}
           >
-            {approve.isPending || approveInView.isPending ? "Approving…" : confirmOnly ? "Approve order" : `Approve ${usd(card.amount_usd)}`}
+            {approve.isPending || approveInView.isPending
+              ? confirmOnly ? "Approving…" : "Approving and paying…"
+              : confirmOnly ? "Approve order (nothing paid)" : `Approve and pay ${usd(payNow)}`}
           </button>
         )}
+        {/* Approved: the server already started the charge. While it settles, offer a status check; if it never started, a retry. */}
+        {status === "approved" && charging && <p className="ap-waiting">Approved · charging {usd(payNow)}…</p>}
         {status === "approved" && (
           <button className="hg-btn hg-btn-primary" disabled={busy} onClick={() => void run(() => pay.callTool({ job_id: card.job_id, quote_id: card.quote_id }))}>
-            {pay.isPending ? "Paying…" : `Pay ${usd(payNow)} deposit`}
+            {pay.isPending ? (charging ? "Checking…" : "Paying…") : charging ? "Check payment" : `Retry payment of ${usd(payNow)}`}
           </button>
         )}
         {status === "confirmed" && <p className="ap-paid">Confirmed — the business was told to go ahead (nothing paid).</p>}
@@ -193,7 +202,12 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
           </button>
         )}
       </div>
-      {card.status === "pending_human" && card.channel !== "simulated" && <p className="ap-note hg-muted">Only you can approve. Your agent can't press this for you.</p>}
+      {card.status === "pending_human" && card.channel !== "simulated" && (
+        <p className="ap-note hg-muted">
+          {confirmOnly ? "" : `Approving pays ${usd(payNow)} right away${simulatedPay || card.mode === "mock" ? " (simulated)" : " (Stripe test mode)"} (so does replying YES if Haggle texted you). `}
+          Only you can approve. Your agent can't press this for you.
+        </p>
+      )}
       {error && (
         <p className="ap-error" role="alert">
           {error}

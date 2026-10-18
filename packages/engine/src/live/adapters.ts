@@ -7,6 +7,7 @@ import { createX402Client } from "@primitivedotdev/sdk/x402";
 import { privateKeyToAccount } from "viem/accounts";
 import { extractAttachments, type ExtractedFile } from "../inbound/attachments.ts";
 import { sendEmail, type SenderClient } from "../outbound/primitiveSender.ts";
+import { answerFromRequest } from "../parsing/answerQuestion.ts";
 import { heuristicExtract } from "../parsing/heuristic.ts";
 import { createAnthropicClient, parseReply } from "../parsing/parseReply.ts";
 import type { PayerClient } from "../payments/x402Challenge.ts";
@@ -27,7 +28,10 @@ export function primitiveEmail(apiKey: string): EmailPort & { client: PrimitiveC
 
 export function claudeExtractor(opts: { apiKey: string; workspaceId?: string; model: string }): ExtractorPort {
   const client = createAnthropicClient({ apiKey: opts.apiKey, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) });
-  return { extract: ({ request, bodyText, pdfs, images }) => parseReply(client, opts.model, { request, bodyText, pdfs, ...(images ? { images } : {}) }) };
+  return {
+    extract: ({ request, bodyText, pdfs, images }) => parseReply(client, opts.model, { request, bodyText, pdfs, ...(images ? { images } : {}) }),
+    answerQuestion: (input) => answerFromRequest(client, opts.model, input),
+  };
 }
 
 /** The keyword fallback alone (no API key): low-confidence quotes, flagged for the agent. */
@@ -49,6 +53,17 @@ export function withHeuristicFallback(primary: ExtractorPort, log?: (event: stri
         return heuristicExtract({ request: input.request, bodyText: input.bodyText });
       }
     },
+    // No keyword fallback for answering: when Claude can't, the question waits for the human.
+    ...(primary.answerQuestion ? {
+      async answerQuestion(input: Parameters<NonNullable<ExtractorPort["answerQuestion"]>>[0]) {
+        try {
+          return await primary.answerQuestion!(input);
+        } catch (err) {
+          log?.("answer_question_failed", { error: (err as Error).message.slice(0, 200) });
+          return null;
+        }
+      },
+    } : {}),
   };
 }
 

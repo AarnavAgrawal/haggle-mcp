@@ -396,7 +396,8 @@ describe("approval by text (SMS)", () => {
     expect(await engine.ingestText({ messageId: "late_yes", from: HUMAN, text: `YES ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "approval_already_decided" });
     expect(emails.length).toBe(sentBefore); // nothing went to Sunset Kitchen
     expect((await repo.listQuestions(jobId)).every((q) => q.status === "pending")).toBe(true);
-    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(/already approved/) });
+    // Payments are off in this engine (disabled x402 payer): the reply says the payment didn't go through.
+    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(/approved on the card at .*didn't go through/) });
     // Redelivery of the same webhook: handled once.
     expect((await engine.ingestText({ messageId: "late_yes", from: HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("duplicate");
   });
@@ -422,6 +423,67 @@ describe("approval by text (SMS)", () => {
     // The agent calling pay afterwards changes nothing (one charge).
     await engine.pay(jobId, quoteId);
     expect(stripe.charges).toHaveLength(1);
+  });
+
+  // Live 2026-10-17 (job_c78295b3287a42cd8974): the card approved at 6:45:10, the human's YES at 6:45:19 got
+  // "nothing more to do", and the job sat in paying until the model called pay at 6:46:35.
+  it("approving on the card charges at once (no Pay step); a late YES <code> is told it's paid", async () => {
+    const stripe = simulatedStripe();
+    const { engine, repo, texts, emails, jobId, quoteId } = await quoted({ stripe });
+    const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
+    expect((await engine.approveWithViewCode(a.id, a.code)).status).toBe("used");
+    expect(stripe.charges.map((c) => c.amountCents)).toEqual([34_500]);
+    expect((await repo.getJob(jobId))!.state).toBe("paid");
+    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(/Paid \$345 to Harbor Table/) });
+    const sentBefore = emails.length;
+    expect(await engine.ingestText({ messageId: "late_yes_paid", from: HUMAN, text: `YES ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "approval_already_decided" });
+    expect(emails.length).toBe(sentBefore);
+    expect(texts.at(-1)!.text).toMatch(/already approved on the card at \d{1,2}:\d{2}\s?[AP]M and paid \$345 to Harbor Table/);
+    // The agent calling pay afterwards is harmless: still one charge.
+    expect(await engine.pay(jobId, quoteId)).toMatchObject({ status: "settled" });
+    expect(stripe.charges).toHaveLength(1);
+  });
+
+  it("approved on the card but the charge is still retrying: a late YES says it's paying now, then that it paid", async () => {
+    const charges: { amountCents: number; idempotencyKey: string }[] = [];
+    const script = [{ ok: false as const, reason: "stripe_unreachable", retryable: true }, { ok: false as const, reason: "stripe_http_503", retryable: true }];
+    const flaky: StripePort = { simulated: true, async charge(r) { charges.push(r); return script.shift() ?? { ok: true, paymentIntentId: "pi_DEMOlate" }; } };
+    const { engine, repo, texts, jobId, quoteId } = await quoted({ stripe: flaky });
+    const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
+    await engine.approveWithViewCode(a.id, a.code);
+    expect((await repo.getPaymentForJob(jobId))!.status).toBe("charging");
+    const before = texts.length;
+    expect(await engine.ingestText({ messageId: "late_yes_charging", from: HUMAN, text: `YES ${a.code}`, inbound: true })).toMatchObject({ outcome: "approval_already_decided" });
+    const after = texts.slice(before).map((x) => x.text);
+    expect(after[0]).toMatch(/approved on the card at \d{1,2}:\d{2}\s?[AP]M; paying \$345 to Harbor Table now/);
+    expect(after.at(-1)).toMatch(/Paid \$345 to Harbor Table/);
+    expect(after.join(" ")).not.toMatch(/nothing (else|more) to do/i);
+    expect((await repo.getJob(jobId))!.state).toBe("paid");
+    expect(new Set(charges.map((c) => c.idempotencyKey))).toEqual(new Set([`haggle-pay-${a.id}`])); // one PaymentIntent
+  });
+
+  it("a declined charge after approval is told to the human, never 'nothing to do'", async () => {
+    const stripe = simulatedStripe({ decline: "card_declined" });
+    const { engine, texts, jobId, quoteId } = await quoted({ stripe });
+    const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
+    await engine.approveWithViewCode(a.id, a.code);
+    expect(texts.some((x) => /payment to Harbor Table didn't go through: card_declined/.test(x.text))).toBe(true);
+    await engine.ingestText({ messageId: "late_yes_declined", from: HUMAN, text: `YES ${a.code}`, inbound: true });
+    expect(texts.at(-1)!.text).toMatch(/approved on the card at .* but the \$345 payment to Harbor Table didn't go through/);
+    expect(stripe.charges).toHaveLength(1);
+  });
+
+  it("a revised quote while the human is deciding voids the approval: a late tap or YES charges nothing", async () => {
+    const stripe = simulatedStripe();
+    const { engine, repo, jobId, quoteId } = await quoted({ stripe });
+    const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
+    await emailReply(engine, repo, jobId, 2, "Correction: $1,250 total, 12 vegetarian, delivered. $375 deposit.");
+    expect((await repo.getApproval(a.id))!.status).toBe("expired");
+    expect((await engine.approveWithViewCode(a.id, a.code)).status).toBe("expired");
+    await engine.ingestText({ messageId: "late_yes_revised", from: HUMAN, text: `YES ${a.code}`, inbound: true });
+    expect(stripe.charges).toHaveLength(0);
+    await expect(engine.pay(jobId, quoteId)).rejects.toBeTruthy();
+    expect(stripe.charges).toHaveLength(0);
   });
 
   it("a blocked number: the approval text is held and sent when the human texts back", async () => {

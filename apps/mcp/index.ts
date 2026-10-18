@@ -29,8 +29,8 @@ const server = new MCPServer<never, AppEnv>({
   version: `0.6.0${process.env.HAGGLE_BUILD_SHA ? `+${process.env.HAGGLE_BUILD_SHA}` : ""}`,
   description: "Lets AI agents buy from businesses the way businesses work: email, phone and agent-to-agent. Quotes, negotiation, human approval, payment.",
   instructions: [
-    "Haggle turns businesses' email and phones into an API. Cold path: deal -> wait_for_update (repeat, pass the cursor) -> get_quotes -> approve -> pay.",
-    "deal opens the live deal board in the chat right away (who is being emailed, called or texted; replies and quotes as they land) and the board updates itself, so don't call get_quotes or open_haggle just to show it; call get_quotes once quotes are final.",
+    "Haggle turns businesses' email and phones into an API. Cold path: deal -> wait_for_update (repeat, pass the cursor) -> get_quotes -> approve. The human's approval charges the approved amount at once (no separate pay step; pay only reports or retries a charge).",
+    "deal opens the live deal board in the chat once per deal (who is being emailed, called or texted; replies and quotes as they land). The board updates itself and the human chooses, approves and pays on it, so don't re-open it: get_quotes returns the same data as text without drawing another board; open_haggle only when the user asks to see the board again.",
     "Any kind of request works: pass ask[] (the answers you want back), compare_by and payable_field to deal; catering orders can use the default (total, deposit, delivery).",
     "Along the way: answer_business for a business's question, send_message for anything else (guarded: real amounts only, no other business names, no commitments), negotiate for another counteroffer round, get_conversation for one business's thread, cancel_deal to stop.",
     "Warm path: ask for instant estimates from learned businesses (estimates are never quotes; nothing is ordered).",
@@ -250,7 +250,7 @@ export const deal = server.tool(
       "Start a cold deal: Haggle contacts each business on its best channel (email; Voice AI call / A2A when enabled; email that gets no reply escalates to a call) from its own identity and returns a job_id in under a second. " +
       "Use when the user wants real quotes from businesses. Catering: request.quantity + date + requirements. Anything else (repairs, services, rentals): pass request.ask[] (the answers you want), " +
       "compare_by (which one ranks) and payable_field (what approval pays). Don't use for a quick price idea (use ask), and never email or call the businesses yourself. " +
-      "Shows the live deal board, which updates itself as calls, texts and emails go out and replies arrive (don't call get_quotes just to show it). " +
+      "Shows the live deal board once; it updates itself as calls, texts and emails go out and replies arrive, and the human chooses, approves and pays any option on it (don't re-open it with open_haggle). " +
       "Side effect: one request for quote per business, idempotent with client_request_id. Next: wait_for_update(job_id).",
     inputSchema: z.object({
       request: dealRequest,
@@ -333,7 +333,7 @@ export const waitForUpdate = server.tool(
     description:
       "Long-poll a deal: returns as soon as something changes (a reply, a finished call, a quote, a business question, a state change, a payment step) or after timeout_s (max 60). " +
       "until: any_change (default), ready (quotes are final), approval_decided (the human answered), done (the deal finished). " +
-      "Use repeatedly while a deal is in progress, passing back the cursor; safe to call any number of times (each poll also runs due follow-ups and escalations). Don't loop on get_quotes instead (the board deal opened updates itself). Next: follow `next`.",
+      "Use repeatedly while a deal is in progress, passing back the cursor; safe to call any number of times (each poll also runs due follow-ups and escalations). Draws nothing: the board deal opened updates itself, so don't loop on get_quotes or re-open the board. Next: follow `next`.",
     inputSchema: z.object({
       job_id: jobId,
       cursor: z.string().regex(/^\d+$/).default("0").describe("cursor from the previous response; '0' for everything"),
@@ -360,12 +360,14 @@ export const getQuotes = server.tool(
     title: "Deal board",
     description:
       "The deal board for one deal: every business with its channel and live status, ranked quotes in one schema (total, deposit, compliance, custom answers for any-request deals, flags such as hidden deposit or scam link, " +
-      "price check, negotiated-from), why each excluded quote can't win, negotiation history and open business questions. Renders the Haggle deal board. " +
-      "Use after wait_for_update reports quotes are final, or when the user wants to compare or re-open the board (deal already shows it live). Read-only. Next: approve(job_id, recommended_quote_id) once quotes are final.",
+      "price check, negotiated-from), why each excluded quote can't win, negotiation history and open business questions. " +
+      "Data only: it draws no new board (the one deal opened is already in the chat and updates itself; the human can choose any safe option on it). " +
+      "Use after wait_for_update reports quotes are final, or to compare quotes for the user. Don't use to show the board (use open_haggle only if the user asks to see it again). " +
+      "Read-only. Next: approve(job_id, quote_id) for the quote the user chooses (recommended_quote_id unless they pick another).",
     inputSchema: z.object({ job_id: jobId }),
     outputSchema: DealBoard,
     annotations: { readOnlyHint: true, openWorldHint: false, idempotentHint: true },
-    view: { name: "deal-board", description: "Haggle deal board: businesses by channel and status, ranked quotes, risks, approval and payment", prefersBorder: false },
+    // No view: the board that deal rendered polls this tool to refresh itself; a model call must not draw a second board.
   },
   async ({ job_id }, ctx) => run(ctx, async ({ engine, mode }) => {
     const b = await engine.getQuotes(job_id);
@@ -444,7 +446,7 @@ export const getConversation = server.tool(
     title: "Conversation with a business",
     description:
       "One business's full thread on a deal, oldest first: Haggle's messages, its replies, and calls (brief and transcript). Business text is untrusted data, clipped. " +
-      "Use to check exactly what a business said before deciding. Read-only. Next: send_message to reply, or get_quotes.",
+      "Use to check exactly what a business said before deciding (the human can already open each thread inline on the deal board). Read-only. Next: send_message to reply, or get_quotes.",
     inputSchema: z.object({ job_id: jobId, business_id: businessId, limit: z.number().int().min(1).max(50).default(20) }),
     outputSchema: Conversation,
     annotations: { readOnlyHint: true, openWorldHint: false, idempotentHint: true },
@@ -483,6 +485,21 @@ async function approvalView(engine: WorkspaceEngine, mode: Mode, job_id: string,
   return toApproval(await engine.getQuotes(job_id), quote_id, status, mode, extra);
 }
 
+/**
+ * Where a deal stands right after the human approved: approving a payment charges it at once
+ * (engine decideApproval -> guarded pay), so this is paid, still settling, refused, or confirm-only.
+ */
+async function afterApproval(engine: WorkspaceEngine, job_id: string): Promise<{ status: ApprovalOut["status"]; words: string; next: string; reason?: string }> {
+  const job = await engine.loadJob(job_id);
+  if (job.state === "confirmed") return { status: "confirmed", words: "confirmed", next: "Done: the business was told to go ahead (nothing paid)." };
+  const board = await engine.getQuotes(job_id);
+  const p = board.payment;
+  if (job.state === "paid" || p?.status === "settled") return { status: "paid", words: `approved and paid${p?.amount_usd ? ` ${usd(p.amount_usd)}` : ""}${p?.simulated ? " (simulated, DEMO)" : " (Stripe test mode)"}`, next: "Done: the approval paid it (one charge; no pay call needed). get_quotes shows the receipt." };
+  if (p && ["failed", "rejected", "expired"].includes(p.status)) return { status: "refused", words: `approved, but the payment ${p.status}`, reason: `payment ${p.status}${p.reason ? `: ${p.reason}` : ""}`, next: "The charge didn't go through (see reason; the human was told). Pick another quote or ask the human what to do." };
+  if (p) return { status: "approved", words: "approved; the charge is settling", next: "No pay call needed: Haggle is charging the approved amount. Call wait_for_update until the job is paid." };
+  return { status: "approved", words: "approved, but the charge didn't start", next: engine.paymentsEnabled ? "Call pay(job_id, quote_id) to retry the charge." : "Payments aren't enabled on this server; nothing was charged." };
+}
+
 const actionWords = (action: string, payment: number, total: number) =>
   action === "confirm" ? `confirm the order (${usd(total)} total; nothing paid now)` : action === "pay" ? `pay ${usd(payment)} now` : `${usd(total)} total, pay ${usd(payment)} deposit now`;
 
@@ -495,7 +512,8 @@ export const approve = server.tool(
       "The decision always comes from the human, on every channel they can use at once: a text to their phone (reply YES <code> / NO <code>, when the server texts), an email to the settings approver email (reply APPROVE <code>), the Approve button on the approval card, or the client's approval form; the first answer wins. The model can't approve and never sees or asks for the code. Calling this tool is never an approval by itself; after it, tell the human how to approve (the response says which channels went out). " +
       "Works for any quote except safety refusals (scam/pay-elsewhere links, injected instructions, unverified senders, a business that declined, no amount): " +
       "over budget, over the spending cap, unmet or unconfirmed requirements and computed totals are shown to the human as caveats, so use such a quote only when the user chose it. " +
-      "Confirm-only pays nothing; a paying approval pays the deposit, or the full total when no deposit was stated. Returns approved, confirmed, pending_human or refused; NO_HUMAN_CHANNEL means this client can show none of them. Next: pay(job_id, quote_id) once approved (not needed for confirm).",
+      "Confirm-only pays nothing; a paying approval pays the deposit, or the full total when no deposit was stated. The human's approval IS the payment decision: the moment they approve (any channel), Haggle charges exactly the approved amount (Stripe test mode) and texts them the result, so you don't need to call pay. " +
+      "Returns paid, approved (charge still settling), confirmed, pending_human or refused; NO_HUMAN_CHANNEL means this client can show none of them. Next: wait_for_update with until=approval_decided while pending, then get_quotes for the receipt.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId, action: z.enum(["confirm", "pay", "confirm_and_pay"]).optional() }),
     outputSchema: ApprovalOut,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
@@ -531,9 +549,12 @@ export const approve = server.tool(
       const caveats = await engine.approvalCaveats(job_id, quote_id);
       const note = caveats.length ? `Heads up: ${caveats.join("; ")}.` : "";
       const summary = `${actionWords(approval.action, approval.payment_cents / 100, approval.quote_total_cents / 100)}${note ? `. ${note}` : ""}`;
-      const done = async () => ((await engine.loadJob(job_id)).state === "confirmed" ? "confirmed" as const : "approved" as const);
-      const afterYes = approval.action === "confirm" ? "Done: the business was told to go ahead." : "Call pay(job_id, quote_id).";
-      if (approval.status === "approved") return ok(await approvalView(engine, mode, job_id, quote_id, await done(), { next: afterYes }), `Approved (${summary}). next: ${afterYes}`);
+      // After the human's yes, the approval-time charge has run: say what actually happened.
+      const after = () => afterApproval(engine, job_id);
+      if (approval.status === "approved" || approval.status === "used") {
+        const d = await after();
+        return ok(await approvalView(engine, mode, job_id, quote_id, d.status, { next: d.next, ...(d.reason ? { reason: d.reason } : {}) }), `${d.words} (${summary}). next: ${d.next}`);
+      }
       if (channel === "elicitation") {
         const key = `approve_${approval.id}`;
         const response = inputResponse(ctx.inputResponses, key);
@@ -560,16 +581,22 @@ export const approve = server.tool(
         if (!decided) {
           // Already decided on another channel (text, email, card) or expired: report what happened.
           const cur = (await engine.getQuotes(job_id)).approval;
-          const status = cur && ["approved", "used"].includes(cur.status) ? await done() : cur?.status === "pending" ? "pending_human" as const : "refused" as const;
-          const next = status === "refused" ? `The approval is ${cur?.status ?? "gone"}. Pick another quote or call approve again.` : status === "pending_human" ? "Call wait_for_update with until=approval_decided." : afterYes;
+          if (cur && ["approved", "used"].includes(cur.status)) {
+            const d = await after();
+            return ok(await approvalView(engine, mode, job_id, quote_id, d.status, { next: d.next, ...(d.reason ? { reason: d.reason } : {}) }), `Already decided on another channel: ${d.words} (${summary}). next: ${d.next}`);
+          }
+          const status = cur?.status === "pending" ? "pending_human" as const : "refused" as const;
+          const next = status === "refused" ? `The approval is ${cur?.status ?? "gone"}. Pick another quote or call approve again.` : "Call wait_for_update with until=approval_decided.";
           return ok(await approvalView(engine, mode, job_id, quote_id, status, { next, ...(status === "refused" ? { reason: `approval ${cur?.status ?? "missing"}` } : {}) }), `Approval ${cur?.status ?? "missing"} (${summary}). next: ${next}`);
         }
-        const v = await approvalView(engine, mode, job_id, quote_id, yes ? await done() : "refused", { next: yes ? afterYes : "The human declined. Pick another quote or stop.", ...(yes ? {} : { reason: "declined by the human" }) });
-        return ok(v, yes ? `The human approved (${summary}). next: ${afterYes}` : "The human declined this quote.");
+        if (!yes) return ok(await approvalView(engine, mode, job_id, quote_id, "refused", { next: "The human declined. Pick another quote or stop.", reason: "declined by the human" }), "The human declined this quote.");
+        const d = await after();
+        return ok(await approvalView(engine, mode, job_id, quote_id, d.status, { next: d.next, ...(d.reason ? { reason: d.reason } : {}) }), `The human approved: ${d.words} (${summary}). next: ${d.next}`);
       }
       if (channel === "simulated") {
         await engine.decideApproval(approval.id, "approve", "simulated", "DEMO simulated human");
-        return ok(await approvalView(engine, mode, job_id, quote_id, await done(), { demo: "DEMO MODE: simulated human approval (this client has no approval card or form)", next: afterYes }), `Approved by a SIMULATED human (${summary}). next: ${afterYes}`);
+        const d = await after();
+        return ok(await approvalView(engine, mode, job_id, quote_id, d.status, { demo: "DEMO MODE: simulated human approval (this client has no approval card or form)", next: d.next, ...(d.reason ? { reason: d.reason } : {}) }), `Approved by a SIMULATED human: ${d.words} (${summary}). next: ${d.next}`);
       }
       if (channel === "imessage" && canIMessage && !offered.imessage) {
         const next = "The iMessage couldn't be sent (has the approver texted `connect @haggle`?). Approve on the card, or fix iMessage and call approve again.";
@@ -592,17 +619,44 @@ export const approveInView = server.tool(
   {
     name: "approve_in_view",
     title: "Approve (approval card button)",
-    description: "Called only by the approval card when the human taps Approve. Hidden from the model; it needs the one-time code the card received. Five wrong codes lock the approval.",
+    description: "Called only by the approval card / deal board when the human taps Approve. Hidden from the model; it needs the one-time code the card received. Approving a payment charges the approved amount at once. Five wrong codes lock the approval.",
     inputSchema: z.object({ approval_id: z.string().min(3).max(64), code: z.string().regex(/^\d{4}$/) }),
     outputSchema: z.looseObject({ ...envelope, status: z.string() }),
     visibility: "app",
-    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   },
   async ({ approval_id, code }, ctx) =>
     run(ctx, async ({ engine, mode }) => {
       const r = await engine.approveWithViewCode(approval_id, code);
-      const next = r.status === "approved" ? (r.approval.action === "confirm" ? "Done: the business was told to go ahead." : "Call pay(job_id, quote_id).") : `Approval is ${r.status}.`;
-      return ok({ ok: true, mode, status: r.status, next }, `Approval ${r.status}.`);
+      if (r.status !== "approved" && r.status !== "used") return ok({ ok: true, mode, status: r.status, next: `Approval is ${r.status}.` }, `Approval ${r.status}.`);
+      // status stays "approved" (the human's decision is recorded; views treat it as success); the
+      // approval-time charge's outcome is in `outcome` (paid | approved = settling | refused | confirmed)
+      // and in `card`, the refreshed approval card (payment, receipt), so no Pay click is needed.
+      const d = await afterApproval(engine, r.approval.job_id);
+      const card = await approvalView(engine, mode, r.approval.job_id, r.approval.quote_id, d.status, { next: d.next, ...(d.reason ? { reason: d.reason } : {}) });
+      return ok({ ok: true, mode, status: "approved", outcome: d.status, next: d.next, ...(d.reason ? { reason: d.reason } : {}), card }, `Approval: ${d.words}.`);
+    }),
+);
+
+export const chooseInView = server.tool(
+  {
+    name: "choose_in_view",
+    title: "Choose a quote (deal board button)",
+    description:
+      "Called only by the deal board when the human picks a quote and confirms. Hidden from the model. Starts a board-only approval for that exact quote: nothing is texted or emailed " +
+      "(the human is approving on the board right now, so a 'reply YES' text would be moot). Hands the board the one-time code in _meta; the same confirm click then calls approve_in_view. " +
+      "An approval already waiting for this quote (e.g. one the model asked for by text) is reused. Not an approval by itself.",
+    inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
+    outputSchema: z.looseObject({ ...envelope, approval_id: z.string(), status: z.string() }),
+    visibility: "app",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async ({ job_id, quote_id }, ctx) =>
+    run(ctx, async ({ engine, mode }) => {
+      const a = await engine.requestApproval(job_id, quote_id, "view", undefined, { text: false, email: false });
+      const next = a.status === "pending" ? "Waiting for the human's confirm click on the board (approve_in_view)." : `Approval is ${a.status}.`;
+      // The code goes only to the board (_meta), never to model-visible content.
+      return ok({ ok: true, mode, approval_id: a.id, status: a.status, next }, `Board approval ${a.status}.`, a.status === "pending" ? { "haggle/approval": { approval_id: a.id, code: a.code } } : undefined);
     }),
 );
 
@@ -611,9 +665,9 @@ export const pay = server.tool(
     name: "pay",
     title: "Pay the approved amount",
     description:
-      "Pay a quote the human approved for payment, by Stripe TEST MODE (no real money): the deposit, or the full total when no deposit was stated. The amount is always the approved one, never an input. " +
-      "Refuses without a stored human approval for that exact quote, above the server's per-payment safety ceiling, if the quote changed, or to a business that didn't quote; safe to retry (one charge per approval). " +
-      "Not needed for confirm-only approvals. Don't call it to ask for approval (use approve). Next: get_quotes shows the receipt; wait_for_update if it is still charging.",
+      "Usually NOT needed: the human's approval already charges the approved amount (Stripe TEST MODE, no real money) the moment they approve. Use pay only to check a payment or retry a charge that didn't start; it is idempotent (one charge per approval), so calling it after an approval just reports the settled payment. " +
+      "The amount is always the approved one (the deposit, or the full total when no deposit was stated), never an input. Refuses without a stored human approval for that exact quote, above the server's per-payment safety ceiling, if the quote changed, or to a business that didn't quote. " +
+      "Not for confirm-only approvals. Don't call it to ask for approval (use approve). Next: get_quotes shows the receipt; wait_for_update if it is still charging.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId }),
     outputSchema: ApprovalOut,
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: true },
@@ -739,15 +793,19 @@ export const openHaggle = server.tool(
   {
     name: "open_haggle",
     title: "Open Haggle",
-    description: "Open Haggle: the most relevant deal (newest open one, else the newest) as a deal board, or an empty board when there is none. Accepts no arguments. Read-only. Next: deal to start one, or get_quotes(job_id).",
-    inputSchema: z.object({}),
+    description:
+      "Open Haggle: draws a deal board for job_id, or for the most relevant deal (newest open one, else the newest), or an empty board when there is none. Works with no arguments. " +
+      "Use only when the user asks to see the board again (e.g. a new chat, or it scrolled away): deal already drew a board that updates itself, and every call here draws another one. " +
+      "For the data, use get_quotes (draws nothing). Read-only. Next: deal to start one.",
+    inputSchema: z.object({ job_id: jobId.optional().describe("Deal to show (default: the most relevant one)") }),
     outputSchema: DealBoardOrEmpty,
     annotations: { readOnlyHint: true, openWorldHint: false, idempotentHint: true },
-    ...viewIf({ name: "launcher", description: "Haggle launcher: the latest deal board", entrypoints: [{ type: "global" as const }, { type: "thread" as const }] }),
+    // The same deal board deal draws (one per deal); here only when the user asks to see it again.
+    ...viewIf({ name: "deal-board", description: "Haggle deal board: businesses by channel and status, ranked quotes, the recommendation, and choose / approve / pay on any safe option", prefersBorder: false, entrypoints: [{ type: "global" as const }, { type: "thread" as const }] }),
   },
-  async (_input, ctx) =>
+  async ({ job_id }, ctx) =>
     run(ctx, async ({ engine, mode }) => {
-      const job = await engine.latestJob();
+      const job = job_id ? { id: job_id } : await engine.latestJob();
       if (!job) return ok(emptyBoard(mode), "No deals yet. next: deal or ask");
       const b = await engine.getQuotes(job.id);
       return ok(DealBoardOrEmpty.parse({ ...toDealBoard(b, mode), empty: false }), boardText(b));
@@ -813,7 +871,7 @@ server.get("/llms.txt", (c) => c.text([
   "- check_price(...): good / typical / high vs what Haggle has seen",
   "- deal(request, businesses[] | discover:true, budget_usd, ...): contact businesses on their channel; returns job_id",
   "- wait_for_update(job_id, cursor, timeout_s<=60): what changed",
-  "- get_quotes(job_id): the deal board (ranked quotes, flags, statuses, next)",
+  "- get_quotes(job_id): the deal data (ranked quotes, flags, statuses, next); draws no new board",
   "- answer_business(job_id, question_id, answer): reply to a business's question",
   "- approve(job_id, quote_id): ask the HUMAN to approve (text YES <code>, email APPROVE <code>, the card or the form); never an approval by itself",
   "- pay(job_id, quote_id): Stripe test-mode deposit of the approved amount only",
