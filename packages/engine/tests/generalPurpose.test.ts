@@ -23,12 +23,12 @@ const extractor = {
   },
 };
 
-function engine() {
-  let t = Date.now();
+function engine(shared?: { repo: InMemoryRepository; t: number }) {
+  let t = shared?.t ?? Date.now();
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const sent: { to: string; subject: string; bodyText: string }[] = [];
   const texts: { to: string; text: string }[] = [];
-  const repo = new InMemoryRepository();
+  const repo = shared?.repo ?? new InMemoryRepository();
   const e = new HaggleEngine({
     repo, now: clock.now, extractor: extractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { sent.push(m); return { providerId: `em_${sent.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${sent.length}@haggle.test>` }; } },
@@ -72,5 +72,31 @@ describe("a non-catering purchase: roof leak repair (contractor)", () => {
     expect(by("Peak Roof Co")).toMatchObject({ total_usd: 1900, eligible: false });
     expect(board.recommended_quote_id).toBe(by("Bayside Roofing").quote_id);
     expect(board.value!.explanation!.winner).toMatch(/^Bayside Roofing: best value/);
+  });
+});
+
+describe("asynchronous resumption", () => {
+  it("a deal started by one server process is finished by a fresh one (restart) from stored state alone", async () => {
+    const first = engine();
+    const deal = await first.engine.deal({
+      request: { what: "office deep clean", quantity: 1, unit: "job", date: "2026-11-05", area: "San Francisco, CA", requirements: [] },
+      budget_usd: 900, businesses: [{ name: "Sparkle Co", email: "hi@sparkle.test" }, { name: "Bright Crew", phone: "+14155550177", channel: "imessage" }],
+    });
+    const rfq = (await first.repo.getBusinesses(deal.job_id)).find((b) => b.name === "Sparkle Co")!.rfq_message_id!;
+
+    // The process restarts: a new engine over the same store, no in-memory state carried over.
+    const second = engine({ repo: first.repo, t: Date.now() + 60_000 });
+    await second.engine.ingest({ providerEventId: "e9", eventType: "message.received", providerEmailId: "in_9", threadId: "t9", messageId: "<in_9@x>", inReplyTo: [rfq], references: [rfq], from: "hi@sparkle.test", to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "$780 total incl. supplies and tax. $100 deposit.", attachments: [], attachmentsDownloadUrl: null }, trusted);
+    expect((await second.engine.ingestIMessage({ messageId: "im_9", from: "+14155550177", text: "$720 total, $0 deposit, tax included", isGroup: false })).outcome).toBe("stored");
+    await second.engine.advanceJob(deal.job_id);
+    const board = await second.engine.getQuotes(deal.job_id);
+    expect(board.quotes.map((q) => [q.business, q.total_usd]).sort()).toEqual([["Bright Crew", 720], ["Sparkle Co", 780]]);
+    // The restarted process carries on: both quoted, and it opens the negotiation round itself.
+    expect({ state: board.state, statuses: board.businesses.map((b) => b.engine_status) }).toEqual({ state: "negotiating", statuses: ["quoted", "quoted"] });
+    expect(board.recommended_quote_id).toBeTruthy();
+    expect(first.sent).toHaveLength(1); // the original RFQ only
+    expect(second.sent.map((m) => m.bodyText).join("\n")).toMatch(/another quote of \$720\.00 total/); // a new counter, citing the real quote
+    expect(second.sent.some((m) => /Could you quote the following/.test(m.bodyText))).toBe(false); // no RFQ re-sent after the restart
+    expect(second.texts).toHaveLength(0);
   });
 });

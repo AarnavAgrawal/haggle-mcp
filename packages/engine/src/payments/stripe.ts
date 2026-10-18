@@ -19,7 +19,7 @@ export interface StripeChargeRequest {
 }
 
 export type StripeChargeResult =
-  | { ok: true; paymentIntentId: string }
+  | { ok: true; paymentIntentId: string; /** Stripe's hosted receipt (viewable without a Stripe login). */ receiptUrl?: string }
   | { ok: false; reason: string; retryable: boolean; paymentIntentId?: string };
 
 export interface StripePort {
@@ -98,9 +98,9 @@ export function stripeTestPayments(c: StripeTestConfig): StripePort {
  * an unreachable check is retryable (the same idempotency key replays the same PaymentIntent).
  */
 async function verifyCharge(f: typeof fetch, c: StripeTestConfig, req: StripeChargeRequest, id: string): Promise<StripeChargeResult> {
-  let pi: { id?: string; status?: string; livemode?: boolean; amount?: number; amount_received?: number; currency?: string; customer?: string | { id?: string }; metadata?: Record<string, string> };
+  let pi: { id?: string; status?: string; livemode?: boolean; amount?: number; amount_received?: number; currency?: string; customer?: string | { id?: string }; metadata?: Record<string, string>; latest_charge?: string | { receipt_url?: string | null } | null };
   try {
-    const res = await f(`${API}/payment_intents/${encodeURIComponent(id)}`, { headers: { authorization: `Bearer ${c.secretKey}` }, signal: AbortSignal.timeout(20_000) });
+    const res = await f(`${API}/payment_intents/${encodeURIComponent(id)}?expand[]=latest_charge`, { headers: { authorization: `Bearer ${c.secretKey}` }, signal: AbortSignal.timeout(20_000) });
     if (!res.ok) return { ok: false, reason: "verification_unavailable", retryable: true, paymentIntentId: id };
     pi = (await res.json()) as typeof pi;
   } catch {
@@ -110,7 +110,9 @@ async function verifyCharge(f: typeof fetch, c: StripeTestConfig, req: StripeCha
   const mismatch = pi.id !== id ? "id" : pi.livemode !== false ? "livemode" : pi.status !== "succeeded" ? "status"
     : pi.amount !== req.amountCents ? "amount" : pi.amount_received !== req.amountCents ? "amount_received" : pi.currency !== "usd" ? "currency"
     : customer !== c.customerId ? "customer" : pi.metadata?.approval_id !== req.metadata.approval_id || pi.metadata?.quote_id !== req.metadata.quote_id ? "metadata" : null;
-  return mismatch ? { ok: false, reason: `verification_failed:${mismatch}`, retryable: false, paymentIntentId: id } : { ok: true, paymentIntentId: id };
+  if (mismatch) return { ok: false, reason: `verification_failed:${mismatch}`, retryable: false, paymentIntentId: id };
+  const receipt = typeof pi.latest_charge === "object" ? pi.latest_charge?.receipt_url : null;
+  return { ok: true, paymentIntentId: id, ...(receipt && /^https:\/\/pay\.stripe\.com\//.test(receipt) ? { receiptUrl: receipt } : {}) };
 }
 
 /** Mock mode: no network; deterministic DEMO PaymentIntent ids; same idempotency semantics. */

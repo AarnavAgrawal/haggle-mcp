@@ -346,6 +346,13 @@ export class HaggleEngine {
     return scoreQuotes(inputs, job.request.preferences?.weights ?? {});
   }
 
+  /** A settled Stripe charge links Stripe's hosted receipt when the read-back returned one. */
+  private async withReceipt(jobId: string, s: EnginePaymentStatus): Promise<EnginePaymentStatus> {
+    if (s.rail !== "stripe" || s.status !== "settled" || s.simulated) return s;
+    const e = (await this.repo.listEvents(jobId)).filter((x) => x.type === "payment" && x.data.status === "settled" && typeof x.data.receipt_url === "string").at(-1);
+    return e ? { ...s, receipt_url: String(e.data.receipt_url) } : s;
+  }
+
   private async rankRows(job: JobRow) {
     const quotes = (await this.repo.listQuotes(job.id)).filter((q) => q.status === "current");
     const rankable = quotes.map((q): RankableQuote => ({
@@ -696,11 +703,14 @@ export class HaggleEngine {
     const hits: { job: JobRow; b: JobBusinessRow }[] = [];
     for (const job of await this.repo.listOpenJobs()) for (const b of await this.repo.getBusinesses(job.id)) if (b.channel === "imessage" && b.phone === m.from && b.contacted_at) hits.push({ job, b });
     if (!hits.length) return { jobId: null, outcome: "unknown_sender" };
-    const { job, b } = hits.sort((x, y) => Date.parse(y.b.contacted_at!) - Date.parse(x.b.contacted_at!))[0]!;
+    // Same number on several open jobs: the HG-<code> it quotes wins, else the most recently contacted job.
+    const code = /\bHG-([A-Z0-9]{4,8})\b/i.exec(m.text)?.[1]?.toUpperCase();
+    const byCode = code ? hits.find((h) => h.job.short_code.toUpperCase() === code) : undefined;
+    const { job, b } = byCode ?? hits.sort((x, y) => Date.parse(y.b.contacted_at!) - Date.parse(x.b.contacted_at!))[0]!;
     const stored = await this.repo.insertMessage({
       job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: "imessage", provider_email_id: `imsg-in:${m.messageId}`, idempotency_key: null,
       rfc_message_id: null, thread_id: null, from_address: m.from, to_address: job.inbox, subject: null, body_text: m.text.slice(0, 5000) || null, attachments: [], attachments_download_url: null,
-      sender_trusted: true, trust_reason: "imessage-from-pinned-number", matched_via: "imessage_number", parse_status: m.text.trim() ? "pending" : "none", quarantine_reason: null,
+      sender_trusted: true, trust_reason: "imessage-from-pinned-number", matched_via: byCode ? "imessage_number+code" : "imessage_number", parse_status: m.text.trim() ? "pending" : "none", quarantine_reason: null,
       round: null, simulated: false,
     });
     if (!stored) return { jobId: job.id, outcome: "duplicate" };
@@ -1492,7 +1502,7 @@ export class HaggleEngine {
       const done = await this.repo.transitionPayment(pay.id, ["charging"], { status: "settled", stripe_payment_intent_id: r.paymentIntentId, reason: null });
       if (done) {
         await this.repo.transitionApproval(pay.approval_id, "approved", { status: "used" });
-        await this.repo.appendEvent(jobId, "payment", { status: "settled", rail: "stripe", payment_intent_id: r.paymentIntentId, simulated: done.simulated });
+        await this.repo.appendEvent(jobId, "payment", { status: "settled", rail: "stripe", payment_intent_id: r.paymentIntentId, simulated: done.simulated, ...(r.receiptUrl ? { receipt_url: r.receiptUrl } : {}) });
       }
     } else if (r.retryable) {
       // Stays `charging` and marked resumable; the next advance retries with the same key.
@@ -1645,7 +1655,7 @@ export class HaggleEngine {
       business_names: Object.fromEntries(businesses.map((b) => [b.business_id, b.name])),
       businesses: board,
       approval: approval ? approvalRecord(approval, job) : null,
-      payment: payment ? paymentStatus(payment) : job.state === "awaiting_approval" ? this.noPayment() : null,
+      payment: payment ? await this.withReceipt(jobId, paymentStatus(payment)) : job.state === "awaiting_approval" ? this.noPayment() : null,
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
       payment_ceiling_usd: centsToUsd(Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents)),
       payments_enabled: this.d.stripe !== undefined || !this.d.payer.disabledReason,
@@ -1851,7 +1861,7 @@ export class HaggleEngine {
       await this.advanceJob(jobId); // a settled charge moves the job to paid
       const p = await this.repo.getPaymentForJob(jobId);
       if (!p) throw new EngineError("payment_not_started", "The payment didn't start.", "Call get_quotes to check the job, then pay again.", "get_quotes");
-      return paymentStatus(p);
+      return this.withReceipt(jobId, paymentStatus(p));
     }
     const p0 = await this.repo.getPaymentForJob(jobId);
     if (p0?.status === "expired") {

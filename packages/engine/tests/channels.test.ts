@@ -312,6 +312,19 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     expect(board.callbacks).toEqual([]); // nothing more to justify
   });
 
+  it("the same number on two open jobs: a reply quoting HG-<code> goes to that job, else to the latest contact", async () => {
+    const { engine, repo, clock, texts } = demoEngine();
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const older = await engine.deal({ request, budget_usd, businesses: [{ name: "Sunset Kitchen", phone: "+14155550111", channel: "imessage" }] });
+    clock.advance(60_000);
+    const newer = await engine.deal({ request, budget_usd, businesses: [{ name: "Sunset Kitchen", phone: "+14155550111", channel: "imessage" }] });
+    const olderCode = (await repo.getJob(older.job_id))!.short_code;
+    expect(texts[0]!.text).toContain(`HG-${olderCode}`);
+    expect(await engine.ingestIMessage({ messageId: "im_x1", from: "+14155550111", text: `For HG-${olderCode}: $1,080 total, 14 vegetarian, delivered`, isGroup: false })).toMatchObject({ jobId: older.job_id, outcome: "stored" });
+    expect(await engine.ingestIMessage({ messageId: "im_x2", from: "+14155550111", text: "$1,050 total, 14 vegetarian, delivered", isGroup: false })).toMatchObject({ jobId: newer.job_id, outcome: "stored" });
+    expect(await engine.ingestIMessage({ messageId: "im_x3", from: "+14155550999", text: "$1 total", isGroup: false })).toMatchObject({ jobId: null }); // unknown sender never lands on a job
+  });
+
   it("an unanswered email escalates to one Voice AI call when the business has an allowlisted phone", async () => {
     const { engine, clock, calls } = demoEngine({ escalateEmailToCallAfterMs: 5 * 60_000 });
     const { budget_usd, ...request } = GOLDEN_REQUEST;

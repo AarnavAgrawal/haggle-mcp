@@ -66,7 +66,11 @@ describe("Stripe test-mode port", () => {
       stripeTestPayments({ ...CFG, fetchImpl: fakeFetch((c) => (c.method === "POST" ? { status: 200, json: PI } : get(c))).f }).charge(REQ);
     const { f, calls } = fakeFetch((c) => (c.method === "POST" ? { status: 200, json: PI } : { status: 200, json: PI }));
     expect(await stripeTestPayments({ ...CFG, fetchImpl: f }).charge(REQ)).toEqual({ ok: true, paymentIntentId: "pi_123" });
-    expect(calls[1]).toMatchObject({ method: "GET", url: "https://api.stripe.com/v1/payment_intents/pi_123" });
+    expect(calls[1]).toMatchObject({ method: "GET", url: "https://api.stripe.com/v1/payment_intents/pi_123?expand[]=latest_charge" });
+    // Stripe's hosted receipt (no Stripe login needed) comes from the same read-back; anything else is ignored.
+    const withReceipt = await charge(() => ({ status: 200, json: { ...PI, latest_charge: { receipt_url: "https://pay.stripe.com/receipts/payment/abc" } } }));
+    expect(withReceipt).toEqual({ ok: true, paymentIntentId: "pi_123", receiptUrl: "https://pay.stripe.com/receipts/payment/abc" });
+    expect(await charge(() => ({ status: 200, json: { ...PI, latest_charge: { receipt_url: "https://evil.example/receipt" } } }))).toEqual({ ok: true, paymentIntentId: "pi_123" });
     for (const [field, value] of [["amount", 5000], ["amount_received", 0], ["currency", "eur"], ["status", "requires_action"], ["livemode", true], ["customer", "cus_OTHER"], ["metadata", { approval_id: "ap_2", quote_id: "q_1" }]] as const) {
       expect(await charge(() => ({ status: 200, json: { ...PI, [field]: value } })), field).toMatchObject({ ok: false, reason: expect.stringMatching(/^verification_failed/), retryable: false, paymentIntentId: "pi_123" });
     }
