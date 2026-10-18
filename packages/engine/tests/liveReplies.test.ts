@@ -46,6 +46,9 @@ describe("the live rehearsal replies become quotes and the deal moves on by itse
     // Best value is still Mission Eats, but only an approvable quote is recommended; the board says why.
     expect(b.best_value_quote_id).toBe(q("Mission Eats").quote_id);
     expect(b.recommended_quote_id).toBe(q("Sunset Kitchen").quote_id);
+    // list_deals' "leading" is the board's recommendation, never the cheaper estimate ("≈ $1,200").
+    const listed = (await engine.recentDeals(5)).find((d) => d.job_id === deal.job_id)!;
+    expect(listed.leading).toMatchObject({ business: "Sunset Kitchen" });
     expect(b.recommendation_note).toMatch(/^Best value is Mission Eats but it can't be approved yet: Approximate total from the call \(≈ \$1,200\)\..*callback/);
     expect(b.next).toMatch(new RegExp(`approve\\(job_id, quote_id='${q("Sunset Kitchen").quote_id}'\\) for Sunset Kitchen`));
   });

@@ -2385,9 +2385,12 @@ export class HaggleEngine {
     const jobs = (await this.repo.listRecentJobs(Math.min(Math.max(limit, 1), 50))).sort((a, b) => Number(TERMINAL.has(a.state)) - Number(TERMINAL.has(b.state)) || b.created_at.localeCompare(a.created_at));
     const out = [];
     for (const j of jobs) {
-      const { quotes, ranking } = await this.rankRows(j);
+      const { quotes } = await this.rankRows(j);
       const businesses = await this.repo.getBusinesses(j.id);
-      const lead = quotes.find((q) => q.id === ranking.recommendedQuoteId);
+      // "Leading" is the board's recommendation (best value the human can actually approve), never a
+      // raw-ranking pick such as an approximate total.
+      const board = quotes.some((q) => q.total_cents !== null) ? await this.getQuotes(j.id).catch(() => null) : null;
+      const lead = quotes.find((q) => q.id === board?.recommended_quote_id);
       out.push({
         job_id: j.id, what: j.request.what, quantity: j.request.quantity, ...(j.request.unit ? { unit: j.request.unit } : {}), date: j.request.date, area: j.request.area, state: j.state, ready: j.ready,
         created_at: j.created_at, updated_at: j.updated_at, businesses: businesses.length, quotes: quotes.filter((q) => q.total_cents !== null).length,
