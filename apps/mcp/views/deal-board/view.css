@@ -381,3 +381,9 @@
 .db-setup ul { margin: 6px 0 0; padding-left: 18px; }
 .db-setup li { margin: 4px 0; }
 .db-setup-fix { display: block; color: var(--ink-2); }
+
+.db-factors { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 2px; font-size: 12px; color: var(--ink-2); }
+.db-factors li.is-neutral { opacity: .7; }
+.db-factor-name { display: inline-block; min-width: 86px; font-weight: 600; text-transform: capitalize; color: var(--ink); }
+.db-whynot { margin: 4px 0 0; font-size: 12px; color: var(--ink-2); }
+.db-callback { border-left: 3px solid var(--ch-phone); }

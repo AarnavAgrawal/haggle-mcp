@@ -131,6 +131,8 @@ export interface EngineDeps {
    */
   stripe?: StripePort;
   config: EngineConfig;
+  /** Optional: public reputation for real businesses (non-blocking; never for simulated vendors). */
+  reputation?: import("../reputation/places.ts").ReputationPort;
   now?: () => Date;
   /** Mock mode: deliver due simulated replies before each advance. */
   onTick?: () => Promise<void>;

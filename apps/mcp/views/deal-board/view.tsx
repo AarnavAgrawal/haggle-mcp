@@ -43,8 +43,16 @@ type Sync = { at: number | null; trouble: boolean };
 type Extras = {
   request_details?: { what: string; headcount: number; when: string; place: string; requirements: string[]; budget_usd: number | null; budget_source?: "request" | "settings_default" };
   payment_ceiling_usd?: number;
+  payments_enabled?: boolean;
   setup?: { ready: number; total: number; blockers: { vendor: string; channel: string; reason: string; fix: string }[] };
   not_contacted?: { business: string; channel: string; reason: string }[];
+  value?: {
+    weights: Record<string, number>;
+    recommendedQuoteId: string | null;
+    ranked: { quoteId: string; business: string; score: number; confidence: number; factors: { name: string; score: number; weight: number; neutral: boolean; note: string }[] }[];
+    explanation: { winner: string; others: { quote_id: string; text: string }[] } | null;
+  };
+  callbacks?: { business_id: string; business: string; their_total_usd: number; basis_total_usd: number; basis_business: string; why: string }[];
 };
 type DealBoard = CoreDealBoard & Extras;
 type DealBoardOrEmpty = CoreDealBoardOrEmpty & Extras;
@@ -227,7 +235,7 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
                   </>
                 )}
                 {board.request_details.requirements.join(", ")}
-                {board.payment_ceiling_usd !== undefined && <> · Deposits only after your approval, up to {usd(board.payment_ceiling_usd)}</>}
+                {board.payments_enabled === false ? <> · Payments are off on this server</> : board.payment_ceiling_usd !== undefined && <> · Deposits only after your approval, up to {usd(board.payment_ceiling_usd)}</>}
               </p>
             </>
           ) : (
@@ -263,6 +271,9 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
           <Ladder board={board} winnerId={winner?.quote_id} onChanged={onChanged} />
         </section>
         <section className="db-side">
+          {(board.callbacks ?? []).map((c) => (
+            <Callback key={c.business_id} jobId={board.job.id} c={c} onChanged={onChanged} />
+          ))}
           {board.open_questions.map((q) => (
             <Question key={q.question_id} jobId={board.job.id} question={q} onChanged={onChanged} />
           ))}
@@ -372,7 +383,9 @@ function QuoteRow({ quote: q, rank, scale, board, winner, onChanged }: { quote: 
             <FlagChip key={f} flag={f} />
           ))}
         </div>
-        {winner && <p className="db-why">{whyWinner(q, board)}</p>}
+        {winner && <p className="db-why">{valueWhy(q, board) ?? whyWinner(q, board)}</p>}
+        {winner && <Factors board={board} quoteId={q.quote_id} />}
+        {!winner && q.meets_requirements && <WhyNot board={board} quoteId={q.quote_id} />}
         {winner && q.items.length > 0 && <p className="db-items">{q.items.join(", ")}</p>}
         {countered.map((n) => (
           <p key={`${n.business_id}-${n.round}`} className="db-neg">
@@ -493,6 +506,75 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
           {err}
         </span>
       )}
+    </div>
+  );
+}
+
+/** The best-value reason (server-computed, deterministic), without the leading business name. */
+function valueWhy(q: Quote, board: DealBoard): string | null {
+  const w = board.value?.explanation?.winner;
+  if (!w || board.value?.recommendedQuoteId !== q.quote_id) return null;
+  return w.replace(/^[^:]+:\s*/, "").replace(/^best value (\d\.\d\d) — /, "Best value ($1): ");
+}
+
+/** Each factor of the winner's score with its evidence; neutral factors say so. */
+function Factors({ board, quoteId }: { board: DealBoard; quoteId: string }) {
+  const r = board.value?.ranked.find((x) => x.quoteId === quoteId);
+  if (!r) return null;
+  return (
+    <ul className="db-factors" aria-label="Why this score">
+      {r.factors.filter((f) => f.weight > 0).map((f) => (
+        <li key={f.name} className={f.neutral ? "is-neutral" : undefined} title={`${f.name}: ${f.score.toFixed(2)} × weight ${f.weight.toFixed(2)}`}>
+          <span className="db-factor-name">{f.name}</span> {f.note}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function WhyNot({ board, quoteId }: { board: DealBoard; quoteId: string }) {
+  const t = board.value?.explanation?.others.find((o) => o.quote_id === quoteId)?.text;
+  return t ? <p className="db-whynot">{t.replace(/^[^:]+:\s*/, "")}</p> : null;
+}
+
+/** A justified negotiation callback: the human taps to authorize one AI-disclosed call. */
+function Callback({ jobId, c, onChanged }: { jobId: string; c: NonNullable<Extras["callbacks"]>[number]; onChanged: () => Promise<void> }) {
+  const call = useCallTool("call_back");
+  const inView = useCallTool("call_back_in_view");
+  const [state, setState] = useState<"idle" | "placed" | "declined" | "error">("idle");
+  const [err, setErr] = useState<string | null>(null);
+  const go = async () => {
+    setErr(null);
+    try {
+      const res = await call.callTool({ job_id: jobId, business_id: c.business_id });
+      const out = res.structuredContent as { status?: string };
+      const code = ((res as { _meta?: Record<string, unknown> })._meta?.["haggle/callback"] as { code?: string } | undefined)?.code;
+      if (out.status === "pending_human" && code) {
+        await inView.callTool({ job_id: jobId, business_id: c.business_id, code });
+        setState("placed");
+      } else setState(out.status === "placed" ? "placed" : out.status === "declined" ? "declined" : "idle");
+    } catch (e) {
+      setErr((e as Error).message);
+      setState("error");
+    }
+    await onChanged();
+  };
+  return (
+    <div className="db-question db-callback">
+      <p className="db-q-who">Negotiate by phone?</p>
+      <p className="db-q-text">
+        {c.business} quoted {usd(c.their_total_usd)}. {c.basis_business} quoted {usd(c.basis_total_usd)} for the same order.
+      </p>
+      {state === "placed" ? (
+        <p className="db-q-sent">Calling {c.business} back. The AI says it's an assistant and cites only the real {usd(c.basis_total_usd)} quote.</p>
+      ) : state === "declined" ? (
+        <p className="hg-muted">Not called.</p>
+      ) : (
+        <button className="hg-btn" disabled={call.isPending || inView.isPending} onClick={() => void go()}>
+          {call.isPending || inView.isPending ? "Calling…" : `Call ${c.business} back`}
+        </button>
+      )}
+      {err && <span className="db-err">{err}</span>}
     </div>
   );
 }

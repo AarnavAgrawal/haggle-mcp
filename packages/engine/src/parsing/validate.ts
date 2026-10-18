@@ -121,6 +121,8 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
 
   const dietary: QuoteRecord["dietary_coverage"] = {};
   for (const d of x.dietary_coverage) dietary[d.need.trim().toLowerCase()] = { covered: d.covered, count_offered: d.count_offered };
+  const answers: NonNullable<QuoteRecord["requirement_answers"]> = {};
+  for (const a of x.requirement_answers ?? []) if (a.answer !== "not_stated" && a.excerpt.trim()) answers[a.requirement.trim().toLowerCase()] = { met: a.answer === "yes", excerpt: a.excerpt.trim().slice(0, 200) };
 
   return {
     available: x.available,
@@ -135,6 +137,7 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number): Q
     deposit_cents: cents.deposit,
     menu_items: x.menu_items.slice(0, 20),
     dietary_coverage: dietary,
+    ...(Object.keys(answers).length ? { requirement_answers: answers } : {}),
     valid_until: validUntil,
     questions: x.questions.slice(0, 5).map((q) => q.slice(0, 500)),
     flags: [...flags],
@@ -164,4 +167,16 @@ export function dropUnstatedDietaryRefusals(x: QuoteExtraction, text: string): Q
   const mentions = (need: string) => (NEED_WORDS[need.trim().toLowerCase()] ?? new RegExp(`\\b${need.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")).test(text);
   const kept = x.dietary_coverage.filter((d) => d.covered || d.count_offered !== null || mentions(d.need));
   return kept.length === x.dietary_coverage.length ? x : { ...x, dietary_coverage: kept };
+}
+
+/**
+ * A requirement answer counts only when its quoted excerpt is really in the reply (plain-text
+ * replies; PDFs can't be checked here). Unsupported answers become "not stated", never a yes or no.
+ */
+export function dropUnsupportedRequirementAnswers(x: QuoteExtraction, text: string): QuoteExtraction {
+  if (!x.requirement_answers?.length) return x;
+  const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9$]+/g, " ").trim();
+  const hay = norm(text);
+  const kept = x.requirement_answers.map((a) => (a.answer !== "not_stated" && (!a.excerpt.trim() || !hay.includes(norm(a.excerpt))) ? { ...a, answer: "not_stated" as const } : a));
+  return { ...x, requirement_answers: kept };
 }

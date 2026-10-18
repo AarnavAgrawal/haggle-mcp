@@ -138,6 +138,20 @@ export class BrainAdapter implements Brain {
     return p ? toEngineProfile(p, this.engineIdForBrainId(p.business_id), p.name, false) : null;
   }
 
+  /**
+   * Haggle's own track record with a business for value ranking: real quotes on other jobs (seed
+   * samples excluded), their median reply time and safety flags seen. null when nothing is known.
+   */
+  async trackRecord(business: string, excludeJobId: string): Promise<{ past_quotes: number; median_reply_minutes?: number; safety_flags_seen: number } | null> {
+    const p = (await this.core.getProfile(this.brainIdFor(business))) ?? (await this.core.getProfile(business));
+    if (!p) return null;
+    const real = p.history.filter((h) => h.kind === "quote" && h.job_id !== excludeJobId && !h.job_id.startsWith("job_seed"));
+    const mins = real.map((h) => h.reply_minutes).filter((m): m is number => typeof m === "number").sort((a, b) => a - b);
+    const flags = p.flags_seen.filter((f) => f === "external_payment_link" || f === "prompt_injection").length;
+    if (!real.length && !flags) return null;
+    return { past_quotes: real.length, ...(mins.length ? { median_reply_minutes: mins[Math.floor(mins.length / 2)]! } : {}), safety_flags_seen: flags };
+  }
+
   private engineIdForBrainId(brainId: string): string {
     const d = this.directory.find((x) => x.id === brainId);
     return d ? this.engineIdFor(d) : brainId;

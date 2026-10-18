@@ -19,6 +19,8 @@ export * from "./payments/guard.ts";
 export * from "./outbound/rfq.ts";
 export * from "./outbound/imessageErrors.ts";
 export * from "./ranking/rank.ts";
+export * from "./ranking/value.ts";
+export * from "./reputation/places.ts";
 export * from "./outbound/primitiveSender.ts";
 export * from "./payments/x402Challenge.ts";
 export * from "./ids.ts";

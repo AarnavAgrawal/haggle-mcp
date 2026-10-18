@@ -185,6 +185,17 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
       expect(board.quotes.some((x: { quote_id: string }) => x.quote_id === n.basis_quote_id) || eligibleTotals.has(n.target_total_usd)).toBe(true);
     }
 
+    // Best value is explained; Mission Eats ($1,070 by phone) may be called back citing the real $995.
+    expect(board.value.explanation.winner).toMatch(/^Bay Catering: best value /);
+    expect(board.value.ranked[0].factors.find((f: { name: string }) => f.name === "reputation")).toMatchObject({ neutral: true, note: "demo vendor: no public listing to check (neutral)" });
+    const cb = board.callbacks.find((c: { business: string }) => c.business === "Mission Eats");
+    expect(cb).toMatchObject({ their_total_usd: 1070, basis_total_usd: 995 });
+    const placed = await call("call_back", { job_id: job, business_id: cb.business_id });
+    expect(placed.structuredContent).toMatchObject({ status: "placed", business: "Mission Eats", mode: "mock" });
+    expect(errorOf(await call("call_back", { job_id: job, business_id: cb.business_id })).error.code).toBe("callback_not_justified"); // once
+    const tap = await call("call_back_in_view", { job_id: job, business_id: cb.business_id, code: "123456" });
+    expect(errorOf(tap).error.code).toBe("callback_not_authorized");
+
     // Unauthorized operations are refused with a fix.
     const early = await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(errorOf(early)).toMatchObject({ error: { code: "no_approval" }, next: "approve" });

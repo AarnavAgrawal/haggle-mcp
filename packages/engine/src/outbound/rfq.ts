@@ -45,6 +45,7 @@ export interface RfqInput {
   quantity: number;
   date: string; // YYYY-MM-DD
   time?: string; // "12:00" (24h, local)
+  unit?: string; // "people" (default), "jobs", "hours", "items"
   location: string;
   requirements: string[]; // hard requirements, human-readable
   replyBy: Date;
@@ -53,7 +54,7 @@ export interface RfqInput {
 }
 
 export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string } {
-  const subject = `[HG-${i.shortCode}] Quote request: ${i.what}, ${i.quantity} people, ${humanDate(i.date)}`;
+  const subject = `[HG-${i.shortCode}] Quote request: ${i.what}, ${i.quantity} ${i.unit ?? "people"}, ${humanDate(i.date)}`;
   const replyBy = `${humanDate(i.replyBy.toISOString().slice(0, 10))} ${String(i.replyBy.getUTCHours()).padStart(2, "0")}:${String(i.replyBy.getUTCMinutes()).padStart(2, "0")} UTC`;
   const lines = [
     `Hi ${i.businessName},`,
@@ -62,14 +63,14 @@ export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string 
     "",
     `- What: ${i.what}`,
     `- When: ${eventWhen(i.date, i.time)}`,
-    `- People: ${i.quantity}`,
+    !i.unit || i.unit === "people" ? `- People: ${i.quantity}` : `- Quantity: ${i.quantity} ${i.unit}`,
     `- Location: ${i.location}`,
     ...(i.requirements.length ? ["- Must have:", ...i.requirements.map((r) => `  - ${r}`)] : []),
   ];
   if (i.budgetHintCents !== undefined) lines.push(`- Budget: up to $${(i.budgetHintCents / 100).toFixed(2)} total`);
   lines.push(
     "",
-    `Please reply by ${replyBy} with your total price, what it includes (delivery, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.`,
+    `Please reply by ${replyBy} with your total price, what it includes (delivery or travel, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.`,
     "",
     "Thank you!",
   );

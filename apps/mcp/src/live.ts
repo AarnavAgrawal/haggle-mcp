@@ -6,7 +6,7 @@
 // when HAGGLE_ENABLE_PAYMENTS=true and the key is sk_test_ (refuses to start otherwise); without the
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
-  businessIdFor, claudeExtractor, connectInkboxBuyer, disabledPayer, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
+  businessIdFor, claudeExtractor, placesReputation, connectInkboxBuyer, disabledPayer, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
 } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
@@ -24,9 +24,10 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // Stripe test mode is opt-in; a non-test key or a missing customer/card refuses to start (throws).
   const paymentsOn = env.HAGGLE_ENABLE_PAYMENTS === "true";
   const stripe = paymentsOn ? stripeTestPayments({ secretKey: env.STRIPE_SECRET_KEY ?? "", customerId: env.STRIPE_CUSTOMER_ID ?? "", paymentMethodId: env.STRIPE_PAYMENT_METHOD_ID ?? "" }) : undefined;
-  // Per-payment ceiling (operator): x402 keeps its $10 testnet limit; Stripe defaults to $500, max $10,000.
-  const cap = Number(env.HAGGLE_GLOBAL_PAYMENT_CAP_CENTS ?? (stripe ? "50000" : "500"));
-  const capMax = stripe ? 1_000_000 : 1000;
+  // Per-payment ceiling (operator): one value whether or not payments are on (live has no x402 rail).
+  // Default $5,000, max $10,000. Separate from each deal's budget and the human's settings cap.
+  const cap = Number(env.HAGGLE_GLOBAL_PAYMENT_CAP_CENTS ?? "500000");
+  const capMax = 1_000_000;
   const ceiling = Number(env.HAGGLE_SPENDING_CAP_CEILING_CENTS ?? "500000");
   const repo = new PostgresRepository(env.SUPABASE_DB_URL!, env.HAGGLE_DB_SCHEMA?.trim() ? { schema: env.HAGGLE_DB_SCHEMA.trim() } : {});
   // Each outbound channel is OFF unless explicitly enabled (real calls / iMessages / A2A tasks need
@@ -61,9 +62,11 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     brain,
     payer: disabledPayer("Payments are not enabled on this server (HAGGLE_ENABLE_PAYMENTS is off); nothing was charged."),
     ...(stripe ? { stripe } : {}),
+    // Public reviews for real businesses (Google Places), only when a key is configured; never for demo vendors.
+    reputation: placesReputation({ ...(env.GOOGLE_PLACES_API_KEY ? { apiKey: env.GOOGLE_PLACES_API_KEY } : {}), log: (event, data) => console.log(JSON.stringify({ level: "info", event, ...data })) }),
     config: {
       mode: "live", inboxDomain: buyerMailbox.split("@")[1]!, sharedInbox: buyerMailbox, collectionWindowMs: 30 * 60_000, negotiationWindowMs: 15 * 60_000,
-      approvalTtlMs: 30 * 60_000, globalPaymentCapCents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : stripe ? 50_000 : 500, maxRounds: 2,
+      approvalTtlMs: 30 * 60_000, globalPaymentCapCents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, maxRounds: 2,
       defaultSpendingCapCents: 150_000, spendingCapCeilingCents: Number.isInteger(ceiling) && ceiling > 0 ? ceiling : 500_000,
       ...(allowAny ? {} : { recipientAllowlist: allowlist }),
       trustInboundCallerId: env.HAGGLE_TRUST_INBOUND_CALLER_ID === "true",
@@ -76,7 +79,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   setInterval(() => {
     void repo.listOpenJobs().then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
   }, TICK_MS).unref();
-  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, payments: stripe ? "stripe-test" : "disabled", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
+  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, payments: stripe ? "stripe-test" : "disabled", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
   // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
   let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };
   const roster = async () => {

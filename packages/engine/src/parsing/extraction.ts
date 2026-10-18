@@ -27,6 +27,10 @@ export const QuoteExtraction = z.object({
   dietary_coverage: z
     .array(z.object({ need: z.string(), covered: z.boolean(), count_offered: z.number().int().nullable() }))
     .describe("For each requested dietary need: whether the business said it can cover it, and how many meals it offered if it said"),
+  requirement_answers: z
+    .array(z.object({ requirement: z.string(), answer: z.enum(["yes", "no", "not_stated"]), excerpt: z.string() }))
+    .optional()
+    .describe("For each listed requirement that is not a dietary need or delivery: yes/no only if the business explicitly addressed it (with the exact short text), else not_stated"),
   valid_until: z.string().nullable().describe("YYYY-MM-DD if stated"),
   questions: z.array(z.string()).describe("Questions the business asked the buyer before it can quote, verbatim"),
   payment_request: z
@@ -58,6 +62,8 @@ export interface QuoteRecord {
   deposit_cents: number | null;
   menu_items: string[];
   dietary_coverage: Record<string, { covered: boolean; count_offered: number | null }>;
+  /** Other requirements the business explicitly answered, keyed by the requirement's text (lowercased). */
+  requirement_answers?: Record<string, { met: boolean; excerpt: string }>;
   valid_until: string | null;
   questions: string[];
   flags: string[];

@@ -86,6 +86,8 @@ function boardText(b: DealBoardData) {
     `${b.businesses.length} businesses: ${b.businesses.map((x) => `${x.name} [${x.channel}] ${x.status}`).join("; ")}`,
     `${b.quotes.length} quotes, ${eligible.length} eligible${best ? `; best ${best.business} ${usd(best.total_usd)} (quote_id ${best.quote_id})` : ""}`,
     ...b.rejected.map((r) => `rejected ${b.business_names[r.business_id]}: ${r.detail}`),
+    ...(b.value?.explanation ? [`why: ${b.value.explanation.winner}`] : []),
+    ...(b.callbacks ?? []).map((c) => `callback available: ${c.business} (${c.why}) → call_back(job_id, business_id='${c.business_id}') only if the user wants it`),
     ...b.open_questions.map((q) => `question ${q.question_id} from ${q.business}: "${q.text.slice(0, 120)}"`),
     `next: ${b.next}`,
   ];
@@ -131,6 +133,13 @@ async function areaOr(rt: Runtime, area: string | undefined) {
 
 // ───────────────────────────── cold path ─────────────────────────────
 
+/** Best-value presets (normalized by the engine); hard requirements and the budget always come first. */
+const PRIORITY_WEIGHTS = {
+  lowest_price: { price: 0.8, reputation: 0.05, reliability: 0.05, completeness: 0.05, terms: 0.05 },
+  balanced: { price: 0.5, reputation: 0.2, reliability: 0.1, completeness: 0.1, terms: 0.1 },
+  quality: { price: 0.3, reputation: 0.35, reliability: 0.15, completeness: 0.1, terms: 0.1 },
+} as const;
+
 export const deal = server.tool(
   {
     name: "deal",
@@ -147,6 +156,10 @@ export const deal = server.tool(
       discover: z.boolean().optional().describe("Deprecated: omitting businesses already uses the configured vendors"),
       requirements: z.array(requirement).max(20).optional().describe("Extra requirements (merged with request.requirements)"),
       budget_usd: z.number().positive().max(1_000_000).optional().describe("The user's budget for the whole order, in USD (e.g. 'under $5k' = 5000). Quotes above it can't win. Defaults to the settings spending cap only if the user gave none."),
+      preferences: z.object({
+        priority: z.enum(["lowest_price", "balanced", "quality"]).optional().describe("How the user trades price against reviews/track record/terms (default balanced). Use 'quality' only if the user says quality matters more than price."),
+        weights: z.object({ price: z.number().min(0).max(1), reputation: z.number().min(0).max(1), reliability: z.number().min(0).max(1), completeness: z.number().min(0).max(1), terms: z.number().min(0).max(1) }).partial().optional().describe("Advanced: explicit best-value weights (normalized)"),
+      }).optional().describe("Buyer preferences for the best-value recommendation (hard requirements and budget always come first)"),
       deadline: z.string().datetime({ offset: true }).optional().describe("ISO time the businesses should reply by"),
       approver_email: z.string().email().optional().describe("Stored with the deal; email approval isn't enabled (approve in the client's form or approval card)"),
       approver_phone: z.string().regex(/^\+[1-9]\d{6,14}$/).optional().describe("Ignored: the iMessage approver is set by the human in settings"),
@@ -187,7 +200,10 @@ export const deal = server.tool(
       if (fromRoster && blockers.length) warnings.push(`${blockers.length} of ${roster.length} demo vendors not contacted (setup needed): ${blockers.map((x) => `${x.vendor} [${x.channel}]`).join(", ")}.`);
       const { time: _t, venue: _v, ...base } = input.request;
       const r = await engine.deal({
-        request: { ...base, area, ...(input.request.time ? { time: input.request.time } : {}), ...(input.request.venue ? { venue: input.request.venue } : {}), requirements: reqs },
+        request: {
+          ...base, area, ...(input.request.time ? { time: input.request.time } : {}), ...(input.request.venue ? { venue: input.request.venue } : {}), requirements: reqs,
+          ...(input.preferences ? { preferences: { weights: { ...PRIORITY_WEIGHTS[input.preferences.priority ?? "balanced"], ...input.preferences.weights } } } : {}),
+        },
         businesses,
         budget_usd: budget,
         ...(input.deadline ? { reply_by: input.deadline } : {}),
@@ -210,7 +226,7 @@ export const deal = server.tool(
         `Contacted ${r.contacted.length}: ${r.contacted.map((c) => `${c.business} [${c.channel}]`).join(", ") || "none"}.`,
         ...(r.not_contacted.length ? [`Not contacted: ${r.not_contacted.map((c) => `${c.business} (${c.reason})`).join("; ")}.`] : []),
         ...warnings,
-        `Deposits are paid only after the human approves, up to ${usd(v.payment_ceiling_usd)} per payment.`,
+        v.payments_enabled === false ? "Payments are off on this server: nothing can be paid even after approval." : `Deposits are paid only after the human approves, up to ${usd(v.payment_ceiling_usd)} per payment.`,
         `next: ${v.next}`,
       ].join("\n");
       return ok(v, text);
@@ -362,6 +378,73 @@ export const approve = server.tool(
     }),
 );
 const approveHasView = "view" in viewIf({ name: "approval" });
+
+// One-time codes for a callback authorized by a tap on the deal board (never shown to the model).
+const callbackCodes = new Map<string, { job_id: string; business_id: string; expires: number }>();
+
+const callbackOut = z.looseObject({ ok: z.boolean(), mode: z.enum(["mock", "live"]), next: z.string(), status: z.enum(["placed", "pending_human", "declined"]), business: z.string(), basis_total_usd: z.number(), their_total_usd: z.number() });
+
+export const callBack = server.tool(
+  {
+    name: "call_back",
+    title: "Negotiate by phone (callback)",
+    description:
+      "Ask the human to authorize ONE Voice AI callback to a phone vendor to negotiate, citing a real, cheaper, eligible competing quote from this deal. " +
+      "Only for a business listed in get_quotes `callbacks` (Haggle offers one only when the evidence justifies it). The human decides (approval form or the board's button); calling this is never the go-ahead by itself. " +
+      "Don't use to place first calls (deal does) or to call anyone else. Next: wait_for_update for the call's result.",
+    inputSchema: z.object({ job_id: jobId, business_id: z.string().min(3).max(64).describe("business_id from get_quotes callbacks") }),
+    outputSchema: callbackOut,
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async ({ job_id, business_id }, ctx) =>
+    run(async (rt) => {
+      const { engine, mode } = rt;
+      const proposal = (await engine.callbackProposals(job_id)).find((p) => p.business_id === business_id);
+      if (!proposal) return fail(mode, "callback_not_justified", "No evidence-based callback is available for this business now.", "Call get_quotes: callbacks are listed there only when a cheaper eligible competing quote exists.", "get_quotes");
+      const base = { ok: true, mode, business: proposal.business, basis_total_usd: proposal.basis_total_usd, their_total_usd: proposal.their_total_usd };
+      const ask = `${mode === "mock" ? "[DEMO] " : ""}Call ${proposal.business} back now? Haggle's Voice AI will say it's an AI assistant, thank them for their ${usd(proposal.their_total_usd)} quote and ask if they can beat a real ${usd(proposal.basis_total_usd)} quote from ${proposal.basis_business}. Nothing is bought.`;
+      const place = async (by: string) => {
+        await engine.placeCallback(job_id, business_id, by);
+        return ok({ ...base, status: "placed" as const, next: `Calling ${proposal.business} back. Call wait_for_update(job_id) for the result.` }, `Calling ${proposal.business} back (Voice AI), citing a real ${usd(proposal.basis_total_usd)} quote. next: wait_for_update`);
+      };
+      if (ctx.client.can("elicitation")) {
+        const key = `callback_${job_id}_${business_id}`;
+        const response = inputResponse(ctx.inputResponses, key);
+        if (response.kind !== "elicit") {
+          return inputRequired({ inputRequests: { [key]: inputRequired.elicit({ message: ask, requestedSchema: z.object({ call: z.boolean().describe("Yes, call them back once") }) }) } });
+        }
+        if (!(response.action === "accept" && response.content?.call === true)) return ok({ ...base, status: "declined" as const, next: "The human declined the callback. Continue with the quotes as they are." }, "The human declined the callback.");
+        return place(`mcp-client:${ctx.client.info()?.name ?? "unknown"}`);
+      }
+      if (ctx.client.extension("io.modelcontextprotocol/ui") !== undefined) {
+        const code = String(Math.floor(100_000 + Math.random() * 900_000));
+        callbackCodes.set(code, { job_id, business_id, expires: Date.now() + 10 * 60_000 });
+        return ok({ ...base, status: "pending_human" as const, next: "Waiting for the human to tap 'Call back' on the deal board." }, `Waiting for the human to authorize the callback on the deal board. next: wait_for_update`, { "haggle/callback": { code } });
+      }
+      if (mode === "mock") return place("DEMO simulated human");
+      return fail(mode, "NO_HUMAN_CHANNEL", "No way to ask a human to authorize the callback in this client.", "Authorize from a client that shows forms (Claude Code) or the deal board in Claude/ChatGPT.", "get_quotes");
+    }),
+);
+
+export const callBackInView = server.tool(
+  {
+    name: "call_back_in_view",
+    title: "Call back (board button)",
+    description: "Called only by the deal board when the human taps Call back. Hidden from the model; it needs the one-time code the board received.",
+    inputSchema: z.object({ job_id: jobId, business_id: z.string().min(3).max(64), code: z.string().regex(/^\d{6}$/) }),
+    outputSchema: callbackOut,
+    visibility: "app",
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async ({ job_id, business_id, code }) =>
+    run(async (rt) => {
+      const c = callbackCodes.get(code);
+      if (!c || c.job_id !== job_id || c.business_id !== business_id || c.expires < Date.now()) return fail(rt.mode, "callback_not_authorized", "That callback authorization is missing, used or expired.", "Tap Call back again.", "get_quotes");
+      callbackCodes.delete(code);
+      const { proposal } = await rt.engine.placeCallback(job_id, business_id, "human tap on the deal board");
+      return ok({ ok: true, mode: rt.mode, status: "placed" as const, business: proposal.business, basis_total_usd: proposal.basis_total_usd, their_total_usd: proposal.their_total_usd, next: "Calling them back. The board updates when the call ends." }, `Calling ${proposal.business} back.`);
+    }),
+);
 
 export const approveInView = server.tool(
   {

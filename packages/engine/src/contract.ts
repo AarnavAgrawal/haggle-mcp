@@ -45,6 +45,8 @@ export interface Request {
   venue?: string;             // "Y Combinator office, Mountain View St" (delivery address or place); optional
   requirements: Requirement[];
   budget_usd?: Usd;           // buyer's hard cap for the order total
+  /** How the buyer trades price against quality; weights are normalized (see ranking/value.ts). */
+  preferences?: { weights?: Partial<import("./ranking/value.ts").ValueWeights>; note?: string };
 }
 
 /* ───────────────────────── businesses ───────────────────────── */

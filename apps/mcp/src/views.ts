@@ -73,6 +73,15 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   }).optional(),
   /** Operator/settings ceiling for any single payment (the deposit), separate from the order budget. */
   payment_ceiling_usd: z.number().nonnegative().optional(),
+  payments_enabled: z.boolean().optional(),
+  /** Best-value ranking of eligible quotes: per-quote factors with evidence, weights and the why. */
+  value: z.looseObject({
+    method: z.literal("best_value"), weights: z.record(z.string(), z.number()), recommendedQuoteId: z.string().nullable(),
+    ranked: z.array(z.looseObject({ quoteId: z.string(), business: z.string(), score: z.number(), confidence: z.number(), factors: z.array(z.looseObject({ name: z.string(), score: z.number(), weight: z.number(), neutral: z.boolean(), note: z.string() })) })),
+    explanation: z.object({ winner: z.string(), others: z.array(z.object({ quote_id: z.string(), text: z.string() })) }).nullable(),
+  }).optional(),
+  /** Negotiation callbacks the evidence justifies; each needs the human's go-ahead (call_back). */
+  callbacks: z.array(z.looseObject({ business_id: z.string(), business: z.string(), their_total_usd: z.number(), basis_total_usd: z.number(), basis_business: z.string(), why: z.string() })).optional(),
   contacted: z.array(z.looseObject({ business: z.string(), channel: z.string() })).optional(),
   not_contacted: z.array(z.looseObject({ business: z.string(), channel: z.string(), reason: z.string() })).optional(),
   warnings: z.array(z.string()).optional(),
@@ -92,7 +101,7 @@ export function requestDetails(b: DealBoardData, budgetSource?: "request" | "set
 /** Board + request details + payment ceiling (+ setup blockers when given). */
 export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus> = {}): DealBoardPlus {
   return DealBoardPlus.parse({
-    ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...extra,
+    ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...extra,
   });
 }
 

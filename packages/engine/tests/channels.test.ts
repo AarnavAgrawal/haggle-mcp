@@ -258,7 +258,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
   }
   const trusted = (expected: string) => ({ trusted: true as const, address: expected, reason: "trusted" as const, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
 
-  it("collects all three, the call cites the best real competing quote, and ranking picks the best eligible offer", async () => {
+  it("collects all three; a justified, human-authorized callback cites the real competing quote; best value picks the winner", async () => {
     const { engine, repo, clock, sent, texts, calls } = demoEngine({ callDelayMs: 60_000 });
     const { budget_usd, ...request } = GOLDEN_REQUEST;
     const deal = await engine.deal({ request, budget_usd, businesses: [
@@ -278,25 +278,38 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     expect((await engine.ingestIMessage({ messageId: "im_in_1", from: "+14155550111", text: "We can do $1,080 total, 14 vegetarian, delivered, $100 deposit", isGroup: false })).outcome).toBe("stored");
     await engine.advanceJob(deal.job_id);
 
-    // After the delay the Voice AI call goes out, AI-disclosed, citing the best REAL competing total.
+    // After the delay the Voice AI call goes out, AI-disclosed. The first call only collects a quote.
     clock.advance(61_000);
     await engine.advanceJob(deal.job_id);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.reason).toMatch(/this is Haggle, an AI assistant/);
-    expect(calls[0]!.reason).toMatch(/real quote of \$1,080 total/);
-    expect((await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "haggle: I'm an AI assistant...\nremote: For you, $995 total all-in, 12 vegetarian, delivery included, $150 deposit." })).outcome).toBe("stored");
+    expect(calls[0]!.reason).toMatch(/Do not mention other businesses or prices/);
+    expect((await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "haggle: I'm an AI assistant...\nremote: For you, $1,150 total all-in, 12 vegetarian, delivery included, $150 deposit." })).outcome).toBe("stored");
     await engine.advanceJob(deal.job_id);
 
-    const board = await engine.getQuotes(deal.job_id);
-    const by = (n: string) => board.quotes.find((q) => q.business === n)!;
-    expect(by("Mission Eats")).toMatchObject({ channel: "phone", total_usd: 995, verdict: "compliant" });
+    // Evidence justifies one callback: a real, eligible, cheaper quote ($1,080 by iMessage) exists.
+    let board = await engine.getQuotes(deal.job_id);
+    expect(board.callbacks).toEqual([expect.objectContaining({ business: "Mission Eats", their_total_usd: 1150, basis_total_usd: 1080, basis_business: "Sunset Kitchen", round: 2 })]);
+    expect(calls).toHaveLength(1); // proposed, never placed without a human
+
+    // A human authorizes it: one AI-disclosed call citing only that real total.
+    await engine.placeCallback(deal.job_id, board.callbacks![0]!.business_id, "human via approval form");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.reason).toMatch(/AI assistant who called earlier/);
+    expect(calls[1]!.reason).toMatch(/real quote of \$1,080 total/);
+    await expect(engine.placeCallback(deal.job_id, board.callbacks![0]!.business_id, "again")).rejects.toMatchObject({ code: "callback_not_justified" }); // once
+    expect((await engine.ingestCall({ callId: "call_2", outcome: "completed", transcript: "haggle: Thanks again...\nremote: OK, we can do $1,040 total all-in, 12 vegetarian, delivery included, $150 deposit." })).outcome).toBe("stored");
+    await engine.advanceJob(deal.job_id);
+
+    board = await engine.getQuotes(deal.job_id);
+    const by = (n: string) => board.quotes.find((q) => q.business === n && q.status === "current")!;
+    expect(by("Mission Eats")).toMatchObject({ channel: "phone", total_usd: 1040, negotiated_from: 1150, verdict: "compliant" });
     expect(by("Sunset Kitchen")).toMatchObject({ channel: "imessage", total_usd: 1080, verdict: "compliant" });
     expect(by("Harbor Table")).toMatchObject({ channel: "email", total_usd: 1150 });
     expect(board.recommended_quote_id).toBe(by("Mission Eats").quote_id);
-    // Honest negotiation: counters cite the real $995 phone quote, by email and by iMessage.
-    await engine.advanceJob(deal.job_id);
-    const counterText = texts.find((x) => /another quote/.test(x.text));
-    if (counterText) expect(counterText.text).toMatch(/\$995\.00/);
+    expect(board.negotiation).toEqual(expect.arrayContaining([expect.objectContaining({ business: "Mission Eats", round: 2, target_total_usd: 1080, outcome_total_usd: 1040 })]));
+    expect(board.value!.explanation!.winner).toMatch(/^Mission Eats: best value .* lowest all-in total \$1,040 \(negotiated down from \$1,150\)/);
+    expect(board.callbacks).toEqual([]); // nothing more to justify
   });
 
   it("an unanswered email escalates to one Voice AI call when the business has an allowlisted phone", async () => {
@@ -385,6 +398,12 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
       const q = board.quotes.find((x) => x.status === "current")!;
       expect(q).toMatchObject({ total_usd: 6700, verdict: "compliant", eligible: true, round: 2 });
       expect(texts.filter((t) => /confirm/.test(t.text))).toHaveLength(1); // asked once
+      // Live regression: a reply that adds nothing (just the reference code) keeps the vendor "quoted", no noise flags.
+      expect((await engine.ingestIMessage({ messageId: "im_b", from: "+14155550111", text: "HG-RMT2", isGroup: false })).outcome).toBe("stored");
+      await engine.advanceJob(deal.job_id);
+      const after = await engine.getQuotes(deal.job_id);
+      expect(after.businesses[0]).toMatchObject({ status: "quoted" });
+      expect(after.quotes.find((x) => x.status === "current")).toMatchObject({ total_usd: 6700, verdict: "compliant" });
     } finally {
       textExtractor.extract = real;
     }

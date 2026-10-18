@@ -41,8 +41,13 @@ export function evaluateRequirements(q: QuoteRecord, reqs: EngineRequirement[], 
         return q.headcount >= requestedHeadcount
           ? { requirement_id: r.id, met: true, reason: `${q.headcount} guests` }
           : { requirement_id: r.id, met: false, reason: `quoted for ${q.headcount}, need ${requestedHeadcount}` };
-      default:
-        return { requirement_id: r.id, met: null, reason: "needs review" };
+      default: {
+        // Any other requirement (licensing, insurance, timing, service scope…): only the business's
+        // own explicit answer counts, with its words as the reason.
+        const a = q.requirement_answers?.[r.text.trim().toLowerCase()];
+        if (!a) return { requirement_id: r.id, met: null, reason: "not stated" };
+        return { requirement_id: r.id, met: a.met, reason: a.met ? `business said: "${a.excerpt}"` : `business said it can't: "${a.excerpt}"` };
+      }
     }
   });
 }
