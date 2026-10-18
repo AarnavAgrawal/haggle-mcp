@@ -36,7 +36,7 @@ export function rejectReason(q: RankableQuote, budgetCents: number | null): Reje
   if (q.flags.includes("external_payment_link")) return "external_payment_link";
   if (q.flags.includes("prompt_injection")) return "prompt_injection";
   if (!q.compliant) return "requirement_unmet";
-  if (q.totalCents === null) return "no_total";
+  if (q.totalCents === null || q.totalCents <= 0) return "no_total"; // a $0 total is never a price to rank, cite or pay
   if (q.allInKnown === false) return "all_in_unknown";
   if (budgetCents !== null && q.totalCents > budgetCents) return "over_budget";
   return null;

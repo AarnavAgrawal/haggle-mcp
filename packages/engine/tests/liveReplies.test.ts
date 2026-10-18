@@ -15,7 +15,7 @@ const PERSONAS: Persona[] = [
 ];
 
 describe("the live rehearsal replies become quotes and the deal moves on by itself", { timeout: 60_000 }, () => {
-  it("three quotes from the vendors' own words, missing details shown, counters citing the real $1,200, then a recommendation", async () => {
+  it("three quotes from the vendors' own words, missing details shown, counters citing 'about $1,200', then an approvable recommendation", async () => {
     let t = Date.now();
     const { engine, fleet } = createMockEngine({ now: () => new Date(t), personas: PERSONAS, config: { maxRounds: 2 } });
     const deal = await engine.deal({ request: { what: "catering", quantity: 50, unit: "people", date: "2030-10-24", area: "San Francisco, CA", requirements: [] }, businesses: PERSONAS.map((p) => ({ name: p.name, ...(p.email ? { email: p.email } : {}), ...(p.phone ? { phone: p.phone } : {}), simulated: true })) });
@@ -36,9 +36,17 @@ describe("the live rehearsal replies become quotes and the deal moves on by itse
     // What wasn't said is shown, and a vague reply is marked as such.
     expect(b.quotes.every((x) => x.flags.includes("delivery_unclear"))).toBe(true);
     expect(q("Harbor Table").flags).toContain("low_confidence");
-    // It moved on by itself: counters to the email/text vendors cite Mission Eats' real $1,200.
-    expect(b.negotiation.map((n) => [n.business, n.target_total_usd]).sort()).toEqual([["Harbor Table", 1200], ["Sunset Kitchen", 1200]]);
+    // "prolly around 1300" and "approximately twelve hundred" are estimates: shown ≈ and ranked, never approvable.
+    expect(q("Harbor Table")).toMatchObject({ total_approximate: true, approvable: false, approval_block: { code: "total_not_firm" } });
+    expect(q("Mission Eats")).toMatchObject({ total_approximate: true, approvable: false, approval_block: { code: "total_not_firm" } });
+    expect(q("Sunset Kitchen")).toMatchObject({ approvable: true });
+    // It moved on by itself: counters cite Mission Eats' $1,200 as what it is, an estimate ("about").
+    expect(b.negotiation.map((n) => [n.business, n.target_total_usd, n.basis_approximate]).sort()).toEqual([["Harbor Table", 1200, true], ["Sunset Kitchen", 1200, true]]);
     expect(b.ready).toBe(true);
-    expect(b.recommended_quote_id).toBe(q("Mission Eats").quote_id);
+    // Best value is still Mission Eats, but only an approvable quote is recommended; the board says why.
+    expect(b.best_value_quote_id).toBe(q("Mission Eats").quote_id);
+    expect(b.recommended_quote_id).toBe(q("Sunset Kitchen").quote_id);
+    expect(b.recommendation_note).toMatch(/^Best value is Mission Eats but it can't be approved yet: Approximate total from the call \(≈ \$1,200\)\..*callback/);
+    expect(b.next).toMatch(new RegExp(`approve\\(job_id, quote_id='${q("Sunset Kitchen").quote_id}'\\) for Sunset Kitchen`));
   });
 });

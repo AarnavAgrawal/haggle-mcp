@@ -26,6 +26,8 @@ export interface CounterQuote {
   /** The business's own stated extras (levers a target counter may mention). */
   deliveryFeeCents?: number | null;
   depositCents?: number | null;
+  /** The business hedged this total ("around $1,300"): cited only as "about $X", never as a firm quote. */
+  approximate?: boolean;
 }
 
 export interface PlannedCounter {
@@ -37,23 +39,27 @@ export interface PlannedCounter {
   basisQuoteId: string; // the real competing quote cited, or "buyer_target"
   /** competing_quote: cites a real cheaper eligible quote. buyer_target: the buyer's stated target. */
   basis: "competing_quote" | "buyer_target";
+  /** The cited competing total is the other business's approximation (said as "about $X"). */
+  basisApproximate: boolean;
   text: string;
   /** Short form for text messages (iMessage/RCS). */
   shortText: string;
 }
 
 const usd = (cents: number) => `$${Math.floor(cents / 100).toLocaleString("en-US")}.${String(cents % 100).padStart(2, "0")}`;
+/** Their own figure, as firm as they said it. */
+const theirs = (cents: number, approximate = false) => `${approximate ? "estimate of about" : "quote of"} ${usd(cents)} total`;
 
 /** "21:30 UTC". Businesses see one unambiguous clock. */
 function deadlineLabel(d: Date): string {
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} UTC`;
 }
 
-export function counterofferText(businessName: string, theirCents: number, bestCents: number, deadline: Date): string {
+export function counterofferText(businessName: string, theirCents: number, bestCents: number, deadline: Date, opts: { theirApproximate?: boolean; bestApproximate?: boolean } = {}): string {
   return [
     `Hi ${businessName},`,
     "",
-    `Thanks for your quote of ${usd(theirCents)} total. We've received another quote of ${usd(bestCents)} total for the same order and requirements. Are you able to match or beat that? If so, please reply with your updated total and deposit by ${deadlineLabel(deadline)}.`,
+    `Thanks for your ${theirs(theirCents, opts.theirApproximate)}. We've received another ${theirs(bestCents, opts.bestApproximate)} for the same order and requirements${opts.bestApproximate ? " (not yet confirmed as firm)" : ""}. Are you able to match or beat that? If so, please reply with your updated firm total and deposit by ${deadlineLabel(deadline)}.`,
     "",
     "Thank you!",
   ].join("\n");
@@ -65,12 +71,12 @@ export function counterofferText(businessName: string, theirCents: number, bestC
  * - Skip entirely with fewer than 2 such quotes.
  * - Cite the single best total; counter only businesses priced above it with rounds left.
  */
-export function targetCounterText(businessName: string, theirCents: number, targetCents: number, deadline: Date, levers: { deliveryFeeCents?: number | null; depositCents?: number | null } = {}): string {
+export function targetCounterText(businessName: string, theirCents: number, targetCents: number, deadline: Date, levers: { deliveryFeeCents?: number | null; depositCents?: number | null; approximate?: boolean } = {}): string {
   const asks = [levers.deliveryFeeCents ? `the ${usd(levers.deliveryFeeCents)} delivery fee` : "", levers.depositCents && levers.depositCents > theirCents * 0.25 ? `the ${usd(levers.depositCents)} deposit` : ""].filter(Boolean);
   return [
     `Hi ${businessName},`,
     "",
-    `Thanks for your quote of ${usd(theirCents)} total. Our client's budget target for this order is ${usd(targetCents)} total. Is there anything you can do to get closer to it${asks.length ? ` (for example on ${asks.join(" or ")})` : ""}? If so, please reply with your updated total and deposit by ${deadlineLabel(deadline)}.`,
+    `Thanks for your ${theirs(theirCents, levers.approximate)}. Our client's budget target for this order is ${usd(targetCents)} total. Is there anything you can do to get closer to it${asks.length ? ` (for example on ${asks.join(" or ")})` : ""}? If so, please reply with your updated firm total and deposit by ${deadlineLabel(deadline)}.`,
     "",
     "Thank you!",
   ].join("\n");
@@ -94,15 +100,16 @@ export function planCounteroffers(quotes: CounterQuote[], deadline: Date, maxRou
     for (const q of eligible.filter((q) => q.businessId !== best.businessId && q.totalCents > best.totalCents && q.round < maxRounds)) {
       out.push({
         businessId: q.businessId, businessName: q.businessName, round: q.round + 1, theirTotalCents: q.totalCents, targetTotalCents: best.totalCents,
-        basisQuoteId: best.quoteId, basis: "competing_quote", text: counterofferText(q.businessName, q.totalCents, best.totalCents, deadline),
-        shortText: `Thanks! We have another quote of ${usd(best.totalCents)} total for the same order. Can you match or beat it?`,
+        basisQuoteId: best.quoteId, basis: "competing_quote", basisApproximate: best.approximate === true,
+        text: counterofferText(q.businessName, q.totalCents, best.totalCents, deadline, { theirApproximate: q.approximate === true, bestApproximate: best.approximate === true }),
+        shortText: `Thanks! We have another ${theirs(best.totalCents, best.approximate)} for the same order. Can you match or beat it?`,
       });
     }
   }
   if (targetCents !== null && best.totalCents > targetCents && best.round < maxRounds) {
     out.push({
       businessId: best.businessId, businessName: best.businessName, round: best.round + 1, theirTotalCents: best.totalCents, targetTotalCents: targetCents,
-      basisQuoteId: "buyer_target", basis: "buyer_target", text: targetCounterText(best.businessName, best.totalCents, targetCents, deadline, best),
+      basisQuoteId: "buyer_target", basis: "buyer_target", basisApproximate: false, text: targetCounterText(best.businessName, best.totalCents, targetCents, deadline, best),
       shortText: `Thanks! Our client's target is ${usd(targetCents)} total. Anything you can do to get closer (delivery or deposit)?`,
     });
   }

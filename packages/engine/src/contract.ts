@@ -119,7 +119,9 @@ export type QuoteFlag =
   | "requirement_unmet" | "requirement_unknown" | "hidden_deposit" | "hidden_fee"
   | "tax_excluded" | "delivery_unclear" | "vague_price" | "conflicting_numbers"
   | "expired" | "external_payment_link" | "prompt_injection" | "unverified_sender"
-  | "over_budget" | "low_confidence" | "question_pending" | "unsourced_figure";
+  | "over_budget" | "low_confidence" | "question_pending" | "unsourced_figure"
+  /** The business hedged its total ("around $1,300"): ranked and shown as ≈, never approved or paid until confirmed firm. */
+  | "approximate_total";
 
 /* ───────────────────────── replies (engine → brain) ───────────────────────── */
 

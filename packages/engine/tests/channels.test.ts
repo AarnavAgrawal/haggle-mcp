@@ -218,7 +218,7 @@ describe("calls a business places to Haggle", () => {
       const inbound = (await repo.listMessages(deal.job_id)).find((m) => m.provider_email_id === `call-ended:in2-${trust}`)!;
       expect(inbound).toMatchObject({ sender_trusted: trust, matched_via: "caller_number" });
       // Trusted: sent for parsing (the scripted mock extractor has no line for it); untrusted: never parsed.
-      expect(board.businesses[0]!.last_event).toMatch(trust ? /low confidence|Quoted|called Haggle/ : /caller ID not verified|unverified sender/);
+      expect(board.businesses[0]!.last_event).toMatch(trust ? /couldn't read a price|Quoted|called Haggle/ : /caller ID not verified|unverified sender/);
     }
   });
 });
@@ -259,7 +259,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
   const trusted = (expected: string) => ({ trusted: true as const, address: expected, reason: "trusted" as const, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
 
   it("collects all three; a justified, human-authorized callback cites the real competing quote; best value picks the winner", async () => {
-    const { engine, repo, clock, sent, texts, calls } = demoEngine({ callDelayMs: 60_000 });
+    const { engine, repo, clock, sent, texts, calls } = demoEngine({ callDelayMs: 60_000, globalPaymentCapCents: 500_000 }); // the fake extractor reads no deposits: full totals must fit the ceiling
     const { budget_usd, ...request } = GOLDEN_REQUEST;
     const deal = await engine.deal({ request, budget_usd, businesses: [
       { name: "Harbor Table", email: "harbor-table-sf@inkboxmail.test" },

@@ -30,6 +30,9 @@ import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.t
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
 import { dropUnstatedDietaryRefusals, dropUnsupportedRequirementAnswers, validateQuote } from "../parsing/validate.ts";
 import { answeredSomething, dropAgentOnlyAmounts } from "../parsing/callSafety.ts";
+import { APPROXIMATE_FLAG, confirmsFirm, isApproximateTotal } from "../parsing/approximate.ts";
+import { isTransientParseError, MAX_PARSE_RETRIES, parseErrorKind, parseRetryDelayMs } from "../parsing/parseErrors.ts";
+import type { QuoteRecord } from "../parsing/extraction.ts";
 import { verifyApproval } from "../approvals/verifyApproval.ts";
 import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
 import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
@@ -41,6 +44,9 @@ import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
 import { start, TERMINAL, transition, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
 import type { EngineDeps } from "./ports.ts";
+
+/** Board text for a reply Haggle couldn't read (never the provider's raw error). */
+export const UNREADABLE_REPLY = "Reply received; Haggle couldn't read a price";
 
 /** Board excerpt of what a business said (see transcriptSnippet.ts), only when there is one. */
 const snippet = (s: string) => (s ? { transcript_snippet: s } : {});
@@ -122,6 +128,12 @@ export type BoardQuote = Omit<Quote, "total_usd"> & {
   eligible: boolean;
   verdict: "compliant" | "rejected" | "incomplete";
   excluded_reason?: string;
+  /** The business hedged this total in its own words ("around $1,300"): show it as ≈, rank it, but it is not approvable until confirmed. */
+  total_approximate?: true;
+  /** Can the human approve (and pay) this quote right now? Caveats (over budget, unconfirmed requirement) don't block; see approval_block when false. */
+  approvable: boolean;
+  /** Why it can't be approved yet, in words for the board (code is an EngineError code, e.g. total_not_firm). */
+  approval_block?: { code: string; reason: string };
 };
 
 /** A justified, not-yet-placed negotiation callback to a phone vendor (needs a human's go-ahead). */
@@ -133,13 +145,15 @@ export interface CallbackProposal {
   basis_quote_id: string;
   basis_total_usd: number;
   basis_business: string;
+  /** The cited competing total is itself an approximation (the brief says "about $X"). */
+  basis_approximate?: boolean;
   round: number;
   why: string;
 }
 
 /** One business's place in the deal (finer than the shared board status). */
 export interface BusinessStage {
-  stage: "sending" | "waiting" | "calling" | "responded" | "asked_question" | "clarifying" | "quoted" | "countered" | "vendor_revised" | "held_firm" | "final" | "excluded" | "buyer_approved" | "paid" | "no_reply" | "unreachable" | "declined";
+  stage: "sending" | "waiting" | "calling" | "responded" | "reply_unreadable" | "asked_question" | "clarifying" | "quoted" | "countered" | "vendor_revised" | "held_firm" | "final" | "excluded" | "buyer_approved" | "paid" | "no_reply" | "unreachable" | "declined";
   /** none · countered (Haggle's counter, not a price) · vendor_revised (the business lowered its price) · held_firm */
   negotiation: "none" | "countered" | "vendor_revised" | "held_firm";
   first_total_usd?: number;
@@ -154,6 +168,8 @@ export interface NegotiationStep {
   round: number;
   target_total_usd: number;
   basis_quote_id: string;
+  /** The cited competing total was another business's estimate (said as "about $X"). */
+  basis_approximate?: boolean;
   outcome_total_usd: number | null; // the business's answer, when it came back
 }
 
@@ -181,6 +197,10 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
   value?: ValueRanking;
   /** Negotiation callbacks the evidence justifies (each needs a human's go-ahead). */
   callbacks?: CallbackProposal[];
+  /** The best-value quote when it differs from recommended_quote_id because it can't be approved (see its approval_block). */
+  best_value_quote_id?: string;
+  /** Why the recommendation isn't the best-value quote (or why nothing can be approved). */
+  recommendation_note?: string;
   /** Per business: stage, negotiation state, first vs current price, version, savings. */
   stages?: Record<string, BusinessStage>;
   /** Per business: observed reply performance by channel (all jobs) and any contact preference it stated. */
@@ -372,7 +392,7 @@ export class HaggleEngine {
     for (const q of eligible) {
       const b = byId.get(q.business_id)!;
       const r = q.record;
-      const prev = all.filter((x) => x.business_id === q.business_id && x.id !== q.id && x.total_cents !== null).sort((x, y) => y.round - x.round)[0];
+      const prev = all.filter((x) => x.business_id === q.business_id && x.id !== q.id && x.total_cents !== null && !isApproximate(x.record)).sort((x, y) => y.round - x.round)[0];
       const rep = this.d.reputation?.peek({ business_id: b.business_id, name: b.name, phone: b.phone, area: job.request.area, simulated: b.simulated }) ?? { status: b.simulated ? "simulated" as const : "disabled" as const };
       const tracker = this.d.brain as { trackRecord?: (id: string, excludeJobId: string) => Promise<ValueInput["reliability"]> };
       let reliability: ValueInput["reliability"] = null;
@@ -431,7 +451,9 @@ export class HaggleEngine {
   private async rankRows(job: JobRow) {
     const quotes = (await this.repo.listQuotes(job.id)).filter((q) => q.status === "current");
     const rankable = quotes.map((q): RankableQuote => ({
-      quoteId: q.id, businessId: q.business_id, totalCents: q.total_cents, available: q.record.available, compliant: q.compliant,
+      quoteId: q.id, businessId: q.business_id, totalCents: q.total_cents, available: q.record.available,
+      // A no-total row is stored not-compliant (DB check); judge it by its requirement results so it ranks as "no total", not "requirement unmet".
+      compliant: q.total_cents === null ? meetsHardRequirements(q.requirement_results, this.requirements(job)) : q.compliant,
       senderTrusted: q.sender_trusted, status: q.status, confidence: q.record.confidence, flags: q.record.flags, allInKnown: allInKnown(q.record, this.needsDelivery(job)),
     }));
     return { quotes, rankable, ranking: rankQuotes(rankable, this.hardLimitCents(job)) };
@@ -449,6 +471,10 @@ export class HaggleEngine {
     const hard = q.status !== "current" ? "not_current" : !q.record.available ? "unavailable" : !q.sender_trusted ? "unverified_sender"
       : q.record.flags.includes("external_payment_link") ? "external_payment_link" : q.record.flags.includes("prompt_injection") ? "prompt_injection"
       : q.total_cents === null ? "no_total"
+      // A $0 total is never an amount to approve or charge (approvals require > 0).
+      : q.total_cents <= 0 ? "zero_total"
+      // "around $1,300" is a price to compare, never an amount to approve or charge.
+      : isApproximate(q.record) ? "total_not_firm"
       : this.hardLimitCents(job) !== null && q.total_cents > this.hardLimitCents(job)! ? "over_limit"
       : !allInKnown(q.record, this.needsDelivery(job)) ? "all_in_unknown" : null;
     const caveats: string[] = [];
@@ -483,13 +509,45 @@ export class HaggleEngine {
     return q && q.job_id === jobId ? this.approvability(job, q, (await this.getSettings()).spending_cap_cents).caveats : [];
   }
 
+  /** Why the board can't offer Approve on this quote (null = approvable; caveats never block). */
+  private approvalBlock(job: JobRow, q: QuoteRow, b: JobBusinessRow | undefined, askedFirm: boolean): { code: string; reason: string } | null {
+    const hard = this.approvability(job, q).hard;
+    const name = b?.name ?? "The business";
+    if (!hard) {
+      // The operator's per-payment ceiling (requestApproval's over_cap): the same rule, said up front.
+      const deposit = q.deposit_cents !== null && q.deposit_cents > 0;
+      const payment = deposit ? q.deposit_cents! : q.total_cents!;
+      const cap = this.d.config.globalPaymentCapCents;
+      if (payment <= cap) return null;
+      const usdS = (c: number) => `$${centsToUsd(c).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+      return { code: "over_cap", reason: `Needs ${usdS(payment)} up front (${deposit ? "the deposit" : "no deposit stated, so the full total"}), above the ${usdS(cap)} per-payment ceiling: ask ${name} for a smaller deposit, or ask the operator to raise the ceiling.` };
+    }
+    const approx = q.total_cents === null ? "" : `≈ $${centsToUsd(q.total_cents).toLocaleString("en-US")}`;
+    if (hard === "total_not_firm") {
+      return {
+        code: "total_not_firm",
+        reason: b?.channel === "phone"
+          ? `Approximate total from the call (${approx}). A firm figure needs a callback to ${name}, which only you can authorize; it can't be approved until then.`
+          : askedFirm ? `Approximate total (${approx}). Haggle asked ${name} once for a firm all-in total; it can be approved when they confirm.`
+          : `Approximate total (${approx}). ${name} must confirm a firm all-in total before it can be approved.`,
+      };
+    }
+    const TEXT: Record<string, string> = {
+      not_current: "Superseded by a newer quote.", unavailable: `${name} declined.`, unverified_sender: "The sender couldn't be verified.",
+      external_payment_link: "It asked for payment through an external link (blocked).", prompt_injection: "It contained instructions aimed at the agent (ignored).",
+      no_total: "No total yet.", zero_total: "The stated total is $0; nothing to approve.", over_limit: "Over the buyer's hard spending limit.", all_in_unknown: "The all-in total (delivery, tax or fees) isn't confirmed yet.",
+    };
+    return { code: hard === "no_total" || hard === "zero_total" ? hard : "quote_not_eligible", reason: TEXT[hard] ?? hard };
+  }
+
   private async context(job: JobRow) {
     const { quotes, rankable, ranking } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
     const plan = this.counterPlan(job, rankable, businesses, quotes);
     const payment = await this.repo.getPaymentForJob(job.id);
     return {
-      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => this.approvability(job, q).hard === null).length, counterable: plan.length > 0,
+      // An approximate total counts: it becomes approvable once the business confirms a firm figure.
+      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => { const h = this.approvability(job, q).hard; return h === null || h === "total_not_firm"; }).length, counterable: plan.length > 0,
       negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent"].includes(payment.status),
     };
   }
@@ -501,15 +559,12 @@ export class HaggleEngine {
   private counterPlan(job: JobRow, rankable: RankableQuote[], businesses: JobBusinessRow[], quotes: QuoteRow[] = []) {
     const byId = new Map(businesses.map((b) => [b.business_id, b]));
     const rows = new Map(quotes.map((q) => [q.id, q]));
+    // A business's negotiation round counts Haggle's counters to it, not its quote versions: a
+    // confirm-once revision (a firm total, a confirmed requirement) doesn't use up its round.
     return planCounteroffers(
-      rankable.map((r) => ({ ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: this.quoteRound(r.quoteId), deliveryFeeCents: rows.get(r.quoteId)?.record.delivery_fee_cents ?? null, depositCents: rows.get(r.quoteId)?.deposit_cents ?? null })),
+      rankable.map((r) => ({ ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: Math.max(1, byId.get(r.businessId)?.countered_round ?? 1), deliveryFeeCents: rows.get(r.quoteId)?.record.delivery_fee_cents ?? null, depositCents: rows.get(r.quoteId)?.deposit_cents ?? null, approximate: isApproximate(rows.get(r.quoteId)?.record) })),
       new Date(job.collect_until), job.max_rounds, this.hardLimitCents(job), this.targetCents(job),
     ).filter((c) => { const b = byId.get(c.businessId); return b?.channel === "a2a" ? !!(this.d.a2a && b.thread_id && b.a2a_card_url) : b?.channel === "imessage" ? !!(this.d.imessage && b.phone) : !!b?.email; });
-  }
-
-  private roundCache = new Map<string, number>();
-  private quoteRound(quoteId: string): number {
-    return this.roundCache.get(quoteId) ?? 1;
   }
 
   /** CAS-commit a transition, record it, then run its effects. Returns the committed row or null on conflict. */
@@ -528,17 +583,12 @@ export class HaggleEngine {
     for (let attempt = 0; attempt < 4; attempt++) {
       const job = await this.repo.getJob(jobId);
       if (!job) return { ok: false, reason: "job not found" };
-      await this.refreshRounds(job);
       const r = transition(this.machine(job), event, await this.context(job));
       if (!r.ok) return { ok: false, reason: r.reason };
       const committed = await this.commit(job, r.next, r.effects, cause);
       if (committed) return { ok: true, job: committed };
     }
     return { ok: false, reason: "conflict" };
-  }
-
-  private async refreshRounds(job: JobRow) {
-    for (const q of await this.repo.listQuotes(job.id)) this.roundCache.set(q.id, q.round);
   }
 
   // ───────────────────────────── effects (after commit) ─────────────────────────────
@@ -744,6 +794,26 @@ export class HaggleEngine {
     return text.length + tail.length <= 159 ? text + tail : `${text.slice(0, 159 - tail.length - 1).trimEnd()}…${tail}`;
   }
 
+  /**
+   * The one confirm-once text ("Thanks! Can you confirm: …? HG-CODE") within Inkbox's limits: ≤ 159
+   * chars, no links or phone numbers; the asks are shortened, never the reference code. The firm-total
+   * ask (last) is kept whole when anything has to give.
+   */
+  static confirmIMessageText(asks: string[], shortCode: string): string {
+    const clean = (s: string) => s.replace(/https?:\/\/\S+|www\.\S+/gi, "").replace(/\+?\d[\d\s().-]{6,}\d/g, "").replace(/\s+/g, " ").trim();
+    const head = "Thanks! Can you confirm: ";
+    const tail = `? HG-${shortCode}`;
+    const parts = asks.map(clean).filter(Boolean);
+    let ask = parts.join("; ");
+    const room = 159 - head.length - tail.length;
+    if (ask.length > room) {
+      const last = parts.at(-1)!;
+      const lead = parts.slice(0, -1).join("; ");
+      ask = last.length + 3 >= room ? `${last.slice(0, room - 1).trimEnd()}…` : `${lead.slice(0, room - last.length - 3).trimEnd()}…; ${last}`;
+    }
+    return `${head}${ask}${tail}`;
+  }
+
   /** One iMessage to a business on the iMessage channel, recorded once per idempotency key. */
   private async sendIMessageToBusiness(job: JobRow, b: JobBusinessRow, kind: "rfq" | "answer" | "counter" | "followup", key: string, text: string, round: number | null) {
     const prior = await this.repo.findMessageByIdempotencyKey(key);
@@ -816,15 +886,18 @@ export class HaggleEngine {
     const out: CallbackProposal[] = [];
     for (const b of businesses.filter((x) => x.channel === "phone" && x.phone)) {
       const mine = quotes.find((q) => q.business_id === b.business_id && q.total_cents !== null);
-      if (!mine || mine.round >= job.max_rounds || b.countered_round > 0) continue;
+      if (!mine || job.max_rounds < 2 || b.countered_round > 0) continue;
       if (await this.repo.findMessageByIdempotencyKey(`call:${job.id}:${b.business_id}:r${mine.round + 1}`)) continue;
       const basis = await this.bestCompetingQuote(job, b.business_id);
       if (!basis || basis.total_cents >= mine.total_cents!) continue;
       const basisRow = quotes.find((q) => q.id === basis.id)!;
+      const approx = isApproximate(basisRow.record);
+      const money = (c: number) => `$${centsToUsd(c).toLocaleString("en-US")}`;
       out.push({
         business_id: b.business_id, business: b.name, their_quote_id: mine.id, their_total_usd: centsToUsd(mine.total_cents!), basis_quote_id: basis.id,
-        basis_total_usd: centsToUsd(basis.total_cents), basis_business: businesses.find((x) => x.business_id === basisRow.business_id)?.name ?? "another business", round: mine.round + 1,
-        why: `${b.name} quoted $${centsToUsd(mine.total_cents!).toLocaleString("en-US")}; a real eligible quote of $${centsToUsd(basis.total_cents).toLocaleString("en-US")} is on this deal.`,
+        basis_total_usd: centsToUsd(basis.total_cents), basis_business: businesses.find((x) => x.business_id === basisRow.business_id)?.name ?? "another business",
+        ...(approx ? { basis_approximate: true } : {}), round: 2,
+        why: `${b.name} ${isApproximate(mine.record) ? `estimated about ${money(mine.total_cents!)}` : `quoted ${money(mine.total_cents!)}`}; ${approx ? `another business estimated about ${money(basis.total_cents)} (not yet firm)` : `a real eligible quote of ${money(basis.total_cents)} is on this deal`}.`,
       });
     }
     return out;
@@ -842,7 +915,8 @@ export class HaggleEngine {
     const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === businessId)!;
     const key = `call:${job.id}:${b.business_id}:r${proposal.round}`;
     const reqs = job.request.requirements.filter((r) => r.hard).map((r) => r.text);
-    const reason = HaggleEngine.callBrief(b.name, job, reqs, { competingTotalUsd: proposal.basis_total_usd, followUpOnQuoteUsd: proposal.their_total_usd });
+    const mine = await this.repo.getQuote(proposal.their_quote_id);
+    const reason = HaggleEngine.callBrief(b.name, job, reqs, { competingTotalUsd: proposal.basis_total_usd, competingApproximate: proposal.basis_approximate === true, followUpOnQuoteUsd: proposal.their_total_usd, followUpApproximate: isApproximate(mine?.record) });
     const { callId } = await this.d.phone!.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone!, reason, idempotencyKey: key });
     await this.repo.insertMessage({
       job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind: "call", channel: "phone", provider_email_id: callId, idempotency_key: key,
@@ -850,8 +924,8 @@ export class HaggleEngine {
       sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null, round: proposal.round, simulated: job.mode === "mock",
     });
     await this.repo.updateBusiness(job.id, b.business_id, { status: "ringing", countered_round: proposal.round });
-    await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: proposal.round, target_total_usd: proposal.basis_total_usd, basis_quote_id: proposal.basis_quote_id, channel: "phone", authorized_by: authorizedBy });
-    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} back (Voice AI), citing a real $${proposal.basis_total_usd.toLocaleString("en-US")} quote`, channel: "phone" });
+    await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: proposal.round, target_total_usd: proposal.basis_total_usd, basis_quote_id: proposal.basis_quote_id, ...(proposal.basis_approximate ? { basis_approximate: true } : {}), channel: "phone", authorized_by: authorizedBy });
+    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} back (Voice AI), citing ${proposal.basis_approximate ? `another business's estimate of about $${proposal.basis_total_usd.toLocaleString("en-US")}` : `a real $${proposal.basis_total_usd.toLocaleString("en-US")} quote`}`, channel: "phone" });
     await this.repo.touchJob(job.id);
     return { placed: true, proposal };
   }
@@ -883,18 +957,22 @@ export class HaggleEngine {
    * The Voice AI's instructions for one quote call: short numbered steps, AI disclosure first, the
    * date as people say it, only real competing figures, no commitments. Under Inkbox's 2,000 chars.
    */
-  static callBrief(name: string, job: Pick<JobRow, "request" | "short_code">, reqs: string[], opts: { escalation?: boolean; competingTotalUsd?: number; followUpOnQuoteUsd?: number } = {}): string {
+  static callBrief(name: string, job: Pick<JobRow, "request" | "short_code">, reqs: string[], opts: { escalation?: boolean; competingTotalUsd?: number; competingApproximate?: boolean; followUpOnQuoteUsd?: number; followUpApproximate?: boolean } = {}): string {
     const r = job.request;
     const when = eventWhen(r.date, r.time, r.date_until);
     const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
     return [
       `You are Haggle, an AI assistant phoning ${name} for a customer to get a price quote. Be brief, warm and natural; keep the call under three minutes.`,
       opts.followUpOnQuoteUsd !== undefined
-        ? `1. Open with: "Hi, this is Haggle, the AI assistant who called earlier about ${r.what}. Thanks again for your quote of ${money(opts.followUpOnQuoteUsd)}. Do you have a minute?"`
+        ? `1. Open with: "Hi, this is Haggle, the AI assistant who called earlier about ${r.what}. Thanks again for your ${opts.followUpApproximate ? `estimate of about ${money(opts.followUpOnQuoteUsd)}` : `quote of ${money(opts.followUpOnQuoteUsd)}`}. Do you have a minute?"`
         : `1. Open with: "Hi, this is Haggle, an AI assistant calling for a customer about a quote for ${r.what}. Do you have a minute?"${opts.escalation ? " Mention we emailed earlier and wanted to follow up by phone." : ""}`,
       `2. The order: ${r.what} for ${r.quantity} ${r.unit ?? "people"} on ${when}${r.area ? `, at ${eventPlace(r.area, r.venue)}` : ""}.${r.date_until ? " The customer is flexible on the day: ask which of those days they can do." : ""}${reqs.length ? ` Must have: ${reqs.join("; ")}.` : ""}`,
       `3. Ask for: the all-in total including delivery and tax, how each requirement is met${r.requirements.some((q) => q.kind === "dietary") ? " (for example how many vegetarian meals)" : ""}, any deposit and when it is due, and what is included.`,
-      opts.competingTotalUsd !== undefined ? `4. We have a real quote of ${money(opts.competingTotalUsd)} total for the same order. You may say that figure and ask if they can do better. Never invent, round down or exaggerate it.` : `4. Do not mention other businesses or prices.`,
+      opts.competingTotalUsd !== undefined
+        ? opts.competingApproximate
+          ? `4. Another business estimated about ${money(opts.competingTotalUsd)} total for the same order (not yet a firm quote). You may say exactly that, as an estimate, and ask if they can do better. Never call it a firm quote, invent, round down or exaggerate it.`
+          : `4. We have a real quote of ${money(opts.competingTotalUsd)} total for the same order. You may say that figure and ask if they can do better. Never invent, round down or exaggerate it.`
+        : `4. Do not mention other businesses or prices.`,
       `5. Read the numbers back to confirm, thank them and end the call.`,
       `If they ask something you don't know, say you'll pass it on to the customer; never guess. If they can't do it or decline, thank them and end politely. If you reach voicemail, leave one sentence asking for a quote by email and hang up.`,
       `Never agree to buy, book or pay, and never share payment details. Reference HG-${job.short_code}.`,
@@ -1010,7 +1088,6 @@ export class HaggleEngine {
   }
 
   private async sendCounteroffers(job: JobRow, round: number) {
-    await this.refreshRounds(job);
     const { rankable, quotes } = await this.rankRows(job);
     const businesses = await this.repo.getBusinesses(job.id);
     const byId = new Map(businesses.map((b) => [b.business_id, b]));
@@ -1021,8 +1098,8 @@ export class HaggleEngine {
     for (const c of moves) {
       const b = byId.get(c.businessId);
       if (!b) continue;
-      const counter = { haggle: "counter/1", protocol: "haggle.v0", type: "counter", job_id: job.id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis: c.basis, ...(c.basis === "competing_quote" ? { basis_quote_total_usd: centsToUsd(c.targetTotalCents) } : { buyer_target_usd: centsToUsd(c.targetTotalCents) }), respond_by: job.collect_until };
-      const why = `${c.basis === "competing_quote" ? `match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})` : `get closer to the buyer's $${centsToUsd(c.targetTotalCents)} target`} · ${c.strategy.reason}`;
+      const counter = { haggle: "counter/1", protocol: "haggle.v0", type: "counter", job_id: job.id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis: c.basis, ...(c.basis === "competing_quote" ? { basis_quote_total_usd: centsToUsd(c.targetTotalCents), ...(c.basisApproximate ? { basis_is_estimate: true } : {}) } : { buyer_target_usd: centsToUsd(c.targetTotalCents) }), respond_by: job.collect_until };
+      const why = `${c.basis === "competing_quote" ? (c.basisApproximate ? `match about ${centsToUsd(c.targetTotalCents)} (another business's estimate ${c.basisQuoteId}, not yet firm)` : `match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})`) : `get closer to the buyer's $${centsToUsd(c.targetTotalCents)} target`} · ${c.strategy.reason}`;
       if (b.channel === "imessage") {
         const key = sendKeys.counter(job.id, b.business_id, c.round);
         if (await this.repo.findMessageByIdempotencyKey(key)) continue;
@@ -1030,7 +1107,7 @@ export class HaggleEngine {
           await this.sendIMessageToBusiness(job, b, "counter", key, `${c.shortText} HG-${job.short_code}`, c.round);
           await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
           await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} by iMessage: ${why}`, basis_quote_id: c.basisQuoteId });
-          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis_quote_id: c.basisQuoteId, basis: c.basis, strategy: c.strategy });
+          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis_quote_id: c.basisQuoteId, basis: c.basis, ...(c.basisApproximate ? { basis_approximate: true } : {}), strategy: c.strategy });
           sent++;
         } catch (err) {
           this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -1046,7 +1123,7 @@ export class HaggleEngine {
           await this.recordA2aOutbound(job, b, "counter", key, t.taskId, c.text, c.round);
           await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
           await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} over A2A: ${why}`, basis_quote_id: c.basisQuoteId });
-          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis, strategy: c.strategy });
+          await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis, ...(c.basisApproximate ? { basis_approximate: true } : {}), strategy: c.strategy });
           sent++;
         } catch (err) {
           this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -1059,7 +1136,7 @@ export class HaggleEngine {
         });
         await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name}: ${why}`, basis_quote_id: c.basisQuoteId });
-        await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis, strategy: c.strategy });
+        await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: c.round, target_total_usd: counter.target_total_usd, basis_quote_id: c.basisQuoteId, basis: c.basis, ...(c.basisApproximate ? { basis_approximate: true } : {}), strategy: c.strategy });
         sent++;
       } catch (err) {
         this.log("counter_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -1243,9 +1320,10 @@ export class HaggleEngine {
       } else {
         const sent = (await this.repo.listEvents(job.id)).some((e) => e.type === "counteroffers_sent" && e.data.round === job.round);
         if (sent) {
-          const quotes = (await this.repo.listQuotes(job.id)).filter((q) => q.status === "current");
+          const quotes = await this.repo.listQuotes(job.id);
+          const events = await this.repo.listEvents(job.id);
           const countered = businesses.filter((b) => b.countered_round === job.round);
-          const answered = countered.every((b) => b.status === "bounced" || quotes.some((q) => q.business_id === b.business_id && q.round >= b.countered_round));
+          const answered = countered.every((b) => b.status === "bounced" || answerToCounter(events, quotes, b.business_id, b.countered_round) !== undefined);
           if (answered) return { type: "window_closed" };
         }
       }
@@ -1272,7 +1350,14 @@ export class HaggleEngine {
   private async parsePending(job: JobRow) {
     const reqs = this.requirements(job);
     const businesses = await this.repo.getBusinesses(job.id);
-    for (const msg of await this.repo.getPendingMessages(job.id)) {
+    const pending = await this.repo.getPendingMessages(job.id);
+    // Transient provider failures already retried (job events, so the count survives restarts).
+    const retries = pending.length ? (await this.repo.listEvents(job.id)).filter((e) => e.type === "parse_retry") : [];
+    for (const msg of pending) {
+      const tried = retries.filter((e) => e.data.message_id === msg.id);
+      const waitUntil = tried.at(-1)?.data.retry_after;
+      if (typeof waitUntil === "string" && this.now().getTime() < Date.parse(waitUntil)) continue; // backing off
+      let phase: "read" | "store" = "read";
       const b = businesses.find((x) => x.business_id === msg.business_id);
       if (!b) {
         await this.repo.updateMessage(msg.id, { parse_status: "failed" });
@@ -1295,11 +1380,12 @@ export class HaggleEngine {
           continue;
         }
         let extraction = null;
+        let structuredQuote = false;
         const qj = files.find((f) => f.kind === "json" && /quote\.json$/i.test(f.filename));
         if (qj) {
           try {
             const parsed = quotePartToExtraction(JSON.parse(Buffer.from(qj.data).toString("utf8")), job.id, reqs, job.request.quantity);
-            if (parsed.ok) extraction = parsed.extraction;
+            if (parsed.ok) { extraction = parsed.extraction; structuredQuote = true; }
             else await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "conflicting_numbers", summary: parsed.reason });
           } catch {
             await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "conflicting_numbers", summary: "quote.json is not valid JSON" });
@@ -1317,17 +1403,27 @@ export class HaggleEngine {
         // The extractor only knows email wording ("email body"); figures from a call or a text say so.
         const channelSource = msg.channel === "a2a" ? "a2a task" : msg.channel === "phone" ? "call transcript" : msg.channel === "imessage" ? "iMessage text" : null;
         if (channelSource) for (const src of extraction.sources) if (msg.channel === "a2a" || !/^pdf\b/i.test(src.source)) src.source = channelSource;
-        await this.storeExtraction(job, b, msg, extraction, channelSource ?? (qj ? "quote.json" : files.some((f) => f.kind === "pdf") ? "pdf" : "email body"));
+        phase = "store"; // from here a retry could store twice: errors are final
+        await this.storeExtraction(job, b, msg, extraction, channelSource ?? (qj ? "quote.json" : files.some((f) => f.kind === "pdf") ? "pdf" : "email body"), { structured: structuredQuote });
         await this.repo.updateMessage(msg.id, { parse_status: "done" });
       } catch (err) {
-        this.log("parse_failed", { job_id: job.id, message_id: msg.id, error: (err as Error).message });
+        const transient = phase === "read" && isTransientParseError(err);
+        this.log(transient ? "parse_retry" : "parse_failed", { job_id: job.id, message_id: msg.id, error: (err as Error).message, attempt: tried.length + 1 });
+        if (transient && tried.length < MAX_PARSE_RETRIES) {
+          // Busy or unreachable provider: stays pending, read again on a later tick (bounded, backing off).
+          const attempt = tried.length + 1;
+          await this.repo.appendEvent(job.id, "parse_retry", { message_id: msg.id, business_id: b.business_id, attempt, max_attempts: MAX_PARSE_RETRIES, error: parseErrorKind(err), retry_after: new Date(this.now().getTime() + parseRetryDelayMs(attempt)).toISOString() });
+          continue;
+        }
         await this.repo.updateMessage(msg.id, { parse_status: "failed" });
-        await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "low_confidence", summary: "could not read this reply" });
+        await this.repo.appendEvent(job.id, "parse_failed", { message_id: msg.id, business_id: b.business_id, error: parseErrorKind(err), retried: tried.length });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: UNREADABLE_REPLY });
+        await this.repo.touchJob(job.id);
       }
     }
   }
 
-  private async storeExtraction(job: JobRow, b: JobBusinessRow, msg: MessageRow, x: Parameters<typeof validateQuote>[0], kind: string) {
+  private async storeExtraction(job: JobRow, b: JobBusinessRow, msg: MessageRow, x: Parameters<typeof validateQuote>[0], kind: string, opts: { structured?: boolean } = {}) {
     // Mail that fails sender authentication never becomes a quote or a question: it can't win, and
     // it must not supersede (knock out) the business's genuine quote either. Kept for audit only.
     if (msg.sender_trusted !== true) {
@@ -1336,13 +1432,21 @@ export class HaggleEngine {
       return;
     }
     const reqs = this.requirements(job);
+    const followupsBefore = b.followups_sent;
     const prior = (await this.repo.listQuotes(job.id)).filter((q) => q.business_id === b.business_id);
     const priorCurrent = prior.find((q) => q.status === "current");
     let record = validateQuote(x, job.request.quantity);
+    // "prolly around 1300", "approximately twelve hundred": the business's own words hedge the total.
+    // Deterministic, from its text (a structured quote.json is firm by construction).
+    if (!opts.structured && record.total_cents !== null && isApproximateTotal({ totalCents: record.total_cents, excerpts: [(record.sources.total?.excerpt ?? "").split(" + ")[0]!], text: msg.body_text ?? "", channel: msg.channel })) {
+      record = { ...record, flags: [...record.flags, APPROXIMATE_FLAG] };
+    }
     // An answer to "can you confirm X?" ("yes, 45 vegetarian") carries no price: it revises the
     // business's current quote with what it now states, keeping that quote's own figures.
-    const statesTerms = Object.keys(record.dietary_coverage).length > 0 || record.delivery_included !== null || record.delivery_fee_cents !== null || record.tax_cents !== null || Object.keys(record.requirement_answers ?? {}).length > 0 || (record.other_fees?.length ?? 0) > 0 || !!record.terms;
-    if (record.total_cents === null && record.available && statesTerms && priorCurrent?.record.total_cents != null && record.questions.length === 0) {
+    const statesTerms = Object.keys(record.dietary_coverage).length > 0 || record.delivery_included !== null || record.delivery_fee_cents !== null || record.tax_cents !== null || Object.keys(record.requirement_answers ?? {}).length > 0 || (record.other_fees?.length ?? 0) > 0 || !!record.terms || record.deposit_cents !== null;
+    // "Yes, that's firm" to Haggle's one request for a firm total: the approximate figure becomes firm.
+    const firmed = !!priorCurrent && isApproximate(priorCurrent.record) && record.total_cents === null && confirmsFirm(msg.body_text ?? "", msg.channel);
+    if (record.total_cents === null && record.available && (statesTerms || firmed) && priorCurrent?.record.total_cents != null && record.questions.length === 0) {
       const p = priorCurrent.record;
       // A newly stated extra ("$250 extra for delivery", "+$300 tax") the earlier total didn't include
       // is added to it, with its source, so the all-in total stays honest.
@@ -1358,6 +1462,7 @@ export class HaggleEngine {
       const feesKnown = !(record.flags.includes("fees_unclear")) && (record.other_fees?.length ?? 0) > 0;
       const flags = [...new Set([...p.flags, ...record.flags])].filter((f) => !(f === "delivery_unclear" && deliveryKnown) && !(f === "fees_unclear" && feesKnown) && f !== "question_pending");
       const statedTotal = p.sources.total;
+      const answer = record;
       record = {
         ...p, dietary_coverage: { ...p.dietary_coverage, ...record.dietary_coverage }, delivery_included: record.delivery_included ?? p.delivery_included,
         ...(p.requirement_answers || record.requirement_answers ? { requirement_answers: { ...p.requirement_answers, ...record.requirement_answers } } : {}),
@@ -1373,6 +1478,14 @@ export class HaggleEngine {
         } : {}),
         flags, missing_fields: p.missing_fields.filter((f) => !(f in record.sources)), confidence: Math.min(p.confidence, record.confidence),
       };
+      // A deposit stated in the answer ("$200 deposit") completes the quote when it fits within the total.
+      if (answer.deposit_cents !== null && answer.deposit_cents <= record.total_cents!) {
+        record = { ...record, deposit_cents: answer.deposit_cents, sources: { ...record.sources, ...(answer.sources.deposit ? { deposit: answer.sources.deposit } : {}) }, missing_fields: record.missing_fields.filter((f) => f !== "deposit") };
+      }
+      if (firmed) {
+        const t = record.sources.total;
+        record = { ...record, flags: record.flags.filter((f) => f !== APPROXIMATE_FLAG), sources: { ...record.sources, total: { source: `${t?.source ?? "stated"}; confirmed firm by the business`, excerpt: `${t?.excerpt ?? ""} / ${(msg.body_text ?? "").trim().slice(0, 80)}`.slice(0, 200) } } };
+      }
     }
     const results = evaluateRequirements(record, reqs, job.request.quantity);
     const compliant = meetsHardRequirements(results, reqs);
@@ -1382,6 +1495,7 @@ export class HaggleEngine {
       questionIds.push(q.id);
       await this.repo.appendEvent(job.id, "question", { question_id: q.id, business_id: b.business_id, text });
     }
+    let askedToConfirm = false;
     let quoteRow: QuoteRow | null = null;
     // Every priced reply is reported as a quote, even without a single stated total (flagged; Haggle
     // asks for the exact total below when it can).
@@ -1390,25 +1504,32 @@ export class HaggleEngine {
       const source = record.sources.total?.source ?? (kind === "quote.json" ? "quote.json" : kind);
       quoteRow = await this.repo.insertCurrentQuote({
         job_id: job.id, business_id: b.business_id, message_id: msg.id, round: prior.length + 1, record, total_cents: record.total_cents,
-        deposit_cents: record.deposit_cents, compliant, requirement_results: results, sender_trusted: msg.sender_trusted === true, source,
+        // The quotes table requires a total for a compliant row (quotes_check1: not compliant or total_cents
+        // is not null): a decline or a reply priced without a total is stored as not (yet) compliant; its
+        // requirement results stay as evaluated, and ranking re-derives compliance from them.
+        deposit_cents: record.deposit_cents, compliant: compliant && record.total_cents !== null, requirement_results: results, sender_trusted: msg.sender_trusted === true, source,
       });
       if (quoteRow) {
-        this.roundCache.set(quoteRow.id, quoteRow.round);
         await this.repo.appendEvent(job.id, "quote", { quote_id: quoteRow.id, business_id: b.business_id, total_usd: record.total_cents === null ? null : centsToUsd(record.total_cents), round: quoteRow.round });
         for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
         if (!compliant) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: results.some((r) => r.met === false) ? "requirement_unmet" : "requirement_unknown" });
         if (priorCurrent) await this.onRevision(job, priorCurrent);
-        // No stated total (missing or worked out from parts): ask once for the exact figure, by email.
+        // No stated total (missing or worked out from parts): ask once for the exact figure, on the
+        // business's own thread (email, or iMessage for a texting business).
         const stated = record.total_cents !== null && !/^computed/.test(record.sources.total?.source ?? "");
-        if (record.available && !stated && record.questions.length === 0 && b.followups_sent < 1 && b.email) {
+        const texting = b.channel === "imessage" && !!b.phone && !!this.d.imessage;
+        if (record.available && !stated && record.questions.length === 0 && b.followups_sent < 1 && (texting || (b.channel !== "imessage" && b.email))) {
           const read = record.total_cents !== null ? ` We read your quote as $${centsToUsd(record.total_cents).toLocaleString("en-US")} in total.` : "";
           try {
-            await this.sendRecorded(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), {
-              to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
+            if (texting) await this.sendIMessageToBusiness(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), `Thanks! Could you confirm one exact total for ${job.request.quantity}, incl. delivery, and any deposit? HG-${job.short_code}`, null);
+            else await this.sendRecorded(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), {
+              to: b.email!, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
               bodyText: `Hi ${b.name},\n\nThanks for the quote!${read} Could you tell us the exact all-in total for ${job.request.quantity} ${job.request.unit ?? "people"}, including delivery or travel, and the deposit?`,
             });
             await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
+            b.followups_sent += 1;
             await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} for the exact total` });
+            askedToConfirm = true;
           } catch (err) {
             this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
           }
@@ -1422,6 +1543,7 @@ export class HaggleEngine {
         try {
           await this.sendIMessageToBusiness(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), `Thanks! Could you confirm one exact total for ${job.request.quantity}, incl. delivery, and any deposit? HG-${job.short_code}`, null);
           await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
+          b.followups_sent += 1;
           await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} for an exact total (iMessage)` });
         } catch (err) {
           this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -1433,6 +1555,7 @@ export class HaggleEngine {
             bodyText: `Hi ${b.name},\n\nThanks! Could you send the exact total for ${job.request.quantity} ${job.request.unit ?? "people"}, including delivery or travel, and any deposit? We can't compare estimates.`,
           });
           await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
+          b.followups_sent += 1;
           await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} for an exact total` });
         } catch (err) {
           this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -1441,14 +1564,17 @@ export class HaggleEngine {
     }
     // A priced quote that leaves a hard requirement unstated (e.g. no vegetarian count): ask once, on
     // the same text/email thread, instead of treating silence as a no. Never by a new call.
-    let askedToConfirm = false;
     const unstated = quoteRow && record.available ? reqs.filter((r) => r.hard && results.find((x) => x.requirement_id === r.id)?.met === null) : [];
-    const asks = [...unstated.map((r) => r.text), ...(quoteRow && record.available && !allInKnown(record, this.needsDelivery(job)) ? ["the all-in total including delivery, tax and any fees"] : [])];
+    // An approximate total: ask once for the firm all-in figure (and the deposit when unknown). It
+    // also covers the all-in question, so that one isn't asked separately.
+    const approx = !!quoteRow && record.available && isApproximate(record) && record.total_cents !== null;
+    const firmAsk = approx ? `your firm all-in total (you said about $${centsToUsd(record.total_cents!).toLocaleString("en-US")})${record.deposit_cents === null ? " and the deposit" : ""}` : null;
+    const asks = [...unstated.map((r) => r.text), ...(firmAsk ? [firmAsk] : quoteRow && record.available && !allInKnown(record, this.needsDelivery(job)) ? ["the all-in total including delivery, tax and any fees"] : [])];
     if (asks.length && b.followups_sent < 1 && ((b.channel === "imessage" && b.phone) || (b.channel === "email" && b.email))) {
       const ask = asks.join("; ");
       try {
         if (b.channel === "imessage") {
-          await this.sendIMessageToBusiness(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), `Thanks! Can you confirm: ${ask}? HG-${job.short_code}`, null);
+          await this.sendIMessageToBusiness(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), HaggleEngine.confirmIMessageText(asks, job.short_code), null);
         } else {
           await this.sendRecorded(job, b, "followup", sendKeys.followUp(job.id, b.business_id, 1), {
             to: b.email!, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
@@ -1456,13 +1582,14 @@ export class HaggleEngine {
           });
         }
         await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
-        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} to confirm: ${ask}`, channel: b.channel });
+        b.followups_sent += 1;
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} to confirm: ${ask}`, channel: b.channel, ...(firmAsk ? { asked: "firm_total" } : {}) });
         askedToConfirm = true;
       } catch (err) {
         this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
       }
     }
-    const status = !record.available ? "declined" : askedToConfirm ? "replied" : quoteRow || (priorCurrent && !record.questions.length) ? "quoted" : record.questions.length ? "question" : b.followups_sent >= 1 ? "silent" : "replied";
+    const status = !record.available ? "declined" : askedToConfirm ? "replied" : quoteRow || (priorCurrent && !record.questions.length) ? "quoted" : record.questions.length ? "question" : followupsBefore >= 1 ? "silent" : "replied";
     await this.repo.updateBusiness(job.id, b.business_id, { status });
     // Partner's brain learns from every parsed reply; a brain failure never blocks the deal.
     try {
@@ -1709,7 +1836,7 @@ export class HaggleEngine {
     if (job.state === "awaiting_approval") return "Waiting for the human to approve. Call wait_for_update.";
     if (job.state === "paying" && !this.d.stripe && this.d.payer.disabledReason) return "Approved. Payments are off on this server, so nothing can be charged yet; tell the user. The approval stays valid until it expires.";
     if (job.state === "paying") return job.pay_intent ? "Payment in progress. Call wait_for_update." : "Approved. Call pay(job_id, quote_id) to pay the deposit.";
-    if (job.ready) return "Quotes are final. Call get_quotes, then approve(job_id, quote_id) for the recommended quote.";
+    if (job.ready) return "Quotes are final. Call get_quotes, then approve(job_id, quote_id) for its recommended_quote_id (the best quote the human can approve).";
     return "Still collecting. Call wait_for_update again (cursor from this response).";
   }
 
@@ -1733,9 +1860,12 @@ export class HaggleEngine {
     const events = await this.repo.listEvents(jobId);
     const out: BoardQuote[] = [];
     const unknownOnly = new Map<string, { met: boolean | null }[]>();
+    const askedFirm = new Set(events.filter((e) => e.type === "reply" && e.data.asked === "firm_total").map((e) => String(e.data.business_id)));
     for (const q of sorted) {
       const b = byId.get(q.business_id)!;
+      // "Negotiated from" only from this business's own earlier firm figure (an estimate was never a price).
       const prev = all.filter((x) => x.business_id === q.business_id && x.id !== q.id && x.total_cents !== null).sort((x, y) => y.round - x.round)[0];
+      const prevFirm = prev && !isApproximate(prev.record) ? prev : undefined;
       let price_check: Quote["price_check"];
       if (q.total_cents !== null) {
         try {
@@ -1743,13 +1873,17 @@ export class HaggleEngine {
           if (v.verdict !== "unknown") price_check = v.verdict;
         } catch { /* brain optional */ }
       }
-      const cq = toContractQuote(q, b, { budgetCents: job.budget_cents, ...(prev?.total_cents != null && prev.total_cents !== q.total_cents ? { negotiatedFromCents: prev.total_cents } : {}), ...(price_check ? { price_check } : {}) });
+      const cq = toContractQuote(q, b, { budgetCents: job.budget_cents, ...(prevFirm?.total_cents != null && prevFirm.total_cents !== q.total_cents ? { negotiatedFromCents: prevFirm.total_cents } : {}), ...(price_check ? { price_check } : {}) });
       const reason = rejectedBy.get(q.id);
+      const hard = this.approvability(job, q).hard;
+      const block = this.approvalBlock(job, q, b, askedFirm.has(q.business_id));
       out.push({
         ...cq, total_usd: q.total_cents === null ? null : cq.total_usd, channel: b.channel, eligible: order.has(q.id),
         // "rejected" only for safety (or a business that declined); every other gap is "incomplete" (flagged, still approvable).
-        verdict: order.has(q.id) ? "compliant" : this.approvability(job, q).hard && this.approvability(job, q).hard !== "no_total" ? "rejected" : "incomplete",
+        verdict: order.has(q.id) ? "compliant" : hard && hard !== "no_total" && hard !== "total_not_firm" ? "rejected" : "incomplete",
         ...(reason ? { excluded_reason: excludedText(reason, cq.requirement_results) } : {}),
+        ...(isApproximate(q.record) ? { total_approximate: true as const } : {}),
+        approvable: block === null, ...(block ? { approval_block: block } : {}),
       });
       if (reason) unknownOnly.set(q.id, cq.requirement_results);
     }
@@ -1767,18 +1901,20 @@ export class HaggleEngine {
     }
     // "won" only once paid; an approved, unpaid quote is shown as chosen on its quote row instead.
     const wonBusiness = job.state === "paid" && payment ? payment.business_id : null;
+    // A business whose latest trusted reply couldn't be read (and that has no quote): say so, plainly.
+    const unreadable = this.unreadableReplies(await this.repo.listMessages(jobId), all);
     const board: BoardBusiness[] = businesses.map((b) => {
       const transcript = transcripts.get(b.business_id);
       return {
         id: b.business_id, business_id: b.business_id, name: b.name, business: b.name, channel: b.channel, status: this.boardStatus(b, job, wonBusiness, all), engine_status: b.status,
-        simulated: b.simulated, last_event: lastEvent.get(b.business_id) ?? null, ...(transcript ? { transcript_snippet: transcript } : {}),
+        simulated: b.simulated, last_event: unreadable.has(b.business_id) ? UNREADABLE_REPLY : lastEvent.get(b.business_id) ?? null, ...(transcript ? { transcript_snippet: transcript } : {}),
         ...(b.status === "unavailable" ? { unavailable_reason: this.route(b).reason } : {}),
       };
     });
     const negotiation: NegotiationStep[] = events.filter((e) => e.type === "counteroffer").map((e) => {
       const bid = String(e.data.business_id);
-      const answer = all.filter((q) => q.business_id === bid && q.round >= Number(e.data.round)).sort((x, y) => x.round - y.round)[0];
-      return { business_id: bid, business: byId.get(bid)?.name ?? bid, round: Number(e.data.round), target_total_usd: Number(e.data.target_total_usd), basis_quote_id: String(e.data.basis_quote_id), outcome_total_usd: answer?.total_cents == null ? null : centsToUsd(answer.total_cents) };
+      const answer = answerToCounter(events, all, bid, Number(e.data.round));
+      return { business_id: bid, business: byId.get(bid)?.name ?? bid, round: Number(e.data.round), target_total_usd: Number(e.data.target_total_usd), basis_quote_id: String(e.data.basis_quote_id), ...(e.data.basis_approximate === true ? { basis_approximate: true } : {}), outcome_total_usd: answer?.total_cents == null ? null : centsToUsd(answer.total_cents) };
     });
     const openQuestions = questions.map((q) => ({ question_id: q.id, business_id: q.business_id, business: byId.get(q.business_id)?.name ?? q.business_id, text: q.text }));
     // Excluded = its current quote can't win (the same ranking rejections the card shows as "Can't win"),
@@ -1789,16 +1925,33 @@ export class HaggleEngine {
       const res = unknownOnly.get(q.quote_id) ?? [];
       return !(reason === "requirement_unmet" && res.some((x) => x.met === null) && !res.some((x) => x.met === false));
     }).map((q) => q.business_id));
-    const stages = this.stages(job, businesses, all, negotiation, questions.map((q) => q.business_id), approval, excludedBiz);
+    const stages = this.stages(job, businesses, all, negotiation, questions.map((q) => q.business_id), approval, excludedBiz, unreadable);
     // Best value among the eligible quotes (hard gates already applied): deterministic and explained.
     const value = await this.valueRanking(job, quotes.filter((q) => order.has(q.id)), all, byId);
     const valueOrder = new Map(value.ranked.map((r, i) => [r.quoteId, i]));
     out.sort((a, b) => (valueOrder.get(a.quote_id) ?? 1e6 + (order.get(a.quote_id) ?? 1e6)) - (valueOrder.get(b.quote_id) ?? 1e6 + (order.get(b.quote_id) ?? 1e6)));
+    // Recommend only what the human can actually approve: the best-value quote that passes every hard
+    // rule and the per-payment ceiling. A better-value quote that can't be approved stays on the board
+    // with its reason; nothing is dropped silently, and the ceiling is never weakened.
+    const boardById = new Map(out.map((q) => [q.quote_id, q]));
+    const recommended = value.ranked.map((r) => boardById.get(r.quoteId)).find((q) => q?.approvable) ?? null;
+    const bestValue = value.recommendedQuoteId ? boardById.get(value.recommendedQuoteId) ?? null : null;
+    const recommendation_note = bestValue && bestValue !== recommended
+      ? `Best value is ${bestValue.business} but it can't be approved yet: ${bestValue.approval_block?.reason ?? "not approvable"}${recommended ? ` Recommended instead: ${recommended.business}, the best quote that can be approved.` : " No quote can be approved yet."}`
+      : undefined;
+    const pendingQuestions = questions.length > 0;
+    const next = job.ready && !TERMINAL.has(job.state) && (job.state === "collecting" || job.state === "negotiating") && !pendingQuestions
+      ? recommended
+        ? `Quotes are final. Call approve(job_id, quote_id='${recommended.quote_id}') for ${recommended.business}, the recommended quote the human can approve${recommendation_note ? ` (${bestValue!.business} is better value but blocked: ${bestValue!.approval_block?.code})` : ""}.`
+        : `Quotes are final, but none can be approved yet: ${out.filter((q) => q.approval_block && q.status === "current").map((q) => `${q.business}: ${q.approval_block!.reason}`).join(" ").slice(0, 600) || "no priced quote"}. Tell the user; they may ask a business for a firm total or a smaller deposit.`
+      : await this.nextHint(job);
     return {
       ok: true, mode: job.mode, job_id: jobId, state: job.state,
       job: { id: job.id, request: job.request, state: job.state, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents), created_at: job.created_at, updated_at: job.updated_at },
       quotes: out,
-      ...(value.recommendedQuoteId ? { recommended_quote_id: value.recommendedQuoteId } : {}),
+      ...(recommended ? { recommended_quote_id: recommended.quote_id } : {}),
+      ...(bestValue && bestValue !== recommended ? { best_value_quote_id: bestValue.quote_id } : {}),
+      ...(recommendation_note ? { recommendation_note } : {}),
       ...(value.ranked.length ? { value } : {}),
       stages,
       contact_learning: Object.fromEntries(await Promise.all(businesses.map(async (b) => [b.business_id, await this.contactLearning(b.business_id, await this.businessAliases(b)).catch(() => ({ channels: {} }))] as const))),
@@ -1822,7 +1975,7 @@ export class HaggleEngine {
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
       payment_ceiling_usd: centsToUsd(Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents)),
       payments_enabled: this.d.stripe !== undefined || !this.d.payer.disabledReason,
-      next: await this.nextHint(job),
+      next,
     };
   }
 
@@ -1831,12 +1984,26 @@ export class HaggleEngine {
    * is coarser): waiting, responded, clarifying, quoted, countered, revised, held firm, final, …, plus
    * the negotiation outcome so a counteroffer is never mistaken for an accepted price.
    */
-  private stages(job: JobRow, businesses: JobBusinessRow[], all: QuoteRow[], negotiation: NegotiationStep[], questionFrom: string[], approval: ApprovalRow | null, excluded: Set<string> = new Set()): Record<string, BusinessStage> {
+  /** Businesses whose latest trusted inbound reply failed to parse and that have no quote on this job. */
+  private unreadableReplies(messages: MessageRow[], quotes: QuoteRow[]): Set<string> {
+    const latest = new Map<string, MessageRow>();
+    for (const m of messages) {
+      if (m.direction !== "in" || m.kind !== "reply" || m.sender_trusted !== true || !m.business_id) continue;
+      if (m.parse_status === "none") continue; // nothing to read (e.g. a call that reached voicemail)
+      const cur = latest.get(m.business_id);
+      if (!cur || m.created_at >= cur.created_at) latest.set(m.business_id, m);
+    }
+    const quoted = new Set(quotes.map((q) => q.business_id));
+    return new Set([...latest].filter(([bid, m]) => m.parse_status === "failed" && !quoted.has(bid)).map(([bid]) => bid));
+  }
+
+  private stages(job: JobRow, businesses: JobBusinessRow[], all: QuoteRow[], negotiation: NegotiationStep[], questionFrom: string[], approval: ApprovalRow | null, excluded: Set<string> = new Set(), unreadable: Set<string> = new Set()): Record<string, BusinessStage> {
     const out: Record<string, BusinessStage> = {};
     for (const b of businesses) {
       const mine = all.filter((q) => q.business_id === b.business_id && q.total_cents !== null).sort((x, y) => x.round - y.round);
       const current = mine.at(-1);
       const first = mine[0];
+      const firstFirm = mine.find((q) => !isApproximate(q.record));
       const steps = negotiation.filter((n) => n.business_id === b.business_id).sort((x, y) => x.round - y.round);
       const last = steps.at(-1);
       let negotiationState: BusinessStage["negotiation"] = "none";
@@ -1850,6 +2017,7 @@ export class HaggleEngine {
         : b.status === "ringing" ? "calling"
         : b.status === "declined" ? "declined"
         : b.status === "bounced" || b.status === "unavailable" ? "unreachable"
+        : unreadable.has(b.business_id) && !current ? "reply_unreadable"
         : b.status === "silent" || b.status === "no_reply" ? "no_reply"
         : questionFrom.includes(b.business_id) || b.status === "question" ? "asked_question"
         : negotiationState === "countered" ? "countered"
@@ -1863,7 +2031,8 @@ export class HaggleEngine {
         stage, negotiation: negotiationState,
         ...(first?.total_cents != null ? { first_total_usd: centsToUsd(first.total_cents) } : {}),
         ...(current?.total_cents != null ? { current_total_usd: centsToUsd(current.total_cents), quote_version: current.round } : {}),
-        ...(first?.total_cents != null && current?.total_cents != null && current.total_cents < first.total_cents ? { saved_usd: centsToUsd(first.total_cents - current.total_cents) } : {}),
+        // Savings only against this business's own earlier firm figure (an estimate was never a price).
+        ...(firstFirm?.total_cents != null && current?.total_cents != null && current.total_cents < firstFirm.total_cents ? { saved_usd: centsToUsd(firstFirm.total_cents - current.total_cents) } : {}),
       };
     }
     return out;
@@ -1923,12 +2092,24 @@ export class HaggleEngine {
     if (job.state !== "collecting" && job.state !== "negotiating") {
       const latest = await this.repo.getLatestApproval(jobId);
       if (job.state === "awaiting_approval" && latest?.status === "pending" && latest.quote_id === quoteId) return latest;
-      throw new EngineError("not_approvable", `Job is ${job.state}.`, job.state === "paying" ? "Already approved; call pay." : "Wait until quotes are in.", job.state === "paying" ? "pay" : "wait_for_update");
+      const [fix, next] = job.state === "paying" ? ["Already approved; call pay.", "pay"]
+        : job.state === "paid" ? ["This deal is already paid and closed; nothing more to approve. Start a new deal for another purchase.", "deal"]
+        : job.state === "cancelled" ? ["This deal was cancelled; nothing can be approved on it. Start a new deal.", "deal"]
+        : job.state === "failed" ? [`This deal is closed (${job.failure_reason ?? "failed"}); nothing can be approved on it. Start a new deal.`, "deal"]
+        : job.state === "awaiting_approval" ? ["Another approval is already waiting for the human; wait for it or let it expire.", "wait_for_update"]
+        : ["Wait until quotes are in.", "wait_for_update"];
+      throw new EngineError("not_approvable", `Job is ${job.state}.`, fix, next);
     }
     const q = await this.repo.getQuote(quoteId);
     if (!q || q.job_id !== jobId) throw new EngineError("quote_not_found", "No such quote on this job.", "Use a quote_id from get_quotes.", "get_quotes");
     // Only safety (or no amount at all) refuses; everything else is a caveat on the approval.
     const { hard: reason } = this.approvability(job, q);
+    if (reason === "zero_total") throw new EngineError("zero_total", "That quote's total is $0; there is nothing to approve or pay.", "Ask the business for its actual total, or approve another quote.", "get_quotes");
+    if (reason === "total_not_firm") {
+      const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id);
+      throw new EngineError("total_not_firm", `${b?.name ?? "The business"} only gave an approximate total (about $${centsToUsd(q.total_cents!).toLocaleString("en-US")}); nothing can be approved or charged on an estimate.`,
+        b?.channel === "phone" ? "A firm figure needs a callback to the business, which only the human can authorize; or approve another quote." : "Wait for the business to confirm a firm total (Haggle asked once), then approve the revised quote; or approve another quote.", "get_quotes");
+    }
     if (reason) {
       const fix = reason === "no_total" ? "Ask the business for its total (answer_business, or wait for the follow-up Haggle sent), then approve." : "Pick another quote from get_quotes.";
       throw new EngineError("quote_not_eligible", `That quote can't be approved: ${reason}.`, fix, "get_quotes");
@@ -2079,6 +2260,8 @@ export class HaggleEngine {
     if (approval.status === "pending") return { ...this.noPayment(), reason: "the human hasn't approved yet" };
     if (approval.status === "declined" || approval.status === "expired") throw new EngineError("approval_" + approval.status, `The approval was ${approval.status}.`, "Request a new approval.", "approve");
     if (job.state !== "paying" && job.state !== "paid") throw new EngineError("not_payable", `Job is ${job.state}.`, "Wait for approval.", "wait_for_update");
+    // Defense in depth: an approximate total is never charged (requestApproval already refuses it).
+    if (isApproximate((await this.repo.getQuote(quoteId))?.record) && job.state !== "paid") throw new EngineError("total_not_firm", "That quote's total is only approximate; nothing is charged on an estimate.", "Wait for the business to confirm a firm total, then approve the revised quote.", "get_quotes");
     if (!this.d.stripe && this.d.payer.disabledReason) throw new EngineError("payments_disabled", this.d.payer.disabledReason, "Nothing was charged. The operator must enable Stripe test mode (HAGGLE_ENABLE_PAYMENTS=true with STRIPE_* set); the approval stays valid until it expires.", "get_quotes");
     if (!job.pay_intent) await this.repo.touchJob(jobId, { pay_intent: true });
     if (this.d.stripe) {
@@ -2300,6 +2483,22 @@ function excludedText(reason: import("../ranking/rank.ts").RejectReason, results
  */
 function allInKnown(r: import("../parsing/extraction.ts").QuoteRecord, needsDelivery = true): boolean {
   return !r.flags.includes("tax_excluded") && !r.flags.includes("fees_unclear") && !(needsDelivery && r.flags.includes("delivery_unclear"));
+}
+
+/**
+ * The business's first quote after Haggle's counter of that round (by the job's event order), or
+ * undefined. A version stored before the counter (e.g. a confirm-once revision) is never its answer.
+ */
+function answerToCounter(events: { seq: number; type: string; data: Record<string, unknown> }[], quotes: QuoteRow[], businessId: string, round: number): QuoteRow | undefined {
+  const counter = events.filter((e) => e.type === "counteroffer" && e.data.business_id === businessId && Number(e.data.round) === round).at(-1);
+  if (!counter) return undefined;
+  const after = new Set(events.filter((e) => e.type === "quote" && e.seq > counter.seq && e.data.business_id === businessId).map((e) => String(e.data.quote_id)));
+  return quotes.filter((q) => after.has(q.id)).sort((x, y) => x.round - y.round)[0];
+}
+
+/** The business hedged its total in its own words (see parsing/approximate.ts). */
+function isApproximate(r: QuoteRecord | undefined | null): boolean {
+  return !!r && r.flags.includes(APPROXIMATE_FLAG);
 }
 
 function rejectToFlag(r: string) {
