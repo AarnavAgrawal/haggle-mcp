@@ -95,7 +95,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 - Inkbox plan allows 1 phone number (on `haggle-buyer`). The Voice AI vendor is a human answering a call (the demo's design); a 2nd number is only needed for unattended benchmark runs.
 - iMessage reaches humans only, after they text `connect @<buyer handle>`; before their first reply, messages are ≤159 chars with no links or numbers (the RFQ text is built to fit).
 - Yash (parsing): Harbor Table's live replies come back `requirement_unknown` although the email body says "12 … vegetarian meals" and "Delivery … included" (job_ab9cf02c488f4ce0b2be); likely the body+PDF extraction drops the dietary count. Harbor can't win until fixed.
-- Aarnav's live server `haggle-aarnav` (https://keen-cloud-z3xyf.run.mcp-use.com/mcp) shares `haggle-buyer` (and its webhook signing key) with the errand server; both receive each other's events and ignore unknown threads/calls. Engine tables live in schema `haggle` of errand's Supabase (`HAGGLE_DB_SCHEMA=haggle`; `public` has errand-era tables with the same names), where migration 103 is not applied. Plan: a new dedicated Supabase project with all migrations in `public`.
+- Aarnav's live server `haggle-aarnav` (https://keen-cloud-z3xyf.run.mcp-use.com/mcp) shares `haggle-buyer` (and its webhook signing key) with the errand server; both receive each other's events and ignore unknown threads/calls. Engine tables live in schema `haggle` of errand's Supabase (`HAGGLE_DB_SCHEMA=haggle`; `public` has errand-era tables with the same names), where migration 103 is not applied. Resolved 2026-10-17: `haggle-aarnav` now uses a new dedicated Supabase project (all migrations in `public`).
 - Shared, open decision D8: mock mode's `simulated` approval channel (headless client, DEMO only) isn't in `Approval.channel`; `apps/mcp/src/views.ts` extends the schema for it until both agree.
 - Resolved today: brain persistence (migration 201 + corrected SUPABASE_URL, 6 profiles identical across a redeploy); brain start-up can't crash the server; Inkbox webhook subscribed to iMessage + A2A events.
 - Yash (review): branch `feat/live-demo` (main + aarnav-live-e2e + testing parity) ports the haggle-testing gaps and edits Yash's lane (engine, `apps/mcp/index.ts` + `src/`, migration 103) and `packages/core` (additive, contracts v6). Before merge: Yash reviews; apply `103_engine_parity.sql` on the live DB; set `HAGGLE_AUTH=required` on hosted servers once workspaces are created (`npm run workspace:create -w @haggle/mcp`). New views (identity-card, conversation) not yet checked in the Inspector/ChatGPT.
@@ -103,6 +103,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 2026-10-17 20:40 · Aarnav · `haggle-aarnav` (https://keen-cloud-z3xyf.run.mcp-use.com/mcp) redeployed from `feat/live-demo` (0.6.0, 20 tools) on a new dedicated Supabase project (all 6 migrations, RLS forced, brain read/write verified), Stripe test mode on, calls to the one consenting number; live read-only 17/18 (only miss: buyer webhook has no iMessage/A2A events, both off)
 
 - 2026-10-17 20:15 · Aarnav · Brain store honours `HAGGLE_DB_SCHEMA` (was always `public`, so a shared DB with tables in `haggle` couldn't persist profiles); PDF fixtures marked binary (Windows autocrlf corrupted them); all 6 migrations verified on a fresh Postgres 17 for the new dedicated Supabase project; 369 tests pass
 
