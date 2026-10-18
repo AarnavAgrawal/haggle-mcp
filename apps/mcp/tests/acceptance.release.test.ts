@@ -148,16 +148,21 @@ describe(`release acceptance${DB ? " (Postgres)" : " (memory)"}`, { timeout: 120
     for (const q of run.board.quotes as { business: string; total_usd: number | null }[]) if (q.total_usd !== null) expect(g, q.business).toContain(`$${q.total_usd.toLocaleString("en-US")}`);
   });
 
-  defect("the recommended quote can be approved (or the board says why not instead of 'approve the recommended quote')", async () => {
+  it("the recommended quote can be approved (or the board says why not instead of 'approve the recommended quote')", async () => {
     // Repro: one-sentence request, no budget → recommended Golden Grill $860, no deposit; payment = full total
     // $860 > $500 per-payment ceiling → approve refuses over_cap, while get_quotes.next says
     // "Quotes are final. Call get_quotes, then approve(job_id, quote_id) for the recommended quote."
     // engine.ts:1712 (nextHint) and the ranking ignore engine.ts:1940 (over_cap in requestApproval).
+    // Checked without approving (later tests need the job unapproved): the server marks the recommended
+    // quote approvable and points next at it; a better-value quote it can't approve carries the reason.
     const { board } = run;
-    const r = await call("approve", { job_id: job, quote_id: board.recommended_quote_id });
-    const blocked = r.isError ? err(r).code : null;
-    if (blocked) expect(board.next).not.toMatch(/approve\(job_id, quote_id\) for the recommended quote/);
-    expect(blocked).toBeNull();
+    expect(board.recommended_quote_id).toBeTruthy();
+    expect(board.quote_status[board.recommended_quote_id]).toMatchObject({ approvable: true });
+    expect(board.next).toContain(board.recommended_quote_id);
+    if (board.best_value_quote_id) {
+      expect(board.quote_status[board.best_value_quote_id]).toMatchObject({ approvable: false, block: { reason: expect.any(String) } });
+      expect(board.recommendation_note).toBeTruthy();
+    }
   });
 
   it("approval is tied to the exact quote version: superseded, ineligible or unapproved quotes can't be approved or paid", async () => {

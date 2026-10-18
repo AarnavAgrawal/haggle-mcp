@@ -76,6 +76,13 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   /** Operator/settings ceiling for any single payment (the deposit), separate from the order budget. */
   payment_ceiling_usd: z.number().nonnegative().optional(),
   payments_enabled: z.boolean().optional(),
+  /** Per quote: can the human approve it now, and if not, why (the server decides; the view only shows it). */
+  quote_status: z.record(z.string(), z.object({ approvable: z.boolean(), approximate: z.boolean().optional(), block: z.object({ code: z.string(), reason: z.string() }).optional() })).optional(),
+  /** The best-value quote when it isn't the recommendation because it can't be approved; and why. */
+  best_value_quote_id: z.string().optional(),
+  recommendation_note: z.string().optional(),
+  /** Quote ids that counteroffers cited as estimates ("about $1,200"), not firm quotes. */
+  negotiation_estimates: z.array(z.string()).optional(),
   /** deal(dry_run): who would be contacted; nothing was sent. */
   dry_run: z.boolean().optional(),
   would_contact: z.array(z.looseObject({ name: z.string(), channel: z.string().optional() })).optional(),
@@ -122,7 +129,10 @@ export function requestDetails(b: DealBoardData, budgetSource?: "request" | "set
 /** Board + request details + payment ceiling (+ setup blockers when given). */
 export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus> = {}): DealBoardPlus {
   return DealBoardPlus.parse({
-    ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...(b.stages ? { stages: b.stages } : {}), ...(b.terms && Object.keys(b.terms).length ? { terms: b.terms } : {}), ...(b.contact_learning ? { contact_learning: b.contact_learning } : {}), ...extra,
+    ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...(b.stages ? { stages: b.stages } : {}), ...(b.terms && Object.keys(b.terms).length ? { terms: b.terms } : {}), ...(b.contact_learning ? { contact_learning: b.contact_learning } : {}),
+    quote_status: Object.fromEntries(b.quotes.filter((q) => q.total_usd !== null).map((q) => [q.quote_id, { approvable: q.approvable, ...(q.total_approximate ? { approximate: true } : {}), ...(q.approval_block ? { block: q.approval_block } : {}) }])),
+    ...(b.best_value_quote_id ? { best_value_quote_id: b.best_value_quote_id } : {}), ...(b.recommendation_note ? { recommendation_note: b.recommendation_note } : {}),
+    ...(b.negotiation.some((n) => n.basis_approximate) ? { negotiation_estimates: [...new Set(b.negotiation.filter((n) => n.basis_approximate).map((n) => n.basis_quote_id))] } : {}), ...extra,
   });
 }
 

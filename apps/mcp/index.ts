@@ -96,6 +96,8 @@ function boardText(b: DealBoardData) {
     }),
     ...b.rejected.map((r) => `rejected ${b.business_names[r.business_id]}: ${r.detail}`),
     ...(b.value?.explanation ? [`why: ${b.value.explanation.winner}`] : []),
+    ...(b.recommendation_note ? [`note: ${b.recommendation_note}`] : []),
+    ...b.quotes.filter((q) => q.total_usd !== null && !q.approvable && q.approval_block).map((q) => `can't approve ${q.business} yet: ${q.approval_block!.reason}`),
     ...(b.callbacks ?? []).map((c) => `callback available: ${c.business} (${c.why}) → call_back(job_id, business_id='${c.business_id}') only if the user wants it`),
     ...b.open_questions.map((q) => `question ${q.question_id} from ${q.business}: "${q.text.slice(0, 120)}"`),
     `next: ${b.next}`,

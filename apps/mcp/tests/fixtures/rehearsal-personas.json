@@ -1,0 +1,327 @@
+{
+ "note": "MOCK rehearsal vendors from the 2026-10-18 live replies (real Claude extractions); follow-up/counter answers are scripted for demos. DEMO data only.",
+ "personas": [
+  {
+   "name": "Sunset Kitchen",
+   "email": "events@sunset-kitchen.sim.haggle.dev",
+   "replies": {
+    "rfq": {
+     "text": "$1500, $250 deposit",
+     "extraction": {
+      "available": true,
+      "price_per_head_usd": null,
+      "headcount": null,
+      "subtotal_usd": null,
+      "delivery_fee_usd": null,
+      "delivery_included": null,
+      "tax_usd": null,
+      "tax_included": null,
+      "total_usd": 1500,
+      "deposit_usd": 250,
+      "menu_items": [],
+      "dietary_coverage": [],
+      "valid_until": null,
+      "questions": [],
+      "payment_request": "none",
+      "instructions_to_agent": false,
+      "sources": [
+       {
+        "field": "total",
+        "source": "email body",
+        "excerpt": "$1500"
+       },
+       {
+        "field": "deposit",
+        "source": "email body",
+        "excerpt": "$250 deposit"
+       }
+      ],
+      "missing_fields": [
+       "price_per_head_usd",
+       "headcount",
+       "subtotal_usd",
+       "delivery_fee_usd",
+       "delivery_included",
+       "tax_usd",
+       "tax_included",
+       "valid_until"
+      ],
+      "confidence": 0.6,
+      "requirement_answers": [],
+      "other_fees": [],
+      "terms": {
+       "deposit_terms": "$250 deposit (timing and refundability not stated)",
+       "cancellation": null,
+       "exclusions": []
+      },
+      "preferred_contact": null
+     }
+    },
+    "counter": {
+     "text": "We can do $1,350 total, $250 deposit.",
+     "extraction": {
+      "available": true,
+      "price_per_head_usd": null,
+      "headcount": null,
+      "subtotal_usd": null,
+      "delivery_fee_usd": null,
+      "delivery_included": null,
+      "tax_usd": null,
+      "tax_included": null,
+      "total_usd": 1350,
+      "deposit_usd": 250,
+      "menu_items": [],
+      "dietary_coverage": [],
+      "valid_until": null,
+      "questions": [],
+      "payment_request": "none",
+      "instructions_to_agent": false,
+      "sources": [
+       {
+        "field": "total",
+        "source": "email body",
+        "excerpt": "$1,350 total"
+       },
+       {
+        "field": "deposit",
+        "source": "email body",
+        "excerpt": "$250 deposit"
+       }
+      ],
+      "missing_fields": [
+       "price_per_head_usd",
+       "headcount",
+       "subtotal_usd",
+       "delivery_fee_usd",
+       "delivery_included",
+       "tax_usd",
+       "tax_included",
+       "valid_until"
+      ],
+      "confidence": 0.9,
+      "requirement_answers": [],
+      "other_fees": [],
+      "terms": {
+       "deposit_terms": null,
+       "cancellation": null,
+       "exclusions": []
+      },
+      "preferred_contact": null
+     }
+    }
+   }
+  },
+  {
+   "name": "Harbor Table",
+   "email": "orders@harbor-table.sim.haggle.dev",
+   "replies": {
+    "rfq": {
+     "text": "prolly around 1300 total bucks\n\nOn 10/18/2026, 12:08:19 AM, haggle@inkboxmail.com wrote:\n> Hi Harbor Table,\n> Could you quote the following?",
+     "extraction": {
+      "available": true,
+      "price_per_head_usd": null,
+      "headcount": null,
+      "subtotal_usd": null,
+      "delivery_fee_usd": null,
+      "delivery_included": null,
+      "tax_usd": null,
+      "tax_included": null,
+      "total_usd": 1300,
+      "deposit_usd": null,
+      "menu_items": [],
+      "dietary_coverage": [],
+      "valid_until": null,
+      "questions": [],
+      "payment_request": "none",
+      "instructions_to_agent": false,
+      "sources": [
+       {
+        "field": "total",
+        "source": "email body",
+        "excerpt": "prolly around 1300 total bucks"
+       }
+      ],
+      "missing_fields": [
+       "price_per_head_usd",
+       "headcount",
+       "subtotal_usd",
+       "delivery_fee_usd",
+       "delivery_included",
+       "tax_usd",
+       "tax_included",
+       "deposit_usd",
+       "valid_until"
+      ],
+      "confidence": 0.5,
+      "requirement_answers": [],
+      "other_fees": [],
+      "terms": {
+       "deposit_terms": null,
+       "cancellation": null,
+       "exclusions": []
+      },
+      "preferred_contact": null
+     }
+    },
+    "followup": {
+     "text": "Firm: $1,250 all in, $200 deposit.",
+     "extraction": {
+      "available": true,
+      "price_per_head_usd": null,
+      "headcount": null,
+      "subtotal_usd": null,
+      "delivery_fee_usd": null,
+      "delivery_included": null,
+      "tax_usd": null,
+      "tax_included": null,
+      "total_usd": 1250,
+      "deposit_usd": 200,
+      "menu_items": [],
+      "dietary_coverage": [],
+      "valid_until": null,
+      "questions": [],
+      "payment_request": "none",
+      "instructions_to_agent": false,
+      "sources": [
+       {
+        "field": "total",
+        "source": "email body",
+        "excerpt": "$1,250 all in"
+       },
+       {
+        "field": "deposit",
+        "source": "email body",
+        "excerpt": "$200 deposit"
+       }
+      ],
+      "missing_fields": [
+       "price_per_head_usd",
+       "headcount",
+       "subtotal_usd",
+       "delivery_fee_usd",
+       "delivery_included",
+       "tax_usd",
+       "tax_included",
+       "valid_until"
+      ],
+      "confidence": 0.9,
+      "requirement_answers": [],
+      "other_fees": [],
+      "terms": {
+       "deposit_terms": null,
+       "cancellation": null,
+       "exclusions": []
+      },
+      "preferred_contact": null
+     }
+    },
+    "counter": {
+     "text": "Best we can do is $1,250, sorry.",
+     "extraction": {
+      "available": true,
+      "price_per_head_usd": null,
+      "headcount": null,
+      "subtotal_usd": null,
+      "delivery_fee_usd": null,
+      "delivery_included": null,
+      "tax_usd": null,
+      "tax_included": null,
+      "total_usd": 1250,
+      "deposit_usd": 200,
+      "menu_items": [],
+      "dietary_coverage": [],
+      "valid_until": null,
+      "questions": [],
+      "payment_request": "none",
+      "instructions_to_agent": false,
+      "sources": [
+       {
+        "field": "total",
+        "source": "email body",
+        "excerpt": "$1,250"
+       },
+       {
+        "field": "deposit",
+        "source": "email body",
+        "excerpt": "$200 deposit"
+       }
+      ],
+      "missing_fields": [
+       "price_per_head_usd",
+       "headcount",
+       "subtotal_usd",
+       "delivery_fee_usd",
+       "delivery_included",
+       "tax_usd",
+       "tax_included",
+       "valid_until"
+      ],
+      "confidence": 0.9,
+      "requirement_answers": [],
+      "other_fees": [],
+      "terms": {
+       "deposit_terms": null,
+       "cancellation": null,
+       "exclusions": []
+      },
+      "preferred_contact": null
+     }
+    }
+   }
+  },
+  {
+   "name": "Mission Eats",
+   "phone": "+14155550104",
+   "replies": {
+    "call": {
+     "text": "remote: Hello\nhaggle (AI assistant): Hi, this is Haggle, an AI assistant calling for a customer about a quote for catering. Do you have a minute?\nremote: Yes, I do. What's up\nhaggle (AI assistant): Could you give me the all-in total, including delivery and tax?\nremote: It'll cost approximately twelve hundred dollars",
+     "extraction": {
+      "available": true,
+      "price_per_head_usd": null,
+      "headcount": null,
+      "subtotal_usd": null,
+      "delivery_fee_usd": null,
+      "delivery_included": null,
+      "tax_usd": null,
+      "tax_included": null,
+      "total_usd": 1200,
+      "deposit_usd": null,
+      "menu_items": [],
+      "dietary_coverage": [],
+      "valid_until": null,
+      "questions": [],
+      "payment_request": "none",
+      "instructions_to_agent": false,
+      "sources": [
+       {
+        "field": "total",
+        "source": "call transcript",
+        "excerpt": "It'll cost approximately twelve hundred dollars"
+       }
+      ],
+      "missing_fields": [
+       "price_per_head_usd",
+       "headcount",
+       "subtotal_usd",
+       "delivery_fee_usd",
+       "delivery_included",
+       "tax_usd",
+       "tax_included",
+       "deposit_usd",
+       "valid_until"
+      ],
+      "confidence": 0.6,
+      "requirement_answers": [],
+      "other_fees": [],
+      "terms": {
+       "deposit_terms": null,
+       "cancellation": null,
+       "exclusions": []
+      },
+      "preferred_contact": null
+     }
+    }
+   }
+  }
+ ]
+}

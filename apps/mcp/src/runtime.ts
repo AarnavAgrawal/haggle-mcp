@@ -1,6 +1,7 @@
 // Builds the engine for the configured mode. Mock mode (default) needs no credentials and is
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
-import { createMockEngine, fleetBusinesses, PostgresRepository, type BrainAdapter, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
+import { readFileSync } from "node:fs";
+import { createMockEngine, fleetBusinesses, PostgresRepository, type BrainAdapter, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy, type Persona, type QuoteExtraction } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { fixtureFetchers, type PlacesFetch, type WebFetch } from "./fixtures.ts";
 import { buildRoster, type ChannelStatus, type RosterEntry } from "./vendors.ts";
@@ -58,7 +59,10 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   const delayScale = Number(env.HAGGLE_SIM_DELAY_SCALE ?? "1");
   // Mock mode never writes simulated profiles to a real database (the brain stays in memory), and
   // discover offers only the simulated fleet, which the mock email/phone ports can play.
-  const fleet = fleetBusinesses();
+  // HAGGLE_MOCK_PERSONAS_FILE: scripted vendors (e.g. the 2026-10-18 rehearsal replies) for demos and
+  // visual checks; mock only, always DEMO-labelled.
+  const personas = env.HAGGLE_MOCK_PERSONAS_FILE ? loadPersonas(env.HAGGLE_MOCK_PERSONAS_FILE) : undefined;
+  const fleet = fleetBusinesses(personas);
   // Rehearsals of restarts: HAGGLE_MOCK_DATABASE_URL (a throwaway Postgres) and HAGGLE_MOCK_BRAIN_FILE keep
   // simulated state across a restart. Never point these at the live database: mock data is DEMO only.
   const brain = makeBrain(fleet, env.HAGGLE_MOCK_BRAIN_FILE ? { HAGGLE_BRAIN_FILE: env.HAGGLE_MOCK_BRAIN_FILE } : { HAGGLE_BRAIN_STORE: "memory" }, { discovery: fleet });
@@ -67,7 +71,7 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   const fx = env.HAGGLE_PLACES_FIXTURE ? fixtureFetchers(env.HAGGLE_PLACES_FIXTURE) : null;
   const allow = fx ? [...fleet.flatMap((b) => [b.email, b.phone, b.a2a_card_url].filter((x): x is string => !!x)), ...(env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim()).filter(Boolean)] : null;
   const m = createMockEngine({
-    delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain,
+    delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain, ...(personas ? { personas } : {}),
     ...(env.HAGGLE_MOCK_DATABASE_URL ? { repo: new PostgresRepository(env.HAGGLE_MOCK_DATABASE_URL) } : {}),
     ...(allow ? { config: { recipientAllowlist: allow } } : {}),
   });
@@ -84,6 +88,17 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
     ...(fx ? { placesKey: "fixture", placesFetch: fx.places, webFetch: { fetch: fx.web, resolve: fx.resolve } } : {}),
   });
   return runtime;
+}
+
+interface PersonaFile { personas: { name: string; email?: string; phone?: string; replies: Record<string, { text: string; extraction: QuoteExtraction }> }[] }
+
+/** Scripted mock vendors from JSON: each trigger (rfq, call, followup, counter, answer) has a fixed reply. */
+function loadPersonas(path: string): Persona[] {
+  const f = JSON.parse(readFileSync(path, "utf8")) as PersonaFile;
+  return f.personas.map((p) => ({
+    name: p.name, email: p.email ?? "", ...(p.phone ? { phone: p.phone } : {}), delayMs: 2_000,
+    reply: (t) => { const r = p.replies[t]; return r ? { text: r.text, extraction: structuredClone(r.extraction) } : null; },
+  }));
 }
 
 /** Tests only. */

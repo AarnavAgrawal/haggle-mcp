@@ -2008,7 +2008,9 @@ export class HaggleEngine {
       const last = steps.at(-1);
       let negotiationState: BusinessStage["negotiation"] = "none";
       if (last && last.outcome_total_usd === null) negotiationState = "countered";
-      else if (last && first?.total_cents != null && last.outcome_total_usd !== null) negotiationState = last.outcome_total_usd < centsToUsd(first.total_cents) ? "vendor_revised" : "held_firm";
+      // Revised or held firm is measured against the business's first FIRM price: "about $1,300" followed
+      // by a firm $1,250 is a clarification, and holding at $1,250 after a counter is holding firm.
+      else if (last && firstFirm?.total_cents != null && last.outcome_total_usd !== null) negotiationState = last.outcome_total_usd < centsToUsd(firstFirm.total_cents) ? "vendor_revised" : "held_firm";
       const approved = approval && ["approved", "used"].includes(approval.status) && approval.business_id === b.business_id;
       const stage: BusinessStage["stage"] =
         job.state === "paid" && approved ? "paid"
@@ -2029,7 +2031,7 @@ export class HaggleEngine {
         : "waiting";
       out[b.business_id] = {
         stage, negotiation: negotiationState,
-        ...(first?.total_cents != null ? { first_total_usd: centsToUsd(first.total_cents) } : {}),
+        ...((firstFirm ?? first)?.total_cents != null ? { first_total_usd: centsToUsd((firstFirm ?? first)!.total_cents!) } : {}),
         ...(current?.total_cents != null ? { current_total_usd: centsToUsd(current.total_cents), quote_version: current.round } : {}),
         // Savings only against this business's own earlier firm figure (an estimate was never a price).
         ...(firstFirm?.total_cents != null && current?.total_cents != null && current.total_cents < firstFirm.total_cents ? { saved_usd: centsToUsd(firstFirm.total_cents - current.total_cents) } : {}),

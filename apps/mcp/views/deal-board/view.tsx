@@ -26,6 +26,10 @@ type Extras = {
   request_details?: { what: string; headcount: number; when: string; place: string; requirements: string[]; budget_usd: number | null; budget_source?: "request" | "settings_default" };
   payment_ceiling_usd?: number;
   payments_enabled?: boolean;
+  quote_status?: Record<string, { approvable: boolean; approximate?: boolean; block?: { code: string; reason: string } }>;
+  best_value_quote_id?: string;
+  recommendation_note?: string;
+  negotiation_estimates?: string[];
   dry_run?: boolean;
   would_contact?: { name: string; channel?: string }[];
   blocked?: { name: string; contact_state: string; channel?: string; reason?: string }[];
@@ -312,6 +316,13 @@ function headline(board: DealBoard, f: ReturnType<typeof facts>): { text: string
  * pay-now amount over the per-payment ceiling). The server still decides; this only avoids a dead tap.
  */
 function approveBlocker(q: Quote, board: DealBoard): { short: string; long: string } | null {
+  // The server's decision when it sent one (approvable + the reason in its words); else the local check.
+  const st = board.quote_status?.[q.quote_id];
+  if (st) {
+    if (st.approvable) return null;
+    const short = st.block?.code === "total_not_firm" ? "the total is approximate" : st.block?.code === "over_cap" ? "it is over the per-payment ceiling" : st.block?.code === "zero_total" ? "it has no real total" : "it can't be approved";
+    return { short, long: st.block?.reason ?? "The server says this quote can't be approved yet." };
+  }
   if (isApproximate(q)) return { short: "the total is approximate", long: `${q.business} gave an approximate total. It can be approved once they confirm a firm one.` };
   const now = payNow(q);
   const ceiling = board.payment_ceiling_usd;
@@ -393,6 +404,7 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
       <p className={`db-headline db-headline-${head.tone}`} aria-live="polite">
         {head.text}
       </p>
+      {board.recommendation_note && board.ready && !f.approved && <p className="db-note">{board.recommendation_note}</p>}
       {board.payments_enabled === false && !f.approved && <p className="db-note">Payments are off on this server: you can approve, but nothing can be charged.</p>}
       {board.setup && <Blockers setup={board.setup} />}
 
@@ -651,13 +663,17 @@ function NegTrail({ board, businessId }: { board: DealBoard; businessId: string 
         const answer =
           n.outcome_total_usd === null
             ? { k: "Their answer", v: "waiting", cls: "is-wait" }
-            : first !== undefined && n.outcome_total_usd < first
-              ? { k: "They revised", v: `${usd(n.outcome_total_usd)} (−${usd(st?.saved_usd ?? first - n.outcome_total_usd)})`, cls: "is-win" }
-              : { k: "They held firm", v: usd(n.outcome_total_usd), cls: "" };
+            : st?.negotiation === "vendor_revised" && first !== undefined && n.outcome_total_usd < first
+              ? { k: "They revised", v: `${usd(n.outcome_total_usd)}${st.saved_usd ? ` (−${usd(st.saved_usd)})` : ""}`, cls: "is-win" }
+              : st?.negotiation === "held_firm"
+                ? { k: "They held firm", v: usd(n.outcome_total_usd), cls: "" }
+                : { k: "Their answer", v: usd(n.outcome_total_usd), cls: "" };
+        // A counter that cited another business's rough figure says so: it was never a firm quote.
+        const estimate = (board.negotiation_estimates ?? []).includes(n.basis_quote_id);
         return [
           <li key={`c${n.round}`}>
             <span className="db-trail-k">Haggle countered</span>{" "}
-            {n.basis_quote_id === "buyer_target" ? `asked to get closer to your ${usd(n.target_total_usd)} target` : `with ${basis ? `${basis}'s` : "a"} real ${usd(n.target_total_usd)} quote`}
+            {n.basis_quote_id === "buyer_target" ? `asked to get closer to your ${usd(n.target_total_usd)} target` : estimate ? `citing ${basis ? `${basis}'s` : "an"} estimate of about ${usd(n.target_total_usd)}` : `with ${basis ? `${basis}'s` : "a"} real ${usd(n.target_total_usd)} quote`}
           </li>,
           <li key={`a${n.round}`} className={answer.cls}>
             <span className="db-trail-k">{answer.k}</span> {answer.v}
