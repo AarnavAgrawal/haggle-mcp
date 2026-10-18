@@ -5,6 +5,7 @@
 // Run `mcp-use build` first: this starts the built entry, as Manufact does.
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ApprovalOut as Approval, BusinessProfile, DealBoard, DealBoardOrEmpty, Estimates } from "../src/views.ts";
@@ -12,7 +13,13 @@ import { ApprovalOut as Approval, BusinessProfile, DealBoard, DealBoardOrEmpty, 
 // npm workspaces hoist the binary to the repo root; a per-package install keeps it local.
 const APP_DIR = join(import.meta.dirname, "..");
 const MCP_USE_BIN = [join(APP_DIR, "node_modules/.bin/mcp-use"), join(APP_DIR, "../../node_modules/.bin/mcp-use")].find((p) => existsSync(p)) ?? "mcp-use";
-const PORT = 3900 + Math.floor(Math.random() * 90);
+// A port nobody is listening on (a stale dev server on a random port once answered this suite).
+const PORT = await new Promise<number>((resolve, reject) => {
+  const srv = createServer().once("error", reject).listen(0, "127.0.0.1", () => {
+    const p = (srv.address() as AddressInfo).port;
+    srv.close(() => resolve(p));
+  });
+});
 const BASE = `http://127.0.0.1:${PORT}`;
 let proc: ChildProcess;
 let id = 0;
@@ -33,7 +40,7 @@ const call = async (name: string, args: Record<string, unknown>) => rpc("tools/c
 const errorOf = (r: { isError?: boolean; content: { text: string }[] }) => (r.isError ? JSON.parse(r.content[0]!.text) : null);
 
 const REQUEST = {
-  what: "lunch catering", quantity: 40, unit: "people", date: "2026-10-22", area: "San Francisco, CA",
+  what: "lunch catering", quantity: 40, unit: "people", date: new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10), area: "San Francisco, CA",
   requirements: [{ id: "veg12", kind: "dietary", text: "At least 12 vegetarian meals", hard: true, min_count: 12 }, { id: "delivery", kind: "delivery", text: "Delivery included", hard: true }],
 };
 
@@ -60,6 +67,8 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     for (const n of ["ask", "discover", "check_price", "deal", "wait_for_update", "get_quotes", "answer_business", "approve", "pay", "business_profile", "open_haggle", "settings.read", "settings.update", "mention_businesses"]) expect(names).toContain(n);
     const byName = Object.fromEntries(tools.map((t: { name: string }) => [t.name, t]));
     expect(JSON.stringify(byName.get_quotes._meta)).toContain("deal-board");
+    expect(JSON.stringify(byName.deal._meta)).toContain("deal-started"); // a new deal opens the board immediately
+    expect(byName.deal.description).toMatch(/^START HERE for any purchase/);
     expect(byName.get_quotes.outputSchema).toBeTruthy();
     expect(byName.approve_in_view._meta.ui.visibility).toEqual(["app"]);
     expect(names).not.toContain("answer_seller"); // views call answer_business now
@@ -105,15 +114,13 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
   });
 
   it("runs the cold catering deal end to end through the tools", async () => {
+    // discover lists the six demo vendors with readiness (mock: all simulated, all ready); contacts stay server-side.
     const found = await call("discover", { category: "catering", area: "San Francisco", count: 6 });
-    const businesses = found.structuredContent.businesses.map((b: { name: string; email?: string; phone?: string }) => ({ name: b.name, ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}) }));
-    expect(businesses).toHaveLength(6);
-    expect(found.structuredContent.businesses.every((b: { simulated: boolean }) => b.simulated)).toBe(true);
-    expect(found.structuredContent.note).toBeUndefined();
-    // Asking for more than the fleet says so (the Inspector chat once got 2 of 6 from a live server silently).
-    const more = await call("discover", { category: "catering", area: "San Francisco", count: 8 });
-    expect(more.structuredContent.note).toBe("Only 6 of the 8 requested businesses are available.");
-    expect(more.content[0].text).toMatch(/^\[DEMO\] .*Only 6 of the 8/);
+    expect(found.structuredContent).toMatchObject({ ready: 6, total: 6 });
+    expect(found.structuredContent.businesses.every((b: { simulated: boolean; ready: boolean }) => b.simulated && b.ready)).toBe(true);
+    expect(JSON.stringify(found.structuredContent)).not.toMatch(/\+1415555\d{4}/); // phone numbers never echoed
+    expect(found.content[0].text).toMatch(/^\[DEMO\] 6 of 6 demo vendors ready/);
+    const businesses = undefined; // deal without businesses uses the ready vendors
 
     const deal = await call("deal", { request: REQUEST, businesses, budget_usd: 1200, client_request_id: "e2e-1" });
     expect(deal.isError).toBeFalsy();
@@ -152,7 +159,7 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const biz = (name: string) => board.businesses.find((x: { name: string }) => x.name === name);
     // Bay Catering wins at $995 after negotiating from $1,150.
     expect(board.recommended_quote_id).toBe(q("Bay Catering").quote_id);
-    expect(q("Bay Catering")).toMatchObject({ total_usd: 995, negotiated_from: 1150, deposit_usd: 5, verdict: "compliant", channel: "email" });
+    expect(q("Bay Catering")).toMatchObject({ total_usd: 995, negotiated_from: 1150, deposit_usd: 5, verdict: "compliant", channel: "a2a" }); // its Agent Card
     // Golden Grill: only 6 vegetarian meals → rejected.
     expect(q("Golden Grill")).toMatchObject({ verdict: "rejected", meets_requirements: false });
     expect(board.rejected.find((r: { business_id: string }) => r.business_id === q("Golden Grill").business_id).reason).toBe("requirement_unmet");
@@ -193,7 +200,7 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // Approval (simulated human in mock mode: this client has no approval card or form).
     const ap = await call("approve", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(Approval.safeParse(ap.structuredContent).success).toBe(true);
-    expect(ap.structuredContent).toMatchObject({ status: "approved", amount_usd: 5, deposit_usd: 5, business: "Bay Catering", quote_channel: "email", channel: "simulated", mode: "mock" });
+    expect(ap.structuredContent).toMatchObject({ status: "approved", amount_usd: 5, deposit_usd: 5, business: "Bay Catering", quote_channel: "a2a", channel: "simulated", mode: "mock" });
     expect(ap.structuredContent.summary).toMatch(/\$995 order total/);
     expect(ap.structuredContent.demo).toMatch(/DEMO MODE/);
 

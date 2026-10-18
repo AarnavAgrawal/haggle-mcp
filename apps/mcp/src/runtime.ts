@@ -2,6 +2,7 @@
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
 import { createMockEngine, fleetBusinesses, type BrainAdapter, type HaggleEngine, type InkboxMailApi, type InkboxTrustPolicy } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
+import { buildRoster, type RosterEntry } from "./vendors.ts";
 
 export type Runtime = {
   mode: "mock" | "live";
@@ -13,6 +14,10 @@ export type Runtime = {
   /** Live mode: the Inkbox buyer identity and its webhook signing key. */
   inkbox?: { api: InkboxMailApi; buyerMailbox: string; webhookSecret: string; senderTrust: InkboxTrustPolicy; transcript?: (callId: string) => Promise<string> };
   missing: string[];
+  /** The demo vendors and whether each can be contacted now (never contacts anyone). */
+  roster: () => Promise<RosterEntry[]>;
+  /** Operator configuration problems worth showing (bad HAGGLE_DEMO_VENDORS entries). */
+  configErrors?: string[];
 };
 
 export const LIVE_REQUIRED = ["INKBOX_API_KEY", "INKBOX_WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "SUPABASE_DB_URL"] as const;
@@ -48,7 +53,13 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   const fleet = fleetBusinesses();
   const brain = makeBrain(fleet, { HAGGLE_BRAIN_STORE: "memory" }, { discovery: fleet });
   const m = createMockEngine({ delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain });
-  runtime = Promise.resolve({ mode: "mock", engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [] });
+  // Mock: the simulated fleet plays all six demo vendors; every one is reachable (DEMO).
+  // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board).
+  const roster = env.HAGGLE_MOCK_VENDORS === "none" ? buildRoster({}, { email: true, imessage: false, phone: false, a2a: false, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false }) : fleet.map((b): RosterEntry => ({
+    key: b.slug, name: b.name, channel: b.a2a_card_url && m.engine.a2aEnabled ? "a2a" : b.email ? "email" : "phone", played_by: "simulated seller (DEMO)", simulated: true, ready: true,
+    ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}),
+  }));
+  runtime = Promise.resolve({ mode: "mock", engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster });
   return runtime;
 }
 

@@ -374,3 +374,10 @@
   .db-foot-actions { flex-direction: column; }
   .db-q-form { flex-direction: column; }
 }
+
+.db-when { margin: 2px 0 0; font-weight: 500; }
+.db-setup { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--rule); border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: var(--radius-s); font-size: 13px; }
+.db-setup summary { cursor: pointer; font-weight: 600; }
+.db-setup ul { margin: 6px 0 0; padding-left: 18px; }
+.db-setup li { margin: 4px 0; }
+.db-setup-fix { display: block; color: var(--ink-2); }

@@ -5,7 +5,7 @@
  */
 import { ModelContext, useCallTool, useDisplayMode, useOpenExternal, useSendFollowUp, useToolContext } from "mcp-use/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { DealBoard, DealBoardBusiness, DealBoardOrEmpty, OpenQuestion, Quote } from "@haggle/core";
+import type { DealBoard as CoreDealBoard, DealBoardBusiness, DealBoardOrEmpty as CoreDealBoardOrEmpty, OpenQuestion, Quote } from "@haggle/core";
 import { ChannelBadge, ErrorNote, FlagChip, Meter, ModeBadge, Shell, Skeleton, VerdictChip, isRiskFlag, relativeTime, usd, viewTicket } from "../_shared/ui.tsx";
 import "./view.css";
 
@@ -38,6 +38,16 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 type Sync = { at: number | null; trouble: boolean };
+
+/** Server additions to the shared board (apps/mcp/src/views.ts DealBoardPlus); all optional. */
+type Extras = {
+  request_details?: { what: string; headcount: number; when: string; place: string; requirements: string[]; budget_usd: number | null; budget_source?: "request" | "settings_default" };
+  payment_ceiling_usd?: number;
+  setup?: { ready: number; total: number; blockers: { vendor: string; channel: string; reason: string; fix: string }[] };
+  not_contacted?: { business: string; channel: string; reason: string }[];
+};
+type DealBoard = CoreDealBoard & Extras;
+type DealBoardOrEmpty = CoreDealBoardOrEmpty & Extras;
 
 export default function DealBoardView() {
   const ctx = useToolContext<"get_quotes">();
@@ -96,8 +106,10 @@ export default function DealBoardView() {
       <Shell>
         {ctx.status === "error" ? (
           <ErrorNote title="Couldn't load this deal." detail={ctx.error.message} />
+        ) : initial && !initial.job && initial.setup && initial.setup.ready === 0 ? (
+          <SetupNeeded board={initial} />
         ) : initial && !initial.job ? (
-          <Welcome mode={initial.mode} />
+          <Welcome mode={initial.mode} setup={initial.setup} />
         ) : (
           <Skeleton rows={5} />
         )}
@@ -118,8 +130,45 @@ export default function DealBoardView() {
   );
 }
 
+/** No vendor can be contacted yet: nothing was sent; show exactly what to set up and who does it. */
+function SetupNeeded({ board }: { board: DealBoardOrEmpty }) {
+  const setup = board.setup!;
+  return (
+    <div className="db db-welcome">
+      <header className="db-head">
+        <div className="db-title">
+          <h1>Setup needed</h1>
+          <p className="hg-muted">None of the {setup.total} demo vendors can be contacted from this server yet, so no deal was started and nothing was sent.</p>
+        </div>
+        <ModeBadge mode={board.mode} />
+      </header>
+      <Blockers setup={setup} open />
+    </div>
+  );
+}
+
+/** Demo vendors that can't be contacted, each with the exact fix. */
+function Blockers({ setup, open = false }: { setup: NonNullable<Extras["setup"]>; open?: boolean }) {
+  if (!setup.blockers.length) return null;
+  return (
+    <details className="db-setup" open={open}>
+      <summary>
+        {setup.ready} of {setup.total} demo vendors ready · {setup.blockers.length} need setup
+      </summary>
+      <ul>
+        {setup.blockers.map((b) => (
+          <li key={b.vendor}>
+            <strong>{b.vendor}</strong> <ChannelBadge channel={b.channel as Quote["channel"]} /> {b.reason}.
+            <span className="db-setup-fix">{b.fix}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 /** open_haggle before any deal: what Haggle does and two ways to start. */
-function Welcome({ mode }: { mode?: "mock" | "live" }) {
+function Welcome({ mode, setup }: { mode?: "mock" | "live"; setup?: Extras["setup"] }) {
   const followUp = useSendFollowUp();
   const ask = (prompt: string) => void followUp({ prompt }).catch(() => {});
   return (
@@ -132,13 +181,14 @@ function Welcome({ mode }: { mode?: "mock" | "live" }) {
         <ModeBadge mode={mode} />
       </header>
       <div className="db-welcome-actions">
-        <button className="hg-btn hg-btn-primary" onClick={() => ask("Use Haggle to get catering quotes for 40 people next week in San Francisco, at least 12 vegetarian, delivered, budget $1,200.")}>
+        <button className="hg-btn hg-btn-primary" onClick={() => ask("Use Haggle to get catering quotes for 200 people next Saturday at noon at the YC office in San Francisco, 40 vegetarian, budget $5,000.")}>
           Start a catering deal
         </button>
         <button className="hg-btn" onClick={() => ask("Use Haggle's ask tool for an instant estimate: lunch catering for 40 in San Francisco.")}>
           Instant estimate
         </button>
       </div>
+      {setup && <Blockers setup={setup} />}
     </div>
   );
 }
@@ -161,11 +211,34 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
       />
       <header className="db-head">
         <div className="db-title">
-          <h1>{capitalize(board.job.request)}</h1>
-          <p className="hg-muted">
-            {board.job.budget_usd !== undefined && <>Budget {usd(board.job.budget_usd)}. </>}
-            {board.job.requirements.join(", ")}
-          </p>
+          {board.request_details ? (
+            <>
+              <h1>
+                {capitalize(board.request_details.what)} for {board.request_details.headcount}
+              </h1>
+              <p className="db-when">
+                {board.request_details.when} · {board.request_details.place}
+              </p>
+              <p className="hg-muted">
+                {board.request_details.budget_usd !== null && (
+                  <>
+                    Budget {usd(board.request_details.budget_usd)}
+                    {board.request_details.budget_source === "settings_default" ? " (settings default)" : ""}.{" "}
+                  </>
+                )}
+                {board.request_details.requirements.join(", ")}
+                {board.payment_ceiling_usd !== undefined && <> · Deposits only after your approval, up to {usd(board.payment_ceiling_usd)}</>}
+              </p>
+            </>
+          ) : (
+            <>
+              <h1>{capitalize(board.job.request)}</h1>
+              <p className="hg-muted">
+                {board.job.budget_usd !== undefined && <>Budget {usd(board.job.budget_usd)}. </>}
+                {board.job.requirements.join(", ")}
+              </p>
+            </>
+          )}
         </div>
         <div className="db-head-side">
           <ModeBadge mode={board.mode} />
@@ -183,6 +256,7 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
       </header>
 
       <Progress board={board} />
+      {board.setup && <Blockers setup={board.setup} />}
 
       <div className="db-body">
         <section className="db-ladder" aria-label="Quotes, best first">

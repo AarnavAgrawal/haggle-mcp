@@ -370,5 +370,11 @@ export async function connectInkboxBuyer(opts: { apiKey: string; handle: string 
     a2a: () => inkboxA2A(identity as never),
     imessage: () => (identity.imessageEnabled ? inkboxIMessage(identity as never) : null),
     transcript: (callId: string) => fullCallTranscript(identity as never, callId),
+    /** E.164 numbers with an active iMessage connection to this identity (they texted `connect @<handle>`). */
+    connectedNumbers: async (): Promise<Set<string>> => {
+      const rows = await withRetry(() => identity.listIMessageAssignments({ limit: 200 }));
+      return new Set(rows.filter((a) => String(a.status) === "active" && !a.releasedAt).map((a) => a.remoteNumber));
+    },
+    connectCommand: `connect @${identity.agentHandle}`,
   };
 }

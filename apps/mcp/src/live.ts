@@ -10,11 +10,12 @@ import {
 } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
+import { buildRoster, parseVendorConfig, rosterRecipients, type VendorContact } from "./vendors.ts";
 
 const TICK_MS = 30_000;
 
 registerLiveFactory(async (env): Promise<Runtime> => {
-  const { api, buyerMailbox, phone, a2a, imessage, transcript, callOrigin } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
+  const { api, buyerMailbox, phone, a2a, imessage, transcript, callOrigin, connectedNumbers, connectCommand } = await connectInkboxBuyer({ apiKey: env.INKBOX_API_KEY!, handle: env.INKBOX_IDENTITY?.trim() || "haggle" });
 
   // Only the explicitly configured simulated fleet is offered by discover (never arbitrary businesses).
   const fleet = parseFleet(env.HAGGLE_DEMO_FLEET).map((b) => ({
@@ -38,7 +39,11 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const imessagePort = env.HAGGLE_ENABLE_IMESSAGE === "true" ? imessage() : null;
   // Never contact arbitrary businesses: only the simulated fleet and explicitly allowed recipients.
   const allowAny = env.HAGGLE_ALLOW_ANY_RECIPIENT === "true";
-  const allowlist = [...fleet.map((b) => b.email), ...(env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim()).filter(Boolean)];
+  // The demo vendor roster: configuring a vendor's contact is the operator authorizing it as a recipient.
+  const vendorConfig = parseVendorConfig(env.HAGGLE_DEMO_VENDORS);
+  const contacts: Record<string, VendorContact> = { ...vendorConfig.contacts };
+  for (const b of fleet) if (!Object.values(contacts).some((c) => c.email === b.email)) contacts[`fleet_${b.slug}`] = { name: b.name, email: b.email, channel: "email" };
+  const allowlist = [...new Set([...fleet.map((b) => b.email), ...rosterRecipients(vendorConfig.contacts), ...(env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim()).filter(Boolean)])];
   // Seller-reply trust (see InkboxTrustPolicy): strict by default; "pinned-org-identity" is the
   // operator opt-in for an agent-scoped buyer key, limited to the pinned fleet/allowlist addresses.
   const senderTrust: InkboxTrustPolicy = env.INKBOX_SENDER_TRUST === "pinned-org-identity"
@@ -72,5 +77,14 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     void repo.listOpenJobs().then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
   }, TICK_MS).unref();
   console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, payments: stripe ? "stripe-test" : "disabled", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy }));
-  return { mode: "live", engine, brain, missing: [], inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript } };
+  // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
+  let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };
+  const roster = async () => {
+    if (imessagePort || phonePort) {
+      if (Date.now() - connected.at > 20_000) connected = { at: Date.now(), set: await connectedNumbers().catch(() => null) };
+    }
+    return buildRoster(contacts, { email: true, imessage: imessagePort !== null, phone: phonePort !== null, a2a: a2aPort !== null, connectCommand, connected: connected.set, callsViaSharedLine: callOrigin === "shared_imessage_number" });
+  };
+  if (vendorConfig.errors.length) console.error(JSON.stringify({ level: "warn", event: "demo_vendors_config", errors: vendorConfig.errors }));
+  return { mode: "live", engine, brain, missing: [], roster, configErrors: vendorConfig.errors, inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript } };
 });

@@ -140,6 +140,8 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
   inbox: string;
   request: Request;
   budget_usd: number | null;
+  /** Ceiling for any single payment on this job (operator ceiling ∩ job cap); separate from the order budget. */
+  payment_ceiling_usd?: number;
 };
 
 const REJECT_TEXT: Record<import("../ranking/rank.ts").RejectReason, string> = {
@@ -207,7 +209,9 @@ export class HaggleEngine {
 
     // Stripe rail: the per-job payment cap is the settings spending cap, never above the operator's
     // per-payment ceiling. x402 keeps its fixed testnet ceiling.
-    const paymentCapCents = this.d.stripe ? Math.min(this.d.config.globalPaymentCapCents, (await this.getSettings()).spending_cap_cents) : this.d.config.globalPaymentCapCents;
+    // Any single payment on this job stays within the operator's ceiling, the human's settings cap and
+    // the order budget. The budget itself is the request's and is never replaced by these limits.
+    const paymentCapCents = this.d.stripe ? Math.min(this.d.config.globalPaymentCapCents, (await this.getSettings()).spending_cap_cents, budgetCents ?? Infinity) : this.d.config.globalPaymentCapCents;
     let job: JobRow | null = null;
     for (let i = 0; i < 5 && !job; i++) {
       const code = newShortCode();
@@ -1408,6 +1412,7 @@ export class HaggleEngine {
       approval: approval ? approvalRecord(approval, job) : null,
       payment: payment ? paymentStatus(payment) : job.state === "awaiting_approval" ? this.noPayment() : null,
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
+      payment_ceiling_usd: centsToUsd(Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents)),
       next: await this.nextHint(job),
     };
   }

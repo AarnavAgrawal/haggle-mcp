@@ -1,7 +1,7 @@
 // Engine read models -> the shared view schemas (@haggle/core/views). Every tool that renders a view
 // returns exactly one of these shapes, parsed (validated and stripped of engine-only fields).
 import { Approval, DealBoard, DealBoardOrEmpty, requirementText, type Channel, type Mode } from "@haggle/core";
-import type { DealBoardData } from "@haggle/engine";
+import { eventPlace, eventWhen, type DealBoardData } from "@haggle/engine";
 import { z } from "zod";
 
 export { BusinessProfile, DealBoard, DealBoardOrEmpty, Estimates } from "@haggle/core";
@@ -23,7 +23,7 @@ export type ApprovalOut = z.infer<typeof ApprovalOut>;
 const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
 export function requestSummary(r: DealBoardData["job"]["request"]): string {
-  return [`${r.what} for ${r.quantity}${r.unit ? ` ${r.unit}` : ""}`, r.date, r.area].filter(Boolean).join(" · ");
+  return [`${r.what} for ${r.quantity}${r.unit ? ` ${r.unit}` : ""}`, eventWhen(r.date, r.time), eventPlace(r.area, r.venue)].filter(Boolean).join(" · ");
 }
 
 /** Flags that mean the business's own words must not be echoed to the model or the view. */
@@ -54,6 +54,45 @@ export function toDealBoard(b: DealBoardData, mode: Mode): DealBoard {
     approval: b.approval ? { approval_id: b.approval.approval_id, quote_id: b.approval.quote_id, status: b.approval.status, channel: b.approval.channel } : null,
     payment: b.payment ? { status: b.payment.status, simulated: b.payment.simulated, ...(b.payment.receipt_url ? { receipt_url: b.payment.receipt_url } : b.payment.explorer_url ? { receipt_url: b.payment.explorer_url } : {}) } : null,
     ready: b.ready,
+  });
+}
+
+const Blocker = z.object({ vendor: z.string(), channel: z.string(), reason: z.string(), fix: z.string() });
+
+/**
+ * The deal board as Haggle's tools return it (deal, get_quotes, open_haggle): the shared DealBoard
+ * plus engine/server additions the board shows when present. Extends (never edits) @haggle/core.
+ */
+export const DealBoardPlus = DealBoardOrEmpty.extend({
+  ok: z.boolean().optional(),
+  job_id: z.string().optional(),
+  /** Exactly what the businesses were asked, so the human can check the parse. */
+  request_details: z.object({
+    what: z.string(), headcount: z.number().int(), when: z.string(), place: z.string(), date: z.string(), time: z.string().optional(),
+    requirements: z.array(z.string()), budget_usd: z.number().nullable(), budget_source: z.enum(["request", "settings_default"]).optional(),
+  }).optional(),
+  /** Operator/settings ceiling for any single payment (the deposit), separate from the order budget. */
+  payment_ceiling_usd: z.number().nonnegative().optional(),
+  contacted: z.array(z.looseObject({ business: z.string(), channel: z.string() })).optional(),
+  not_contacted: z.array(z.looseObject({ business: z.string(), channel: z.string(), reason: z.string() })).optional(),
+  warnings: z.array(z.string()).optional(),
+  /** Demo vendors this server can't contact yet, with the exact fix. Shown before and during a deal. */
+  setup: z.object({ ready: z.number().int(), total: z.number().int(), blockers: z.array(Blocker) }).optional(),
+});
+export type DealBoardPlus = z.infer<typeof DealBoardPlus>;
+
+export function requestDetails(b: DealBoardData, budgetSource?: "request" | "settings_default"): NonNullable<DealBoardPlus["request_details"]> {
+  const r = b.job.request;
+  return {
+    what: r.what, headcount: r.quantity, when: eventWhen(r.date, r.time), place: eventPlace(r.area, r.venue), date: r.date, ...(r.time ? { time: r.time } : {}),
+    requirements: r.requirements.map(requirementText), budget_usd: b.job.budget_usd, ...(budgetSource ? { budget_source: budgetSource } : {}),
+  };
+}
+
+/** Board + request details + payment ceiling (+ setup blockers when given). */
+export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus> = {}): DealBoardPlus {
+  return DealBoardPlus.parse({
+    ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...extra,
   });
 }
 

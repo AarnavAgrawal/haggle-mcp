@@ -37,7 +37,7 @@ describe("toDealBoard (live-shaped engine data)", () => {
     const b = toDealBoard(live, "live");
     expect(DealBoard.safeParse(b).success).toBe(true);
     expect(b).toMatchObject({ mode: "live", recommended_quote_id: "q_live_1", job: { id: "job_512a5d0265b144ed9337", state: "collecting", budget_usd: 1200, requirements: ["At least 12 vegetarian meals"] } });
-    expect(b.job.request).toBe("lunch catering for 40 people · 2026-10-22 · San Francisco, CA");
+    expect(b.job.request).toBe("lunch catering for 40 people · Thursday, October 22, 2026 · San Francisco, CA");
     expect(b.quotes).toHaveLength(1); // D2: the reply with no total is not a quote
     expect(b.quotes[0]).toMatchObject({ business: "Haggle Test Seller", channel: "email", total_usd: 1080, eligible: true, verdict: "compliant" });
     expect(b.quotes[0]).not.toHaveProperty("evidence"); // engine-internal fields never reach the view
