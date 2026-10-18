@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: first complete live demo on calm-spark (39c4782+): waiting on the demo vendor routes, Stripe test-mode authorization and Aarnav's Claude.ai connector · Aarnav: live Haggle in the Claude app (`haggle-aarnav` on Manufact, branch `aarnav-live-e2e`), then the first live call to Mission Eats
+**Now working on:** Yash: first witnessed live purchase on calm-spark 6cb7312: waiting on roster activation, Stripe secrets + enable, and Aarnav's RCS inbound check · Aarnav: live Haggle in the Claude app (`haggle-aarnav` on Manufact, branch `aarnav-live-e2e`), then the first live call to Mission Eats
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -110,6 +110,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 19:10 · Yash · Production pass, calm-spark 6cb7312: stale default fleet routes removed (two Claude.ai deals had defaulted to haggle-test-seller + golden-grill-sf), HG-code iMessage routing across open jobs, Stripe hosted receipt link, restart/resumption + isolation regressions (342 tests); Claude.ai evidence: model called deal; the embedded board polled wait_for_update/get_quotes 53×; Aarnav (Android, RCS) connected to @haggle but no inbound reached @haggle yet
 
 - 18:40 · Yash · Merged `aarnav-live-e2e` (only safety stops a purchase, caveats, race fixes, Stripe read-back) with the demo/value work; best-value ranking + Google Places reputation, human-authorized phone callback (`call_back`), general-purpose requirements/units (roof-repair test), per-payment ceiling fix ($5,000), board polish; deployed calm-spark 39c4782 (payments off, allowlist unchanged); real-Claude NL journey 6/6 on the hosted server; 340 tests + 220 on Postgres
 
