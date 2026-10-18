@@ -104,6 +104,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-17 21:40 · Aarnav (in Yash's lane, approved; needs his review) · Calls: spoken prices ("seventeen", "two fifty"), confirmed read-backs and tax rates now make a quote (the live Mission Eats call had been dropped); Voice AI confirms the all-in total. SMS (`HAGGLE_ENABLE_SMS`, `HAGGLE_NOTIFY_PHONE`): update texts to the human on quotes/questions/calls/ready/failed, a texted reply answers the open question, one SMS follow-up to a phone vendor without a clear total; `text.received` webhook. Deal board "Keep chat updated" wakes the model on updates. 392 tests; deployed to haggle-aarnav (sms + notify on), live read-only 17/18
+
 - 2026-10-17 20:40 · Aarnav · `haggle-aarnav` (https://keen-cloud-z3xyf.run.mcp-use.com/mcp) redeployed from `feat/live-demo` (0.6.0, 20 tools) on a new dedicated Supabase project (all 6 migrations, RLS forced, brain read/write verified), Stripe test mode on, calls to the one consenting number; live read-only 17/18 (only miss: buyer webhook has no iMessage/A2A events, both off)
 
 - 2026-10-17 20:15 · Aarnav · Brain store honours `HAGGLE_DB_SCHEMA` (was always `public`, so a shared DB with tables in `haggle` couldn't persist profiles); PDF fixtures marked binary (Windows autocrlf corrupted them); all 6 migrations verified on a fresh Postgres 17 for the new dedicated Supabase project; 369 tests pass
