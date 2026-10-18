@@ -540,7 +540,8 @@ export const discover = server.tool(
   },
   async ({ count }) =>
     run(async (rt) => {
-      const roster = (await rt.roster()).slice(0, Math.max(count, 6));
+      // Every vendor deal could contact is listed (ready first); count only matters for very large rosters.
+      const roster = (await rt.roster()).sort((a, b) => Number(b.ready) - Number(a.ready)).slice(0, Math.max(count, 12));
       // Contacts stay server-side (deal uses them); phone numbers are never echoed.
       const businesses = roster.map((r) => ({
         name: r.name, best_channel: r.channel, simulated: true, ready: r.ready, played_by: r.played_by,
