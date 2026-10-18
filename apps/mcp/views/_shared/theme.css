@@ -2,7 +2,7 @@
 .hg {
   --ink: #16202a;
   --ink-2: #4a5764;
-  --ink-3: #7b8794;
+  --ink-3: #65717d; /* ≥ 4.5:1 on paper for small text */
   --paper: #fbfcfd;
   --panel: #ffffff;
   --rule: #dfe5ea;
@@ -204,6 +204,7 @@
   color: var(--risk);
 }
 .hg-error span { color: var(--ink-2); }
+.hg-error .hg-error-fix { color: var(--ink); font-size: 12.5px; }
 
 @keyframes hg-shimmer {
   to { background-position: -200% 0; }

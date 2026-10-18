@@ -89,6 +89,7 @@ const FLAG_INFO: Record<string, { label: string; tone: "risk" | "warn" | "info" 
   low_confidence: { label: "Low confidence", tone: "warn" },
   question_pending: { label: "Waiting on our answer", tone: "info" },
   expired: { label: "Expired", tone: "warn" },
+  approximate_total: { label: "Approximate total", tone: "warn" },
 };
 
 export function FlagChip({ flag }: { flag: string }) {
@@ -140,6 +141,68 @@ export function ErrorNote({ title, detail }: { title: string; detail?: string })
     </div>
   );
 }
+
+/**
+ * A tool error rendered as words, not a JSON blob. Haggle's errors are
+ * `{"ok":false,"error":{"code","message","fix"}}` in the text content; anything else is shown as-is.
+ */
+export function ToolErrorNote({ title, error, content }: { title: string; error?: { message?: string }; content?: unknown }) {
+  const texts = [error?.message, ...(Array.isArray(content) ? content.map((c) => (c as { text?: string }).text) : [])];
+  const text = texts.find((t): t is string => typeof t === "string" && t.trim().length > 0) ?? "";
+  let message = text;
+  let fix: string | undefined;
+  const brace = text.indexOf("{");
+  if (brace >= 0) {
+    try {
+      const j = JSON.parse(text.slice(brace)) as { error?: { message?: string; fix?: string } | string; message?: string };
+      const e = typeof j.error === "object" ? j.error : undefined;
+      message = e?.message ?? (typeof j.error === "string" ? j.error : j.message) ?? text;
+      fix = e?.fix;
+    } catch {
+      /* plain text */
+    }
+  }
+  return (
+    <div className="hg-error" role="alert">
+      <strong>{title}</strong>
+      {message && <span>{message}</span>}
+      {fix && <span className="hg-error-fix">{fix}</span>}
+    </div>
+  );
+}
+
+/**
+ * Words for a failed tool call: a thrown Error, or a result's content blocks. Haggle errors arrive as
+ * `{"ok":false,"error":{"message","fix"}}` text; this returns "message fix" instead of the JSON.
+ */
+export function toolErrorText(e: unknown): string | undefined {
+  const raw = Array.isArray(e)
+    ? (e as { text?: string }[]).find((c) => typeof c?.text === "string")?.text
+    : e instanceof Error ? e.message : typeof e === "string" ? e : undefined;
+  if (!raw) return undefined;
+  const brace = raw.indexOf("{");
+  if (brace < 0) return raw;
+  try {
+    const j = JSON.parse(raw.slice(brace)) as { error?: { message?: string; fix?: string } | string; message?: string };
+    const err = typeof j.error === "object" ? j.error : undefined;
+    return [err?.message ?? (typeof j.error === "string" ? j.error : j.message), err?.fix].filter(Boolean).join(" ") || raw;
+  } catch {
+    return raw;
+  }
+}
+
+/** What is paid now for a quote: the stated deposit, or the full total when no deposit was stated. */
+export function payNow(q: { total_usd: number; deposit_usd?: number }): { amount: number; deposit: boolean } {
+  return q.deposit_usd !== undefined ? { amount: q.deposit_usd, deposit: true } : { amount: q.total_usd, deposit: false };
+}
+
+/** "$50 deposit" or "$860 full total": the one wording used on every button and status line. */
+export function payWords(p: { amount: number; deposit: boolean }): string {
+  return `${usd(p.amount)} ${p.deposit ? "deposit" : "full total"}`;
+}
+
+/** The business gave a rough figure ("about $1,300"): shown as an estimate and never approvable. */
+export const isApproximate = (q: { flags: string[] }) => q.flags.includes("approximate_total");
 
 export function relativeTime(iso: string | undefined, now = Date.now()): string {
   if (!iso) return "";
