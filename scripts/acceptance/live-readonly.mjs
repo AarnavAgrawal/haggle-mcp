@@ -26,7 +26,7 @@ const by = Object.fromEntries(tools.map((t) => [t.name, t]));
 check("get_quotes bound to the deal board with an outputSchema", JSON.stringify(by.get_quotes?._meta ?? {}).includes("deal-board") && !!by.get_quotes?.outputSchema);
 check("launcher has global + thread entrypoints", JSON.stringify(by.open_haggle?._meta ?? {}).includes("global") && JSON.stringify(by.open_haggle?._meta ?? {}).includes("thread"));
 check("approve_in_view hidden from the model", by.approve_in_view?._meta?.ui?.visibility?.[0] === "app");
-for (const [tool, args] of [["open_haggle", {}], ["settings.read", {}], ["ask", { what: "lunch catering", quantity: 25, date: "2026-10-30", area: "San Francisco, CA" }], ["discover", { category: "catering", area: "San Francisco, CA", count: 3 }], ["business_profile", { business: "Harbor Table" }], ["check_price", { what: "lunch catering", quantity: 40, area: "San Francisco, CA", total_usd: 995 }]]) {
+for (const [tool, args] of [["open_haggle", {}], ["settings.read", {}], ["ask", { what: "lunch catering", quantity: 25, date: "2026-10-30", area: "San Francisco, CA" }], ["discover", { category: "catering", area: "San Francisco, CA", count: 3 }], ["business_profile", { business: "Mission Eats" }], ["check_price", { what: "lunch catering", quantity: 40, area: "San Francisco, CA", total_usd: 995 }]]) {
   const r = await call(tool, args);
   check(`read-only ${tool}`, r && !r.isError, r?.isError ? err(r)?.error?.code : (r?.content?.[0]?.text ?? "").slice(0, 70));
 }
@@ -47,6 +47,21 @@ check("get_quotes() with no job_id opens the most relevant deal", !latest.isErro
 check("board carries vendor stages and the payment state", !!latest.structuredContent?.stages && typeof latest.structuredContent?.payments_enabled === "boolean", `payments_enabled=${latest.structuredContent?.payments_enabled}`);
 const roster = await call("discover", {});
 check("discover reports the demo roster with readiness", !roster.isError && typeof roster.structuredContent?.ready === "number", `${roster.structuredContent?.ready}/${roster.structuredContent?.total} ready`);
+// Naming a vendor: the server resolves its contact; exactly that vendor; never the whole roster.
+// dry_run sends nothing. Guard: a server without dry_run would drop the flag and SEND, so skip there.
+if (by.deal?.inputSchema?.properties?.dry_run) {
+  const req = { what: "drop-off catering", quantity: 25, date: new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10), area: "San Francisco, CA", requirements: [] };
+  const before = deals.structuredContent?.deals?.length;
+  const one = await call("deal", { request: req, budget_usd: 500, businesses: ["Mission Eats"], dry_run: true });
+  const would = one.structuredContent?.would_contact?.map((w) => w.name) ?? [];
+  check("deal(businesses=['Mission Eats']) resolves exactly Mission Eats, no contact details needed (dry run)", !one.isError && would.length === 1 && would[0] === "Mission Eats", would.join(", ") || err(one)?.error?.code);
+  const unknown = await call("deal", { request: req, budget_usd: 500, businesses: ["Taco Palace"], dry_run: true });
+  check("an unknown vendor name starts nothing (no roster fallback)", err(unknown)?.error?.code === "unknown_business");
+  check("dry runs started no deal", (await call("list_deals", { limit: 5 })).structuredContent?.deals?.length === before);
+  const prof = await call("business_profile", { business: "Mission Eats" });
+  const pc = prof.structuredContent ?? {};
+  check("business_profile(Mission Eats): same business_ref deal takes, real quotes only (no seed samples)", pc.business_ref === "mission_eats" && pc.configured_vendor === true && pc.n_quotes > 0 && !/seed/i.test(prof.content?.[0]?.text ?? "") && !(pc.history ?? []).some((h) => /seed/i.test(h.note ?? "")), `${pc.n_quotes} real quotes, confidence ${pc.confidence}`);
+} else check("deal supports dry_run (named-vendor checks)", false, "server predates dry_run: named-vendor checks skipped, deal NOT called");
 const cb = latest.structuredContent?.callbacks?.[0];
 if (cb) check("call_back can't be authorized by a headless client (no call placed)", ["NO_HUMAN_CHANNEL", "callback_not_justified"].includes(err(await call("call_back", { job_id: latest.structuredContent.job_id, business_id: cb.business_id }))?.error?.code));
 const blocked = await call("deal", { request: { what: "lunch catering", quantity: 40, date: "2026-10-22", area: "San Francisco, CA", requirements: [] }, businesses: [{ name: "Some Real Diner", email: "owner@realdiner.example" }], budget_usd: 1200 });

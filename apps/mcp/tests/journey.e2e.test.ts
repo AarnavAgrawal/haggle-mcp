@@ -179,3 +179,74 @@ describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
     expect((await call(blocked, "open_haggle", {})).structuredContent).toMatchObject({ job: null, setup: { ready: 0 } });
   });
 });
+
+// P0 regression (2026-10-18), Claude.ai: "I need drop-off catering for 25 people in San Francisco next
+// week, including 5 vegetarian meals. My target budget is $500 all-in. Use Mission Eats ONLY, …".
+// Before: deal required each named business's raw email/phone, so Claude (correctly) wouldn't omit the
+// vendor list and couldn't start the deal without asking the user for Mission Eats' phone number,
+// which the server already had. After: names are enough, and exactly the named vendors are contacted.
+describe("named vendors: 'Use Mission Eats ONLY'", () => {
+  const missionOnly = (over: Record<string, unknown> = {}) => hackathon({
+    request: { what: "drop-off catering", quantity: 25, date: SAT, area: "San Francisco, CA", requirements: [{ kind: "dietary", text: "5 vegetarian meals", min_count: 5 }] },
+    budget_usd: 500, businesses: ["Mission Eats"], ...over,
+  });
+  const dealCount = async () => (await call(ready, "list_deals", { limit: 20 })).structuredContent.deals.length;
+
+  it("tool metadata: names are enough, and the model must never ask for a known vendor's contact", async () => {
+    const init = await rpc(ready, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "journey", version: "1" } });
+    expect(init.instructions).toMatch(/deal\(businesses=\['Mission Eats'\]\)/);
+    expect(init.instructions).toMatch(/never ask the user for a phone number or email of a vendor Haggle knows/);
+    const { tools } = await rpc(ready, "tools/list");
+    const deal = tools.find((t: { name: string }) => t.name === "deal");
+    expect(deal.description).toMatch(/never ask the user for a vendor's phone or email/);
+    expect(JSON.stringify(deal.inputSchema.properties.businesses)).toMatch(/"type":"string"/); // a bare name is valid input
+  });
+
+  it("dry run: exactly one vendor would be contacted, nothing is sent and no deal starts", async () => {
+    const before = await dealCount();
+    const r = await call(ready, "deal", missionOnly({ dry_run: true }));
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toMatchObject({ dry_run: true, job: null, would_contact: [{ name: "Mission Eats", business_ref: "mission_eats", known_vendor: true }] });
+    expect(r.structuredContent.would_contact).toHaveLength(1);
+    expect(r.content[0].text).toMatch(/DRY RUN \(nothing sent\): deal would contact exactly 1: Mission Eats/);
+    expect(await dealCount()).toBe(before);
+  });
+
+  it("the deal contacts Mission Eats and nobody else; a chosen subset is exactly that subset", async () => {
+    const one = (await call(ready, "deal", missionOnly())).structuredContent;
+    expect(one.ok).toBe(true);
+    expect(one.businesses.map((b: { name: string }) => b.name)).toEqual(["Mission Eats"]);
+    expect(one.contacted.map((c: { business: string }) => c.business)).toEqual(["Mission Eats"]);
+    expect(one.setup).toBeUndefined();
+    const two = (await call(ready, "deal", missionOnly({ businesses: ["Harbor Table", "golden_grill"] }))).structuredContent;
+    expect(two.businesses.map((b: { name: string }) => b.name).sort()).toEqual(["Golden Grill", "Harbor Table"]);
+  });
+
+  it("an unknown name starts nothing and says what to ask; no other vendor is contacted instead", async () => {
+    const before = await dealCount();
+    const r = await call(ready, "deal", missionOnly({ businesses: ["Mission Eats", "Taco Palace"] }));
+    expect(r.isError).toBe(true);
+    const e = JSON.parse(r.content[0].text).error;
+    expect(e).toMatchObject({ code: "unknown_business", message: expect.stringContaining("Nothing was sent"), fix: expect.stringContaining("Ask the user") });
+    expect(await dealCount()).toBe(before);
+  });
+
+  it("'next week' is a flexible window, not a day Haggle picked; a reversed window is refused", async () => {
+    const end = new Date(Date.parse(`${SAT}T00:00:00Z`) + 4 * 86_400_000).toISOString().slice(0, 10);
+    const r = (await call(ready, "deal", missionOnly({ request: { what: "drop-off catering", quantity: 25, date: SAT, date_until: end, area: "San Francisco, CA", requirements: [] } }))).structuredContent;
+    expect(r.request_details.when).toMatch(/^any day .+ – .+ \(flexible\)$/);
+    const bad = await call(ready, "deal", missionOnly({ request: { what: "catering", quantity: 25, date: end, date_until: SAT, area: "San Francisco, CA", requirements: [] } }));
+    expect(JSON.parse(bad.content[0].text).error.code).toBe("bad_date_range");
+  });
+
+  it("business_profile and discover give the same reference deal accepts", async () => {
+    const d = (await call(ready, "discover", {})).structuredContent;
+    expect(d.businesses.find((b: { name: string }) => b.name === "Mission Eats")).toMatchObject({ business_ref: "mission_eats", ready: true });
+    expect(d.next).toMatch(/businesses=\['<name>'/);
+    const p = await call(ready, "business_profile", { business: "Mission Eats" });
+    expect(p.structuredContent).toMatchObject({ name: "Mission Eats", business_ref: "mission_eats", configured_vendor: true, ready: true });
+    expect(p.structuredContent.next).toMatch(/businesses=\['Mission Eats'\]\): Haggle already has its contact details/);
+    const viaRef = (await call(ready, "deal", missionOnly({ businesses: [p.structuredContent.business_ref], dry_run: true }))).structuredContent;
+    expect(viaRef.would_contact.map((w: { name: string }) => w.name)).toEqual(["Mission Eats"]);
+  });
+});

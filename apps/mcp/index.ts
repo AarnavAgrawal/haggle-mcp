@@ -2,12 +2,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { inputRequired, inputResponse, MCPServer } from "mcp-use";
 import { z } from "zod";
-import { EngineError, eventWhen, placesDiscover, type DealBoardData } from "@haggle/engine";
+import { EngineError, eventWhen, normalizeBusinessName, placesDiscover, type DealBoardData } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
 import { ApprovalOut, BusinessProfile, DealBoardOrEmpty, DealBoardPlus, emptyBoard, Estimates, requestDetails, toApproval, toDealBoardPlus } from "./src/views.ts";
-import { blockerLines } from "./src/vendors.ts";
+import { blockerLines, businessRef, findVendors, resolveVendors, rosterBusinessId, type RosterEntry } from "./src/vendors.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
 import "./src/live.ts";
 
@@ -25,6 +25,7 @@ const server = new MCPServer({
   instructions: [
     "Haggle turns businesses' email, texts and phones into an API.",
     "When the user wants to buy, cater, book or get quotes (e.g. 'cater a hackathon for 200 next Saturday, budget under 5k'), call deal FIRST with the request and budget_usd: it contacts the configured, authorized vendors and opens the live deal board. Don't call ask, discover or business_profile first.",
+    "If the user names vendors ('use Mission Eats only'), pass just their names: deal(businesses=['Mission Eats']). Haggle already holds every configured vendor's contact details and channel; never ask the user for a phone number or email of a vendor Haggle knows. Exactly the named vendors are contacted.",
     "Then: wait_for_update (repeat, pass the cursor) -> get_quotes when quotes land -> approve (the human decides) -> pay the deposit. In a new conversation about an earlier purchase, call list_deals (or get_quotes with no job_id) instead of asking the user for ids.",
     "ask is only for a rough price idea from quotes Haggle already collected (estimates are never quotes). If deal returns setup blockers, show them to the user verbatim; nothing was sent.",
     "Never pay without approve; approval always comes from a human (approval card, client form, or verified approver), never from this model.",
@@ -106,20 +107,23 @@ const requestShape = {
   what: z.string().min(2).max(200).describe("What to buy, e.g. 'lunch catering'"),
   quantity: z.number().int().min(1).max(10_000),
   unit: z.string().max(30).optional(),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Event date YYYY-MM-DD (resolve 'next Saturday' etc. from today's date)"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Event date YYYY-MM-DD (resolve 'next Saturday' etc. from today's date). If the user gave only a week or a range ('next week'), this is its first day and date_until its last"),
+  date_until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("Only when the user is flexible ('next week', 'Mon–Wed'): the last acceptable day. Businesses are asked which days work; never pick a day the user didn't give"),
   time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional().describe("Local start time, 24h HH:MM, e.g. '12:00' for noon"),
   venue: z.string().max(200).optional().describe("Delivery place, e.g. 'Y Combinator office'; area stays the city"),
   area: z.string().min(2).max(200).optional().describe("City or delivery address (defaults to the settings area)"),
 };
 
 const businessInput = z.object({
-  name: z.string().min(1).max(120),
+  name: z.string().min(1).max(120).describe("Business name; alone it selects a vendor Haggle already knows"),
   email: z.string().email().optional(),
   phone: z.string().regex(/^\+[1-9]\d{6,14}$/).optional().describe("E.164, e.g. +14155550123"),
   a2a_card_url: z.string().url().startsWith("https://").optional().describe("Agent Card URL for agent-ready businesses"),
   channel: z.enum(["email", "phone", "a2a", "imessage"]).optional().describe("Preferred channel when several are possible; 'imessage' texts the business at `phone` (it must have texted connect @<buyer> first)"),
-}).refine((b) => b.email || b.phone || b.a2a_card_url, { message: "each business needs an email, phone or a2a_card_url" })
-  .refine((b) => b.channel !== "imessage" || b.phone, { message: "channel 'imessage' needs the business's phone number" });
+}).refine((b) => b.channel !== "imessage" || b.phone || !b.email, { message: "channel 'imessage' needs the business's phone number" });
+/** A vendor by name or business_ref ("Mission Eats", "mission_eats"), or a new business with its contact. */
+const businessChoice = z.union([z.string().min(1).max(120), businessInput]);
+const hasContact = (b: z.infer<typeof businessInput>) => !!(b.email || b.phone || b.a2a_card_url);
 
 const jobId = z.string().min(4).max(64).describe("job_id returned by deal");
 const quoteId = z.string().min(3).max(64).describe("quote_id from get_quotes");
@@ -147,12 +151,12 @@ export const deal = server.tool(
     description:
       "START HERE for any purchase or procurement request: catering, food for an event or hackathon, print, rentals, services ('cater 200 people', 'get quotes', 'plan catering for…', 'find a vendor'). " +
       "Haggle contacts the demo vendors this server is authorized and set up to reach, each on its own channel (email, iMessage, Voice AI call, A2A), opens the live deal board right away, collects quotes over minutes, asks once about anything unconfirmed and negotiates by message using only real competing quotes or the buyer's own target. " +
-      "Call it directly: no need for ask, discover or business_profile first. Omit businesses to use the configured vendors. Put the user's budget in budget_usd ('under 5k' = 5000), the headcount in request.quantity, " +
-      "the event date as YYYY-MM-DD (resolve 'next Saturday' from today's date) and a time like '12:00' if given. Ask the user only if what/headcount/date is missing. " +
+      "Call it directly: no need for ask, discover or business_profile first. Omit businesses to use all configured vendors; if the user names vendors, pass only their names (businesses: ['Mission Eats']) and exactly those are contacted: Haggle already has their contact details, so never ask the user for a vendor's phone or email. An unknown, ambiguous or unreachable name starts nothing and says what to ask the user. Put the user's budget in budget_usd ('under 5k' = 5000), the headcount in request.quantity, " +
+      "the event date as YYYY-MM-DD (resolve 'next Saturday' from today's date) and a time like '12:00' if given; for a week or range ('next week') pass its first day as date and last day as date_until rather than asking or picking a day. Ask the user only if what/headcount/date is missing entirely. " +
       "If no vendor can be contacted it starts nothing and returns the setup blockers to show the user. Side effect: one quote request per vendor (idempotent with client_request_id). Next: wait_for_update(job_id).",
     inputSchema: z.object({
       request: z.object({ ...requestShape, requirements: z.array(requirement).max(20).default([]) }),
-      businesses: z.array(businessInput).max(12).optional().describe("Specific businesses to contact; omit to use this server's configured demo vendors"),
+      businesses: z.array(businessChoice).min(1).max(12).optional().describe("Only these businesses are contacted. Name a known vendor by name or business_ref (e.g. 'Mission Eats'); its contact details and channel are already on the server. Give email/phone/a2a_card_url only for a business Haggle doesn't know. Omit to use all configured vendors."),
       discover: z.boolean().optional().describe("Deprecated: omitting businesses already uses the configured vendors"),
       requirements: z.array(requirement).max(20).optional().describe("Extra requirements (merged with request.requirements)"),
       budget_usd: z.number().positive().max(1_000_000).optional().describe("The user's budget for the whole order, in USD (e.g. 'under $5k' = 5000). By default a target: over-target quotes stay visible and Haggle negotiates toward it. Defaults to the settings spending cap only if the user gave none."),
@@ -166,6 +170,7 @@ export const deal = server.tool(
       approver_phone: z.string().regex(/^\+[1-9]\d{6,14}$/).optional().describe("Ignored: the iMessage approver is set by the human in settings"),
       max_rounds: z.number().int().min(1).max(3).optional().describe("Quote rounds including negotiation rounds (default from the server, at most 3)"),
       client_request_id: z.string().max(64).optional().describe("Reuse to get the same job back instead of contacting businesses again"),
+      dry_run: z.boolean().optional().describe("Preview only: resolve who would be contacted and on which channel, send nothing and start no job. Use only if the user asks for a preview."),
     }),
     outputSchema: DealBoardPlus,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: true },
@@ -177,16 +182,39 @@ export const deal = server.tool(
       const area = await areaOr(rt, input.request.area);
       const warnings: string[] = [];
       const today = new Date().toISOString().slice(0, 10);
+      if (input.request.date_until !== undefined && input.request.date_until < input.request.date) {
+        return fail(rt.mode, "bad_date_range", `date_until ${input.request.date_until} is before date ${input.request.date}.`, "Set date to the first acceptable day and date_until to the last.", "deal");
+      }
+      // A flexible range that has already started ("this week") keeps only the days still ahead.
+      if (input.request.date_until !== undefined && input.request.date < today && input.request.date_until >= today) input.request.date = today;
       if (input.request.date < today) {
         return fail(rt.mode, "date_in_past", `${eventWhen(input.request.date, input.request.time)} is in the past (today is ${eventWhen(today)}).`, "Resolve relative dates ('next Saturday') from today's date and pass the future YYYY-MM-DD.", "deal");
       }
-      // Who to contact: the businesses given, else the configured demo vendors that are ready now.
+      // Who to contact: exactly the businesses named (known vendors resolved server-side by name, new
+      // ones by the contact given), else every configured vendor that is ready now. A named vendor that
+      // can't be resolved stops the deal: it never falls back to, or adds, other vendors.
       const roster = await rt.roster();
       const blockers = roster.filter((r) => !r.ready).map((r) => ({ vendor: r.name, channel: r.channel, reason: r.blocker!, fix: r.fix! }));
       const fromRoster = !input.businesses?.length;
-      const businesses = fromRoster
-        ? roster.filter((r) => r.ready).map((r) => ({ name: r.name, channel: r.channel, simulated: true, ...(r.email ? { email: r.email } : {}), ...(r.phone ? { phone: r.phone } : {}), ...(r.a2a_card_url ? { a2a_card_url: r.a2a_card_url } : {}) }))
-        : input.businesses!;
+      const fromVendor = (r: RosterEntry) => ({ name: r.name, channel: r.channel, simulated: true, ...(r.email ? { email: r.email } : {}), ...(r.phone ? { phone: r.phone } : {}), ...(r.a2a_card_url ? { a2a_card_url: r.a2a_card_url } : {}) });
+      let businesses: z.infer<typeof businessInput>[];
+      if (fromRoster) businesses = roster.filter((r) => r.ready).map(fromVendor);
+      else {
+        const given = input.businesses!.map((b) => (typeof b === "string" ? { name: b } : b));
+        const named = given.filter((b) => !hasContact(b));
+        const resolved = resolveVendors(named.map((b) => b.name), roster);
+        if (!resolved.ok) return fail(rt.mode, resolved.code, resolved.message, resolved.fix, "Ask the user, then call deal again with the vendor's exact name.");
+        // Each name resolved to exactly one ready vendor; its configured contact and channel are used.
+        const vendorFor = (name: string) => (resolveVendors([name], roster) as { ok: true; vendors: RosterEntry[] }).vendors[0]!;
+        businesses = given.map((b) => (hasContact(b) ? b : fromVendor(vendorFor(b.name))));
+        // One vendor named twice ("Mission Eats", "mission_eats") is contacted once.
+        businesses = businesses.filter((b, i) => businesses.findIndex((x) => x.name === b.name && x.email === b.email && x.phone === b.phone && x.a2a_card_url === b.a2a_card_url) === i);
+      }
+      if (input.dry_run) {
+        const would = businesses.map((b) => { const v = roster.find((r) => r.name === b.name && (r.email ?? r.phone ?? r.a2a_card_url) === (b.email ?? b.phone ?? b.a2a_card_url)); return { name: b.name, channel: b.channel ?? (b.a2a_card_url ? "a2a" : b.email ? "email" : "phone"), ...(v ? { business_ref: businessRef(v), known_vendor: true } : { known_vendor: false, allowed: rt.engine.canContact({ ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}) }) }) }; });
+        const v = DealBoardPlus.parse({ ok: true, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode: rt.mode, dry_run: true, would_contact: would, next: "Dry run: nothing was sent and no deal was started. Call deal again without dry_run to contact exactly these businesses." });
+        return ok(v, `DRY RUN (nothing sent): deal would contact exactly ${would.length}: ${would.map((w) => `${w.name} [${w.channel}]`).join(", ") || "nobody"}.\nnext: ${v.next}`);
+      }
       const setup = fromRoster ? { ready: businesses.length, total: roster.length, blockers } : undefined;
       if (fromRoster && businesses.length === 0) {
         // Nothing is sent. Show the human exactly what is missing instead of a failed deal.
@@ -521,7 +549,7 @@ export const ask = server.tool(
       const base = { ...raw, estimates: raw.estimates.flatMap((e, i) => (keep[i] ? [{ ...e, basis: `${honestBasis(e.basis, counts[i]!)}${latest[i] ? `; latest real quote ${latest[i]!.slice(0, 10)}` : ""}` }] : [])), ...(hidden ? { note: `${hidden} business(es) have only seed sample data, not quotes Haggle collected; not shown.` } : {}) };
       // The brain's own hint passes bare business ids to deal, which deal rejects: point at discover instead.
       const v = { ...base, mode: rt.mode, next: base.estimates.length
-        ? `These are estimates, not quotes. For confirmed prices call deal(request={what:'${request.what}', quantity:${request.quantity}, date:'${request.date ?? "YYYY-MM-DD"}', area:'${request.area}'}, discover:true): Haggle contacts the learned businesses it may contact, each on its own channel.`
+        ? `These are estimates, not quotes. For confirmed prices call deal(request={what:'${request.what}', quantity:${request.quantity}, date:'${request.date ?? "YYYY-MM-DD"}', area:'${request.area}'}, budget_usd) without businesses to contact every configured vendor, or with businesses=['<name>'] for only the vendors the user chose (names are enough).`
         : `No learned prices yet for this request. To get real quotes call deal(request={what:'${request.what}', quantity:${request.quantity}, date:'YYYY-MM-DD', area:'${request.area}'}, budget_usd) without businesses.` };
       const text = v.estimates.length
         ? `${v.estimates.length} estimates (not quotes): ${v.estimates.map((e) => `${e.business} ~${usd(e.total_usd)} (${Math.round(e.confidence * 100)}%, ${e.n_quotes} quotes)`).join("; ")}. next: ${v.next}`
@@ -556,7 +584,7 @@ export const discover = server.tool(
     title: "Demo vendors and readiness",
     description:
       "List the vendors this server may contact (demo vendors played by teammates or seller personas, clearly labelled), each with its channel and whether Haggle can contact it right now, plus (when public discovery is configured) real businesses found in public listings for the category and area, which are NOT authorized to contact. " +
-      "for any that can't, the exact setup blocker and fix. Read-only; contacts nobody. Not needed before deal (deal uses the ready vendors itself); use it when the user asks who Haggle would contact or why a vendor wasn't contacted.",
+      "for any that can't, the exact setup blocker and fix. Read-only; contacts nobody. Not needed before deal (deal uses the ready vendors itself, and takes vendor names directly); use it when the user asks who Haggle would contact or why a vendor wasn't contacted.",
     inputSchema: z.object({ category: z.string().min(2).max(100).optional(), area: z.string().min(2).max(200).optional(), count: z.number().int().min(1).max(12).default(6) }),
     outputSchema: z.looseObject({
       ok: z.boolean(), mode: z.enum(["mock", "live"]), next: z.string(), ready: z.number().int(), total: z.number().int(),
@@ -581,12 +609,12 @@ export const discover = server.tool(
       const roster = (await rt.roster()).sort((a, b) => Number(b.ready) - Number(a.ready)).slice(0, Math.max(count, 12));
       // Contacts stay server-side (deal uses them); phone numbers are never echoed.
       const businesses = roster.map((r) => ({
-        name: r.name, best_channel: r.channel, simulated: true, ready: r.ready, played_by: r.played_by,
+        name: r.name, business_ref: businessRef(r), best_channel: r.channel, simulated: true, ready: r.ready, played_by: r.played_by,
         ...(r.email ? { email: r.email } : {}), ...(r.phone ? { phone: `${r.phone.slice(0, 2)}•••${r.phone.slice(-2)}` } : {}),
         ...(r.blocker ? { blocker: r.blocker, fix: r.fix } : {}),
       }));
       const ready = roster.filter((r) => r.ready).length;
-      const next = ready ? "Call deal(request, budget_usd) without businesses: Haggle contacts the ready vendors and opens the deal board." : "No vendor is ready: show the user the blockers; nothing can be sent until one is fixed.";
+      const next = ready ? "Call deal(request, budget_usd) without businesses to contact every ready vendor, or with businesses=['<name>', ...] to contact only the vendors the user chose (names are enough: Haggle has their contact details)." : "No vendor is ready: show the user the blockers; nothing can be sent until one is fixed.";
       return ok(
         { ok: true, mode: rt.mode, ready, total: roster.length, businesses, next, public_discovery: publicDiscovery, ...(found ? { found: foundOut } : {}), ...(rt.configErrors?.length ? { config_errors: rt.configErrors } : {}) },
         [`${ready} of ${roster.length} demo vendors ready: ${roster.map((r) => `${r.name} [${r.channel}] ${r.ready ? "ready" : "NOT READY"}`).join("; ")}.`, ...blockerLines(roster),
@@ -623,21 +651,37 @@ export const businessProfile = server.tool(
   {
     name: "business_profile",
     title: "Business profile",
-    description: "What Haggle has learned about one business (its 'API'): menu, price per unit, minimum, deposit rule, discount behaviour, best channel, reply speed and quote history. Read-only. Use before a deal or to explain a quote.",
+    description: "What Haggle has learned about one business (its 'API'): menu, price per unit, minimum, deposit rule, discount behaviour, best channel, reply speed and quote history (only quotes Haggle really collected; samples are labelled). Read-only. Takes the same names deal does; not needed before deal (deal(businesses=['<name>']) works directly). Use when the user asks about a business or to explain a quote.",
     inputSchema: z.object({ business: z.string().min(2).max(200).describe("business_id, slug (bay-catering) or name") }),
     outputSchema: BusinessProfile,
     annotations: { readOnlyHint: true, openWorldHint: false },
     ...viewIf({ name: "business-profile", description: "Haggle business profile: what Haggle learned about a business" }),
   },
   async ({ business }) =>
-    run(async ({ brain, mode }) => {
-      const p = (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business)));
-      if (!p) return fail(mode, "NOT_LEARNED", `Haggle hasn't learned ${business} yet.`, "Run a deal with this business; every reply teaches Haggle.", "deal");
+    run(async (rt) => {
+      const { brain, mode } = rt;
+      // The same identity deal uses: a configured vendor by name / business_ref / id, then its memory.
+      const hits = findVendors(business, await rt.roster());
+      if (hits.length > 1) return fail(mode, "ambiguous_business", `"${business}" could be ${hits.map((h) => h.name).join(" or ")}.`, "Ask the user which one they meant, then pass that exact name.", "business_profile");
+      const vendor = hits[0];
+      const engineId = vendor ? rosterBusinessId(vendor) : null;
+      const hint = vendor ? { name: vendor.name, ...(vendor.email ? { email: vendor.email } : {}), ...(vendor.phone ? { phone: vendor.phone } : {}) } : {};
+      const byName = async (n: string) => { const x = await brain.core.getProfile(n); return x && normalizeBusinessName(x.name) === normalizeBusinessName(n) ? x : null; };
+      const p = vendor
+        ? (engineId ? await brain.coreProfile(engineId, hint) : null) ?? (await byName(vendor.name))
+        : (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business)));
+      const dealHint = vendor
+        ? vendor.ready
+          ? `For a real quote from ${vendor.name}, call deal(request, budget_usd, businesses=['${vendor.name}']): Haggle already has its contact details and channel (${vendor.channel}); only ${vendor.name} is contacted.`
+          : `${vendor.name} can't be contacted yet: ${vendor.blocker}. Fix: ${vendor.fix}`
+        : "This business isn't one of this server's configured vendors, so deal can contact it only with its email/phone and only if the operator authorized that contact. For an instant estimate call ask(what, quantity, date, area).";
+      const who = vendor ? { business_ref: businessRef(vendor), configured_vendor: true, ready: vendor.ready, channel: vendor.channel } : { configured_vendor: false };
+      if (!p) return fail(mode, "NOT_LEARNED", `Haggle has no real quotes from ${vendor?.name ?? business} yet${mode === "live" ? " (sample data is never shown as history)" : ""}.`, dealHint, vendor && !vendor.ready ? "none" : "deal");
       const counts = quoteCounts(p.history);
       const seeded = seedRows(p.history);
       const view = toBusinessProfileView(p);
-      const v = { ...view, history: view.history.map((h, i) => (seeded[i] ? { ...h, note: `${h.note} (seed sample)` } : h)), mode, next: `For a real quote call deal(request=..., discover:true) or pass this business with its contact (email / phone / a2a_card_url); for an instant estimate call ask(what, quantity, date, area).` };
-      return ok(v, `${p.name}: ${honestBasis(`${p.n_quotes} real quotes`, counts)}, confidence ${Math.round(p.confidence * 100)}%. next: ${v.next}`);
+      const v = { ...view, ...(vendor ? { name: vendor.name } : {}), ...who, history: view.history.map((h, i) => (seeded[i] ? { ...h, note: `${h.note} (seed sample)` } : h)), mode, next: dealHint };
+      return ok(v, `${v.name}: ${honestBasis(`${p.n_quotes} real quotes`, counts)}, confidence ${Math.round(p.confidence * 100)}%. next: ${v.next}`);
     }),
 );
 
@@ -722,7 +766,7 @@ server.get("/llms.txt", (c) => c.text([
   "- ask(what, quantity, date, area): instant estimates from learned businesses (estimates, not quotes)",
   "- discover(category, area, count): businesses with channels; contacts nobody",
   "- check_price(...): good / typical / high vs what Haggle has seen",
-  "- deal(request, businesses[] | discover:true, budget_usd, ...): contact businesses on their channel; returns job_id",
+  "- deal(request, budget_usd, businesses?: ['Mission Eats', ...]): contact exactly the named vendors (names are enough), or all configured vendors; returns job_id",
   "- wait_for_update(job_id, cursor, timeout_s<=60): what changed",
   "- get_quotes(job_id): the deal board (ranked quotes, flags, statuses, next)",
   "- answer_business(job_id, question_id, answer): reply to a business's question",

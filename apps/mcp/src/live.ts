@@ -10,7 +10,7 @@ import {
 } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
-import { buildRoster, parseVendorConfig, rosterRecipients, type VendorContact } from "./vendors.ts";
+import { buildRoster, DEMO_VENDORS, parseVendorConfig, rosterRecipients, type VendorContact } from "./vendors.ts";
 
 const TICK_MS = 30_000;
 
@@ -51,7 +51,13 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const senderTrust: InkboxTrustPolicy = env.INKBOX_SENDER_TRUST === "pinned-org-identity"
     ? { policy: "pinned-org-identity", allowedSenders: allowlist.filter((a) => a.includes("@") && !a.startsWith("@")) }
     : { policy: "outbound-verified" };
-  const brain = makeBrain(fleet.map((b) => ({ business_id: b.business_id, name: b.name, email: b.email, simulated: b.simulated })), env);
+  // Every configured vendor's identity (name + contact) is known to the brain, so its memory, including
+  // quotes learned under an older contact-only id, is found by the same id deal uses.
+  const vendorIdentities = Object.entries(vendorConfig.contacts).flatMap(([key, c]) => {
+    const name = c.name ?? DEMO_VENDORS.find((v) => v.key === key)?.name;
+    return name && (c.email || c.phone) ? [{ business_id: businessIdForContact({ email: c.email ?? null, phone: c.phone ?? null, a2a_card_url: c.a2a_card_url ?? null }, name), name, ...(c.email ? { email: c.email } : {}), ...(c.phone ? { phone: c.phone } : {}), simulated: true }] : [];
+  });
+  const brain = makeBrain([...fleet.map((b) => ({ business_id: b.business_id, name: b.name, email: b.email, simulated: b.simulated })), ...vendorIdentities], env, { observed: true });
   const engine = new HaggleEngine({
     repo,
     email: inkboxEmail(api, buyerMailbox),

@@ -240,9 +240,10 @@ describe("v5 channels and deal board (mock mode)", { timeout: 60_000 }, () => {
     const deal = await startDeal(engine);
     const latest = (await engine.latestJob())!;
     if (makeRepo) {
-      // Shared Postgres: other tests' jobs share this fake clock's start, so assert the rule, not the id.
-      const mine = (await engine.loadJob(deal.job_id)) as { created_at: string };
-      expect(Date.parse((latest as { created_at: string }).created_at)).toBeGreaterThanOrEqual(Date.parse(mine.created_at));
+      // Shared Postgres: parallel tests' jobs are active too, so assert the rule (most recently active
+      // open job, by updated_at), not the id. Comparing created_at was a flake: an older job can be busier.
+      const mine = (await engine.loadJob(deal.job_id)) as { updated_at: string };
+      expect(Date.parse((latest as { updated_at: string }).updated_at)).toBeGreaterThanOrEqual(Date.parse(mine.updated_at));
       expect(["paid", "cancelled", "failed"]).not.toContain(latest.state);
     } else expect(latest.id).toBe(deal.job_id);
     const ready = await runUntil(engine, clock, deal.job_id, (x) => x.ready);

@@ -598,7 +598,7 @@ export class HaggleEngine {
   private rfqInput(job: JobRow, b: JobBusinessRow, reqs: string[]) {
     const r = job.request;
     return {
-      shortCode: job.short_code, businessName: b.name, what: r.what, quantity: r.quantity, ...(r.unit ? { unit: r.unit } : {}), date: r.date, ...(r.time ? { time: r.time } : {}),
+      shortCode: job.short_code, businessName: b.name, what: r.what, quantity: r.quantity, ...(r.unit ? { unit: r.unit } : {}), date: r.date, ...(r.date_until ? { date_until: r.date_until } : {}), ...(r.time ? { time: r.time } : {}),
       location: eventPlace(r.area, r.venue), requirements: reqs, replyBy: new Date(job.collect_until),
     };
   }
@@ -608,7 +608,7 @@ export class HaggleEngine {
     return {
       haggle: "rfq/1", protocol: "haggle.v0", type: "rfq", job_id: job.id, what: job.request.what, quantity: job.request.quantity, ...(job.request.unit ? { unit: job.request.unit } : {}),
       ...(veg ? { vegetarian: veg.min_count } : {}),
-      date: job.request.date, ...(job.request.time ? { time: job.request.time } : {}), location: eventPlace(job.request.area, job.request.venue),
+      date: job.request.date, ...(job.request.date_until ? { date_until: job.request.date_until } : {}), ...(job.request.time ? { time: job.request.time } : {}), location: eventPlace(job.request.area, job.request.venue),
       requirements: job.request.requirements.map((r) => ({ id: r.id, text: r.text, label: r.text, hard: r.hard, mandatory: r.hard, ...(r.min_count !== undefined ? { min_count: r.min_count } : {}) })),
       reply_by: job.collect_until, reply_to: job.inbox,
     };
@@ -717,10 +717,13 @@ export class HaggleEngine {
     const clean = (s: string, n: number) => s.replace(/https?:\/\/\S+|www\.\S+/gi, "").replace(/\+?\d[\d\s().-]{6,}\d/g, "").replace(/\s+/g, " ").trim().slice(0, n);
     const veg = r.requirements.find((q) => q.kind === "dietary" && q.min_count !== undefined);
     const delivery = r.requirements.some((q) => q.kind === "delivery" && q.hard);
-    const date = new Date(`${r.date}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) + (r.time ? ` ${humanTime(r.time).replace(":00", "").replace(" ", "").toLowerCase()}` : "");
+    const short = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+    const date = (r.date_until && r.date_until > r.date ? `${short(r.date)}-${short(r.date_until)} (flexible)` : short(r.date)) + (r.time ? ` ${humanTime(r.time).replace(":00", "").replace(" ", "").toLowerCase()}` : "");
     const needs = [veg ? `${veg.min_count}+ ${/veg/i.test(veg.text) ? "veg" : "special"}` : "", delivery ? "delivered" : ""].filter(Boolean).join(", ");
-    const text = `Hi ${clean(business, 24)}, Haggle AI assistant here. Quote for ${clean(r.what, 24)}${r.quantity === 1 && r.unit && r.unit !== "people" ? "" : ` for ${r.quantity}${r.unit && r.unit !== "people" ? ` ${clean(r.unit, 10)}` : ""}`} on ${date} ${r.venue ? `at ${clean(r.venue.split(",")[0]!, 22)}` : `in ${clean(r.area.split(",")[0]!, 18)}`}${needs ? `: ${needs}` : ""}. Total + deposit? HG-${job.short_code}`;
-    return text.slice(0, 159);
+    const text = `Hi ${clean(business, 24)}, Haggle AI assistant here. Quote for ${clean(r.what, 24)}${r.quantity === 1 && r.unit && r.unit !== "people" ? "" : ` for ${r.quantity}${r.unit && r.unit !== "people" ? ` ${clean(r.unit, 10)}` : ""}`} on ${date} ${r.venue ? `at ${clean(r.venue.split(",")[0]!, 22)}` : `in ${clean(r.area.split(",")[0]!, 18)}`}${needs ? `: ${needs}` : ""}.`;
+    // The ask and the reference code always fit; only the description is shortened.
+    const tail = ` Total + deposit? HG-${job.short_code}`;
+    return text.length + tail.length <= 159 ? text + tail : `${text.slice(0, 159 - tail.length - 1).trimEnd()}…${tail}`;
   }
 
   /** One iMessage to a business on the iMessage channel, recorded once per idempotency key. */
@@ -864,14 +867,14 @@ export class HaggleEngine {
    */
   static callBrief(name: string, job: Pick<JobRow, "request" | "short_code">, reqs: string[], opts: { escalation?: boolean; competingTotalUsd?: number; followUpOnQuoteUsd?: number } = {}): string {
     const r = job.request;
-    const when = eventWhen(r.date, r.time);
+    const when = eventWhen(r.date, r.time, r.date_until);
     const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
     return [
       `You are Haggle, an AI assistant phoning ${name} for a customer to get a price quote. Be brief, warm and natural; keep the call under three minutes.`,
       opts.followUpOnQuoteUsd !== undefined
         ? `1. Open with: "Hi, this is Haggle, the AI assistant who called earlier about ${r.what}. Thanks again for your quote of ${money(opts.followUpOnQuoteUsd)}. Do you have a minute?"`
         : `1. Open with: "Hi, this is Haggle, an AI assistant calling for a customer about a quote for ${r.what}. Do you have a minute?"${opts.escalation ? " Mention we emailed earlier and wanted to follow up by phone." : ""}`,
-      `2. The order: ${r.what} for ${r.quantity} ${r.unit ?? "people"} on ${when}${r.area ? `, at ${eventPlace(r.area, r.venue)}` : ""}.${reqs.length ? ` Must have: ${reqs.join("; ")}.` : ""}`,
+      `2. The order: ${r.what} for ${r.quantity} ${r.unit ?? "people"} on ${when}${r.area ? `, at ${eventPlace(r.area, r.venue)}` : ""}.${r.date_until ? " The customer is flexible on the day: ask which of those days they can do." : ""}${reqs.length ? ` Must have: ${reqs.join("; ")}.` : ""}`,
       `3. Ask for: the all-in total including delivery and tax, how each requirement is met${r.requirements.some((q) => q.kind === "dietary") ? " (for example how many vegetarian meals)" : ""}, any deposit and when it is due, and what is included.`,
       opts.competingTotalUsd !== undefined ? `4. We have a real quote of ${money(opts.competingTotalUsd)} total for the same order. You may say that figure and ask if they can do better. Never invent, round down or exaggerate it.` : `4. Do not mention other businesses or prices.`,
       `5. Read the numbers back to confirm, thank them and end the call.`,

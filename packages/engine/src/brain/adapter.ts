@@ -74,6 +74,34 @@ export class BrainAdapter implements Brain {
     return hit ? hit.id : engineId;
   }
 
+  /**
+   * The id this business's memory is stored under. Usually brainIdFor(); but quotes learned before
+   * identities included the business name live under the contact-only id, so when the current id has
+   * nothing yet and that older profile carries the same business name, it is used (reads and writes),
+   * keeping one history. A different business on the same contact never matches (names differ).
+   */
+  async profileIdFor(engineId: string, hint: { email?: string; phone?: string; name?: string; simulated?: boolean } = {}): Promise<string> {
+    const id = this.brainIdFor(engineId, hint);
+    if (id !== engineId) return id;
+    const own = await this.core.getProfile(id);
+    if (own && own.business_id === id) return id;
+    const known = this.engine.get(engineId);
+    const email = hint.email ?? known?.email;
+    const phone = hint.phone ?? known?.phone;
+    const name = hint.name ?? known?.name;
+    if (!name || !(email || phone)) return id;
+    const legacy = businessIdForContact({ email: email ?? null, phone: email ? null : phone ?? null });
+    if (legacy === engineId) return id;
+    const old = await this.core.getProfile(legacy);
+    return old && old.business_id === legacy && normalizeBusinessName(old.name) === normalizeBusinessName(name) ? legacy : id;
+  }
+
+  /** The brain's own profile for an engine business id (or a name / brain id), via profileIdFor. */
+  async coreProfile(business: string, hint: { email?: string; phone?: string; name?: string } = {}): Promise<CoreProfile | null> {
+    const id = await this.profileIdFor(business, hint);
+    return (await this.core.getProfile(id)) ?? (await this.core.getProfile(business));
+  }
+
   /** Engine id for a business the brain returned (deterministic from its contact). */
   engineIdFor(b: { id: string; name?: string | undefined; email?: string | undefined; phone?: string | undefined; a2a_card_url?: string | undefined }): string {
     try {
@@ -87,7 +115,7 @@ export class BrainAdapter implements Brain {
     const phone = meta.business_email.startsWith("tel:") ? meta.business_email.slice(4) : undefined;
     const email = phone ? undefined : meta.business_email;
     const known = this.engine.get(businessId);
-    const brainId = this.brainIdFor(businessId, { ...(email ? { email } : {}), ...(phone ? { phone } : {}), ...(meta.business_name ? { name: meta.business_name } : {}), simulated: meta.simulated });
+    const brainId = await this.profileIdFor(businessId, { ...(email ? { email } : {}), ...(phone ? { phone } : {}), ...(meta.business_name ? { name: meta.business_name } : {}), simulated: meta.simulated });
     const name = known?.name ?? this.directory.find((d) => d.id === brainId)?.name ?? meta.business_name ?? brainId;
     let last: CoreProfile | null = null;
     if (meta.sender_trusted) {
@@ -110,7 +138,7 @@ export class BrainAdapter implements Brain {
   async checkPrice(q: QuoteLike): Promise<PriceVerdict> {
     const v = await this.core.checkPrice({
       total_usd: q.total_usd, quantity: q.request.quantity, area: q.request.area,
-      ...(q.business_id ? { business_id: this.brainIdFor(q.business_id) } : {}),
+      ...(q.business_id ? { business_id: await this.profileIdFor(q.business_id) } : {}),
     });
     const qty = q.request.quantity;
     return {
@@ -121,7 +149,7 @@ export class BrainAdapter implements Brain {
   }
 
   async negotiationHints(businessId: string, req: Request): Promise<Hints> {
-    const h = await this.core.negotiationHints(this.brainIdFor(businessId), toCoreRequest(req));
+    const h = await this.core.negotiationHints(await this.profileIdFor(businessId), toCoreRequest(req));
     return {
       business_id: businessId, responds_to_competing_quote: h.cite_competing_quote, usual_concession_pct: Math.round(h.expected_discount_pct * 100),
       ...(h.floor_per_unit_usd !== undefined && req.quantity ? { floor_hint_usd: round2(h.floor_per_unit_usd * req.quantity) } : {}),
@@ -136,7 +164,7 @@ export class BrainAdapter implements Brain {
 
   /** Engine businessProfile() reads this when present. */
   async getProfile(business: string): Promise<Profile | null> {
-    const p = (await this.core.getProfile(this.brainIdFor(business))) ?? (await this.core.getProfile(business));
+    const p = await this.coreProfile(business);
     return p ? toEngineProfile(p, this.engineIdForBrainId(p.business_id), p.name, false) : null;
   }
 
@@ -145,7 +173,7 @@ export class BrainAdapter implements Brain {
    * samples excluded), their median reply time and safety flags seen. null when nothing is known.
    */
   async trackRecord(business: string, excludeJobId: string): Promise<{ past_quotes: number; median_reply_minutes?: number; safety_flags_seen: number } | null> {
-    const p = (await this.core.getProfile(this.brainIdFor(business))) ?? (await this.core.getProfile(business));
+    const p = await this.coreProfile(business);
     if (!p) return null;
     const real = p.history.filter((h) => h.kind === "quote" && h.job_id !== excludeJobId && !h.job_id.startsWith("job_seed"));
     const mins = real.map((h) => h.reply_minutes).filter((m): m is number => typeof m === "number").sort((a, b) => a - b);

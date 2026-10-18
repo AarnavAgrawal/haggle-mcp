@@ -23,13 +23,21 @@ export function humanTime(hhmm: string): string {
   return `${h % 12 === 0 ? 12 : h % 12}:${m[2]} ${h < 12 ? "AM" : "PM"}`;
 }
 
-/** The exact event time as people read it: "Saturday, October 24, 2026 at 12:00 PM". */
-export function eventWhen(isoDate: string, time?: string): string {
-  const [y, m, d] = isoDate.split("-").map(Number);
-  const date = new Date(Date.UTC(y!, m! - 1, d!));
-  if (Number.isNaN(date.getTime())) return isoDate;
-  const day = `${WEEKDAYS[date.getUTCDay()]}, ${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}, ${date.getUTCFullYear()}`;
-  return time ? `${day} at ${humanTime(time)}` : day;
+/**
+ * The event time as people read it: "Saturday, October 24, 2026 at 12:00 PM", or, when the buyer is
+ * flexible, "any day Monday, October 19 – Friday, October 23, 2026 (flexible)".
+ */
+export function eventWhen(isoDate: string, time?: string, until?: string): string {
+  const fmt = (iso: string, year: boolean) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    const date = new Date(Date.UTC(y!, m! - 1, d!));
+    return Number.isNaN(date.getTime()) ? null : `${WEEKDAYS[date.getUTCDay()]}, ${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}${year ? `, ${date.getUTCFullYear()}` : ""}`;
+  };
+  const day = fmt(isoDate, true);
+  if (!day) return isoDate;
+  const end = until && until > isoDate ? fmt(until, true) : null;
+  const span = end ? `any day ${fmt(isoDate, isoDate.slice(0, 4) !== until!.slice(0, 4))} – ${end} (flexible)` : day;
+  return time ? `${span} at ${humanTime(time)}` : span;
 }
 
 /** "Y Combinator office, San Francisco, CA" (venue first when given, area otherwise). */
@@ -44,6 +52,7 @@ export interface RfqInput {
   what: string;
   quantity: number;
   date: string; // YYYY-MM-DD
+  date_until?: string; // flexible through this date
   time?: string; // "12:00" (24h, local)
   unit?: string; // "people" (default), "jobs", "hours", "items"
   location: string;
@@ -62,7 +71,7 @@ export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string 
     "I'm an AI assistant arranging this order for a client. Could you quote the following?",
     "",
     `- What: ${i.what}`,
-    `- When: ${eventWhen(i.date, i.time)}`,
+    `- When: ${eventWhen(i.date, i.time, i.date_until)}${i.date_until ? ". Please tell us which of these days you can do" : ""}`,
     !i.unit || i.unit === "people" ? `- People: ${i.quantity}` : `- Quantity: ${i.quantity} ${i.unit}`,
     `- Location: ${i.location}`,
     ...(i.requirements.length ? ["- Must have:", ...i.requirements.map((r) => `  - ${r}`)] : []),

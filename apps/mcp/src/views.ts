@@ -23,7 +23,7 @@ export type ApprovalOut = z.infer<typeof ApprovalOut>;
 const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
 export function requestSummary(r: DealBoardData["job"]["request"]): string {
-  return [`${r.what} for ${r.quantity}${r.unit ? ` ${r.unit}` : ""}`, eventWhen(r.date, r.time), eventPlace(r.area, r.venue)].filter(Boolean).join(" · ");
+  return [`${r.what} for ${r.quantity}${r.unit ? ` ${r.unit}` : ""}`, eventWhen(r.date, r.time, r.date_until), eventPlace(r.area, r.venue)].filter(Boolean).join(" · ");
 }
 
 /** Flags that mean the business's own words must not be echoed to the model or the view. */
@@ -74,6 +74,9 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   /** Operator/settings ceiling for any single payment (the deposit), separate from the order budget. */
   payment_ceiling_usd: z.number().nonnegative().optional(),
   payments_enabled: z.boolean().optional(),
+  /** deal(dry_run): who would be contacted; nothing was sent. */
+  dry_run: z.boolean().optional(),
+  would_contact: z.array(z.looseObject({ name: z.string(), channel: z.string() })).optional(),
   /** Best-value ranking of eligible quotes: per-quote factors with evidence, weights and the why. */
   value: z.looseObject({
     method: z.literal("best_value"), weights: z.record(z.string(), z.number()), recommendedQuoteId: z.string().nullable(),
@@ -108,7 +111,7 @@ export type DealBoardPlus = z.infer<typeof DealBoardPlus>;
 export function requestDetails(b: DealBoardData, budgetSource?: "request" | "settings_default"): NonNullable<DealBoardPlus["request_details"]> {
   const r = b.job.request;
   return {
-    what: r.what, headcount: r.quantity, when: eventWhen(r.date, r.time), place: eventPlace(r.area, r.venue), date: r.date, ...(r.time ? { time: r.time } : {}),
+    what: r.what, headcount: r.quantity, when: eventWhen(r.date, r.time, r.date_until), place: eventPlace(r.area, r.venue), date: r.date, ...(r.time ? { time: r.time } : {}),
     requirements: r.requirements.map(requirementText), budget_usd: b.job.budget_usd, ...(budgetSource ? { budget_source: budgetSource } : {}),
   };
 }

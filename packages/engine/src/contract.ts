@@ -40,6 +40,8 @@ export interface Request {
   quantity: number;           // 40
   unit?: string;              // "people" | "meals" | "units"
   date: IsoDate;              // "2026-10-22"
+  /** The buyer is flexible: any day from `date` through this one ("next week"). Never narrowed by Haggle. */
+  date_until?: IsoDate;
   time?: string;              // "12:00" (24h, local to the venue); optional
   area: string;               // "San Francisco, CA"
   venue?: string;             // "Y Combinator office, Mountain View St" (delivery address or place); optional

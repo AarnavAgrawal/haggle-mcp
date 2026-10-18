@@ -61,3 +61,40 @@ describe("demo vendor roster", () => {
     expect(r.find((v) => v.key === "mission_eats")).toMatchObject({ ready: false, blocker: "same contact as Sunset Kitchen (one contact plays one vendor per deal)" });
   });
 });
+
+describe("naming vendors: deal(businesses=['Mission Eats']) without contact details", async () => {
+  const { findVendors, resolveVendors, rosterBusinessId, businessRef } = await import("../src/vendors.ts");
+  const { contacts } = parseVendorConfig(CONFIG);
+  const roster = buildRoster(contacts, ON);
+  const names = (r: ReturnType<typeof resolveVendors>) => (r.ok ? r.vendors.map((v) => v.name) : r.code);
+
+  it("one named vendor resolves to exactly that vendor, with its configured contact and channel", () => {
+    const r = resolveVendors(["Mission Eats"], roster);
+    expect(names(r)).toEqual(["Mission Eats"]);
+    expect(r.ok && r.vendors[0]).toMatchObject({ channel: "phone", phone: "+14155550122" });
+  });
+
+  it("every stable reference to the same vendor works: name, business_ref, slug, casing, '(demo)', engine id, legacy id", () => {
+    const me = roster.find((v) => v.key === "mission_eats")!;
+    for (const ref of ["mission eats", "MISSION EATS", "mission_eats", "mission-eats", "biz_mission_eats", "Mission Eats (demo)", "Mission", rosterBusinessId(me)!, rosterBusinessId(me, { legacy: true })!]) {
+      expect(names(resolveVendors([ref], roster)), ref).toEqual(["Mission Eats"]);
+    }
+    expect(businessRef(me)).toBe("mission_eats");
+  });
+
+  it("a chosen subset is exactly that subset; duplicates are contacted once", () => {
+    expect(names(resolveVendors(["Harbor Table", "Golden Grill"], roster))).toEqual(["Harbor Table", "Golden Grill"]);
+    expect(names(resolveVendors(["Mission Eats", "mission_eats"], roster))).toEqual(["Mission Eats"]);
+  });
+
+  it("unknown, ambiguous and not-ready names resolve to nothing (never a fallback to other vendors)", () => {
+    const unknown = resolveVendors(["Mission Eats", "Taco Palace"], roster);
+    expect(unknown).toMatchObject({ ok: false, code: "unknown_business", message: expect.stringContaining("Nothing was sent"), fix: expect.stringContaining("Mission Eats (mission_eats)") });
+    const amb = resolveVendors(["Bay"], [...roster, { ...roster.find((v) => v.key === "bay_catering")!, key: "bay_bistro", name: "Bay Bistro" }]);
+    expect(amb).toMatchObject({ ok: false, code: "ambiguous_business", details: [{ ref: "Bay", candidates: ["Bay Catering", "Bay Bistro"] }] });
+    const off = buildRoster(contacts, { ...ON, phone: false });
+    expect(resolveVendors(["Mission Eats"], off)).toMatchObject({ ok: false, code: "vendor_not_ready", message: expect.stringContaining("no other vendor was contacted") });
+    expect(findVendors("Mission Eats", off).map((v) => v.name)).toEqual(["Mission Eats"]); // profiles still find it
+    expect(findVendors("", roster)).toEqual([]);
+  });
+});

@@ -5,6 +5,7 @@
 // channel is enabled and set up. Everything else is reported with the exact blocker and who can
 // fix it, before any deal starts. Nothing here contacts anyone.
 import type { Channel } from "@haggle/core";
+import { businessIdForContact, normalizeBusinessName } from "@haggle/engine";
 
 export interface DemoVendor {
   key: string;
@@ -151,4 +152,59 @@ export function dedupeRoster(roster: RosterEntry[]): RosterEntry[] {
 /** One line per blocked vendor, for the model and the board. */
 export function blockerLines(roster: RosterEntry[]): string[] {
   return roster.filter((r) => !r.ready).map((r) => `${r.name} [${r.channel}]: ${r.blocker}. Fix: ${r.fix}`);
+}
+
+// ───────────────────────────── naming a vendor ─────────────────────────────
+
+/** The stable reference an agent passes to deal for a roster vendor: its config key ("mission_eats"). */
+export const businessRef = (r: Pick<RosterEntry, "key">) => r.key.replace(/-/g, "_");
+
+/** The engine's business id for a roster vendor (the id its quotes and memory are stored under). */
+export function rosterBusinessId(r: Pick<RosterEntry, "name" | "email" | "phone" | "a2a_card_url">, opts: { legacy?: boolean } = {}): string | null {
+  const contact = { email: r.email ?? null, phone: r.phone ?? null, a2a_card_url: r.a2a_card_url ?? null };
+  // legacy: the contact-only id used before identities included the name (older quotes and memory).
+  return contact.email || contact.phone || contact.a2a_card_url ? businessIdForContact(contact, opts.legacy ? null : r.name) : null;
+}
+
+/** "Mission Eats", "mission_eats", "mission-eats", "biz_mission_eats", "Mission Eats (demo)" -> "mission eats". */
+function canonical(ref: string): string {
+  return normalizeBusinessName(ref.replace(/[_-]+/g, " ").replace(/^\s*biz\s+/i, ""));
+}
+
+/** Roster vendors a reference names (exact name/ref/id first, else a unique whole-word partial name); readiness ignored. */
+export function findVendors(ref: string, roster: RosterEntry[]): RosterEntry[] {
+  const c = canonical(ref);
+  const exact = roster.filter((r) => ref === rosterBusinessId(r) || ref === rosterBusinessId(r, { legacy: true }) || [r.key, r.name].some((x) => canonical(x) === c));
+  if (exact.length) return exact;
+  // A partial name ("Mission") counts only when it picks out vendors by whole words.
+  const words = c.split(" ").filter(Boolean);
+  return words.length ? roster.filter((r) => { const n = canonical(r.name).split(" "); return words.every((w) => n.includes(w)); }) : [];
+}
+
+export type VendorResolution =
+  | { ok: true; vendors: RosterEntry[] }
+  | { ok: false; code: "unknown_business" | "ambiguous_business" | "vendor_not_ready"; message: string; fix: string; details: { ref: string; candidates?: string[]; blocker?: string }[] };
+
+/**
+ * Resolve the businesses an agent named (by name, business_ref, slug or business id) to roster
+ * vendors. Strict: every name must match exactly one vendor that is ready now; otherwise nothing is
+ * resolved and the caller sends nothing (never a fallback to the whole roster). Contacts stay server-side.
+ */
+export function resolveVendors(refs: string[], roster: RosterEntry[]): VendorResolution {
+  const out: RosterEntry[] = [];
+  const unknown: { ref: string; candidates?: string[] }[] = [];
+  const ambiguous: { ref: string; candidates: string[] }[] = [];
+  const notReady: { ref: string; blocker: string }[] = [];
+  for (const ref of refs) {
+    const hits = findVendors(ref, roster);
+    if (hits.length === 0) unknown.push({ ref });
+    else if (hits.length > 1) ambiguous.push({ ref, candidates: hits.map((h) => h.name) });
+    else if (!hits[0]!.ready) notReady.push({ ref, blocker: `${hits[0]!.name}: ${hits[0]!.blocker}` });
+    else if (!out.includes(hits[0]!)) out.push(hits[0]!);
+  }
+  const names = roster.map((r) => `${r.name} (${businessRef(r)}${r.ready ? "" : ", not ready"})`).join(", ");
+  if (unknown.length) return { ok: false, code: "unknown_business", message: `Haggle has no vendor called ${unknown.map((u) => `"${u.ref}"`).join(", ")}. Nothing was sent.`, fix: `Ask the user which vendor they meant. Vendors on this server: ${names}.`, details: unknown };
+  if (ambiguous.length) return { ok: false, code: "ambiguous_business", message: ambiguous.map((a) => `"${a.ref}" could be ${a.candidates.join(" or ")}`).join("; ") + ". Nothing was sent.", fix: "Ask the user which one they meant, then pass that exact name.", details: ambiguous };
+  if (notReady.length) return { ok: false, code: "vendor_not_ready", message: `${notReady.map((n) => n.blocker).join("; ")}. Nothing was sent (no other vendor was contacted instead).`, fix: "Tell the user this vendor can't be reached yet and what fixes it; contact others only if the user says so.", details: notReady };
+  return { ok: true, vendors: out };
 }
