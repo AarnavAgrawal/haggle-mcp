@@ -14,8 +14,8 @@ Every conversation teaches Haggle about that business, so the next agent can get
 
 The same server works headlessly for agents and renders live views (a deal board, an approval card, estimates, business profiles) inside Claude and ChatGPT.
 
-Built for YC's *Make Something Agents Want* hackathon by Yash and Aarnav.
-Stack: **mcp-use v2 + Manufact** (MCP App and hosting), **Inkbox** (email, Voice AI, iMessage, A2A), **Claude** (extraction and negotiation strategy), **Supabase Postgres** (state) and **Stripe test mode** (payment).
+Built for YC's *Make Something Agents Want* hackathon by Yash and Aarnav. 2nd place - Inkbox Track. 3rd place - Stripe Track
+Stack: Manufact, Inkbox, Stripe, Supabase.
 
 ---
 
