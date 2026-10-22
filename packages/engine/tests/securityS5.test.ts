@@ -34,8 +34,10 @@ async function setup(config: Partial<EngineConfig> = {}, ports: { emailError?: (
   const emails: { to: string; subject: string; bodyText: string }[] = [];
   const calls: { toNumber: string }[] = [];
   const repo = new InMemoryRepository();
+  let t = Date.parse("2026-10-20T19:00:00Z"); // a Tuesday, noon Pacific (call hours)
+  const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const engine = new HaggleEngine({
-    repo, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"), stripe: simulatedStripe(),
+    repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"), stripe: simulatedStripe(),
     email: { async send(m) { const e = ports.emailError?.(m.to); if (e) throw e; emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },
     phone: { async placeCall(c: { toNumber: string }) { calls.push(c); return { callId: `call_${calls.length}` }; } },
     sms: { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } },
@@ -49,7 +51,7 @@ async function setup(config: Partial<EngineConfig> = {}, ports: { emailError?: (
     await repo.insertWorkspace({ id, name: id, token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles" });
     await engine.updateSettings({ approver_phone: phone, spending_cap_cents: 150_000 }, id); // the operator
   }
-  return { engine, repo, texts, emails, calls };
+  return { engine, repo, clock, texts, emails, calls };
 }
 
 /** A deal in `ws` with one firm quote ($1,150 total, $345 deposit). */
@@ -213,5 +215,32 @@ describe("S5-D F10: a business that asked not to be contacted is never contacted
     const deal = await env.engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "Esc Grill", email: "optout-esc@inkboxmail.test", phone: VENDOR_PHONE }] });
     await env.engine.advanceJob(deal.job_id);
     expect(env.calls.filter((c) => c.toNumber === VENDOR_PHONE)).toHaveLength(0);
+  });
+});
+
+describe("S5-D F11: on a live server the agent's send_message can't stand in for an approver-authorized callback", () => {
+  const PHONE_VENDOR = "+14155550555";
+  it("a phone vendor gets at most one agent-written call per deal, never one citing a price", async () => {
+    const env = await setup({ callCooldownMs: 0 }); // no spacing: only the per-deal limit stops the second call
+    const agent = env.engine.forWorkspace("ws_alpha");
+    const deal = await agent.deal({ request, budget_usd, businesses: [{ name: "Phone Grill", phone: PHONE_VENDOR }] });
+    const b = (await env.repo.getBusinesses(deal.job_id))[0]!;
+    env.clock.advance(30 * 60_000);
+    const callsBefore = env.calls.length;
+    await expect(agent.sendMessage(deal.job_id, b.business_id, { text: "Could you beat $1,150?" })).rejects.toMatchObject({ code: "call_cites_price" });
+    const first = await agent.sendMessage(deal.job_id, b.business_id, { text: "Do you have vegetarian options?" });
+    expect(first.sent).toBe(true);
+    env.clock.advance(30 * 60_000);
+    await expect(agent.sendMessage(deal.job_id, b.business_id, { text: "Do you deliver?" })).rejects.toMatchObject({ code: "call_limit" });
+    expect(env.calls.length).toBe(callsBefore + 1);
+  });
+  it("an email business isn't switched to a Voice AI call by the agent", async () => {
+    const env = await setup();
+    const agent = env.engine.forWorkspace("ws_alpha");
+    const deal = await agent.deal({ request, budget_usd, businesses: [{ name: "Mail Grill", email: "mail-grill@inkboxmail.test", phone: PHONE_VENDOR }] });
+    const b = (await env.repo.getBusinesses(deal.job_id))[0]!;
+    env.clock.advance(30 * 60_000);
+    await expect(agent.sendMessage(deal.job_id, b.business_id, { text: "Is delivery included?", channel: "phone" })).rejects.toMatchObject({ code: "call_needs_approver" });
+    expect(env.calls).toHaveLength(0);
   });
 });

@@ -30,7 +30,7 @@ import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers, type PlannedCounter } from "../negotiation/counteroffer.ts";
 import { applyStrategy, type StrategyContext } from "../negotiation/strategist.ts";
 import { imessageFailureReason } from "../outbound/imessageErrors.ts";
-import { checkMessage, citesCompetingOffer, findDollarAmounts } from "../negotiation/messageGuard.ts";
+import { amountsIn, checkMessage, citesCompetingOffer, findDollarAmounts } from "../negotiation/messageGuard.ts";
 import { buildRfqEmail, eventPlace, eventWhen, humanTime, quantityText } from "../outbound/rfq.ts";
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.ts";
@@ -6021,6 +6021,15 @@ export class HaggleEngine {
     const channel: Channel = opts.channel ?? b.channel;
     const reachable = channel === "email" ? !!b.email : channel === "phone" ? !!(b.phone && this.d.phone) : channel === "imessage" ? !!(b.phone && (this.d.imessage || this.d.sms)) : !!(this.d.a2a && b.a2a_card_url && b.thread_id);
     if (!reachable) throw new EngineError("no_contact_method", `${b.name} can't be reached by ${channel} here.`, opts.channel ? "Pick a channel the business has (see get_quotes), or omit channel." : "Its own channel isn't available here; pass channel explicitly with one the business has (see get_quotes).", "get_quotes");
+    if (channel === "phone" && this.callbacksNeedApproverText) {
+      // A Voice AI call the agent asks for rings a real person: on a live server it is never a switch from
+      // another channel, never a price discussion (that is a callback: call_back, the approver's CALL
+      // code and recorded consent), and at most one per business per deal (S5-D F11).
+      if (b.channel !== "phone") throw new EngineError("call_needs_approver", `${b.name} was contacted by ${b.channel}; switching it to a Voice AI call needs the approver.`, "Message it on its own channel, or use call_back (the approver authorizes calls by text).", "call_back");
+      if (opts.text && amountsIn(opts.text).length) throw new EngineError("call_cites_price", "A call that discusses prices is a callback the approver authorizes.", "Use call_back when get_quotes offers one, or negotiate.", "call_back");
+      const called = (await this.repo.listMessages(jobId)).some((m) => m.direction === "out" && m.kind === "call" && m.business_id === b.business_id && !!m.idempotency_key?.startsWith("msg:"));
+      if (called) throw new EngineError("call_limit", `Haggle already called ${b.name} once for you on this deal.`, "Wait for its answer (wait_for_update), or use call_back for an approver-authorized call.", "wait_for_update");
+    }
     const ref = `Ref HG-${job.short_code}`;
     const textLimit = (this.d.imessage ? 159 : SMS_LIMIT) - ref.length - 1;
     let text: string;

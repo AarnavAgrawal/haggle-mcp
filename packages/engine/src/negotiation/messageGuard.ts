@@ -60,6 +60,11 @@ function plainAmounts(text: string): number[] {
   return out;
 }
 
+/** Every amount the text states, with or without a "$". */
+export function amountsIn(text: string): number[] {
+  return [...findDollarAmounts(text), ...plainAmounts(text)];
+}
+
 /** Folded for name matching: case, accents, separators and digit lookalikes ("M1ssion  Eats" = "mission eats"). */
 function foldName(s: string): string {
   return s.toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "").replace(/0/g, "o").replace(/[1!|l]/g, "i").replace(/3/g, "e").replace(/[4@]/g, "a").replace(/[5$]/g, "s").replace(/7/g, "t")
@@ -83,7 +88,7 @@ const usd = (cents: number) => `$${Math.floor(cents / 100).toLocaleString("en-US
 
 export function checkMessage(input: GuardInput): GuardResult {
   const allowed = new Set(input.verifiedCents);
-  for (const cents of [...findDollarAmounts(input.text), ...plainAmounts(input.text)]) {
+  for (const cents of amountsIn(input.text)) {
     if (!allowed.has(cents)) return { ok: false, code: "UNVERIFIED_AMOUNT", message: `${usd(cents)} isn't an amount from this request or any quote Haggle received.` };
   }
   for (const name of input.otherBusinessNames) {
