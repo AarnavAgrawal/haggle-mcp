@@ -578,6 +578,25 @@ export interface Repository {
   getReconcileCursor?(scope: string, channel: ReconcileChannel): Promise<string | null>;
   /** Move the mark forward (never back). */
   advanceReconcileCursor?(scope: string, channel: ReconcileChannel, at: string): Promise<void>;
+  // per-call AI usage (migration 122), appended; optional so a repository without the table still runs
+  /** Append one Claude call's reported usage (never fails the call: callers catch). */
+  recordAiUsage?(u: Omit<AiUsageRow, "id" | "at"> & { at?: string }): Promise<void>;
+  /** Usage rows, oldest first; only these jobs' when given. */
+  listAiUsage?(q: { jobIds?: string[]; since?: string; until?: string }): Promise<AiUsageRow[]>;
+}
+
+/** One Claude call's usage as the API reported it (migration 122). Missing counts are 0, never guessed. */
+export interface AiUsageRow {
+  id: number;
+  job_id: string | null;
+  workspace_id: string | null;
+  purpose: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  at: string;
 }
 
 /** An operator's decision on a quarantined inbound message (migration 112; append-only, one per message). */

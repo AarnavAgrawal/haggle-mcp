@@ -27,6 +27,7 @@ import {
   type BookingRow,
   type HandoffReceiptRow,
   type QuarantineResolutionRow,
+  type AiUsageRow,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -586,5 +587,13 @@ export class InMemoryRepository implements Repository {
     const k = `${scope}|${channel}`;
     const cur = this.cursors.get(k);
     if (!cur || Date.parse(at) > Date.parse(cur)) this.cursors.set(k, new Date(at).toISOString());
+  }
+  // per-call AI usage (migration 122): append-only
+  private aiUsage: AiUsageRow[] = [];
+  async recordAiUsage(u: Omit<AiUsageRow, "id" | "at"> & { at?: string }) {
+    this.aiUsage.push({ ...u, id: this.aiUsage.length + 1, at: u.at ?? now() });
+  }
+  async listAiUsage(q: { jobIds?: string[]; since?: string; until?: string }) {
+    return this.aiUsage.filter((r) => (!q.jobIds || (r.job_id !== null && q.jobIds.includes(r.job_id))) && (!q.since || r.at >= q.since) && (!q.until || r.at < q.until)).map(clone);
   }
 }

@@ -77,3 +77,6 @@ export * from "./store/poolGate.ts";
 // Workstream F (sprint 4): reconciler catch-up, the operator report.
 export * from "./live/reconcileWindow.ts";
 export * from "./ops/report.ts";
+// Sprint 5 E: usage metrics from database rows (simulated vs real), approximate AI cost.
+export * from "./ops/costs.ts";
+export * from "./ops/metrics.ts";
