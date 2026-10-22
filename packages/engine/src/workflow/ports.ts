@@ -256,6 +256,12 @@ export interface EngineConfig {
    * wins): messages to businesses say "I'm an AI assistant ... on behalf of <name>". Default "a customer".
    */
   customerName?: string;
+  /**
+   * When businesses may be contacted unprompted (the first RFQ by email or iMessage, reminders to a
+   * silent business): workflow/contactWindow.ts. Absent = any time and no reminders (mock mode, tests).
+   * Live sets it (default Mon–Sat 08:00–19:00 in the workspace's timezone; contactWindowFromEnv).
+   */
+  contactWindow?: import("./contactWindow.ts").ContactWindowConfig;
 }
 
 export interface EngineDeps {

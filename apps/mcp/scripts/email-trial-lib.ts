@@ -10,6 +10,8 @@ import {
 } from "@haggle/engine";
 
 export const TRIAL_FLAG = "--i-own-this-mailbox";
+/** The deal tag the test email carries like a real RFQ ([HG-<code>]), so matching behaves as it does live. */
+export const TRIAL_CODE = "TRIAL";
 /** Mail webhook event types the live subscription needs (received: replies; bounced/failed: delivery status). */
 export const REQUIRED_EVENT_TYPES = ["message.received", "message.bounced", "message.failed"] as const;
 export const OPTIONAL_EVENT_TYPES = ["message.delivered", "message.sent"] as const;
@@ -35,7 +37,11 @@ export function trialMailboxes(env: TrialEnv): string[] {
 export type Command =
   | { kind: "send"; to: string; runDir: string }
   | { kind: "collect"; runDir: string }
-  | { kind: "check-subscription" };
+  | { kind: "check-subscription" }
+  /** No network, no Inkbox, nothing written: configuration checks only. */
+  | { kind: "validate"; runDir: string | null; to: string | null }
+  /** No network, nothing written: the exact test email `send` would build, and an offline replay of the run's captures. */
+  | { kind: "dry-run"; to: string; runDir: string; buyer: string | null };
 
 function arg(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -49,22 +55,90 @@ function arg(argv: string[], name: string): string | undefined {
  * real mail must never be committed).
  */
 export function planTrial(argv: string[], env: TrialEnv, repoRoot: string): { ok: true; cmd: Command } | { ok: false; error: string } {
-  if (env.HAGGLE_EMAIL_TRIAL !== "1") return { ok: false, error: "email trial is disabled: set HAGGLE_EMAIL_TRIAL=1 for this one run" };
   const [sub] = argv;
+  // validate and dry-run contact nothing and write nothing: no gate (they report the gates instead).
+  if (sub === "validate") {
+    const runDir = arg(argv, "run");
+    const to = arg(argv, "to");
+    return { ok: true, cmd: { kind: "validate", runDir: runDir ? resolve(runDir) : null, to: to ? normalizeAddress(to) : null } };
+  }
+  if (sub === "dry-run") {
+    const runDir = arg(argv, "run");
+    const to = normalizeAddress(arg(argv, "to") ?? "");
+    if (!runDir || !to) return { ok: false, error: "dry-run needs --to <addr> and --run <dir> (outside the repository)" };
+    if (!outsideRepo(runDir, repoRoot)) return { ok: false, error: "--run must be outside the repository: raw captures of real mail must never be committed" };
+    const buyer = arg(argv, "buyer");
+    return { ok: true, cmd: { kind: "dry-run", to, runDir: resolve(runDir), buyer: buyer ? normalizeAddress(buyer) : null } };
+  }
+  if (env.HAGGLE_EMAIL_TRIAL !== "1") return { ok: false, error: "email trial is disabled: set HAGGLE_EMAIL_TRIAL=1 for this one run" };
   if (sub === "check-subscription") return { ok: true, cmd: { kind: "check-subscription" } };
-  if (sub !== "send" && sub !== "collect") return { ok: false, error: "usage: email-trial.ts send --to <addr> --run <dir> --i-own-this-mailbox | collect --run <dir> --i-own-this-mailbox | check-subscription" };
+  if (sub !== "send" && sub !== "collect") return { ok: false, error: "usage: email-trial.ts validate [--run <dir>] [--to <addr>] | dry-run --to <addr> --run <dir> [--buyer <addr>] | send --to <addr> --run <dir> --i-own-this-mailbox | collect --run <dir> --i-own-this-mailbox | check-subscription" };
   if (!argv.includes(TRIAL_FLAG)) return { ok: false, error: `${sub} needs ${TRIAL_FLAG}: only mailboxes you own may take part` };
   const allowed = trialMailboxes(env);
   if (!allowed.length) return { ok: false, error: "HAGGLE_EMAIL_TRIAL_MAILBOXES is empty: list the trial mailboxes you own (comma-separated)" };
   const runDir = arg(argv, "run");
   if (!runDir) return { ok: false, error: `${sub} needs --run <dir> (outside the repository)` };
-  const rel = relative(resolve(repoRoot), resolve(runDir));
-  if (!rel.startsWith("..") && !isAbsolute(rel)) return { ok: false, error: "--run must be outside the repository: raw captures of real mail must never be committed" };
+  if (!outsideRepo(runDir, repoRoot)) return { ok: false, error: "--run must be outside the repository: raw captures of real mail must never be committed" };
   if (sub === "collect") return { ok: true, cmd: { kind: "collect", runDir: resolve(runDir) } };
   const to = normalizeAddress(arg(argv, "to") ?? "");
   if (!to) return { ok: false, error: "send needs --to <addr>" };
   if (!allowed.includes(to)) return { ok: false, error: `${to} is not in HAGGLE_EMAIL_TRIAL_MAILBOXES; refusing to email it` };
   return { ok: true, cmd: { kind: "send", to, runDir: resolve(runDir) } };
+}
+
+function outsideRepo(dir: string, repoRoot: string): boolean {
+  const rel = relative(resolve(repoRoot), resolve(dir));
+  return rel.startsWith("..") || isAbsolute(rel);
+}
+
+/** Every gate a send must pass, each reported on its own (validate / dry-run show them; send enforces them via planTrial). */
+export function sendGates(env: TrialEnv, argv: string[], to: string | null) {
+  const allowed = trialMailboxes(env);
+  return {
+    HAGGLE_EMAIL_TRIAL: env.HAGGLE_EMAIL_TRIAL === "1",
+    HAGGLE_EMAIL_TRIAL_MAILBOXES: allowed.length > 0,
+    to_listed: to !== null && allowed.includes(normalizeAddress(to)),
+    [TRIAL_FLAG]: argv.includes(TRIAL_FLAG),
+  };
+}
+
+export type ValidateEnv = TrialEnv & { INKBOX_API_KEY?: string; INKBOX_IDENTITY?: string };
+export type FsProbe = { exists(p: string): boolean; writable(p: string): boolean; list(p: string): string[] };
+export type Check = { check: string; ok: boolean; level: "error" | "warn" | "info"; detail: string };
+
+/**
+ * Configuration checks with no network and nothing written: which env names are set (never their
+ * values), the mailbox allowlist (and entries it rejected), the run directory, the installed SDK,
+ * and every send gate. `sdk` is the locally installed @inkbox/sdk version (null if missing).
+ */
+export function validateTrial(cmd: Extract<Command, { kind: "validate" }>, env: ValidateEnv, argv: string[], repoRoot: string, fs: FsProbe, sdk: string | null): { ok: boolean; checks: Check[] } {
+  const checks: Check[] = [];
+  const add = (check: string, ok: boolean, level: Check["level"], detail: string) => checks.push({ check, ok, level: ok ? "info" : level, detail });
+  add("INKBOX_API_KEY", !!env.INKBOX_API_KEY?.trim(), "error", env.INKBOX_API_KEY?.trim() ? "set (value not shown)" : "not set: send, collect and check-subscription need it");
+  add("INKBOX_IDENTITY", true, "info", env.INKBOX_IDENTITY?.trim() ? `set: "${env.INKBOX_IDENTITY.trim()}"` : 'not set: the buyer identity defaults to "haggle"');
+  add("HAGGLE_EMAIL_TRIAL", env.HAGGLE_EMAIL_TRIAL === "1", "warn", env.HAGGLE_EMAIL_TRIAL === "1" ? "1: send/collect allowed for this invocation" : "not 1: send, collect and check-subscription are refused (set it for the one run only)");
+  const raw = (env.HAGGLE_EMAIL_TRIAL_MAILBOXES ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const allowed = trialMailboxes(env);
+  const rejected = raw.filter((s) => !allowed.includes(normalizeAddress(s)));
+  add("HAGGLE_EMAIL_TRIAL_MAILBOXES", allowed.length > 0 && rejected.length === 0, allowed.length ? "warn" : "error", allowed.length ? `${allowed.length} mailbox(es): ${allowed.map((a) => redact(a)).join(", ")}${rejected.length ? `; ignored ${rejected.length} malformed entr${rejected.length === 1 ? "y" : "ies"}` : ""}` : "empty: list the trial mailboxes you own, comma-separated");
+  if (cmd.to !== null) add("--to", allowed.includes(cmd.to), "error", allowed.includes(cmd.to) ? "listed in HAGGLE_EMAIL_TRIAL_MAILBOXES" : "NOT listed in HAGGLE_EMAIL_TRIAL_MAILBOXES: send would refuse it");
+  add(TRIAL_FLAG, argv.includes(TRIAL_FLAG), "warn", argv.includes(TRIAL_FLAG) ? "given" : "not given: send and collect need it (only mailboxes you own may take part)");
+  if (cmd.runDir === null) add("--run", false, "warn", "not given: send/collect/dry-run need a run directory outside the repository");
+  else if (!outsideRepo(cmd.runDir, repoRoot)) add("--run", false, "error", "inside the repository: raw captures of real mail must never be committed");
+  else {
+    const has = fs.exists(cmd.runDir);
+    const runJson = has && fs.exists(`${cmd.runDir}/run.json`);
+    const raws = has && fs.exists(`${cmd.runDir}/raw`) ? fs.list(`${cmd.runDir}/raw`).filter((f) => f.endsWith(".json")).length : 0;
+    add("--run", !has || fs.writable(cmd.runDir), "error", !has ? "outside the repository; will be created by send" : `outside the repository; ${fs.writable(cmd.runDir) ? "writable" : "NOT writable"}; ${runJson ? `has run.json (send would refuse to reuse it; collect/dry-run read it), ${raws} capture(s)` : "no run yet"}`);
+  }
+  add("@inkbox/sdk", sdk !== null, "error", sdk ? `installed locally: ${sdk} (not contacted)` : "not installed: npm install");
+  return { ok: !checks.some((c) => !c.ok && c.level === "error"), checks };
+}
+
+/** The exact outbound email `send` builds for a run: from, to, subject, body and the provider idempotency key. */
+export function plannedSend(run: TrialRun): { from: string; to: string[]; subject: string; bodyText: string; idempotencyKey: string } {
+  const mail = trialEmail(run);
+  return { from: run.buyerMailbox, to: [run.to], subject: mail.subject, bodyText: mail.bodyText, idempotencyKey: `email-trial:${run.runId}` };
 }
 
 /** The persisted state of one run (run.json in the run directory; the secret never leaves it). */
@@ -89,7 +163,7 @@ export function newRun(o: { to: string; buyerMailbox: string; now: Date; random?
   const jobId = `job_${runId}`;
   const businessId = `biz_${rnd(4).toString("hex")}`;
   const token = replyToken(secret, jobId, businessId);
-  return { runId, startedAt: o.now.toISOString(), buyerMailbox: normalizeAddress(o.buyerMailbox), to: o.to, secret, jobId, businessId, token, subject: `[HAGGLE TEST] Reply-handling trial (ref ${token})` };
+  return { runId, startedAt: o.now.toISOString(), buyerMailbox: normalizeAddress(o.buyerMailbox), to: o.to, secret, jobId, businessId, token, subject: `[HAGGLE TEST] [HG-${TRIAL_CODE}] Reply-handling trial (ref ${token})` };
 }
 
 /** The one clearly-labelled TEST email: no purchase, explains itself, carries the token like a real RFQ. */
@@ -144,6 +218,8 @@ export interface ReplyEvaluation {
   bounce: boolean;
   attachments: { filename: string; content_type: string; size: number }[];
   notes: string[];
+  /** What the real pipeline (signed webhook -> engine -> parse) did with it, replayed offline (email-trial-replay.ts). */
+  pipeline?: { outcome: string; trust_reason: string | null; quarantine_reason: string | null; quote_total_usd: number | null; approvable: boolean | null };
 }
 
 /** Run one captured reply through the engine's real inbound functions, as the webhook would. */
@@ -154,7 +230,7 @@ export function evaluateReply(detail: InkboxMessageDetail, run: TrialRun, ids: {
   const known = [ids.sendTime, ids.stored, ids.ses ? `<${ids.ses.replace(/[<>]/g, "")}@email.amazonses.com>` : null];
   const match = matchInbound(
     { to: msg.to, threadId: msg.threadId, inReplyTo: msg.inReplyTo, references: msg.references, subject: msg.subject, from },
-    [{ businessId: run.businessId, jobId: run.jobId, shortCode: "TEST", email: run.to, threadId: run.send?.threadId ?? null, outboundMessageId: ourSend }],
+    [{ businessId: run.businessId, jobId: run.jobId, shortCode: TRIAL_CODE, email: run.to, threadId: run.send?.threadId ?? null, outboundMessageId: ourSend }],
   );
   const verify = (ours: (string | null)[]) => {
     const v = verifyExternalReply({ from, pinned: run.to, inReplyTo: msg.inReplyTo, references: msg.references, ourMessageIds: ours, subject: msg.subject, bodyText: msg.bodyText, token: run.token, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
@@ -215,6 +291,20 @@ export function buildReport(run: TrialRun, ids: ReturnType<typeof compareMessage
   };
 }
 
+function pipelineCell(p: ReplyEvaluation["pipeline"]): string {
+  if (!p) return "-";
+  return `${p.outcome}${p.trust_reason ? ` (${p.trust_reason})` : ""}${p.quote_total_usd !== null ? ` quote $${p.quote_total_usd}${p.approvable === false ? " (not approvable)" : ""}` : ""}`;
+}
+
+/** Attach each reply's offline pipeline replay (by Inkbox message id). */
+export function withPipeline(evals: ReplyEvaluation[], replays: { id: string; outcome: string; trust_reason: string | null; quarantine_reason: string | null; quote_total_usd: number | null; approvable: boolean | null; notes?: string[] }[]): ReplyEvaluation[] {
+  const by = new Map(replays.map((r) => [r.id, r]));
+  return evals.map((e) => {
+    const r = by.get(e.id);
+    return r ? { ...e, pipeline: { outcome: r.outcome, trust_reason: r.trust_reason, quarantine_reason: r.quarantine_reason, quote_total_usd: r.quote_total_usd, approvable: r.approvable }, notes: [...e.notes, ...(r.notes ?? [])] } : e;
+  });
+}
+
 export function renderMarkdown(r: TrialReport): string {
   const yes = (b: boolean) => (b ? "yes" : "no");
   return [
@@ -234,9 +324,9 @@ export function renderMarkdown(r: TrialReport): string {
     "",
     "## Replies",
     "",
-    "| # | from | verdict | match | token subj/body/own | in-reply-to ours | cut quotes | body | notes |",
-    "|---|---|---|---|---|---|---|---|---|",
-    ...r.replies.map((x, i) => `| ${i + 1} | ${x.from} | ${x.verdict}${x.verdict_any_known_id !== x.verdict ? ` (any id: ${x.verdict_any_known_id})` : ""} | ${x.match} | ${yes(x.token_in_subject)}/${yes(x.token_in_body)}/${yes(x.token_in_own_words)} | ${yes(x.in_reply_to_ours)} | ${yes(x.quoted_history_cut)} | ${x.body_source} | ${x.notes.join("; ").replace(/\|/g, "/")} |`),
+    "| # | from | verdict | match | token subj/body/own | in-reply-to ours | cut quotes | body | pipeline | notes |",
+    "|---|---|---|---|---|---|---|---|---|---|",
+    ...r.replies.map((x, i) => `| ${i + 1} | ${x.from} | ${x.verdict}${x.verdict_any_known_id !== x.verdict ? ` (any id: ${x.verdict_any_known_id})` : ""} | ${x.match} | ${yes(x.token_in_subject)}/${yes(x.token_in_body)}/${yes(x.token_in_own_words)} | ${yes(x.in_reply_to_ours)} | ${yes(x.quoted_history_cut)} | ${x.body_source} | ${pipelineCell(x.pipeline)} | ${x.notes.join("; ").replace(/\|/g, "/")} |`),
     "",
     "## Scenario checklist",
     "",

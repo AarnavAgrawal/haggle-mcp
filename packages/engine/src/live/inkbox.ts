@@ -25,7 +25,7 @@ export interface InkboxMailApi {
 }
 
 /** A message as `inkbox.messages.list` yields it, newest first (the fields Haggle uses). */
-export type InkboxListedMessage = { id?: string; messageId: string; direction: string; createdAt?: Date | string; fromAddress?: string; toAddresses?: string[]; status?: string; subject?: string | null; isRead?: boolean };
+export type InkboxListedMessage = { id?: string; messageId: string; direction: string; createdAt?: Date | string; fromAddress?: string; toAddresses?: string[]; ccAddresses?: string[] | null; status?: string; subject?: string | null; isRead?: boolean };
 
 export interface InkboxMessageDetail {
   id: string;
@@ -33,6 +33,8 @@ export interface InkboxMessageDetail {
   messageId: string;
   fromAddress: string;
   toAddresses: string[];
+  /** Cc recipients (SDK MessageDetail.ccAddresses): a reply-all often puts the buyer here. */
+  ccAddresses?: string[] | null;
   subject: string | null;
   bodyText: string | null;
   /** HTML part; used only when there is no plain-text part (inbound/htmlText.ts). */
@@ -139,6 +141,16 @@ export function verifyInkboxWebhook(rawBody: string, headers: Headers, secret: s
 
 const lower = (s: string) => s.trim().toLowerCase();
 const str = (v: unknown) => (typeof v === "string" ? v : null);
+
+/**
+ * Is this inbound message (fetched from the buyer mailbox) addressed to the buyer: in To or Cc.
+ * Reply-all from Outlook and Gmail often puts Haggle in Cc when the vendor's own colleague is in To.
+ * Bcc (invisible to other recipients) is not accepted: a vendor's real reply never Bccs Haggle.
+ */
+export function addressedToBuyer(detail: Pick<InkboxMessageDetail, "toAddresses" | "ccAddresses">, buyerMailbox: string): boolean {
+  const me = lower(buyerMailbox);
+  return [...(detail.toAddresses ?? []), ...(detail.ccAddresses ?? [])].some((a) => lower(a) === me);
+}
 
 /** Map an Inkbox `message.received` event + the full message (fetched by id) to the engine's InboundMessage. */
 export function inkboxToInbound(payload: { id: string; event_type: string }, detail: InkboxMessageDetail): InboundMessage {
@@ -539,11 +551,24 @@ export async function connectInkboxTrial(opts: { apiKey: string; handle: string 
   if (!buyerMailbox) throw new Error(`Inkbox identity "${identity.agentHandle}" has no mailbox`);
   return {
     buyerMailbox, identityId: (identity as { id?: string }).id ?? null,
+    // "whitelist": only allowed senders' mail is delivered (real vendors and trial mailboxes must be on it).
+    mailInboundFilterMode: String((identity as { mailInboundFilterMode?: unknown }).mailInboundFilterMode ?? "unknown"),
     send: (o: { to: string[]; subject: string; bodyText: string; idempotencyKey: string }) => inkbox.messages.send(buyerMailbox, o as never) as unknown as Promise<{ id: string; messageId: string; status: string; threadId?: string | null }>,
     list: (o: { direction: "inbound" | "outbound"; startDatetime: string; pageSize?: number }) => inkbox.messages.list(buyerMailbox, o as never) as unknown as AsyncIterable<InkboxListedMessage & { isRead?: boolean }>,
     get: (id: string) => inkbox.messages.get(buyerMailbox, id) as unknown as Promise<InkboxMessageDetail>,
     markUnread: (id: string) => inkbox.messages.markUnread(buyerMailbox, id).then(() => undefined),
-    listSubscriptions: () => inkbox.webhooks.subscriptions.list() as unknown as Promise<{ id: string; url: string; eventTypes: string[]; status?: string; agentIdentityId?: string | null; ownerIdentityId?: string | null }[]>,
+    // The buyer's subscription is identity-owned and mixed (mail + call + iMessage + A2A events): a
+    // plain list() leaves mixed rows out (SDK 0.7.x), so ask for the identity scope first.
+    listSubscriptions: async () => {
+      type Sub = { id: string; url: string; eventTypes: string[]; status?: string; agentIdentityId?: string | null; ownerIdentityId?: string | null };
+      const id = (identity as { id?: string }).id;
+      if (id) {
+        try {
+          return (await inkbox.webhooks.subscriptions.list({ agentIdentityId: id, scope: "identity" })) as unknown as Sub[];
+        } catch { /* a server without identity scope: fall back to the legacy view */ }
+      }
+      return (await inkbox.webhooks.subscriptions.list()) as unknown as Sub[];
+    },
   };
 }
 

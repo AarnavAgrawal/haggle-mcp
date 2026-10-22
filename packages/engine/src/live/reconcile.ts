@@ -9,7 +9,7 @@
 // double-ingest, and bounded (a lookback window, a page of items, a per-job rate limit).
 import type { HaggleEngine } from "../workflow/engine.ts";
 import type { JobRow, MessageRow, Repository } from "../store/types.ts";
-import { inkboxSenderTrust, inkboxToInbound, trustForSender, type InkboxMailApi, type InkboxTrustPolicy } from "./inkbox.ts";
+import { addressedToBuyer, inkboxSenderTrust, inkboxToInbound, trustForSender, type InkboxMailApi, type InkboxTrustPolicy } from "./inkbox.ts";
 import { classifyFailure } from "./transient.ts";
 
 /** A text as identity.listTexts returns it (the fields used here). */
@@ -178,7 +178,7 @@ export class InboundReconciler {
         if (Number.isFinite(ms(m.createdAt)) && ms(m.createdAt) < Date.parse(since)) break; // newest first
         if (m.direction && m.direction !== "inbound") continue;
         if (!m.id || this.handled.has(`mail:${m.id}`)) continue;
-        if (m.toAddresses && !m.toAddresses.map((a) => a.toLowerCase()).includes(buyer)) continue;
+        if (m.toAddresses && !addressedToBuyer({ toAddresses: m.toAddresses, ccAddresses: m.ccAddresses ?? null }, buyer)) continue;
         candidates.push(m.id);
       }
     } catch (e) {
@@ -206,7 +206,7 @@ export class InboundReconciler {
     for (const id of fresh.reverse()) {
       await this.attempt(`mail:${id}`, out, async () => {
         const detail = await api.get(buyerMailbox, id);
-        if (!detail.toAddresses.map((a) => a.toLowerCase()).includes(buyer)) return "skip";
+        if (!addressedToBuyer(detail, buyer)) return "skip";
         const from = (detail.fromAddress ?? "").trim().toLowerCase();
         // An agent-scoped buyer key lists only the buyer itself, so under "pinned-org-identity" the
         // operator's pinned roster addresses stand in for the org directory (same address check as the webhook path).

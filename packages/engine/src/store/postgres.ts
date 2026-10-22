@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -526,5 +526,25 @@ export class PostgresRepository implements Repository {
   }
   async getHandoffReceipt(handoffId: string) {
     return row<HandoffReceiptRow>((await this.sql`select * from handoff_receipts where handoff_id = ${handoffId}`)[0]);
+  }
+  // inbound review (migration 112)
+  async insertQuarantineResolution(r: Omit<QuarantineResolutionRow, "resolved_at">) {
+    const x = await this.sql`insert into quarantine_resolutions ${this.sql(this.vals(r as never))} on conflict (message_id) do nothing returning *`;
+    return row<QuarantineResolutionRow>(x[0]);
+  }
+  async listQuarantineResolutions(q: { messageId?: string; jobId?: string; limit?: number }) {
+    const s = this.sql;
+    return rows<QuarantineResolutionRow>(await s`
+      select * from quarantine_resolutions where true
+        ${q.messageId !== undefined ? s`and message_id = ${q.messageId}` : s``}
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+      order by resolved_at desc, id desc limit ${q.limit ?? 200}`);
+  }
+  async listQuarantinedMessages(q: { jobId?: string; limit?: number }) {
+    const s = this.sql;
+    return rows<MessageRow>(await s`
+      select * from messages where direction = 'in' and (kind = 'quarantine' or (kind = 'reply' and sender_trusted is not true))
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+      order by created_at desc, id desc limit ${q.limit ?? 100}`);
   }
 }

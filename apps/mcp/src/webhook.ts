@@ -10,7 +10,7 @@
 // live runtime's InboundReconciler lists the mailbox, texts and calls and ingests what is missing.
 // Ingest is idempotent by provider id, so a replay or a sweep after a 503 never double-ingests.
 // Kept free of the HTTP framework so the route can be tested with Inkbox fakes.
-import { classifyFailure, inkboxCallEnded, inkboxIMessageReceived, inkboxSenderTrust, inkboxTextReceived, inkboxToInbound, RetryLater, trustForSender, verifyInkboxWebhook } from "@haggle/engine";
+import { addressedToBuyer, classifyFailure, inkboxCallEnded, inkboxIMessageReceived, inkboxSenderTrust, inkboxTextReceived, inkboxToInbound, RetryLater, trustForSender, verifyInkboxWebhook } from "@haggle/engine";
 import type { Runtime } from "./runtime.ts";
 
 export type WebhookResult = { status: 200 | 400 | 401 | 404 | 422 | 500 | 503; body: Record<string, unknown>; jobId?: string | null; outcome?: string; retryAfterS?: number };
@@ -28,7 +28,7 @@ export async function handleInkboxWebhook(rt: Runtime, raw: string, headers: Hea
       const id = (payload.data.message as { id?: string } | undefined)?.id;
       if (!id) return { status: 400, body: { error: "bad payload" } };
       const detail = await rt.inkbox.api.get(rt.inkbox.buyerMailbox, id);
-      if (!detail.toAddresses.map((a) => a.toLowerCase()).includes(rt.inkbox.buyerMailbox)) {
+      if (!addressedToBuyer(detail, rt.inkbox.buyerMailbox)) {
         outcome = "not_for_buyer";
       } else {
         const msg = inkboxToInbound(payload, detail);

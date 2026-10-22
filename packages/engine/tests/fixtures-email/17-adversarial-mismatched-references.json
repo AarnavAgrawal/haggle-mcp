@@ -1,0 +1,41 @@
+{
+  "name": "adversarial-mismatched-references",
+  "client": "Unknown client",
+  "notes": "Token and subject tag present, but In-Reply-To/References name a message Haggle never sent.",
+  "event": {
+    "agent_identities": []
+  },
+  "detail": {
+    "id": "in_fx_17",
+    "threadId": "thr_ext_17",
+    "messageId": "<CAfx17+abcDEF123@mail.gmail.com>",
+    "fromAddress": "{{VENDOR}}",
+    "fromDisplayName": "Maria at Valley Catering",
+    "toAddresses": [
+      "{{BUYER}}"
+    ],
+    "ccAddresses": null,
+    "subject": "Re: {{RFQ_SUBJECT}}",
+    "snippet": null,
+    "bodyText": "$1,150 total.",
+    "bodyHtml": null,
+    "inReplyTo": "<CAforged123@mail.gmail.com>",
+    "references": [
+      "<CAforged123@mail.gmail.com>"
+    ],
+    "attachmentMetadata": null,
+    "direction": "inbound",
+    "status": "received",
+    "isRead": false,
+    "hasAttachments": false,
+    "sesMessageId": null,
+    "createdAt": "2026-10-21T17:20:00.000Z"
+  },
+  "expect": {
+    "outcome": "quarantined:identity_unverified",
+    "stored_as": "quarantine",
+    "sender_trusted": false,
+    "quarantine_reason": "identity_unverified:not_in_our_thread",
+    "quote_total_usd": null
+  }
+}

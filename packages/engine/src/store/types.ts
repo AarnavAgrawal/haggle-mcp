@@ -135,6 +135,9 @@ export interface MessageRow {
   /** Channel the message travelled on; phone rows hold a call transcript in body_text. */
   channel: Channel;
   created_at: string;
+  /** Outbound email only (migration 112): Inkbox reported it bounced or failed after accepting it. Absent/null = no report. */
+  delivery_status?: "bounced" | "failed" | null;
+  delivery_status_at?: string | null;
 }
 
 export interface QuoteRow {
@@ -564,4 +567,26 @@ export interface Repository {
   /** Null when the handoff already has a receipt. */
   insertHandoffReceipt(r: Omit<HandoffReceiptRow, "created_at">): Promise<HandoffReceiptRow | null>;
   getHandoffReceipt(handoffId: string): Promise<HandoffReceiptRow | null>;
+  // inbound review (migration 112), appended
+  /** Append-only; null when the message already has a decision. */
+  insertQuarantineResolution(r: Omit<QuarantineResolutionRow, "resolved_at">): Promise<QuarantineResolutionRow | null>;
+  listQuarantineResolutions(q: { messageId?: string; jobId?: string; limit?: number }): Promise<QuarantineResolutionRow[]>;
+  /** Inbound email held for review, newest first: kind 'quarantine', or a reply stored untrusted. */
+  listQuarantinedMessages(q: { jobId?: string; limit?: number }): Promise<MessageRow[]>;
+}
+
+/** An operator's decision on a quarantined inbound message (migration 112; append-only, one per message). */
+export interface QuarantineResolutionRow {
+  id: string;
+  message_id: string;
+  job_id: string | null;
+  business_id: string | null;
+  decision: "released" | "rejected";
+  original_reason: string;
+  original_trust_reason: string | null;
+  resolved_by: string;
+  /** How it was independently verified (release) or why it was rejected. */
+  verification: string;
+  released_trust_reason: "operator_verified" | null;
+  resolved_at: string;
 }

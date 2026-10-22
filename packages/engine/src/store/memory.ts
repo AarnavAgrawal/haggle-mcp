@@ -25,6 +25,7 @@ import {
   type OperatorReviewRow,
   type BookingRow,
   type HandoffReceiptRow,
+  type QuarantineResolutionRow,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -244,7 +245,16 @@ export class InMemoryRepository implements Repository {
   }
   async updateMessage(id: string, patch: Partial<MessageRow>) {
     const m = this.messages.find((x) => x.id === id);
-    if (m) Object.assign(m, patch);
+    if (!m) return;
+    // Migration 112's trigger: an untrusted inbound message is trusted only through a recorded release.
+    const next = { ...m, ...patch };
+    if (m.direction === "in" && m.sender_trusted !== true && next.sender_trusted === true) {
+      const r = this.resolutions.find((x) => x.message_id === id && x.decision === "released");
+      if (next.trust_reason !== "operator_verified" || !r || r.job_id !== next.job_id || r.business_id !== next.business_id || (m.quarantine_reason !== null && next.quarantine_reason !== m.quarantine_reason)) throw new Error("releasing a quarantined message needs a recorded operator release for it");
+    }
+    if (m.kind === "quarantine" && next.kind !== "quarantine" && (next.kind !== "reply" || next.sender_trusted !== true)) throw new Error("a quarantined message can only be released as a trusted reply");
+    if (patch.delivery_status && (m.direction !== "out" || m.channel !== "email" || !next.delivery_status_at)) throw new Error("delivery status is for outbound email only");
+    Object.assign(m, patch);
   }
   async listMessages(jobId: string) {
     return this.messages.filter((m) => m.job_id === jobId).map(clone);
@@ -546,5 +556,22 @@ export class InMemoryRepository implements Repository {
   async getHandoffReceipt(handoffId: string) {
     const r = this.receipts.find((x) => x.handoff_id === handoffId);
     return r ? clone(r) : null;
+  }
+  // inbound review (migration 112): the same rules as its constraints and triggers.
+  private resolutions: QuarantineResolutionRow[] = [];
+  async insertQuarantineResolution(r: Omit<QuarantineResolutionRow, "resolved_at">) {
+    if (this.resolutions.some((x) => x.message_id === r.message_id)) return null;
+    if (r.decision === "released" ? r.released_trust_reason !== "operator_verified" || !r.job_id || !r.business_id : r.released_trust_reason !== null) throw new Error("quarantine resolution check failed");
+    if (r.resolved_by.trim().length < 2 || r.resolved_by.trim().length > 80 || r.verification.trim().length < 10 || r.verification.trim().length > 500) throw new Error("quarantine resolution check failed");
+    const row = { ...clone(r), resolved_at: now() };
+    this.resolutions.push(row);
+    return clone(row);
+  }
+  async listQuarantineResolutions(q: { messageId?: string; jobId?: string; limit?: number }) {
+    return this.resolutions.filter((r) => (q.messageId === undefined || r.message_id === q.messageId) && (q.jobId === undefined || r.job_id === q.jobId)).slice(-(q.limit ?? 200)).reverse().map(clone);
+  }
+  async listQuarantinedMessages(q: { jobId?: string; limit?: number }) {
+    return this.messages.filter((m) => m.direction === "in" && (m.kind === "quarantine" || (m.kind === "reply" && m.sender_trusted !== true)) && (q.jobId === undefined || m.job_id === q.jobId))
+      .slice(-(q.limit ?? 100)).reverse().map(clone);
   }
 }
