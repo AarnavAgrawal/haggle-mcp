@@ -68,6 +68,8 @@ import { planRecovery, type StuckFinding } from "./recovery.ts";
 import type { OperatorReviewRow, OutboxRow } from "../store/types.ts";
 import { DEFAULT_CONTACT_TIMEZONE, decideFirstContact, decideFollowUp, localLabel } from "./contactWindow.ts";
 import { contactStatusOf, type BusinessContactStatus } from "../inbound/contactStatus.ts";
+/** Contact states the board lists per business (the rest are implied by its status). */
+const NOTABLE_CONTACT = new Set<BusinessContactStatus["contact_status"]>(["bounced", "failed", "opted_out", "quarantined_reply", "scheduled"]);
 import { listQuarantine, rejectQuarantined, releaseQuarantined } from "../inbound/quarantineReview.ts";
 
 /** Board text for a reply Haggle couldn't read (never the provider's raw error). */
@@ -5450,6 +5452,13 @@ export class HaggleEngine {
     // Recommend only what the human can actually approve: the best-value quote that passes every hard
     // rule and the per-payment ceiling. A better-value quote that can't be approved stays on the board
     // with its reason; nothing is dropped silently, and the ceiling is never weakened.
+    // Per-business contact status (inbound/contactStatus.ts) from the rows already read; only the ones
+    // the agent must act on or explain are listed (bounced, failed, opted out, held reply, deferred).
+    const contactRows = businesses.flatMap((b) => [b.email ? normalizeAddress(b.email) : null, b.phone].filter((c): c is string => !!c));
+    const contactSuppressions = contactRows.length ? await this.repo.findSuppressions(contactRows) : [];
+    const vendorContact = Object.fromEntries(businesses.map((business) => contactStatusOf({ business, messages, suppressions: contactSuppressions, events }))
+      .filter((c) => NOTABLE_CONTACT.has(c.contact_status))
+      .map((c) => [c.business_id, { status: c.contact_status, detail: c.line, ...(c.next_contact_at ? { next_contact_at: c.next_contact_at } : {}) }]));
     const boardById = new Map(out.map((q) => [q.quote_id, q]));
     // A request compared on a non-money answer (earliest date) recommends in the ranker's compare_by order.
     const recommendOrder = nonMoneyCompare(job.request) ? ranking.ranked.map((r) => r.quoteId) : value.ranked.map((r) => r.quoteId);
@@ -5506,6 +5515,7 @@ export class HaggleEngine {
       negotiation,
       business_names: Object.fromEntries(businesses.map((b) => [b.business_id, b.name])),
       businesses: board,
+      ...(Object.keys(vendorContact).length ? { vendor_contact: vendorContact } : {}),
       approval: approval ? { ...approvalRecord(approval, job), ...(approval.status === "pending" && isAutoIn(events, approval.id) ? { replaceable: true } : {}) } : null,
       payment: paymentOut ?? (job.state === "awaiting_approval" ? this.noPayment() : null),
       ...(purchase ? { purchase } : {}),
