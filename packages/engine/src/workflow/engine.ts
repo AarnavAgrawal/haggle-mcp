@@ -62,6 +62,7 @@ import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effec
 import { ChannelSendError, type EngineDeps, type PhoneCallRequest } from "./ports.ts";
 import { buildVoiceInstructions, isWithinCallHours, nextCallHoursStart } from "./callPolicy.ts";
 import { decideTextScope, inTextScope, jobCodeIn, lastRoute, type TextScope } from "./textRouting.ts";
+import { CALL_TEXT, CALLBACK_AUTH_TTL_MS, callbackCodeHash, callbackConsent, codeMatches, MAX_CALLBACK_CODE_ATTEMPTS, newCallbackCode, pendingCallbackAuths, type CallbackConsent } from "./callbackAuth.ts";
 import { decideChargeResume, decideClaim, redactError } from "./deadLetter.ts";
 import { planRecovery, type StuckFinding } from "./recovery.ts";
 import type { OperatorReviewRow, OutboxRow } from "../store/types.ts";
@@ -933,7 +934,7 @@ export class HaggleEngine {
     return {
       // An approximate total counts: it becomes approvable once the business confirms a firm figure.
       now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => { const h = this.approvability(job, q).hard; return h === null || h === "total_not_firm"; }).length, counterable: plan.length > 0,
-      negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent"].includes(payment.status),
+      negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent", "charging"].includes(payment.status),
       ...(approval ? { approvalAction: approval.action } : {}),
     };
   }
@@ -2572,6 +2573,12 @@ export class HaggleEngine {
     // "PAY <code>" is never an answer or a business reply: it charges (approver only) or is ignored.
     const pay = hm.text.trim().match(PAY_TEXT);
     if (pay) return this.ingestPayText(hm, from, open, pay[1], scope);
+    // "CALL <code>": the approver allowing one callback Haggle texted them about (never anyone else's say-so).
+    const call = hm.text.trim().match(CALL_TEXT);
+    if (call) {
+      const r = await this.ingestCallbackText(hm, from, open, call[1]!);
+      if (r) return r;
+    }
     {
       // The human even when no deal is open any more (e.g. "YES <code>" after the card approved and paid).
       let isHuman = (!!this.d.sms && from === this.d.config.notifyPhone?.replace(/[\s().-]/g, "")) || !!last?.approvalId;
@@ -2723,6 +2730,9 @@ export class HaggleEngine {
     const code = t.match(TEXT_DECISION)?.[2] ?? t.match(PAY_TEXT)?.[1] ?? t.match(PAID_TEXT)?.[1];
     const coded: string[] = [];
     if (code) for (const j of human) if ((await this.repo.getLatestApproval(j.id))?.code === code) coded.push(j.workspace_id);
+    // A callback code (CALL 482913) only one workspace's pending callback has decides too.
+    const callCode = t.match(CALL_TEXT)?.[1];
+    if (callCode) for (const j of human) if (await this.hasCallbackCode(j.id, callCode)) coded.push(j.workspace_id);
     return decideTextScope(owners, text, coded);
   }
 
@@ -2859,6 +2869,128 @@ export class HaggleEngine {
     await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} back (Voice AI), citing ${proposal.basis_approximate ? `another business's estimate of about $${proposal.basis_total_usd.toLocaleString("en-US")}` : `a real $${proposal.basis_total_usd.toLocaleString("en-US")} quote`}`, channel: "phone" });
     await this.repo.touchJob(job.id);
     return { placed: true, proposal };
+  }
+
+  /**
+   * Live mode, or approvals out-of-band only: a callback rings a real person, so no board tap, client
+   * form, view-held code or model call places one; only the approver's CALL <code> text or an operator.
+   */
+  get callbacksNeedApproverText(): boolean {
+    return this.d.config.mode === "live" || this.outOfBandApprovalsOnly;
+  }
+
+  /** The callee's consent to a callback (callbackAuth.ts), from durable records. Mock (DEMO) jobs call only the simulated fleet. */
+  async callbackConsentFor(jobId: string, businessId: string): Promise<CallbackConsent> {
+    const job = await this.loadJob(jobId);
+    const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === businessId);
+    if (!b) return { ok: false, reason: "not a business on this deal" };
+    const suppressed = b.phone ? (await this.repo.findSuppressions([b.phone])).length > 0 : false;
+    if (job.mode === "mock" && !this.callbacksNeedApproverText) return suppressed ? { ok: false, reason: "this number is suppressed" } : { ok: true, basis: "simulated_vendor" };
+    return callbackConsent({ business: b, workspaceVendors: await this.repo.listWorkspaceVendors(job.workspace_id), messages: await this.repo.listMessages(jobId), suppressed });
+  }
+
+  private async requireCallbackConsent(jobId: string, businessId: string) {
+    const c = await this.callbackConsentFor(jobId, businessId);
+    if (!c.ok) throw new EngineError("callback_no_consent", `Haggle won't call this business back: ${c.reason}.`, "Negotiate by email or text (send_message), or ask the operator to add the vendor with its recorded consent (workspace-admin add-vendor --consent).", "get_quotes");
+    return c;
+  }
+
+  /** A justified callback proposal, or the same refusals placeCallback gives. */
+  private async callbackProposalOrThrow(jobId: string, businessId: string): Promise<CallbackProposal> {
+    const current = await this.loadJob(jobId);
+    if (!TERMINAL.has(current.state) && !this.hasRoundLeft(current)) {
+      throw new EngineError("no_rounds_left", `This deal has no negotiation round left (round ${current.round} of ${Math.min(current.max_rounds, MAX_ROUND)}); a callback would open another.`, "Choose among the current quotes (get_quotes, then approve).", "get_quotes");
+    }
+    const proposal = (await this.callbackProposals(jobId)).find((p) => p.business_id === businessId);
+    if (!proposal) throw new EngineError("callback_not_justified", "There is no evidence-based reason to call this business back now (no cheaper eligible competing quote, already called back, or rounds used up).", "Call get_quotes to see the current quotes; callbacks are offered there when justified.", "get_quotes");
+    return proposal;
+  }
+
+  /**
+   * Ask the workspace approver, out of band, to allow one callback: a text to their own phone with a
+   * one-time code ("Reply CALL <code>"). The code goes only to that phone (a hash is kept), never to
+   * the model, the board or the response. Nothing is dialed here; ingestCallbackText places the call.
+   */
+  async requestCallbackAuthorization(jobId: string, businessId: string): Promise<{ auth_id: string; texted: boolean; held: boolean; expires_at: string; proposal: CallbackProposal; consent: CallbackConsent }> {
+    const proposal = await this.callbackProposalOrThrow(jobId, businessId);
+    const consent = await this.requireCallbackConsent(jobId, businessId);
+    const job = await this.loadJob(jobId);
+    const to = await this.notifyTarget(job);
+    if (!to) throw new EngineError("NO_HUMAN_CHANNEL", "No way to reach this workspace's approver by text: a callback is placed only after the approver texts CALL <code>.", "Ask the operator to set the workspace approver phone (workspace-admin set-approver) and enable texting. Nothing was called.", "none");
+    // One open authorization per business: a new request replaces an older, unanswered one.
+    for (const old of pendingCallbackAuths(await this.repo.listEvents(jobId), this.now()).filter((a) => a.business_id === businessId)) {
+      await this.repo.appendEvent(jobId, "callback_auth_decided", { auth_id: old.auth_id, business_id: businessId, decision: "superseded" });
+    }
+    const authId = newId("cba");
+    const code = newCallbackCode();
+    const expires = new Date(this.now().getTime() + CALLBACK_AUTH_TTL_MS).toISOString();
+    await this.repo.appendEvent(jobId, "callback_auth_requested", { auth_id: authId, business_id: businessId, code_hash: callbackCodeHash(authId, code), expires_at: expires, round: proposal.round, basis_total_usd: proposal.basis_total_usd, consent: consent.ok ? consent.basis : null });
+    const money = (n: number) => `$${n.toLocaleString("en-US")}`;
+    const text = `Haggle: OK for Haggle's AI assistant to call ${clip(proposal.business, 30)} back once, to ask if they can beat a real ${money(proposal.basis_total_usd)} quote? Nothing is bought. Reply CALL ${code} to allow (expires in 30 min). (HG-${job.short_code})`.slice(0, SMS_LIMIT);
+    const r = await this.textHuman(job, to, { key: `notify:${job.id}:callback-auth:${authId}`, text });
+    await this.repo.appendEvent(jobId, "reply", { business_id: businessId, summary: `Asked the approver by text to allow one callback to ${proposal.business}${r.ok ? "" : ` (text ${r.reason === "unanswered_limit" ? "held until they text Haggle" : "not sent"})`}` });
+    await this.repo.touchJob(jobId);
+    return { auth_id: authId, texted: r.ok, held: !r.ok && r.reason === "unanswered_limit", expires_at: expires, proposal, consent };
+  }
+
+  /**
+   * An operator places a callback (scripts, never an MCP tool): the callee's consent and the proposal
+   * are still required; recorded as the operator's authorization.
+   */
+  async operatorCallback(jobId: string, businessId: string, operator: string): Promise<{ placed: boolean; proposal: CallbackProposal }> {
+    if (operator.trim().length < 2) throw new EngineError("operator_required", "Name the operator authorizing the callback.", "Pass --operator <name>.", "none");
+    await this.callbackProposalOrThrow(jobId, businessId);
+    await this.requireCallbackConsent(jobId, businessId);
+    return this.placeCallback(jobId, businessId, `operator:${operator.trim().slice(0, 60)}`);
+  }
+
+  /**
+   * "CALL <code>" texted to Haggle's line. Only from a job's own text approver (the workspace approver;
+   * the notify number on the default workspace), only for a pending authorization of that job whose
+   * code matches; consent and the proposal are re-checked before the one call. Null when the sender is
+   * no job's approver (left to the normal routing, e.g. a business's reply). Idempotent per message id.
+   */
+  private async ingestCallbackText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string): Promise<{ jobId: string | null; outcome: string } | null> {
+    const mine: JobRow[] = [];
+    for (const job of open) if (from === (await this.notifyTarget(job))) mine.push(job);
+    if (!mine.length) return null;
+    const pending: { job: JobRow; a: ReturnType<typeof pendingCallbackAuths>[number] }[] = [];
+    for (const job of mine) for (const a of pendingCallbackAuths(await this.repo.listEvents(job.id), this.now())) pending.push({ job, a });
+    const hit = pending.find((p) => codeMatches(p.a.auth_id, code, p.a.code_hash));
+    const home = hit?.job ?? pending[0]?.job ?? mine.sort((x, y) => y.created_at.localeCompare(x.created_at))[0]!;
+    const stored = await this.repo.insertMessage({
+      job_id: home.id, business_id: null, approval_id: null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 200), attachments: [], attachments_download_url: null,
+      sender_trusted: true, trust_reason: "sms-from-text-approver", matched_via: "approval_code", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+    });
+    if (!stored) return { jobId: home.id, outcome: "duplicate" };
+    if (!hit) {
+      // A wrong code counts against every callback waiting for this approver (a guess can't be retried forever).
+      for (const p of pending) {
+        await this.repo.appendEvent(p.job.id, "callback_auth_wrong_code", { auth_id: p.a.auth_id });
+        if (p.a.wrong + 1 >= MAX_CALLBACK_CODE_ATTEMPTS) await this.repo.appendEvent(p.job.id, "callback_auth_decided", { auth_id: p.a.auth_id, business_id: p.a.business_id, decision: "locked" });
+      }
+      await this.notifyHuman(home, `callback-ack:${m.messageId}`, `no callback is waiting for code ${code}, so nobody was called.`);
+      return { jobId: home.id, outcome: "callback_no_match" };
+    }
+    const { job, a } = hit;
+    await this.repo.appendEvent(job.id, "callback_auth_decided", { auth_id: a.auth_id, business_id: a.business_id, decision: "authorized", by: `approver-text:${maskHandle(from)}` });
+    try {
+      await this.callbackProposalOrThrow(job.id, a.business_id);
+      await this.requireCallbackConsent(job.id, a.business_id);
+      const { proposal } = await this.placeCallback(job.id, a.business_id, `approver-text:${maskHandle(from)}:${a.auth_id}`);
+      await this.notifyHuman(job, `callback-ack:${m.messageId}`, `calling ${clip(proposal.business, 30)} back now (AI assistant, one call). The deal board shows the result.`);
+      return { jobId: job.id, outcome: "callback_placed" };
+    } catch (err) {
+      if (!(err instanceof EngineError) && !(err instanceof ChannelSendError)) throw err;
+      await this.notifyHuman(job, `callback-ack:${m.messageId}`, `nobody was called: ${clip(err.message, 120)}`);
+      return { jobId: job.id, outcome: "callback_refused" };
+    }
+  }
+
+  /** Is this one of the job's pending callback codes (text scoping between workspaces)? */
+  private async hasCallbackCode(jobId: string, code: string): Promise<boolean> {
+    return pendingCallbackAuths(await this.repo.listEvents(jobId), this.now()).some((a) => codeMatches(a.auth_id, code, a.code_hash));
   }
 
   /** The deal still has a negotiation round to spend: its current round < max_rounds (never past MAX_ROUND). */
@@ -6278,7 +6410,24 @@ export class WorkspaceEngine {
   // Main's tools, workspace-scoped (decision 7).
   recentDeals(limit?: number) { return this.engine.recentDeals(limit, this.workspaceId); }
   async callbackProposals(jobId: string) { await this.own(jobId); return this.engine.callbackProposals(jobId); }
-  async placeCallback(jobId: string, businessId: string, authorizedBy: string) { await this.own(jobId); return this.engine.placeCallback(jobId, businessId, authorizedBy); }
+  /**
+   * DEMO only (mock, in-band approvals): a callback the client's form or the board authorized. In live
+   * mode a tool path never places a call (callbacksNeedApproverText): requestCallbackAuthorization texts the approver.
+   */
+  async placeCallback(jobId: string, businessId: string, authorizedBy: string) {
+    await this.own(jobId);
+    if (this.engine.callbacksNeedApproverText) throw new EngineError("callback_needs_approver_text", "On this server a callback is placed only after the workspace approver texts CALL <code> to Haggle (or an operator places it); a tool, form or board tap can't authorize it.", "Call call_back: Haggle texts the approver to ask.", "call_back");
+    const consent = await this.engine.callbackConsentFor(jobId, businessId);
+    if (!consent.ok) throw new EngineError("callback_no_consent", `Haggle won't call this business back: ${consent.reason}.`, "Negotiate by email or text (send_message) instead.", "get_quotes");
+    return this.engine.placeCallback(jobId, businessId, authorizedBy);
+  }
+  get callbacksNeedApproverText() { return this.engine.callbacksNeedApproverText; }
+  /** Text the workspace approver for one callback (they reply CALL <code>); the code never comes back here. */
+  async requestCallbackAuthorization(jobId: string, businessId: string) {
+    await this.own(jobId);
+    const r = await this.engine.requestCallbackAuthorization(jobId, businessId);
+    return { texted: r.texted, held: r.held, expires_at: r.expires_at, proposal: r.proposal };
+  }
   async businessAliases(b: Parameters<HaggleEngine["businessAliases"]>[0]) { return this.engine.businessAliases(b); }
   /** Learning from this workspace's own deals only. */
   async contactLearning(businessId: string, aliases?: string[]) { return this.engine.contactLearning(businessId, aliases, this.workspaceId); }

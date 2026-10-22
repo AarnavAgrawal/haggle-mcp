@@ -799,7 +799,7 @@ export const callBack = server.tool(
     title: "Negotiate by phone (callback)",
     description:
       "Ask the human to authorize ONE Voice AI callback to a phone vendor to negotiate, citing a real, cheaper, eligible competing quote from this deal. " +
-      "Only for a business listed in get_quotes `callbacks` (Haggle offers one only when the evidence justifies it and a negotiation round is left; otherwise it refuses with no_rounds_left). The human decides (approval form or the board's button); calling this is never the go-ahead by itself. " +
+      "Only for a business listed in get_quotes `callbacks` (Haggle offers one only when the evidence justifies it and a negotiation round is left; otherwise it refuses with no_rounds_left). The human decides (in DEMO: the approval form or the board's button; on a live server only the workspace approver's own text reply, CALL <code>, to the request Haggle texts them); calling this is never the go-ahead by itself, and only a vendor that agreed to be called is ever called. " +
       "Don't use to place first calls (deal does) or to call anyone else. Next: wait_for_update for the call's result.",
     inputSchema: z.object({ job_id: jobId, business_id: z.string().min(3).max(64).describe("business_id from get_quotes callbacks") }),
     outputSchema: callbackOut,
@@ -818,7 +818,15 @@ export const callBack = server.tool(
       }
       if (!proposal) return fail(mode, "callback_not_justified", "No evidence-based callback is available for this business now.", "Call get_quotes: callbacks are listed there only when a cheaper eligible competing quote exists.", "get_quotes");
       const base = { ok: true, mode, business: proposal.business, basis_total_usd: proposal.basis_total_usd, their_total_usd: proposal.their_total_usd };
-      const ask = `${mode === "mock" ? "[DEMO] " : ""}Call ${proposal.business} back now? Haggle's Voice AI will say it's an AI assistant, thank them for their ${usd(proposal.their_total_usd)} quote and ask if they can beat a real ${usd(proposal.basis_total_usd)} quote from ${proposal.basis_business}. Nothing is bought.`;
+      if (engine.callbacksNeedApproverText) {
+        // Live (or out-of-band approvals): no form, board tap or model call places a real call. The
+        // approver is texted a one-time code to their own phone; their CALL <code> reply places it.
+        const r = await engine.requestCallbackAuthorization(job_id, business_id);
+        if (!r.texted && !r.held) return fail(mode, "NO_HUMAN_CHANNEL", "The approval text to the workspace approver couldn't be sent, so no callback can be authorized now. Nothing was called.", "Try again later, or ask the operator to check texting for this workspace.", "get_quotes");
+        const next = r.held ? "Texts to the approver are paused until they text Haggle; the request is sent then. Call wait_for_update(job_id)." : "Haggle texted the approver: they allow it by replying CALL <code> from their phone (never ask them for the code). Call wait_for_update(job_id) for the call's result.";
+        return ok({ ...base, status: "pending_human" as const, next }, `Asked the workspace approver by text to allow one callback to ${proposal.business}; nothing is called until they reply. next: wait_for_update`);
+      }
+      const ask =`${mode === "mock" ? "[DEMO] " : ""}Call ${proposal.business} back now? Haggle's Voice AI will say it's an AI assistant, thank them for their ${usd(proposal.their_total_usd)} quote and ask if they can beat a real ${usd(proposal.basis_total_usd)} quote from ${proposal.basis_business}. Nothing is bought.`;
       const place = async (by: string) => {
         await engine.placeCallback(job_id, business_id, by);
         return ok({ ...base, status: "placed" as const, next: `Calling ${proposal.business} back. Call wait_for_update(job_id) for the result.` }, `Calling ${proposal.business} back (Voice AI), citing a real ${usd(proposal.basis_total_usd)} quote. next: wait_for_update`);
@@ -855,6 +863,8 @@ export const callBackInView = server.tool(
   async ({ job_id, business_id, code }, ctx) =>
     run(ctx, async ({ engine, mode }) => {
       const c = callbackCodes.get(code);
+      // A view-held code is client-side metadata: never an authorization where callbacks need the approver's text.
+      if (engine.callbacksNeedApproverText) return fail(mode, "callback_not_authorized", "On this server only the approver's CALL <code> text authorizes a callback.", "Use call_back: Haggle texts the approver.", "get_quotes");
       if (!c || c.job_id !== job_id || c.business_id !== business_id || c.expires < Date.now()) return fail(mode, "callback_not_authorized", "That callback authorization is missing, used or expired.", "Tap Call back again.", "get_quotes");
       callbackCodes.delete(code);
       const { proposal } = await engine.placeCallback(job_id, business_id, "human tap on the deal board");
