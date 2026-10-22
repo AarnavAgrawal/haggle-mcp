@@ -263,6 +263,71 @@ describe("a Stripe `charging` row is money in flight: cancel and approval-void c
   });
 });
 
+// ───────────────────────────── caps and approvals rechecked on every resume ─────────────────────────────
+
+describe("spending caps and approvals are rechecked after resume and recovery", () => {
+  const HARBOR = "harbor-cap@inkboxmail.test";
+  async function dealt(config: Partial<EngineConfig> = {}, stripe?: StripePort) {
+    const env = setup({ notifyPhone: ALPHA_HUMAN, ...config }, stripe ? { stripe } : {});
+    const deal = await env.engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: HARBOR }, { name: "Quiet Bistro", email: "quiet-cap@inkboxmail.test" }] });
+    const b = (await env.repo.getBusinesses(deal.job_id)).find((x) => x.name === "Harbor Table")!;
+    let k = 0;
+    const mail = (body: string) => env.engine.ingest({ providerEventId: `ecap${++k}`, eventType: "message.received", providerEmailId: `in_cap${k}`, threadId: "tcap", messageId: `<in_cap${k}@x>`, inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: HARBOR, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: body, attachments: [], attachmentsDownloadUrl: null }, trusted);
+    await mail("$1,150 total, delivered. $345 deposit.");
+    await env.engine.advanceJob(deal.job_id);
+    const q = (await env.engine.getQuotes(deal.job_id)).quotes.find((x) => x.business === "Harbor Table")!;
+    return { env, jobId: deal.job_id, q, mail };
+  }
+  const lowerCap = (env: Env, usd: number) => env.engine.updateSettings({ spending_cap_cents: usd * 100 }, "ws_default", "agent");
+
+  it("Stripe: the cap lowered after the human approved stops the charge, at pay and on every recovery advance", async () => {
+    let charges = 0;
+    const base = simulatedStripe();
+    const { env, jobId, q } = await dealt({}, { simulated: true, async charge(r) { charges++; return base.charge(r); } });
+    const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
+    expect((await env.engine.ingestText({ messageId: "yc", from: ALPHA_HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
+    await lowerCap(env, 300);
+    await expect(env.engine.pay(jobId, q.quote_id)).rejects.toMatchObject({ code: "payment_refused_over_spend_cap" });
+    env.clock.advance(5 * 60_000);
+    await env.engine.recoverStuck();
+    await env.engine.advanceAllOpen();
+    expect(charges).toBe(0);
+  });
+
+  it("re-confirmation re-open: a stale quote the business re-confirms is not sent for approval once the cap no longer covers it", async () => {
+    const { env, jobId, q, mail } = await dealt();
+    env.clock.advance(8 * 86_400_000);
+    await expect(env.engine.requestApproval(jobId, q.quote_id, "imessage")).rejects.toMatchObject({ code: "quote_reconfirming" });
+    await lowerCap(env, 300);
+    await mail("Yes, that still stands: $1,150 total, delivered, $345 deposit.");
+    await env.engine.advanceJob(jobId);
+    const a = await env.repo.getLatestApproval(jobId);
+    expect(a?.status === "pending" || a?.status === "approved").toBe(false);
+    expect(env.texts.some((t) => /YES \d{4}/.test(t.text))).toBe(false);
+  });
+
+  it("manual rail: PAID <code> after the cap was lowered is refused (nothing recorded as paid)", async () => {
+    const { env, jobId, q, mail } = await dealt({ manualPaymentHandoff: true });
+    const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
+    expect((await env.engine.ingestText({ messageId: "ym", from: ALPHA_HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
+    expect((await mail("Confirmed, we're all set for your event.")).outcome).toBe("booking_confirmed");
+    await lowerCap(env, 300);
+    expect((await env.engine.ingestText({ messageId: "pm", from: ALPHA_HUMAN, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("handoff_refused");
+    expect((await env.repo.getJob(jobId))!.state).toBe("paying");
+  });
+
+  // Workstream B's region (startHandoff / startBooking): the handoff (asking the vendor how to be paid)
+  // should re-run paymentVerdict(job, a, { bookingHeld: true }) first. Patch in the sprint-4 D report.
+  it.fails("manual rail: once the cap no longer covers the approved deposit, the vendor isn't asked how to be paid", async () => {
+    const { env, jobId, q, mail } = await dealt({ manualPaymentHandoff: true });
+    const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
+    await env.engine.ingestText({ messageId: "yh", from: ALPHA_HUMAN, text: `YES ${a.code}`, inbound: true });
+    await lowerCap(env, 300);
+    await mail("Confirmed, we're all set for your event.");
+    expect((await env.repo.listEvents(jobId)).some((e) => e.type === "payment" && e.data.status === "handoff_requested")).toBe(false);
+  });
+});
+
 // ───────────────────────────── untrustworthy quotes never carry money ─────────────────────────────
 
 describe("simulated replies, keyword-fallback readings and quarantined messages never establish a financial obligation", () => {
@@ -353,5 +418,92 @@ describe("simulated replies, keyword-fallback readings and quarantined messages 
       for (const ch of ["imessage", "view"] as const) await expect(env.engine.requestApproval(deal.job_id, q.quote_id, ch)).rejects.toMatchObject({ code: "quote_not_eligible" });
     }
     expect((await env.engine.ingestText({ messageId: "y", from: ALPHA_HUMAN, text: "YES 1234", inbound: true })).outcome).not.toBe("approved");
+  });
+});
+
+// ───────────────────────────── the shared line: calls, held texts, overlapping vendors ─────────────────────────────
+
+describe("one Inkbox identity for every workspace: inbound events reach only the intended workspace", () => {
+  const SHARED_VENDOR = "+14085550777";
+
+  it("an inbound call from a number on two workspaces' deals is held for audit, never read into either", async () => {
+    const env = setup({ trustInboundCallerId: true, callDelayMs: 60 * 60_000 });
+    await workspace(env, "ws_alpha", ALPHA_HUMAN);
+    await workspace(env, "ws_beta", BETA_HUMAN);
+    const a = await env.engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "Shared Grill", phone: SHARED_VENDOR }] });
+    const b = await env.engine.forWorkspace("ws_beta").deal({ request, budget_usd, businesses: [{ name: "Shared Grill", phone: SHARED_VENDOR }] });
+    const r = await env.engine.ingestCall({ callId: "in_amb", outcome: "completed", transcript: "remote: It's Shared Grill. For you, $990 total all-in, $100 deposit.", direction: "inbound", remoteNumber: SHARED_VENDOR });
+    expect(r).toEqual({ jobId: null, outcome: "ambiguous_caller" });
+    for (const id of [a.job_id, b.job_id]) {
+      expect((await env.repo.listMessages(id)).some((m) => m.direction === "in")).toBe(false);
+      const held = (await env.repo.listEvents(id)).find((e) => e.data.kind === "call_held");
+      expect(String(held?.data.summary)).toMatch(new RegExp(`HG-${(await env.repo.getJob(id))!.short_code}`));
+      expect(String(held?.data.summary)).not.toMatch(/990/);
+    }
+    expect((await env.repo.findMessageByProviderId("call-ended:in_amb"))).toMatchObject({ job_id: null, kind: "quarantine", quarantine_reason: "ambiguous_caller" });
+    expect((await env.engine.ingestCall({ callId: "in_amb", outcome: "completed", transcript: "x", direction: "inbound", remoteNumber: SHARED_VENDOR })).outcome).toBe("duplicate");
+  });
+
+  it("the 'which deal?' text never reveals another workspace's deal code the number was never given", async () => {
+    const env = setup({ callDelayMs: 60 * 60_000 });
+    await workspace(env, "ws_alpha", ALPHA_HUMAN);
+    await workspace(env, "ws_beta", BETA_HUMAN);
+    // Alpha lists Beta's approver's number as a vendor, but hasn't contacted it yet (its call is scheduled).
+    const a = await env.engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "Moonlighting Grill", phone: BETA_HUMAN }, { name: "Harbor Table", email: "harbor-leak@inkboxmail.test" }] });
+    expect((await env.repo.getBusinesses(a.job_id)).find((x) => x.phone === BETA_HUMAN)!.contacted_at).toBeNull();
+    const b = await env.engine.forWorkspace("ws_beta").deal({ request, budget_usd, businesses: [{ name: "Beta Grill", email: "beta-leak@inkboxmail.test" }] });
+    expect((await env.engine.ingestText({ messageId: "amb1", from: BETA_HUMAN, text: "Is there an update?", inbound: true })).outcome).toBe("ambiguous_workspace");
+    const told = env.texts.filter((t) => t.to === BETA_HUMAN).at(-1)!.text;
+    expect(told).toMatch(new RegExp(`HG-${(await env.repo.getJob(b.job_id))!.short_code}`));
+    expect(told).not.toMatch(new RegExp(`HG-${(await env.repo.getJob(a.job_id))!.short_code}`));
+  });
+
+  it("an operator releases a held text to one deal the number belongs to; never a decision text, never to an unrelated deal", async () => {
+    const env = setup();
+    await workspace(env, "ws_alpha", ALPHA_HUMAN);
+    await workspace(env, "ws_beta", BETA_HUMAN);
+    const a = await env.engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "Shared Grill", phone: SHARED_VENDOR, channel: "imessage" }] });
+    const b = await env.engine.forWorkspace("ws_beta").deal({ request, budget_usd, businesses: [{ name: "Shared Grill", phone: SHARED_VENDOR, channel: "imessage" }] });
+    const c = await env.engine.forWorkspace("ws_beta").deal({ request, budget_usd, businesses: [{ name: "Other Grill", email: "other-rel@inkboxmail.test" }] });
+    expect((await env.engine.ingestText({ messageId: "h1", from: SHARED_VENDOR, text: "$1,020 total all-in, delivered, $100 deposit", inbound: true })).outcome).toBe("ambiguous_workspace");
+    const held = (await env.repo.findMessageByProviderId("sms-in:h1"))!;
+    await expect(env.engine.releaseHeldText(held.id, c.job_id, "ops-alice")).rejects.toMatchObject({ code: "not_tied" });
+    await expect(env.engine.releaseHeldText(held.id, a.job_id, "")).rejects.toMatchObject({ code: "operator_required" });
+    expect(await env.engine.releaseHeldText(held.id, a.job_id, "ops-alice")).toMatchObject({ jobId: a.job_id, outcome: "stored" });
+    expect((await env.repo.listMessages(a.job_id)).filter((m) => m.direction === "in")).toHaveLength(1);
+    expect((await env.repo.listMessages(b.job_id)).filter((m) => m.direction === "in")).toHaveLength(0);
+    expect((await env.engine.releaseHeldText(held.id, a.job_id, "ops-alice")).outcome).toBe("duplicate");
+    // A human approving for both workspaces: a held YES is theirs to resend with the deal code.
+    const env2 = setup();
+    await workspace(env2, "ws_alpha", ALPHA_HUMAN);
+    await workspace(env2, "ws_beta", ALPHA_HUMAN);
+    const a2 = await env2.engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "A Grill", email: "a-rel@inkboxmail.test" }] });
+    await env2.engine.forWorkspace("ws_beta").deal({ request, budget_usd, businesses: [{ name: "B Grill", email: "b-rel@inkboxmail.test" }] });
+    expect((await env2.engine.ingestText({ messageId: "y1", from: ALPHA_HUMAN, text: "YES 4821", inbound: true })).outcome).toBe("ambiguous_workspace");
+    const heldYes = (await env2.repo.findMessageByProviderId("sms-in:y1"))!;
+    await expect(env2.engine.releaseHeldText(heldYes.id, a2.job_id, "ops-alice")).rejects.toMatchObject({ code: "decision_not_releasable" });
+  });
+
+  it("the same vendor email on simultaneous deals in two workspaces: interleaved replies each land on their own deal; a signal-less email lands on neither", async () => {
+    const env = setup();
+    await workspace(env, "ws_alpha", ALPHA_HUMAN);
+    await workspace(env, "ws_beta", BETA_HUMAN);
+    const V = "shared-vendor@inkboxmail.test";
+    const a = await env.engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "Shared Kitchen", email: V }, { name: "Quiet A", email: "qa@inkboxmail.test" }] });
+    const b = await env.engine.forWorkspace("ws_beta").deal({ request, budget_usd, businesses: [{ name: "Shared Kitchen", email: V }, { name: "Quiet B", email: "qb@inkboxmail.test" }] });
+    const rfq = async (jobId: string) => (await env.repo.getBusinesses(jobId)).find((x) => x.email === V)!.rfq_message_id!;
+    const [ra, rb] = [await rfq(a.job_id), await rfq(b.job_id)];
+    expect(ra).not.toBe(rb);
+    let k = 0;
+    const mail = (refs: string[], body: string, subject = "Re: Quote request") => env.engine.ingest({ providerEventId: `ov${++k}`, eventType: "message.received", providerEmailId: `ov_${k}`, threadId: null, messageId: `<ov_${k}@x>`, inReplyTo: refs, references: refs, from: V, to: ["haggle@inkboxmail.test"], subject, bodyText: body, attachments: [], attachmentsDownloadUrl: null }, trusted);
+    expect((await mail([rb], "For Beta: $900 total, delivered. $90 deposit.")).jobId).toBe(b.job_id);
+    expect((await mail([ra], "For Alpha: $1,150 total, delivered. $345 deposit.")).jobId).toBe(a.job_id);
+    expect((await mail([], "Another quote: $500 total, delivered.")).jobId).toBeNull();
+    for (const id of [a.job_id, b.job_id]) await env.engine.advanceJob(id);
+    expect((await env.engine.getQuotes(a.job_id)).quotes.map((q) => q.total_usd)).toEqual([1150]);
+    expect((await env.engine.getQuotes(b.job_id)).quotes.map((q) => q.total_usd)).toEqual([900]);
+    // Beta's deal code in the subject of a reply in Alpha's thread: the thread (Haggle's own Message-ID) decides.
+    const codeB = (await env.repo.getJob(b.job_id))!.short_code;
+    expect((await mail([ra], "Revised: $1,100 total, delivered. $345 deposit.", `Re: [HG-${codeB}] Quote request`)).jobId).toBe(a.job_id);
   });
 });

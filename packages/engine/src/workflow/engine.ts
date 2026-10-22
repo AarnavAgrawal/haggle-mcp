@@ -61,7 +61,7 @@ import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.t
 import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
 import { ChannelSendError, type EngineDeps, type PhoneCallRequest } from "./ports.ts";
 import { buildVoiceInstructions, isWithinCallHours, nextCallHoursStart } from "./callPolicy.ts";
-import { decideTextScope, inTextScope, jobCodeIn, lastRoute, type TextScope } from "./textRouting.ts";
+import { decideTextScope, inTextScope, jobCodeIn, lastRoute, withoutJobCode, type TextScope } from "./textRouting.ts";
 import { CALL_TEXT, CALLBACK_AUTH_TTL_MS, callbackCodeHash, callbackConsent, codeMatches, MAX_CALLBACK_CODE_ATTEMPTS, newCallbackCode, pendingCallbackAuths, type CallbackConsent } from "./callbackAuth.ts";
 import { decideChargeResume, decideClaim, redactError } from "./deadLetter.ts";
 import { planRecovery, type StuckFinding } from "./recovery.ts";
@@ -2756,16 +2756,50 @@ export class HaggleEngine {
     this.log("text_held_ambiguous", { from: maskHandle(from), workspaces: scope.workspaces.length });
     const tied = [...new Map(scope.jobs.map((j) => [j.id, j])).values()].filter((j) => !TERMINAL.has(j.state)).sort((a, b) => b.created_at.localeCompare(a.created_at));
     let told = false;
+    // Only deal codes this number was already given (it approves that deal, or Haggle contacted it on
+    // it): another workspace's deal code is never revealed to it.
+    const known: JobRow[] = [];
+    for (const j of tied) if (from === (await this.notifyTarget(j)) || (await this.repo.getBusinesses(j.id)).some((x) => x.phone === from && x.contacted_at)) known.push(j);
     for (const j of tied) {
       const b = (await this.repo.getBusinesses(j.id)).find((x) => x.phone === from);
       if (b) await this.repo.appendEvent(j.id, "reply", { business_id: b.business_id, kind: "text_held", summary: `A text from ${b.name} was held unread: its number is on more than one Haggle deal, so Haggle can't tell which one it answers. Ask ${b.name} to include HG-${j.short_code} in the reply (send_message).` });
       if (!told && prefix === "sms-in" && from === (await this.notifyTarget(j))) {
         told = true;
-        const codes = tied.slice(0, 4).map((x) => `HG-${x.short_code}`).join(", ");
+        const codes = known.slice(0, 4).map((x) => `HG-${x.short_code}`).join(", ");
         await this.notifyHuman(j, `which-deal:${m.messageId}`, `this number has open deals in more than one Haggle account (${codes}), so nothing was done with "${clip(m.text, 40)}". Reply again starting with the deal code, e.g. "HG-${j.short_code}: ${clip(m.text, 30)}".`);
       }
     }
     return { jobId: null, outcome: "ambiguous_workspace" };
+  }
+
+  /**
+   * Operator only (scripts, never an MCP tool): route a text held as ambiguous (holdAmbiguousText) to
+   * one deal its number belongs to: that deal's approver, or a business Haggle contacted at it, and
+   * the deal still open. Never an approval, payment or callback reply (YES / NO / PAY / PAID / CALL):
+   * who decided what for whom is the human's to say, so they resend it with the deal code. Once per text.
+   */
+  async releaseHeldText(heldMessageId: string, jobId: string, operator: string): Promise<{ jobId: string | null; outcome: string }> {
+    if (operator.trim().length < 2) throw new EngineError("operator_required", "Name the operator releasing the text.", "Pass --operator <name>.", "none");
+    const held = await this.repo.getMessage(heldMessageId);
+    if (!held || held.kind !== "quarantine" || held.quarantine_reason !== "ambiguous_workspace" || held.job_id !== null || !held.from_address || !held.provider_email_id) {
+      throw new EngineError("not_held", "No held ambiguous text with that id.", "Use the id of a quarantined message with reason ambiguous_workspace.", "none");
+    }
+    const job = await this.repo.getJob(jobId);
+    if (!job || TERMINAL.has(job.state)) throw new EngineError("job_not_open", "That deal isn't open.", "Release only to an open deal the number belongs to.", "none");
+    const from = held.from_address;
+    const text = held.body_text ?? "";
+    const t = withoutJobCode(text);
+    if (TEXT_DECISION.test(t) || PAY_TEXT.test(t) || PAID_TEXT.test(t) || CALL_TEXT.test(t)) {
+      throw new EngineError("decision_not_releasable", "A held approval, payment or callback reply is never attributed by an operator.", "Ask the human to resend it with the deal code (e.g. \"YES 4821 HG-AB12\").", "none");
+    }
+    const tied = from === (await this.notifyTarget(job)) || (await this.repo.getBusinesses(job.id)).some((b) => b.phone === from && b.contacted_at);
+    if (!tied) throw new EngineError("not_tied", "That number isn't this deal's approver or a business Haggle contacted on it.", "Release the text to a deal the number belongs to.", "none");
+    const prefix = held.provider_email_id.startsWith("imsg-in:") ? "imsg-in" : "sms-in";
+    const m = { messageId: `${held.provider_email_id.slice(prefix.length + 1)}:released`, from, text: `HG-${job.short_code} ${text}` };
+    if (await this.repo.findMessageByProviderId(`${prefix}:${m.messageId}`)) return { jobId: job.id, outcome: "duplicate" };
+    await this.repo.appendEvent(job.id, "text_released", { held_message_id: held.id, operator: operator.trim().slice(0, 60) });
+    this.log("text_released", { job_id: job.id, from: maskHandle(from) });
+    return prefix === "imsg-in" ? this.ingestBusinessIMessage(m) : this.routeText(m, from);
   }
 
   /**
@@ -3248,7 +3282,19 @@ export class HaggleEngine {
     const num = call.remoteNumber.replace(/[\s().-]/g, "");
     const hits: { job: JobRow; b: JobBusinessRow }[] = [];
     for (const job of await this.repo.listOpenJobs()) for (const b of await this.repo.getBusinesses(job.id)) if (b.phone === num) hits.push({ job, b });
-    if (hits.length !== 1) return { jobId: null, outcome: hits.length ? "ambiguous_caller" : "unknown_caller" };
+    if (hits.length > 1) {
+      // The number is on several deals (possibly several workspaces): kept for audit with no deal, never
+      // read into one; each deal only learns that a call from that business is held (nothing of what was said).
+      const stored = await this.repo.insertMessage({
+        job_id: null, business_id: null, approval_id: null, direction: "in", kind: "quarantine", channel: "phone", provider_email_id: `call-ended:${call.callId}`, idempotency_key: null,
+        rfc_message_id: null, thread_id: null, from_address: num, to_address: null, subject: null, body_text: call.transcript.trim().slice(0, 20_000) || null, attachments: [], attachments_download_url: null,
+        sender_trusted: false, trust_reason: "caller-number-on-several-deals", matched_via: null, parse_status: "none", quarantine_reason: "ambiguous_caller", round: null, simulated: call.simulated ?? false,
+      });
+      if (!stored) return { jobId: null, outcome: "duplicate" };
+      for (const { job, b } of hits) await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "call_held", summary: `${b.name} called Haggle, but its number is on more than one deal, so the call wasn't read into this one. Ask ${b.name} to reply in writing with HG-${job.short_code}.` });
+      return { jobId: null, outcome: "ambiguous_caller" };
+    }
+    if (hits.length !== 1) return { jobId: null, outcome: "unknown_caller" };
     const { job, b } = hits[0]!;
     const trusted = this.d.config.trustInboundCallerId === true;
     const transcript = call.transcript.trim().slice(0, 20_000);
