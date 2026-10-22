@@ -34,4 +34,19 @@ export function manifestTable(): string {
   ].join("\n");
 }
 
-if (process.argv[1]?.replace(/\\/g, "/").endsWith("scripts/env-manifest.ts")) console.log(manifestTable());
+/** The table between the doc's markers, or null when the markers are missing. */
+export function docTable(doc: string): string | null {
+  return doc.split("<!-- manifest:start -->\n")[1]?.split("\n<!-- manifest:end -->")[0] ?? null;
+}
+
+if (process.argv[1]?.replace(/\\/g, "/").endsWith("scripts/env-manifest.ts")) {
+  // --check <doc>: exit 1 when the doc's table is stale (CI), else print the table.
+  const i = process.argv.indexOf("--check");
+  if (i < 0) console.log(manifestTable());
+  else {
+    const { readFileSync } = await import("node:fs");
+    const fresh = docTable(readFileSync(process.argv[i + 1] ?? "docs/env-manifest.md", "utf8")) === manifestTable();
+    console.log(fresh ? "env manifest doc: current" : "env manifest doc: STALE (regenerate: node apps/mcp/scripts/env-manifest.ts, paste between the markers)");
+    process.exit(fresh ? 0 : 1);
+  }
+}

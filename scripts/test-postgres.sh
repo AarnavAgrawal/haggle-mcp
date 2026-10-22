@@ -13,8 +13,9 @@ pg_apply_migrations "$ROOT"
 # npm workspaces: run the engine suite from its package (vitest is hoisted to the repo root).
 cd "$ROOT/packages/engine"
 HAGGLE_TEST_DATABASE_URL="$PG_URL" "$ROOT/node_modules/.bin/vitest" run "$@"
-# The migration ledger script against the same database (apps/mcp/tests/migrationsLedger.pg.test.ts).
+# Every PG-gated apps/mcp test (apps/mcp/tests/*.pg.test.ts: the migration ledger, operator store, and
+# staging-release.ts --execute on throwaway databases, which needs a psql client) against the same server.
 if [ $# -eq 0 ]; then
   cd "$ROOT"
-  HAGGLE_TEST_DATABASE_URL="$PG_URL" "$ROOT/node_modules/.bin/vitest" run apps/mcp/tests/migrationsLedger.pg.test.ts
+  HAGGLE_TEST_DATABASE_URL="$PG_URL" "$ROOT/node_modules/.bin/vitest" run apps/mcp/tests/*.pg.test.ts
 fi

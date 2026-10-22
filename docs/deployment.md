@@ -35,7 +35,13 @@ The server reads two independent settings:
 
 List the production **project ref**, not the shared pooler host: the pooler host (`aws-0-<region>.pooler.supabase.com`) is shared by every project in the region.
 
-**Overriding the guard.** An operator task that deliberately runs a script against production from a laptop sets `HAGGLE_ALLOW_PROD_DB=true` for that one command. The guard also covers the operator scripts that open the database: `workspace-admin`, `workspace-create` and `migrations`. Agent C's `job-ops` should add `import "./dbGuard.ts";` too. A guarded script exits with code 2 before connecting.
+**Overriding the guard.** An operator task that deliberately runs a script against production from a laptop sets `HAGGLE_ALLOW_PROD_DB=true` for that one command. The guard also covers every script that opens a database. A guarded script exits with code 2 before connecting. `apps/mcp/tests/scriptsDbGuard.test.ts` enforces this:
+- **What it scans:** `apps/mcp/scripts`, `packages/engine/scripts` and `scripts/`, recursively, for TypeScript, JavaScript and shell.
+- **TS/JS:** a script that can connect must have `import "./dbGuard.ts";` as its first import, or call `prodDbGuard` before connecting.
+- **Shell:** a script that runs `psql`/`pg_dump` or reads a `*_DB_URL` must source `scripts/pg-common.sh` or use only local databases.
+- **Exemptions** are listed in the test, each with its reason.
+
+`staging-release.ts` is stricter still: it refuses a production URL even with the override.
 
 **Mock mode.** A `HAGGLE_MODE=mock` server never sends a real message or moves money, and every response says `mode: "mock"`. It is for development and demos only. It is never the production server.
 
@@ -81,14 +87,24 @@ Every channel stays off unless explicitly enabled (`HAGGLE_ENABLE_CALLS`, `HAGGL
    - npm ci and typecheck;
    - build;
    - the unit and end-to-end tests;
-   - `scripts/verify-migrations.sh` and `scripts/test-postgres.sh`, both on a Postgres 17 service container.
+   - `npm ls`;
+   - the secret scan;
+   - the env-manifest doc freshness check (`env-manifest.ts --check`);
+   - shellcheck;
+   - the offline launch gate (migration files, build);
+   - the mock-mode smoke against the built server (`scripts/smoke-local.sh`);
+   - `scripts/verify-migrations.sh`, `scripts/migration-compat.sh` and `scripts/test-postgres.sh`, all on a Postgres 17 service container.
+
+   `apps/mcp/tests/ciRelease.test.ts` fails if any of these steps disappears from `ci.yml`.
 2. **Or run the same gate locally.** This needs Docker. `PGTEST_PORT` picks a free port:
    ```bash
    npm ci
    npm run typecheck
    npm run build                       # before the tests: the MCP e2e suites start the built server
    npx vitest run
+   scripts/smoke-local.sh                # SMOKE_PORT picks the port (default 3999)
    scripts/verify-migrations.sh
+   MIGCOMPAT_PORT=55463 scripts/migration-compat.sh
    PGTEST_PORT=55445 scripts/test-postgres.sh
    ```
    With an existing disposable Postgres instead of Docker, set `HAGGLE_PG_ADMIN_URL=postgres://postgres:postgres@localhost:5432/postgres`. The scripts create their own database on that server and drop it afterwards. They refuse any host but localhost, 127.0.0.1 or the CI service host `postgres`.
@@ -107,6 +123,8 @@ Every channel stays off unless explicitly enabled (`HAGGLE_ENABLE_CALLS`, `HAGGL
    - **the ledger against this checkout:** read-only, and refused for a production database unless `--target production`. It fails on pending, drift, unverified or **unexpected** migrations (the database has an engine migration this checkout lacks). `--allow-ahead` accepts unexpected ones for a deliberate rollback.
    - **build:** present and newer than the sources.
    - **webhook subscriptions:** opt-in, read-only. Use `--check-webhooks --webhook-url https://<server>/webhooks/inkbox`, with `INKBOX_API_KEY` in the env file.
+     - The gate **fails** unless all three email events are subscribed: `message.received`, `message.bounced` and `message.failed`. Without the last two, bounces surface only through the reconciler.
+     - Missing events for other channels only warn.
 
    "Tests last green" isn't checkable from a laptop: it shows as `skip`. Check CI on the exact commit instead.
 
@@ -133,15 +151,15 @@ The operator applies them in filename order, each in one transaction, with psql 
 
 `record` and `backfill` are your assertion that those files really are applied. They write only ledger rows.
 
-**First adoption on an existing database** (production today has 100 to 106 and no ledger):
+**First adoption on an existing database.** Per the sprint-4 audit, the live database has 100 to 102 and no ledger: 103–106 were never applied there. Re-check this before acting. For staging, `staging-release.ts --execute --backfill-through <file>` performs exactly these steps (`docs/staging.md` §4).
 1. Back up the database, or confirm Supabase's point-in-time recovery, before any DDL.
 2. Apply the ledger migration:
    ```bash
    psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -1 -f supabase/migrations/111_engine_ops.sql
    ```
-3. Record what was applied before the ledger. Use the highest file you **know** is applied. Applying 107 to 110 is a separate step: don't backfill past what the database has.
+3. Record what was applied before the ledger. Use the highest file you **know** is applied (102 per the audit). Applying 103 and later is the next step: don't backfill past what the database has.
    ```bash
-   npx tsx apps/mcp/scripts/migrations.ts backfill --through 106_engine_pilot.sql --confirm
+   npx tsx apps/mcp/scripts/migrations.ts backfill --through 102_engine_stripe.sql --confirm
    npx tsx apps/mcp/scripts/migrations.ts record 111_engine_ops.sql --confirm
    ```
 4. Check the result:
@@ -173,11 +191,19 @@ npx tsx apps/mcp/scripts/migrations.ts verify
 | `110_engine_booking` | Bookings, handoff receipts, booking-before-handoff trigger | 100, 106 | Additive; a handoff now needs a confirmed booking (older code that skips booking is refused there, by design) | As above |
 | `111_engine_ops` | The migration ledger `engine_migrations` | – (idempotent) | Additive | Safe to re-run |
 | `112_engine_inbound_review` (A), `113_engine_purchasing` (B), `114_engine_deploy` (C, only if added), `115_engine_security` (D), `116_engine_analytics` (E), `117_engine_ops` (F) | Sprint 4 workstreams | **Each on 100–111 alone**: none may depend on another sprint-4 file | Must be additive (the reviewer checks each one for `drop`/`rename`/narrowed checks) | Per file, in its header |
+| `118_engine_booking` (A), `119_engine_pilot` (B), `120_engine_release` (C, not added), `121_engine_security2` (D), `122_engine_metrics` (E) | Sprint 5 workstreams | **Each on 100–117 alone** | As above | Per file, in its header |
 
 **Checks on every CI run:**
-- `scripts/verify-migrations.sh` applies every file in order and runs the SQL assertions.
-- It then applies **each 112+ engine migration alone** on 100–111 in a fresh database, so a hidden dependency between parallel branches fails the build.
-- `migrationFileProblems` (unit test, `migrations.ts verify` and the launch gate) refuses two files with the same number and any misnamed file.
+- **`scripts/verify-migrations.sh`:**
+  - applies every file in order and runs the SQL assertions;
+  - re-applies every migration whose header declares it re-runnable ("Safe to re-run" or "idempotent (re-running…"); today that is 111, 113 and 117;
+  - applies **each parallel-branch migration alone on its base**, in a fresh database, so a hidden dependency between parallel branches fails the build: 112–117 on 100–111, 118+ on 100–117.
+- **`scripts/migration-compat.sh`** upgrades two kinds of database:
+  - a database at 102 that holds demo-era rows (`scripts/migration-compat/seed_at_102.sql`) to the latest file, one file at a time in single transactions. It then runs the operator's ledger steps with the real CLI (backfill through 102, record, verify) and checks the old rows survived and the newer triggers hold (`check_upgraded.sql`);
+  - a database at **every** engine checkpoint N, with the brain's 2xx files applied before the later engine files.
+- **`migrationFileProblems`** (unit test, `migrations.ts verify` and the launch gate) refuses two files with the same number and any misnamed file.
+
+**Adding a migration needs no list edits.** The ledger, both scripts, the launch gate and `/ready` all read `supabase/migrations/`. The one hand-kept list is `ISOLATION_BASES` in `scripts/verify-migrations.sh`: the last number of each merged sprint (`111 117`). Add a new base only when a new parallel sprint starts. `apps/mcp/tests/ciRelease.test.ts` checks that every base exists.
 
 **Rollback limits in general.** There are no down migrations. To roll back:
 - **Code:** redeploy the previous build. The schema stays: everything since 104 is additive. `/ready` then reports the newer migrations as `unexpected` with `database_ahead: true` and **stays ready**. `migrations.ts verify` and the launch gate need `--allow-ahead`.
@@ -207,8 +233,13 @@ The hosted server `calm-spark-ck3qm` is a **managed upload**: pushing to GitHub,
 4. **Set the build label** on the server. It isn't read from your shell at deploy time:
    ```bash
    ./node_modules/.bin/mcp-use servers env set <server-id> HAGGLE_BUILD_SHA=$(git rev-parse --short HEAD)
+   ./node_modules/.bin/mcp-use servers env set <server-id> HAGGLE_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
    ```
    `servers env` commands take the server **id**, not the slug. `env unset` needs `--yes`.
+   - `/health`, `/ready` and serverInfo then report `version`, `build_sha` and `build_time`.
+   - A label that isn't commit-shaped (letters, digits, `. _ -`, at most 40 characters) shows as `"invalid"` and is never echoed.
+   - Unset, the label shows as `"unknown"`, and `build_time` falls back to the build output's time.
+   - For staging, `staging-release.ts --execute --deploy` runs this step and the next (`docs/staging.md` §5).
 5. **Deploy from the repo root.** Leave out `--new` and `--name`, so the linked server is updated; `.env*` files are never uploaded:
    ```bash
    ./node_modules/.bin/mcp-use deploy --json
@@ -234,6 +265,8 @@ The hosted server `calm-spark-ck3qm` is a **managed upload**: pushing to GitHub,
 
 It reads the server's mode twice, from `/health` / `/ready` and from `list_deals`. It never starts a deal on a live server. It prints no secrets.
 
+**What smoke may call.** Even on a mock server, it calls only `list_deals`, `deal`, `wait_for_update`, `get_quotes` and `cancel_deal`; it never approves or pays. `apps/mcp/tests/smokeSafety.test.ts` checks this against a live server: `index.ts`, served in-process over a live engine whose every outside port (email, SMS, iMessage, phone, A2A, Stripe, payer, Claude) throws if called. Every mode passes with no port touched, and a control call proves the traps fire. `scripts/smoke-local.sh` runs the mock-mode smoke against the built server in a clean environment; CI runs it on every push.
+
 ```bash
 # hosted live server: a workspace token is needed for the MCP calls (never echoed)
 HAGGLE_SMOKE_TOKEN=<workspace bearer> node apps/mcp/scripts/smoke.ts https://<server>.run.mcp-use.com --expect-build <sha>
@@ -258,6 +291,7 @@ Every tool that sends, calls, texts, pays, changes a deal or advances deals as a
 - 200 once the runtime is built.
 - 503 with the configuration problems (by name) otherwise.
 - It never echoes a provider error.
+- Both `/health` and `/ready` carry `version` (0.6.0), `build_sha` (`HAGGLE_BUILD_SHA`, or `"unknown"` / `"invalid"`), `build_time` and the older `build` field (the sha or null). `apps/mcp/src/release.ts` produces them.
 
 **`/ready` (readiness).** It answers 200 or 503. It is cached for 5 s and carries no values, URLs or addresses. The checks:
 
@@ -311,12 +345,14 @@ Counters are per process and per UTC day. With several replicas, each one enforc
 
 ## 8. Known gaps
 
-- **Operator scripts: plain `node` or `npx tsx`.** The operator scripts now load under Node 22's type stripping: `workspace-admin`, `workspace-create`, `job-ops`, `migrations`, `launch-gate`, `env-manifest`, `secret-scan` and `smoke`. `apps/mcp/tests/scriptsPlainNode.test.ts` checks this. Engine code must therefore avoid TypeScript-only syntax such as parameter properties and enums. `npx tsx` keeps working. Pass the env file explicitly (`--env-file=<file>`): never the production `.env` from a laptop by habit.
+- **Operator scripts: plain `node` or `npx tsx`.** The operator scripts now load under Node 22's type stripping: `workspace-admin`, `workspace-create`, `job-ops`, `migrations`, `launch-gate`, `env-manifest`, `secret-scan`, `smoke` and `staging-release`. `apps/mcp/tests/scriptsPlainNode.test.ts` checks this, and `releaseStaging.test.ts` checks `staging-release`. Engine code must therefore avoid TypeScript-only syntax such as parameter properties and enums. `npx tsx` keeps working. Pass the env file explicitly (`--env-file=<file>`): never the production `.env` from a laptop by habit.
 - **The ledger doesn't apply migrations.** Applying stays a manual, reviewed step.
 - **Per-process state.** AI usage counters and alert rate limits live in each process's memory.
 - **Not verified here.** Nothing above was run against the hosted server or a live database (2026-10-22): the deploy steps come from the 2026-10-17 deploy notes. `/ready` on calm-spark will report `migrations.ok: false` until 111 is applied and backfilled.
 
 ## 9. Setting up staging, and the first CI run
+
+**`docs/staging.md` is the full, step-by-step staging procedure**: provisioning, env file, plan, migrations, deploy, webhooks, verify and rollback. `apps/mcp/scripts/staging-release.ts` scripts it, and refuses anything but staging. The summary below is kept for the GitHub steps.
 
 Staging is a **second, independent server**. It shares code with production and nothing else: no database, no Inkbox identity, no webhook secret, no Anthropic key, no alert channel. Each step below is a dashboard action for the user. Nothing in the repository performs any of them.
 
@@ -336,8 +372,11 @@ Staging is a **second, independent server**. It shares code with production and 
    - typecheck
    - build
    - tests
-   - migrations (including each 112+ file alone)
+   - migrations (including each parallel-branch file alone on its base)
+   - migration upgrade compatibility
    - the Postgres suite and ledger.
+
+   Section 3 has the full, current list.
 3. **Protect `main`.** Settings → Branches → add a rule (or ruleset) for `main`:
    - require a pull request;
    - require the status check **CI / verify**;
@@ -355,7 +394,7 @@ Staging is a **second, independent server**. It shares code with production and 
 **Inkbox (staging buyer identity):**
 1. **Create a staging identity**, e.g. `haggle-staging`, in the org that should own staging. Simulated sellers need the buyer identity in their own org for sender trust.
 2. **Create an API key scoped to that identity** for `INKBOX_API_KEY`, and copy the webhook signing secret for `INKBOX_WEBHOOK_SECRET`.
-3. **Create the webhook subscription**, only after the staging server is deployed: URL `https://<staging server>/webhooks/inkbox`, events `message.received`, plus `call.ended`, `imessage.received` and `a2a.sent_task.updated` for the channels staging enables. Check it read-only: `launch-gate.ts --check-webhooks --webhook-url …`.
+3. **Create the webhook subscription**, only after the staging server is deployed: URL `https://<staging server>/webhooks/inkbox`, events `message.received`, `message.bounced` and `message.failed` (all three required: the launch gate fails without them), plus `call.ended`, `imessage.received` and `a2a.sent_task.updated` for the channels staging enables. Check it read-only: `launch-gate.ts --check-webhooks --webhook-url …`.
 
 **Anthropic:** a separate API key (or workspace) for staging, so its spend and `HAGGLE_AI_DAILY_TOKEN_BUDGET` are separate.
 

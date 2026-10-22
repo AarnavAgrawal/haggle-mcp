@@ -39,11 +39,20 @@ describe("smoke runner", () => {
 
   it("passes against a local mock server: /health, /ready, MCP tools, and one simulated deal to a quote", async () => {
     const lines: string[] = [];
-    const r = await runSmoke({ base: BASE, deal: true, expectBuild: "smoketest1", log: (l) => lines.push(l) });
+    const tools: string[] = [];
+    const recording = (async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (body?.method === "tools/call") tools.push(body.params.name);
+      return fetch(url, init);
+    }) as typeof fetch;
+    const r = await runSmoke({ base: BASE, deal: true, expectBuild: "smoketest1", log: (l) => lines.push(l), fetch: recording });
     expect(r.checks.map((c) => `${c.name}:${c.status}`)).toEqual(["/health:pass", "/ready:pass", "build matches:pass", "MCP initialize:pass", "MCP tools/list:pass", "mock deal:pass"]);
     expect(r.ok).toBe(true);
+    // Even on a mock server the deal stops at quotes: nothing is approved, paid or sent by hand.
+    expect([...new Set(tools)].sort()).toEqual(["cancel_deal", "deal", "get_quotes", "list_deals", "wait_for_update"]);
     const ready = await (await fetch(`${BASE}/ready`)).json();
-    expect(ready).toMatchObject({ ready: true, mode: "mock", env: "development", build: "smoketest1", checks: { database: { ok: true, kind: "memory" } } });
+    expect(ready).toMatchObject({ ready: true, mode: "mock", env: "development", version: "0.6.0", build_sha: "smoketest1", build: "smoketest1", checks: { database: { ok: true, kind: "memory" } } });
+    expect(ready.build_time).toMatch(/^\d{4}-\d{2}-\d{2}T/); // the build manifest's time (no HAGGLE_BUILD_TIME here)
   }, 90_000);
 
   it("never starts a deal on a live server, and reports a failing /ready", async () => {

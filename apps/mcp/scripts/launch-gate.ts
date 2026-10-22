@@ -41,8 +41,13 @@ export interface GateOptions {
   json: boolean;
 }
 
-/** Events the server handles at /webhooks/inkbox (src/webhook.ts); message.received is the one email needs. */
-export const WEBHOOK_EVENTS = ["message.received", "call.ended", "imessage.received", "a2a.sent_task.updated"] as const;
+/**
+ * Email, the pilot's channel, needs all three (src/webhook.ts handles each): replies, and our own
+ * mail bouncing or failing (without those, bounces surface only through the reconciler's sweep).
+ */
+export const EMAIL_EVENTS = ["message.received", "message.bounced", "message.failed"] as const;
+/** Every event the server handles at /webhooks/inkbox; the non-email ones only for enabled channels. */
+export const WEBHOOK_EVENTS = [...EMAIL_EVENTS, "call.ended", "imessage.received", "a2a.sent_task.updated"] as const;
 
 export interface GateDeps {
   readFile: (path: string) => string;
@@ -169,7 +174,7 @@ export async function runLaunchGate(o: GateOptions, d: GateDeps): Promise<GateRe
       const missing = WEBHOOK_EVENTS.filter((e) => !have.has(e));
       const host = new URL(o.webhookUrl!).host;
       if (!subs.length) add("webhook subscriptions", "fail", `no subscription points at ${host}/webhooks/inkbox`);
-      else if (!have.has("message.received")) add("webhook subscriptions", "fail", `${host}: message.received is missing (email replies would only arrive by reconciliation)`);
+      else if (EMAIL_EVENTS.some((e) => !have.has(e))) add("webhook subscriptions", "fail", `${host}: ${EMAIL_EVENTS.filter((e) => !have.has(e)).join(", ")} missing (email replies, bounces and failures would only arrive by reconciliation)`);
       else add("webhook subscriptions", missing.length ? "warn" : "pass", missing.length ? `${host}: not subscribed to ${missing.join(", ")} (needed only for enabled channels)` : `${host}: ${WEBHOOK_EVENTS.length} events`);
     } catch (e) {
       add("webhook subscriptions", "fail", `could not list subscriptions (${dbErrorClass(e)})`);

@@ -27,6 +27,9 @@ export const READONLY_TOOLS: Record<string, Record<string, unknown>> = { list_de
  */
 export const SENDS_OR_PAYS = new Set(["deal", "pay", "approve", "answer_business", "send_message", "negotiate", "cancel_deal", "call_back", "call_back_in_view", "approve_in_view", "choose_in_view", "wait_for_update", "get_quotes", "open_haggle", "get_conversation", "discover", "business_profile", "ask", "check_price"]);
 
+/** Everything the mock-server deal may call: never approve, pay, send_message, call_back or negotiate. */
+export const MOCK_DEAL_TOOLS = new Set(["list_deals", "deal", "wait_for_update", "get_quotes", "cancel_deal"]);
+
 export interface ToolMeta { name: string; annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean; destructiveHint?: boolean } }
 /** Throws unless `name` is allowlisted, not a sending/paying tool, and the server annotates it read-only and closed-world. */
 export function assertReadOnlyCall(name: string, tools: ToolMeta[]): void {
@@ -46,6 +49,9 @@ export function parseSmokeArgs(argv: string[], env: Record<string, string | unde
   return { base: base.replace(/\/+$/, "").replace(/\/mcp$/, ""), ...(token ? { token } : {}), ...(expectBuild ? { expectBuild } : {}), deal: !readonly && !argv.includes("--no-deal"), ...(readonly ? { readonly } : {}) };
 }
 
+/** The server's build label: build_sha (0.6.0 servers since sprint 5), else the older `build` field. */
+const buildOf = (j: Record<string, unknown> | null | undefined): string => (typeof j?.build_sha === "string" ? j.build_sha : typeof j?.build === "string" ? j.build : "unknown");
+
 export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
   const f = o.fetch ?? fetch;
   const out: SmokeResult["checks"] = [];
@@ -64,6 +70,8 @@ export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
   const call = async (name: string, args: Record<string, unknown>) => {
     // Defence in depth: in --live-readonly nothing outside the allowlist reaches the server.
     if (o.readonly && (SENDS_OR_PAYS.has(name) || !Object.hasOwn(READONLY_TOOLS, name))) throw new Error(`refused: ${name} in --live-readonly`);
+    // The mock deal never approves or pays, even on a mock server.
+    if (!o.readonly && !MOCK_DEAL_TOOLS.has(name)) throw new Error(`refused: ${name} is not a smoke tool`);
     return callTool(name, args);
   };
   const callTool = async (name: string, args: Record<string, unknown>) => (await rpc("tools/call", { name, arguments: args })) as { isError?: boolean; content?: { text?: string }[]; structuredContent?: Record<string, unknown> };
@@ -79,7 +87,7 @@ export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
     if (h.json?.service !== "haggle-mcp") check("/health", "skip", `not Haggle's JSON (HTTP ${h.status}; hosted platforms answer /health themselves)`);
     else {
       mode = typeof h.json.mode === "string" ? h.json.mode : null;
-      check("/health", h.status === 200 && h.json.ok === true ? "pass" : "fail", `HTTP ${h.status}, mode ${mode ?? "?"}, build ${h.json.build ?? "none"}`);
+      check("/health", h.status === 200 && h.json.ok === true ? "pass" : "fail", `HTTP ${h.status}, mode ${mode ?? "?"}, version ${h.json.version ?? "?"}, build ${buildOf(h.json)}`);
     }
   } catch (e) { check("/health", "fail", (e as Error).message); }
 
@@ -89,7 +97,7 @@ export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
     const failing = Object.entries(checks).filter(([, c]) => !c.ok).map(([k]) => k);
     mode ??= typeof r.json?.mode === "string" ? r.json.mode : null;
     check("/ready", r.status === 200 && r.json?.ready === true ? "pass" : "fail", r.json ? `HTTP ${r.status}${failing.length ? `, failing: ${failing.join(", ")}` : ""}` : `HTTP ${r.status}, not JSON`);
-    if (o.expectBuild) check("build matches", String(r.json?.build ?? "").startsWith(o.expectBuild) ? "pass" : "fail", `server ${r.json?.build ?? "none"}, expected ${o.expectBuild}`);
+    if (o.expectBuild) { const b = buildOf(r.json); check("build matches", b !== "unknown" && b !== "invalid" && b.startsWith(o.expectBuild) ? "pass" : "fail", `server ${b}, expected ${o.expectBuild}`); }
   } catch (e) { check("/ready", "fail", (e as Error).message); }
 
   try {

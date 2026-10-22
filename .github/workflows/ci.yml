@@ -1,4 +1,4 @@
-# CI: the same gate as `npm run verify`, on every push and pull request. Mock mode only: no secret,
+# CI: the release gates (docs/deployment.md §3), on every push and pull request. Mock mode only: no secret,
 # no provider call, no real database. Postgres is a throwaway service container; the scripts create
 # their own database on it (HAGGLE_PG_ADMIN_URL) and drop it afterwards. Deploys stay manual
 # (Manufact CLI upload, docs/deployment.md): pushing never deploys.
@@ -69,6 +69,16 @@ jobs:
       - name: Secret scan (docs and reports)
         run: node apps/mcp/scripts/secret-scan.ts
 
+      # docs/env-manifest.md's table is generated from apps/mcp/src/envManifest.ts.
+      - name: Env manifest doc is current
+        run: node apps/mcp/scripts/env-manifest.ts --check docs/env-manifest.md
+
+      - name: Shell scripts (shellcheck)
+        working-directory: scripts
+        run: |
+          command -v shellcheck || (sudo apt-get update -q && sudo apt-get install -y -q shellcheck)
+          shellcheck -x ./*.sh
+
       - name: psql client
         run: command -v psql || (sudo apt-get update -q && sudo apt-get install -y -q postgresql-client)
 
@@ -79,11 +89,22 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Offline part of the launch gate: migration file numbers/names unique, build newer than the sources.
+      - name: Launch gate (migration files, build)
+        run: node apps/mcp/scripts/launch-gate.ts --target development --skip-config
+
       - name: Unit and end-to-end tests (mock mode, no network)
         run: npx vitest run
 
-      - name: Migrations apply in order; SQL assertions; each 112+ migration alone on 100-111
+      # The built server in a clean mock-mode environment: /health, /ready, MCP, one simulated deal.
+      - name: Mock-mode smoke against the built server
+        run: scripts/smoke-local.sh
+
+      - name: Migrations apply in order; SQL assertions; re-runnable files re-run; each parallel-branch migration alone on its base
         run: scripts/verify-migrations.sh
+
+      - name: Migration upgrade compatibility (102 with rows -> latest via the ledger CLI; every checkpoint)
+        run: scripts/migration-compat.sh
 
       - name: Engine suite and migration ledger on Postgres 17
         run: scripts/test-postgres.sh

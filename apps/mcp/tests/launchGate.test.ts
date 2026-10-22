@@ -107,13 +107,14 @@ describe("launch gate", () => {
     expect(thin.ok).toBe(true);
   });
 
-  it("webhook subscriptions: read-only, opt-in, needs the key from the env file; message.received is required", async () => {
+  it("webhook subscriptions: read-only, opt-in, needs the key from the env file; the email events are required", async () => {
     const url = "https://staging.example/webhooks/inkbox";
     let calls = 0;
     const list = (subs: { url: string; eventTypes: string[] }[]) => async () => { calls++; return subs; };
     const w = (subs: { url: string; eventTypes: string[] }[]) => runLaunchGate(opts({ checkWebhooks: true, webhookUrl: url }), deps({ listWebhooks: list(subs) }));
-    expect((await w([{ url, eventTypes: ["message.received", "call.ended", "imessage.received", "a2a.sent_task.updated"] }])).checks.find((c) => c.name === "webhook subscriptions")).toMatchObject({ status: "pass" });
-    expect((await w([{ url, eventTypes: ["message.received"] }])).checks.find((c) => c.name === "webhook subscriptions")).toMatchObject({ status: "warn", detail: expect.stringMatching(/call\.ended/) });
+    const email = ["message.received", "message.bounced", "message.failed"];
+    expect((await w([{ url, eventTypes: [...email, "call.ended", "imessage.received", "a2a.sent_task.updated"] }])).checks.find((c) => c.name === "webhook subscriptions")).toMatchObject({ status: "pass" });
+    expect((await w([{ url, eventTypes: email }])).checks.find((c) => c.name === "webhook subscriptions")).toMatchObject({ status: "warn", detail: expect.stringMatching(/call\.ended/) });
     expect((await w([{ url, eventTypes: ["call.ended"] }])).ok).toBe(false);
     expect((await w([{ url: "https://old.example/webhooks/inkbox", eventTypes: ["message.received"] }])).ok).toBe(false);
     const before = calls;

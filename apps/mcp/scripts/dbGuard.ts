@@ -6,4 +6,4 @@
 import { guardScriptDatabase } from "../src/config.ts";
 
 const entry = process.argv[1]?.replace(/\\/g, "/") ?? "";
-if (/\/apps\/mcp\/scripts\/[^/]+\.ts$/.test(entry)) guardScriptDatabase(entry.split("/").pop()!);
+if (/\/apps\/mcp\/scripts\/(?:[^/]+\/)*[^/]+\.ts$/.test(entry)) guardScriptDatabase(entry.split("/").pop()!);

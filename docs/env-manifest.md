@@ -70,7 +70,8 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 |---|---|---|---|---|---|---|---|---|---|
 | `HAGGLE_ENV` | Where the server runs: development (default), staging or production |  | server, script | optional | recommended | **required** | **required** | `development` \| `staging` \| `production` (conditional); **error** | `development` |
 | `HAGGLE_MODE` | mock (simulated, DEMO-labelled) or live (real providers) |  | server | optional | **required** | **required** | **required** | `mock` \| `live` (conditional); **error** | `mock` |
-| `HAGGLE_BUILD_SHA` | Build label shown by /health and /ready (set per deploy) |  | server | optional | optional | recommended | recommended | free text; warning |  |
+| `HAGGLE_BUILD_SHA` | Deployed commit (short sha), shown as build_sha by /health and /ready and in serverInfo (set per deploy); a value that isn't label-shaped shows as invalid |  | server, script | optional | optional | recommended | recommended | a commit or release label (letters, digits, . _ -; ≤ 40); warning |  |
+| `HAGGLE_BUILD_TIME` | When the deployed build was made (ISO 8601 UTC), shown as build_time by /health and /ready; unset = the build output's time |  | server, script | optional | optional | optional | optional | ISO 8601, e.g. 2026-10-22T18:00:00Z; warning |  |
 | `HAGGLE_LOG_LEVEL` | Lowest log level written |  | server | – | optional | optional | optional | `debug` \| `info` \| `warn` \| `error`; warning | `info` |
 | `PORT` | HTTP port (read by mcp-use; the hosting platform sets it) |  | platform | optional | optional | optional | optional | integer 1–65535; warning | `3000` |
 | `HAGGLE_PROD_DB_HOSTS` | Production database hosts / Supabase project refs (comma-separated) so development and staging refuse them |  | server, script | optional | recommended | recommended | recommended | free text; warning |  |
