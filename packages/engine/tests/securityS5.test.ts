@@ -330,3 +330,28 @@ describe("S5-D F10b: a business that said STOP after quoting gets no counteroffe
     expect((await env.repo.listEvents(deal.job_id)).some((e) => /Counteroffer to High Grill/.test(String(e.data.summary)))).toBe(false);
   });
 });
+
+describe("S5 H9: a business that said STOP after quoting can't be approved", () => {
+  it("approving its earlier quote is refused with business_opted_out; the other quote still can be", async () => {
+    const env = await setup();
+    const agent = env.engine.forWorkspace("ws_alpha");
+    const hi = "h9-stop@inkboxmail.test", lo = "h9-quote@inkboxmail.test";
+    const deal = await agent.deal({ request, budget_usd, businesses: [{ name: "Stop Grill", email: hi }, { name: "Stay Grill", email: lo }] });
+    const rows = await env.repo.getBusinesses(deal.job_id);
+    const send = (n: string, from: string, bodyText: string) => {
+      const rfq = rows.find((b) => b.email === from)!.rfq_message_id!;
+      return env.engine.ingest({ providerEventId: `h9-${n}`, eventType: "message.received", providerEmailId: `h9-${n}`, threadId: `t-${from}`, messageId: `<h9-${n}@x>`, inReplyTo: [rfq], references: [rfq], from, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText, attachments: [], attachmentsDownloadUrl: null }, trusted as never);
+    };
+    await send("q1", hi, "$900 total, 12 vegetarian, delivered. $200 deposit.");
+    await send("q2", lo, "$1,000 total, 12 vegetarian, delivered. $250 deposit.");
+    expect((await send("s1", hi, "Please stop emailing us.")).outcome).toBe("opted_out");
+    env.clock.advance(2 * 3_600_000);
+    await env.engine.advanceJob(deal.job_id);
+    const quotes = await env.repo.listQuotes(deal.job_id);
+    const stopBiz = rows.find((b) => b.email === hi)!.business_id;
+    const stopQuote = quotes.find((q) => q.business_id === stopBiz)!;
+    const okQuote = quotes.find((q) => q.business_id !== stopBiz)!;
+    await expect(agent.requestApproval(deal.job_id, stopQuote.id, "view")).rejects.toMatchObject({ code: "business_opted_out" });
+    await expect(agent.requestApproval(deal.job_id, okQuote.id, "view")).resolves.toMatchObject({ quote_id: okQuote.id });
+  });
+});

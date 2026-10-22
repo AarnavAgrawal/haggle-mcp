@@ -6399,6 +6399,9 @@ export class HaggleEngine {
     // A live deal approves only a real business's reply (never a simulated one, never a quote with no source message).
     const src = await this.repo.getMessage(q.message_id);
     if (job.mode === "live" && (!src || src.simulated)) throw new EngineError("quote_not_eligible", "That quote can't be approved: simulated_reply.", "Only a real business's reply can be approved on a live deal.", "get_quotes");
+    // A business that asked not to be contacted after quoting gets no booking request (S5 review H9).
+    const quoted = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id);
+    if (quoted) await this.refuseIfOptedOut(job, quoted);
     // Only safety, no firm positive amount, or an unconfirmed all-in total refuses, for confirm-only
     // approvals too (decision 19); everything else is a caveat on the approval.
     const { hard: reason } = this.approvability(job, q);
