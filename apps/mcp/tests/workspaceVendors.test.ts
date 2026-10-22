@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain } from "@haggle/engine";
 import type { Profile } from "@haggle/core";
-import { resolveSelection, type Selection } from "../src/businesses.ts";
+import { discoveredFor, resolveSelection, type Selection } from "../src/businesses.ts";
 import { historyOnly } from "../src/brain.ts";
 import { buildRoster, findWorkspaceVendors, workspaceVendorList, workspaceVendorReadiness, type ChannelStatus } from "../src/vendors.ts";
 import type { Runtime } from "../src/runtime.ts";
@@ -80,6 +80,17 @@ describe("workspace vendors by name", () => {
     await expect(engine.forWorkspace("ws_beta").deal({ request, budget_usd, businesses: [{ name: "Casa Deli", email: "hello@casadeli.example" }] })).rejects.toMatchObject({ code: "recipient_not_allowed" });
     expect("addWorkspaceVendor" in engine.forWorkspace("ws_beta")).toBe(false);
     await expect(engine.addWorkspaceVendor({ workspace_id: "ws_beta", contact: "+14155550161", name: "X", consent: "agreed by phone", added_by: "op", channel: "email" })).rejects.toMatchObject({ code: "bad_channel" });
+  });
+});
+
+describe("discover results belong to the workspace that searched", () => {
+  it("another workspace can't select (or see) a business found by this one's discover", async () => {
+    const { rt, scope } = await setup();
+    const hit = { name: "Ace Plumbing", business_ref: "place:ACE1", place_id: "ACE1", types: ["plumber"], relevance: 1, in_area: true, score: 0.9, rank_reasons: [], source: "Google Places", attribution: "Google Maps", fetched_at: new Date().toISOString(), merged_listings: 1, category: "plumbing", area: "Oakland, CA" };
+    discoveredFor("ws_alpha").remember([hit as never]);
+    expect(await resolveSelection(["Ace Plumbing"], rt, { ...(await scope("ws_alpha")), discovered: discoveredFor("ws_alpha") })).toMatchObject({ ok: true, selected: [{ kind: "discovered", name: "Ace Plumbing" }] });
+    expect(await resolveSelection(["Ace Plumbing"], rt, { ...(await scope("ws_beta")), discovered: discoveredFor("ws_beta") })).toMatchObject({ ok: false, code: "unknown_business" });
+    expect(discoveredFor("ws_beta").get("place:ACE1")).toBeNull();
   });
 });
 

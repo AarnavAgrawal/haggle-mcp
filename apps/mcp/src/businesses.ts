@@ -7,7 +7,7 @@
 // send. Selection is exact and fails closed: an unknown, ambiguous or unreachable choice starts nothing
 // and never falls back to other businesses.
 import type { Channel, Profile } from "@haggle/core";
-import { businessIdForContact, normalizeBusinessName, placeDetails, PlacesError, websiteEvidence, type ContactLearning, type FoundBusiness, type WebsiteEvidence } from "@haggle/engine";
+import { businessIdForContact, DEFAULT_WORKSPACE_ID, normalizeBusinessName, placeDetails, PlacesError, websiteEvidence, type ContactLearning, type FoundBusiness, type WebsiteEvidence } from "@haggle/engine";
 import type { Runtime } from "./runtime.ts";
 import { businessRef, findVendors, findWorkspaceVendors, workspaceVendorList, workspaceVendorReadiness, type ChannelStatus, type RosterEntry, type WorkspaceVendor } from "./vendors.ts";
 
@@ -81,14 +81,22 @@ export class DiscoveryRegistry {
   }
 }
 
-export const discovered = new DiscoveryRegistry();
+const registries = new Map<string, DiscoveryRegistry>();
+/** Each workspace's own discover results: one tenant's searches are never selectable (or visible) by another. */
+export function discoveredFor(workspaceId: string): DiscoveryRegistry {
+  let r = registries.get(workspaceId);
+  if (!r) registries.set(workspaceId, (r = new DiscoveryRegistry()));
+  return r;
+}
+/** The default workspace's registry (single-tenant servers). */
+export const discovered = discoveredFor(DEFAULT_WORKSPACE_ID);
 
 /** Website evidence for a discovered business (fetched once per registry lifetime, never throws). */
-export async function withWebsite(b: Discovered, rt: Runtime): Promise<Discovered> {
+export async function withWebsite(b: Discovered, rt: Runtime, reg: DiscoveryRegistry = discovered): Promise<Discovered> {
   if (!b.website || b.website_evidence) return b;
   const ev = await websiteEvidence(b.website, rt.webFetch ? { fetch: rt.webFetch.fetch, resolve: rt.webFetch.resolve } : {});
   const next = { ...b, website_evidence: ev };
-  discovered.remember([next]);
+  reg.remember([next]);
   return next;
 }
 
@@ -201,6 +209,8 @@ export type Selection =
 export interface SelectionScope {
   vendors: { name: string; contact: string; channel?: Channel | null }[];
   learning: LearningSource;
+  /** This workspace's discover results (default: the default workspace's). */
+  discovered?: DiscoveryRegistry;
 }
 
 /**
@@ -216,6 +226,7 @@ export async function resolveSelection(refs: string[], rt: Runtime, scope?: Sele
   const ch = await rt.channels();
   const learning = scope?.learning ?? rt.engine;
   const mine = workspaceVendorList(scope?.vendors ?? []);
+  const reg = scope?.discovered ?? discovered;
   const out: Selected[] = [];
   const unknown: { ref: string }[] = [];
   const ambiguous: { ref: string; candidates: string[] }[] = [];
@@ -241,16 +252,16 @@ export async function resolveSelection(refs: string[], rt: Runtime, scope?: Sele
     }
     let hits: Discovered[] = [];
     if (/^place:/.test(ref)) {
-      const known = discovered.get(ref);
+      const known = reg.get(ref);
       if (known) hits = [known];
       else if (rt.placesKey) {
         const fresh = await placeDetails({ apiKey: rt.placesKey, ...(rt.placesFetch ? { fetch: rt.placesFetch } : {}) }, ref.slice(6)).catch((e) => { if (e instanceof PlacesError) return null; throw e; });
-        if (fresh) { const d = { ...fresh, category: "", area: "" }; discovered.remember([d]); hits = [d]; }
+        if (fresh) { const d = { ...fresh, category: "", area: "" }; reg.remember([d]); hits = [d]; }
       }
-    } else hits = discovered.find(ref);
+    } else hits = reg.find(ref);
     if (hits.length > 1) { ambiguous.push({ ref, candidates: hits.map((h) => `${h.name} (${h.address ?? h.business_ref})`) }); continue; }
     if (!hits.length) { unknown.push({ ref }); continue; }
-    const b = await withWebsite(hits[0]!, rt);
+    const b = await withWebsite(hits[0]!, rt, reg);
     const { routes, contacts } = discoveredRoutes(b, rt, ch);
     const status = contactStatus(routes, await learningFor(learning, b.name, { email: contacts.find((c) => c.email)?.email ?? null, phone: contacts.find((c) => c.phone)?.phone ?? null }));
     const i = routes.findIndex((r) => r.ready);
