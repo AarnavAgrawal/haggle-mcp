@@ -232,7 +232,7 @@ describe("texting a business over SMS (no iMessage port)", () => {
 });
 
 describe("preferences are soft (budget, requirements); only unsafe quotes are refused", () => {
-  it("every quote over budget: the cheapest is recommended, the others are negotiated, and the human can approve any of them", async () => {
+  it("every quote over budget: none is recommended (the cheapest is best available), the others are negotiated, and the human can approve any of them", async () => {
     const { engine, repo, clock, emails } = demoEngine({ notifyPhone: null });
     const deal = await engine.deal({ request, budget_usd: 1000, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Sunset Kitchen", email: "sunset@inkboxmail.test" }] });
     const reply = async (name: string, n: number, bodyText: string) => {
@@ -244,7 +244,10 @@ describe("preferences are soft (budget, requirements); only unsafe quotes are re
     for (let i = 0; i < 4; i++) { clock.advance(31 * 60_000); await engine.advanceJob(deal.job_id); }
     const board = await engine.getQuotes(deal.job_id);
     const by = (n: string) => board.quotes.find((q) => q.business === n)!;
-    expect(board.recommended_quote_id).toBe(by("Harbor Table").quote_id);
+    // Workstream D: a quote over the buyer's budget never wins by default; the closest is named, not recommended.
+    expect(board.recommended_quote_id).toBeUndefined();
+    expect(board.best_available_quote_id).toBe(by("Harbor Table").quote_id);
+    expect(board.recommendation_note).toMatch(/No quote meets every requirement.*Harbor Table.*over the \$1,000 budget/);
     expect(board.rejected).toEqual([]);
     expect(by("Sunset Kitchen")).toMatchObject({ eligible: true });
     expect(by("Sunset Kitchen").flags).toContain("over_budget");

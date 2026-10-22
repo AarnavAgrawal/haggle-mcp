@@ -66,14 +66,17 @@ describe("rankQuotes (golden scenario, after negotiation)", () => {
       quote({ quoteId: "d", businessId: "4", available: false }),
       quote({ quoteId: "e", businessId: "5", totalCents: 125000, compliant: false, unmet: false }),
     ], 120000);
-    expect(r.recommendedQuoteId).toBe("e"); // both over budget, neither misses a requirement for sure: cheapest first
-    expect(r.ranked.map((x) => x.quoteId)).toEqual(["e", "a"]);
+    // Workstream D: both over budget, so neither wins by default; the unconfirmed requirement ranks
+    // below the quote that confirmed everything (never as if met), even though it is cheaper.
+    expect(r.recommendedQuoteId).toBeNull();
+    expect(r.ranked.map((x) => x.quoteId)).toEqual(["a", "e"]);
     expect(r.caveats).toEqual(expect.arrayContaining([{ quoteId: "a", businessId: "1", reasons: ["over_budget"] }, { quoteId: "e", businessId: "5", reasons: ["requirement_unknown", "over_budget"] }]));
     expect(r.rejected.map((x) => x.reason)).toEqual(["no_total", "unverified_sender", "unavailable"]);
   });
 
-  it("all quotes over budget: the cheapest is still recommended", () => {
+  it("all quotes over budget: the cheapest ranks first, but nothing is recommended by default", () => {
     const r = rankQuotes([quote({ quoteId: "x", businessId: "1", totalCents: 176000 }), quote({ quoteId: "y", businessId: "2", totalCents: 302500 })], 150000);
-    expect(r.recommendedQuoteId).toBe("x");
+    expect(r.ranked[0]!.quoteId).toBe("x");
+    expect(r.recommendedQuoteId).toBeNull();
   });
 });
