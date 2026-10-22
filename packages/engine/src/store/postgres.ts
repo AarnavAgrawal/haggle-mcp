@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -432,5 +432,59 @@ export class PostgresRepository implements Repository {
   }
   async listWorkspacesByApproverPhone(phone: string) {
     return (await this.sql`select id from workspaces where approver_phone = ${phone} order by id`).map((r) => String(r.id));
+  }
+  // reliability (migration 109)
+  async renewJobLease(jobId: string, owner: string, now: string, ttlMs: number) {
+    const until = new Date(Date.parse(now) + ttlMs).toISOString();
+    return (await this.sql`update job_leases set expires_at = ${until} where job_id = ${jobId} and owner = ${owner} returning job_id`).length > 0;
+  }
+  async listOutbox(q: { jobId?: string; statuses?: OutboxRow["status"][]; updatedBefore?: string; limit?: number }) {
+    const s = this.sql;
+    return rows<OutboxRow>(await s`
+      select * from outbox where true
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+        ${q.statuses ? s`and status = any(${q.statuses})` : s``}
+        ${q.updatedBefore ? s`and updated_at < ${q.updatedBefore}` : s``}
+      order by created_at limit ${q.limit ?? 500}`);
+  }
+  async findOutboxByProviderRef(ref: string) {
+    return row<OutboxRow>((await this.sql`select * from outbox where provider_ref = ${ref} limit 1`)[0]);
+  }
+  async rearmOutbox(key: string, now: string) {
+    const r = await this.sql`
+      update outbox set status = 'not_sent', attempts = 1, updated_at = ${now}
+      where key = ${key} and status <> 'sent' and (kind <> 'call' or status = 'not_sent') returning *`;
+    return row<OutboxRow>(r[0]);
+  }
+  async openReview(r: Pick<OperatorReviewRow, "id" | "job_id" | "kind" | "subject" | "reason" | "attempts" | "last_error">, now: string) {
+    const x = await this.sql`
+      insert into operator_reviews (id, job_id, kind, subject, reason, attempts, last_error, status, created_at, updated_at)
+      values (${r.id}, ${r.job_id}, ${r.kind}, ${r.subject}, ${r.reason}, ${r.attempts}, ${r.last_error}, 'open', ${now}, ${now})
+      on conflict (kind, subject) where status = 'open' do update set
+        reason = excluded.reason, attempts = greatest(operator_reviews.attempts, excluded.attempts),
+        last_error = coalesce(excluded.last_error, operator_reviews.last_error), updated_at = excluded.updated_at
+      returning *, (xmax = 0) as created`;
+    const { created, ...rest } = x[0] as Record<string, unknown>;
+    return { row: row<OperatorReviewRow>(rest)!, created: created === true };
+  }
+  async findOpenReview(kind: OperatorReviewRow["kind"], subject: string) {
+    return row<OperatorReviewRow>((await this.sql`select * from operator_reviews where kind = ${kind} and subject = ${subject} and status = 'open'`)[0]);
+  }
+  async getReview(id: string) {
+    return row<OperatorReviewRow>((await this.sql`select * from operator_reviews where id = ${id}`)[0]);
+  }
+  async listReviews(q: { status?: OperatorReviewRow["status"]; jobId?: string; limit?: number }) {
+    const s = this.sql;
+    return rows<OperatorReviewRow>(await s`
+      select * from operator_reviews where true
+        ${q.status ? s`and status = ${q.status}` : s``}
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+      order by created_at desc limit ${q.limit ?? 100}`);
+  }
+  async resolveReview(id: string, r: { resolution: string; resolved_by: string }, now: string) {
+    const x = await this.sql`
+      update operator_reviews set status = 'resolved', resolution = ${r.resolution.slice(0, 500)}, resolved_by = ${r.resolved_by.slice(0, 120)}, resolved_at = ${now}, updated_at = ${now}
+      where id = ${id} and status = 'open' returning *`;
+    return row<OperatorReviewRow>(x[0]);
   }
 }

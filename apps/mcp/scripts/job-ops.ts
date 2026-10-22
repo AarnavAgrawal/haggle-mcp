@@ -1,0 +1,198 @@
+// Operator-only job operations, run with direct database access (never through an MCP tool): see
+// what is stuck or waiting for review, inspect one job, retry an action safely, close a review.
+//
+//   node --env-file=.env scripts/job-ops.ts list-stuck [--limit 200]
+//   node --env-file=.env scripts/job-ops.ts list-review [--all] [--job job_...]
+//   node --env-file=.env scripts/job-ops.ts inspect --job job_...
+//   node --env-file=.env scripts/job-ops.ts retry --key "rfq:job_...:biz_..." --by "<your name>"
+//   node --env-file=.env scripts/job-ops.ts retry --key "confirm:apr_..." --override-obligation --by "<your name>"
+//   node --env-file=.env scripts/job-ops.ts retry --payment pay_... --override-financial --by "<your name>"
+//   node --env-file=.env scripts/job-ops.ts resolve --id rev_... --note "<what you checked or did>" --by "<your name>"
+//
+// The script never calls Inkbox or Stripe. A retry only re-arms the action in the database; the
+// running server's next advance performs it through every normal check (suppressions, vendor
+// authorization, the approval it rests on, the full payment guard). What a retry refuses:
+//   * a Voice AI call that may have rung (pending or unknown): never redialed, override or not;
+//   * an acceptance, booking confirmation or "the customer paid" notice: only with
+//     --override-obligation, after checking the business never received it;
+//   * a held Stripe charge: only with --override-financial, after checking the Stripe dashboard has
+//     no PaymentIntent for the approval (metadata approval_id). The payment guard runs again first;
+//   * x402 payment steps (legacy rail), follow-ups, answers, counteroffers and texts to the human:
+//     the engine re-decides those, or send them again through their tool.
+//
+// Needs SUPABASE_DB_URL (the engine database, migrations through 109 applied).
+import { planChargeRelease, planOutboxRetry, planRecovery, PostgresRepository, redactError, TERMINAL, type Repository, type RetryPlan, type RetryStep, type StuckFinding } from "@haggle/engine";
+
+export type OpsCommand =
+  | { kind: "list-stuck"; limit: number }
+  | { kind: "list-review"; all: boolean; jobId?: string }
+  | { kind: "inspect"; jobId: string }
+  | { kind: "retry-key"; key: string; override: boolean; by: string }
+  | { kind: "retry-payment"; paymentId: string; override: boolean; by: string }
+  | { kind: "resolve"; id: string; note: string; by: string };
+
+function arg(argv: string[], name: string): string | undefined {
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 ? argv[i + 1] : undefined;
+}
+const flag = (argv: string[], name: string) => argv.includes(`--${name}`);
+const ID = /^[a-z]+_[A-Za-z0-9]{6,40}$/;
+
+function by(argv: string[]): string {
+  const who = (arg(argv, "by") ?? "").trim();
+  if (who.length < 2 || who.length > 80) throw new Error("--by is required: who is doing this (it is recorded on the review and the job)");
+  return who;
+}
+
+/** Validate a command line (pure). */
+export function planOps(argv: string[]): OpsCommand {
+  const [kind] = argv;
+  if (kind === "list-stuck") {
+    const limit = Number(arg(argv, "limit") ?? 200);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error("--limit must be 1-1000");
+    return { kind, limit };
+  }
+  if (kind === "list-review") {
+    const job = arg(argv, "job");
+    if (job !== undefined && !ID.test(job)) throw new Error("--job must be a job id like job_...");
+    return { kind, all: flag(argv, "all"), ...(job ? { jobId: job } : {}) };
+  }
+  if (kind === "inspect") {
+    const job = arg(argv, "job") ?? "";
+    if (!ID.test(job)) throw new Error("--job must be a job id like job_...");
+    return { kind, jobId: job };
+  }
+  if (kind === "retry") {
+    const key = arg(argv, "key");
+    const payment = arg(argv, "payment");
+    if ((key === undefined) === (payment === undefined)) throw new Error("retry needs exactly one of --key <outbox key> or --payment <payment id>");
+    if (payment !== undefined) {
+      if (!ID.test(payment)) throw new Error("--payment must be a payment id like pay_...");
+      if (flag(argv, "override-obligation")) throw new Error("--override-obligation is for --key; a charge needs --override-financial");
+      return { kind: "retry-payment", paymentId: payment, override: flag(argv, "override-financial"), by: by(argv) };
+    }
+    if (!key || key.length > 300 || /\s/.test(key)) throw new Error("--key must be an outbox key (see inspect)");
+    if (flag(argv, "override-financial")) throw new Error("--override-financial is for --payment; an acceptance or confirmation needs --override-obligation");
+    return { kind: "retry-key", key, override: flag(argv, "override-obligation"), by: by(argv) };
+  }
+  if (kind === "resolve") {
+    const id = arg(argv, "id") ?? "";
+    if (!ID.test(id)) throw new Error("--id must be a review id like rev_...");
+    const note = (arg(argv, "note") ?? "").trim();
+    if (note.length < 3) throw new Error("--note is required: what you checked or did");
+    return { kind, id, note: note.slice(0, 400), by: by(argv) };
+  }
+  throw new Error("command must be one of: list-stuck, list-review, inspect, retry, resolve");
+}
+
+/** Build the plan for a retry from what the database holds (pure given the rows). */
+export async function planRetry(repo: Repository, cmd: Extract<OpsCommand, { kind: "retry-key" | "retry-payment" }>): Promise<RetryPlan> {
+  if (cmd.kind === "retry-payment") {
+    const job = await findPaymentJob(repo, cmd.paymentId);
+    const payment = job ? await repo.getPaymentForJob(job) : null;
+    const p = payment?.id === cmd.paymentId ? payment : null;
+    return planChargeRelease({ payment: p, review: p ? await repo.findOpenReview("payment", p.id) : null, override: cmd.override, by: cmd.by });
+  }
+  const row = await repo.getOutbox(cmd.key);
+  const job = row?.job_id ? await repo.getJob(row.job_id) : null;
+  const biz = job ? (await repo.getBusinesses(job.id)).find((b) => cmd.key.endsWith(`:${b.business_id}`)) : undefined;
+  return planOutboxRetry({ key: cmd.key, row, review: await repo.findOpenReview("outbox", cmd.key), job, businessStatus: biz?.status ?? null, override: cmd.override, by: cmd.by });
+}
+
+/** The payment's job (payments are read per job): the review row names it. */
+async function findPaymentJob(repo: Repository, paymentId: string): Promise<string | null> {
+  return (await repo.findOpenReview("payment", paymentId))?.job_id ?? null;
+}
+
+/** Apply a plan's steps in order. Resolving the review comes first: an open review blocks the claim. */
+export async function applySteps(repo: Repository, steps: RetryStep[], now: string): Promise<string[]> {
+  const done: string[] = [];
+  for (const s of steps) {
+    if (s.op === "resolve_review") {
+      if (!(await repo.resolveReview(s.id, { resolution: s.resolution, resolved_by: s.by }, now))) throw new Error(`review ${s.id} is no longer open; nothing changed after it`);
+    } else if (s.op === "rearm_outbox") {
+      if (!(await repo.rearmOutbox(s.key, now))) throw new Error(`outbox ${s.key} can't be re-armed (sent, or a call that may have rung)`);
+    } else if (s.op === "requeue_business") {
+      await repo.updateBusiness(s.jobId, s.businessId, { status: "pending", next_attempt_at: now, send_attempts: 0 }, { ifStatus: ["pending", "bounced", "unavailable"] });
+      await repo.touchJob(s.jobId);
+    } else {
+      await repo.appendEvent(s.jobId, s.type, s.data);
+      await repo.touchJob(s.jobId);
+    }
+    done.push(s.op);
+  }
+  return done;
+}
+
+export const formatFinding = (f: StuckFinding) =>
+  `${f.job_id}  ${f.issue.padEnd(22)} ${f.action.padEnd(12)} ${Math.round(f.overdue_ms / 60_000)}m  ${f.subject ? `[${f.subject}] ` : ""}${f.detail}`;
+
+/** Every open job and recently closed one, through the same planner the server's tick uses (read only). */
+export async function listStuck(repo: Repository, nowMs: number, limit: number): Promise<StuckFinding[]> {
+  const open = (await repo.listOpenJobs()).slice(0, limit);
+  const closed = (await repo.listRecentJobs(50)).filter((j) => TERMINAL.has(j.state) && nowMs - Date.parse(j.updated_at) < 7 * 86_400_000);
+  const out: StuckFinding[] = [];
+  for (const job of [...open, ...closed]) {
+    const [businesses, approval, payment, outbox, pending] = await Promise.all([repo.getBusinesses(job.id), repo.getLatestApproval(job.id), repo.getPaymentForJob(job.id), repo.listOutbox({ jobId: job.id }), repo.getPendingMessages(job.id)]);
+    out.push(...planRecovery({ job, businesses, approval, payment, outbox, pendingMessages: pending.length }, nowMs));
+  }
+  return out;
+}
+
+const mask = (c: string | null) => (c ? c.replace(/^(.).*(@.*)$/, "$1***$2").replace(/^(\+\d{2}).*(\d{2})$/, "$1***$2") : "-");
+
+async function inspect(repo: Repository, jobId: string, nowMs: number): Promise<string> {
+  const job = await repo.getJob(jobId);
+  if (!job) throw new Error(`no job ${jobId}`);
+  const [businesses, outbox, reviews, approval, payment, events] = await Promise.all([repo.getBusinesses(jobId), repo.listOutbox({ jobId }), repo.listReviews({ jobId, limit: 50 }), repo.getLatestApproval(jobId), repo.getPaymentForJob(jobId), repo.listEvents(jobId)]);
+  const findings = planRecovery({ job, businesses, approval, payment, outbox, pendingMessages: (await repo.getPendingMessages(jobId)).length }, nowMs);
+  return [
+    `${job.id} HG-${job.short_code} · ${job.state}${job.ready ? " (ready)" : ""} · round ${job.round}/${job.max_rounds} · reply-by ${job.collect_until} · workspace ${job.workspace_id} · ${job.mode}`,
+    "", "Businesses:", ...businesses.map((b) => `  ${b.business_id} ${b.name} · ${b.channel} ${mask(b.email ?? b.phone)} · ${b.status}${b.next_attempt_at ? ` · next attempt ${b.next_attempt_at}` : ""}`),
+    "", "Outbox:", ...(outbox.length ? outbox.map((o) => `  ${o.key} · ${o.kind} · ${o.status} · attempts ${o.attempts} · ${o.updated_at}`) : ["  (none)"]),
+    "", `Approval: ${approval ? `${approval.id} ${approval.status} · quote ${approval.quote_id} · pay ${approval.payment_cents}c · expires ${approval.expires_at}` : "none"}`,
+    `Payment: ${payment ? `${payment.id} ${payment.rail} ${payment.status} · ${payment.amount_cents}c${payment.reason ? ` · ${redactError(payment.reason)}` : ""}` : "none"}`,
+    "", "Reviews:", ...(reviews.length ? reviews.map((r) => `  ${r.id} · ${r.status} · ${r.kind} [${r.subject}] · ${r.reason} · attempts ${r.attempts}${r.last_error ? ` · ${r.last_error}` : ""}${r.resolution ? ` · resolved: ${r.resolution}` : ""}`) : ["  (none)"]),
+    "", "Stuck:", ...(findings.length ? findings.map((f) => `  ${formatFinding(f)}`) : ["  (nothing overdue)"]),
+    "", "Last events:", ...events.slice(-20).map((e) => `  #${e.seq} ${e.at} ${e.type}${typeof e.data.summary === "string" ? `: ${redactError(e.data.summary)}` : ""}`),
+  ].join("\n");
+}
+
+async function main(argv = process.argv.slice(2)) {
+  const cmd = planOps(argv);
+  const url = process.env.SUPABASE_DB_URL;
+  if (!url) throw new Error("SUPABASE_DB_URL is not set (the engine database)");
+  const schema = process.env.HAGGLE_DB_SCHEMA?.trim();
+  const repo = new PostgresRepository(url, { max: 1, ...(schema ? { schema } : {}) });
+  const now = new Date();
+  try {
+    if (cmd.kind === "list-stuck") {
+      const f = await listStuck(repo, now.getTime(), cmd.limit);
+      console.log(f.length ? f.map(formatFinding).join("\n") : "Nothing is overdue.");
+    } else if (cmd.kind === "list-review") {
+      const list = await repo.listReviews({ ...(cmd.all ? {} : { status: "open" as const }), ...(cmd.jobId ? { jobId: cmd.jobId } : {}), limit: 200 });
+      console.log(list.length ? list.map((r) => `${r.id} · ${r.status} · ${r.kind} · job ${r.job_id ?? "-"} · [${r.subject}] · ${r.reason} · attempts ${r.attempts} · ${r.created_at}${r.last_error ? `\n    last error: ${r.last_error}` : ""}`).join("\n") : "No reviews.");
+    } else if (cmd.kind === "inspect") {
+      console.log(await inspect(repo, cmd.jobId, now.getTime()));
+    } else if (cmd.kind === "resolve") {
+      const r = await repo.resolveReview(cmd.id, { resolution: cmd.note, resolved_by: cmd.by }, now.toISOString());
+      if (!r) throw new Error(`review ${cmd.id} isn't open`);
+      if (r.job_id) await repo.appendEvent(r.job_id, "operator_resolved", { review_id: r.id, kind: r.kind, by: cmd.by });
+      console.log(`Resolved ${r.id} (${r.kind} [${r.subject}]): ${cmd.note}. Nothing was re-sent.`);
+    } else {
+      const plan = await planRetry(repo, cmd);
+      if (!plan.ok) throw new Error(`refused: ${plan.reason}`);
+      await applySteps(repo, plan.steps, now.toISOString());
+      console.log(`Done (${plan.steps.map((s) => s.op).join(", ")}): ${plan.note}.`);
+    }
+  } finally {
+    await repo.close();
+  }
+}
+
+if (process.argv[1]?.replace(/\\/g, "/").endsWith("scripts/job-ops.ts")) {
+  main().catch((e) => {
+    console.error(`job-ops failed: ${(e as Error).message}`);
+    process.exit(1);
+  });
+}
