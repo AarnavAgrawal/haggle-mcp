@@ -267,6 +267,8 @@ export interface WorkspaceVendorRow {
   name: string;
   consent: string;
   added_by: string;
+  /** How the vendor is reached (migration 108); null = by its contact (email, else a call). */
+  channel?: Channel | null;
   created_at: string;
 }
 
@@ -288,6 +290,48 @@ export interface PaymentHandoffRow {
   confirmed_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * What Haggle last texted a remote number from one of its lines, for one job and purpose (migration
+ * 108): a text back from that number answers it. Durable, so a restart or another replica routes the
+ * reply to the same job and workspace. `line` is Haggle's own number (or "default" when unknown).
+ */
+export interface TextRouteRow {
+  line: string;
+  remote: string;
+  workspace_id: string;
+  job_id: string;
+  purpose: "human" | "business";
+  business_id: string | null;
+  question_id: string | null;
+  approval_id: string | null;
+  last_out_at: string;
+}
+
+/** A text to the human refused while Inkbox paused the number; re-sent when it texts back. */
+export interface HeldTextRow {
+  line: string;
+  remote: string;
+  key: string;
+  workspace_id: string;
+  job_id: string;
+  text: string;
+  question_id: string | null;
+  approval_id: string | null;
+  held_at: string;
+}
+
+/** The operator removed a suppression (a wrong opt-out or bounce): who, why, and what it was. */
+export interface SuppressionRemovalRow {
+  contact: string;
+  reason: SuppressionRow["reason"];
+  job_id: string | null;
+  evidence: string | null;
+  suppressed_at: string;
+  removed_by: string;
+  why: string;
+  removed_at: string;
 }
 
 /** Persistence port. InMemoryRepository for tests/mock mode; PostgresRepository for live. */
@@ -413,4 +457,19 @@ export interface Repository {
   listRecentJobs(limit: number, workspaceId?: string): Promise<JobRow[]>;
   getSettings(workspaceId?: string): Promise<SettingsRow | null>;
   saveSettings(s: Omit<SettingsRow, "updated_at">, workspaceId?: string): Promise<SettingsRow>;
+
+  // text routing (migration 108; workspace-scoped, durable across restarts and replicas)
+  /** Upsert the route for (line, remote, job, purpose) with these ids and time. */
+  recordTextRoute(r: TextRouteRow): Promise<void>;
+  /** Every route to a remote number on one line, newest first. */
+  listTextRoutes(line: string, remote: string): Promise<TextRouteRow[]>;
+  /** Hold a text (replacing one with the same key), keeping only the newest `keep` for the number. */
+  holdText(h: Omit<HeldTextRow, "held_at">, keep: number): Promise<void>;
+  /** Remove and return a number's held texts, oldest first (atomic: one taker). */
+  takeHeldTexts(line: string, remote: string): Promise<HeldTextRow[]>;
+  isApprovalHeld(approvalId: string): Promise<boolean>;
+  /** Operator only: delete a suppression and record who removed it and why (atomic). Null if none. */
+  removeSuppression(contact: string, removedBy: string, why: string): Promise<SuppressionRemovalRow | null>;
+  /** Workspaces whose settings approver is this phone (routing a text from it must not guess between them). */
+  listWorkspacesByApproverPhone(phone: string): Promise<string[]>;
 }

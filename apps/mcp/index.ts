@@ -7,9 +7,10 @@ import { businessIdForContact, DEFAULT_WORKSPACE_ID, EngineError, eventWhen, MAX
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
+import { historyOnly } from "./src/brain.ts";
 import { ApprovalOut, BusinessProfile, Conversation, dealStartedBoard, DealBoardPlus, emptyBoard, Estimates, Identity, requestDetails, toApproval, toDealBoardPlus } from "./src/views.ts";
 import { blockerLines, businessRef, findVendors, rosterBusinessId, type ChannelStatus, type RosterEntry } from "./src/vendors.ts";
-import { contactEvidence, contactStatus, discovered, discoveredRoutes, e164, historyEvidence, learningFor, listingEvidence, requestCategory, resolveSelection, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered } from "./src/businesses.ts";
+import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, historyEvidence, learningFor, listingEvidence, requestCategory, resolveSelection, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered } from "./src/businesses.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
 import { authRequired, CONNECTOR_HEADER, isHandshakeOnly, resolveWorkspace } from "./src/workspace.ts";
 import "./src/live.ts";
@@ -363,7 +364,7 @@ export const deal = server.tool(
       } else {
         const given = input.businesses!.map((b) => (typeof b === "string" ? { name: b } : b));
         const named = given.filter((b) => !hasContact(b));
-        const sel = await resolveSelection(named.map((b) => b.name), rt);
+        const sel = await resolveSelection(named.map((b) => b.name), rt, { vendors: await engine.workspaceVendors(), learning: engine, discovered: discoveredFor(engine.workspaceId) });
         if (!sel.ok) return fail(mode, sel.code, sel.message, sel.fix, "Ask the user, then call deal again with the business's exact name.");
         const unreachable = sel.selected.filter((x) => !x.send);
         if (unreachable.length && !input.dry_run) {
@@ -1008,7 +1009,7 @@ export const discover = server.tool(
     ...viewIf({ name: "business-list", description: "Haggle business list: businesses found in public listings with ratings, reviews, address, links and whether Haggle may contact them, plus the configured vendors" }),
   },
   async ({ count, category, area }, ctx) =>
-    run(ctx, async ({ rt, engine, mode }) => {
+    run(ctx, async ({ rt, engine, mode, workspaceId }) => {
       const where = area ?? (await engine.getSettings()).default_area ?? "";
       // Real businesses from a public listing: FOUND is not AUTHORIZED. A published phone or website
       // never means Haggle may contact it; deal refuses anything not on the operator's allowlist.
@@ -1020,7 +1021,7 @@ export const discover = server.tool(
       else {
         try {
           found = ((await placesDiscover({ apiKey: rt.placesKey, ...(rt.placesFetch ? { fetch: rt.placesFetch } : {}) }, category, where, count)) ?? []).map((b) => ({ ...b, category, area: where }));
-          discovered.remember(found);
+          discoveredFor(workspaceId).remember(found);
           pub = { status: "ok", message: `${found.length} ${category} business(es) found near ${where} in Google Maps listings.` };
         } catch (e) {
           if (!(e instanceof PlacesError)) throw e;
@@ -1103,32 +1104,36 @@ export const businessProfile = server.tool(
     ...viewIf({ name: "business-profile", description: "Haggle business profile: what Haggle learned about a business" }),
   },
   async ({ business }, ctx) =>
-    run(ctx, async ({ rt, brain, mode }) => {
+    run(ctx, async ({ rt, brain, mode, engine, workspaceId }) => {
       const now = Date.now();
       const byName = async (n: string) => { const x = await brain.core.getProfile(n); return x && normalizeBusinessName(x.name) === normalizeBusinessName(n) ? x : null; };
+      const scope = { vendors: await engine.workspaceVendors(), learning: engine, discovered: discoveredFor(workspaceId) };
       // The same identity deal uses: a configured vendor by name / business_ref / id, else a business
       // from discover (name or place ref), else one Haggle only knows from earlier deals.
       const hits = findVendors(business, await rt.roster());
       if (hits.length > 1) return fail(mode, "ambiguous_business", `"${business}" could be ${hits.map((h) => h.name).join(" or ")}.`, "Ask the user which one they meant, then pass that exact name.", "business_profile");
       const vendor = hits[0];
       let found: Discovered | null = null;
-      if (!vendor && (/^place:/.test(business) || discovered.find(business).length)) {
-        const sel = await resolveSelection([business], rt);
+      if (!vendor && (/^place:/.test(business) || scope.discovered.find(business).length)) {
+        const sel = await resolveSelection([business], rt, scope);
         if (!sel.ok) return fail(mode, sel.code, sel.message.replace(" Nothing was sent.", ""), sel.fix, "business_profile");
         const x = sel.selected[0]!;
-        if (x.kind === "discovered") found = await withWebsite(x.found, rt);
+        if (x.kind === "discovered") found = await withWebsite(x.found, rt, scope.discovered);
       }
       const name = vendor?.name ?? found?.name ?? business;
       const contact = vendor ? { email: vendor.email ?? null, phone: vendor.phone ?? null } : found ? { email: found.website_evidence?.emails[0] ?? null, phone: e164(found.phone) } : { email: null, phone: null };
       const engineId = vendor ? rosterBusinessId(vendor) : contact.email || contact.phone ? businessIdForContact({ email: contact.email, phone: contact.email ? null : contact.phone }, name) : null;
       const hint = { name, ...(contact.email ? { email: contact.email } : {}), ...(contact.phone ? { phone: contact.phone } : {}) };
-      const p = engineId ? (await brain.coreProfile(engineId, hint)) ?? (vendor ? await byName(vendor.name) : null)
+      const shared = engineId ? (await brain.coreProfile(engineId, hint)) ?? (vendor ? await byName(vendor.name) : null)
         : !found ? (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business))) : null;
+      // Brain profiles are shared across workspaces: only this workspace's own deals (and labelled seed samples) are shown.
+      const own = shared ? await engine.ownJobIds(shared.history.map((h) => h.job_id)) : new Set<string>();
+      const p = historyOnly(shared, (jobId) => isSeedJob(jobId) || own.has(jobId));
       if (!vendor && !found && !p) {
         return fail(mode, "NOT_LEARNED", `Haggle doesn't know ${business}: it isn't a configured vendor, wasn't in a recent discover result, and Haggle has no quotes from it${mode === "live" ? " (sample data is never shown as history)" : ""}.`,
           rt.placesKey ? "Call discover(category, area) to find real businesses, then ask about one by name." : "Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY); configured vendors are listed by discover.", "deal");
       }
-      const learning = await learningFor(rt, name, contact);
+      const learning = await learningFor(engine, name, contact);
       const ch = await rt.channels();
       const status = contactStatus(vendor ? vendorRoutes(vendor) : found ? discoveredRoutes(found, rt, ch).routes : [], learning);
       const evidence = [

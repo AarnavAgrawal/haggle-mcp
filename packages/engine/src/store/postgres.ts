@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -137,8 +137,8 @@ export class PostgresRepository implements Repository {
   }
   async addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">) {
     const r = await this.sql`
-      insert into workspace_vendors ${this.sql(this.vals(v as never))}
-      on conflict (workspace_id, contact) do update set name = excluded.name, consent = excluded.consent, added_by = excluded.added_by
+      insert into workspace_vendors ${this.sql(this.vals({ ...v, channel: v.channel ?? null } as never))}
+      on conflict (workspace_id, contact) do update set name = excluded.name, consent = excluded.consent, added_by = excluded.added_by, channel = excluded.channel
       returning *`;
     return row<WorkspaceVendorRow>(r[0])!;
   }
@@ -393,5 +393,44 @@ export class PostgresRepository implements Repository {
       returning spending_cap_cents, approver_phone, approver_email, default_area, settings_updated_at as updated_at`;
     if (!r[0]) throw new Error(`unknown workspace ${workspaceId}`);
     return settingsRow(row<SettingsRow>(r[0]))!;
+  }
+
+  // text routing (migration 108)
+  async recordTextRoute(r: TextRouteRow) {
+    await this.sql`
+      insert into text_routes ${this.sql(this.vals(r as never))}
+      on conflict (line, remote, job_id, purpose) do update set business_id = excluded.business_id, question_id = excluded.question_id,
+        approval_id = excluded.approval_id, last_out_at = greatest(text_routes.last_out_at, excluded.last_out_at), workspace_id = excluded.workspace_id`;
+  }
+  async listTextRoutes(line: string, remote: string) {
+    return rows<TextRouteRow>(await this.sql`select * from text_routes where line = ${line} and remote = ${remote} order by last_out_at desc`);
+  }
+  async holdText(h: Omit<HeldTextRow, "held_at">, keep: number) {
+    await this.sql.begin(async (raw) => {
+      const tx = raw as unknown as Sql;
+      await tx`
+        insert into held_texts ${tx(this.vals(h as never))}
+        on conflict (line, remote, key) do update set text = excluded.text, question_id = excluded.question_id, approval_id = excluded.approval_id, held_at = now()`;
+      await tx`
+        delete from held_texts where line = ${h.line} and remote = ${h.remote} and key not in (
+          select key from held_texts where line = ${h.line} and remote = ${h.remote} order by held_at desc, key desc limit ${keep})`;
+    });
+  }
+  async takeHeldTexts(line: string, remote: string) {
+    return rows<HeldTextRow>(await this.sql`delete from held_texts where line = ${line} and remote = ${remote} returning *`).sort((a, b) => a.held_at.localeCompare(b.held_at));
+  }
+  async isApprovalHeld(approvalId: string) {
+    return (await this.sql`select 1 from held_texts where approval_id = ${approvalId} limit 1`).length > 0;
+  }
+  async removeSuppression(contact: string, removedBy: string, why: string) {
+    const r = await this.sql`
+      with d as (delete from vendor_suppressions where contact = ${contact.toLowerCase()} returning *)
+      insert into suppression_removals (contact, reason, job_id, evidence, suppressed_at, removed_by, why)
+      select contact, reason, job_id, evidence, created_at, ${removedBy}, ${why} from d
+      returning contact, reason, job_id, evidence, suppressed_at, removed_by, why, removed_at`;
+    return row<SuppressionRemovalRow>(r[0]);
+  }
+  async listWorkspacesByApproverPhone(phone: string) {
+    return (await this.sql`select id from workspaces where approver_phone = ${phone} order by id`).map((r) => String(r.id));
   }
 }

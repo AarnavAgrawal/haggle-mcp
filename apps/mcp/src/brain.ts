@@ -27,8 +27,17 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
  * from, price-checked against or cited as this business's history.
  */
 export function observedOnly(p: Profile | null): Profile | null {
+  return historyOnly(p, (jobId) => !isSeedJob(jobId));
+}
+
+/**
+ * A profile with only the history rows whose deal `keep` accepts, and everything derived from the
+ * others dropped or recomputed (as observedOnly). Profiles are shared across workspaces: an agent is
+ * shown its own workspace's rows only (business_profile), never another tenant's deals or replies.
+ */
+export function historyOnly(p: Profile | null, keep: (jobId: string) => boolean): Profile | null {
   if (!p) return null;
-  const history = p.history.filter((h) => !isSeedJob(h.job_id));
+  const history = p.history.filter((h) => keep(h.job_id));
   if (history.length === p.history.length) return p;
   if (!history.length) return null;
   const quotes = history.filter((h) => h.kind === "quote");

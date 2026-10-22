@@ -152,4 +152,32 @@ describe("model-only tool sequences (HTTP, two workspaces)", { timeout: 120_000 
     const mine = await beta("deal", { request: REQUEST, budget_usd: 1200, client_request_id: "sec-1" });
     expect(mine.structuredContent.job_id).not.toBe(job);
   });
+
+  it("every job-scoped tool refuses Alpha's ids for Beta with job_not_found, and leaks nothing of the deal", async () => {
+    const board = (await alpha("get_quotes", { job_id: job })).structuredContent;
+    const biz = board.businesses[0].business_id ?? board.businesses[0].id;
+    const calls: [string, Record<string, unknown>][] = [
+      ["answer_business", { job_id: job, question_id: "q_x", answer: "yes" }], ["send_message", { job_id: job, business_id: biz, text: "hello" }],
+      ["negotiate", { job_id: job }], ["get_conversation", { job_id: job, business_id: biz }], ["call_back", { job_id: job, business_id: biz }],
+      ["check_price", { job_id: job, quote_id: quoteId }], ["choose_in_view", { job_id: job, quote_id: quoteId }],
+    ];
+    for (const [tool, args] of calls) {
+      const r = await beta(tool, args).catch((e: Error) => e);
+      if (r instanceof Error) continue; // refused before reaching the engine (unknown tool on this build)
+      const e = (() => { try { return errorOf(r); } catch { return { raw: r.content[0].text }; } })();
+      expect(e, tool).toMatchObject({ error: { code: "job_not_found" } });
+      expect(JSON.stringify(r), tool).not.toContain(board.businesses[0].name);
+    }
+    // open_haggle with Alpha's job id never draws Alpha's board for Beta.
+    const opened = await beta("open_haggle", { job_id: job });
+    expect(JSON.stringify(opened)).not.toContain(quoteId);
+  });
+
+  it("business_profile shows only the asking workspace's own history of a shared business", async () => {
+    const name = (await alpha("get_quotes", { job_id: job })).structuredContent.quotes[0].business;
+    const theirs = await alpha("business_profile", { business: name });
+    expect(JSON.stringify(theirs.structuredContent ?? {})).toContain(job);
+    const r = await beta("business_profile", { business: name });
+    expect(JSON.stringify(r)).not.toContain(job);
+  });
 });

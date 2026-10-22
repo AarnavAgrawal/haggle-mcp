@@ -19,6 +19,9 @@ import {
   type SuppressionRow,
   type WorkspaceVendorRow,
   type PaymentHandoffRow,
+  type TextRouteRow,
+  type HeldTextRow,
+  type SuppressionRemovalRow,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -387,5 +390,51 @@ export class InMemoryRepository implements Repository {
     const row = { ...clone(s), updated_at: now() };
     this.settings.set(workspaceId, row);
     return clone(row);
+  }
+
+  // text routing (migration 108): the same rules as the database, incl. the job-workspace trigger.
+  private textRoutes: TextRouteRow[] = [];
+  private held: HeldTextRow[] = [];
+  private suppressionRemovals: SuppressionRemovalRow[] = [];
+  private sameWorkspace(r: { job_id: string; workspace_id: string }) {
+    if (this.jobs.get(r.job_id)?.workspace_id !== r.workspace_id) throw new Error("text row workspace must be its job's workspace");
+  }
+  async recordTextRoute(r: TextRouteRow) {
+    this.sameWorkspace(r);
+    if ((r.purpose === "business") !== (r.business_id !== null)) throw new Error("business route needs its business");
+    this.textRoutes = this.textRoutes.filter((x) => !(x.line === r.line && x.remote === r.remote && x.job_id === r.job_id && x.purpose === r.purpose));
+    this.textRoutes.push(clone(r));
+  }
+  async listTextRoutes(line: string, remote: string) {
+    return this.textRoutes.filter((x) => x.line === line && x.remote === remote).sort((a, b) => b.last_out_at.localeCompare(a.last_out_at)).map(clone);
+  }
+  async holdText(h: Omit<HeldTextRow, "held_at">, keep: number) {
+    this.sameWorkspace(h);
+    const mine = (x: HeldTextRow) => x.line === h.line && x.remote === h.remote;
+    this.held = this.held.filter((x) => !(mine(x) && x.key === h.key));
+    this.held.push({ ...clone(h), held_at: now() });
+    const forNumber = this.held.filter(mine);
+    const drop = new Set(forNumber.slice(0, Math.max(0, forNumber.length - keep)));
+    this.held = this.held.filter((x) => !drop.has(x));
+  }
+  async takeHeldTexts(line: string, remote: string) {
+    const taken = this.held.filter((x) => x.line === line && x.remote === remote);
+    this.held = this.held.filter((x) => !taken.includes(x));
+    return taken.map(clone);
+  }
+  async isApprovalHeld(approvalId: string) {
+    return this.held.some((x) => x.approval_id === approvalId);
+  }
+  async removeSuppression(contact: string, removedBy: string, why: string) {
+    const s = this.suppressions.get(contact.toLowerCase());
+    if (!s) return null;
+    if (why.trim().length < 3 || !removedBy.trim()) throw new Error("a removal records who and why");
+    this.suppressions.delete(s.contact);
+    const r: SuppressionRemovalRow = { contact: s.contact, reason: s.reason, job_id: s.job_id, evidence: s.evidence, suppressed_at: s.created_at, removed_by: removedBy, why, removed_at: now() };
+    this.suppressionRemovals.push(r);
+    return clone(r);
+  }
+  async listWorkspacesByApproverPhone(phone: string) {
+    return [...this.settings.entries()].filter(([, s]) => s.approver_phone === phone).map(([id]) => id).sort();
   }
 }

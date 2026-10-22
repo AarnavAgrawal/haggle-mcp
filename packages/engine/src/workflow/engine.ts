@@ -52,6 +52,7 @@ import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.t
 import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
 import { ChannelSendError, type EngineDeps, type PhoneCallRequest } from "./ports.ts";
 import { buildVoiceInstructions, isWithinCallHours, nextCallHoursStart } from "./callPolicy.ts";
+import { decideTextScope, inTextScope, jobCodeIn, lastRoute, type TextScope } from "./textRouting.ts";
 
 /** Board text for a reply Haggle couldn't read (never the provider's raw error). */
 export const UNREADABLE_REPLY = "Reply received; Haggle couldn't read a price";
@@ -736,11 +737,29 @@ export class HaggleEngine {
     return [...new Set([b.business_id, ...rows.filter((r) => normalizeBusinessName(r.name) === key).map((r) => r.business_id)])];
   }
 
-  /** What Haggle observed about reaching this business across all its jobs (and its older ids). */
-  async contactLearning(businessId: string, aliases: string[] = []): Promise<ContactLearning> {
+  /**
+   * What Haggle observed about reaching this business across all its jobs (and its older ids).
+   * `workspaceId`: only that workspace's deals (what an agent may see: a reply quoted from another
+   * tenant's deal is never shown to it).
+   */
+  async contactLearning(businessId: string, aliases: string[] = [], workspaceId?: string): Promise<ContactLearning> {
     const ids = [...new Set([businessId, ...aliases])];
     const [messages, quotes] = await Promise.all([Promise.all(ids.map((id) => this.repo.listMessagesForBusiness(id))), Promise.all(ids.map((id) => this.repo.listQuotesForBusiness(id)))]);
-    return learnContact(messages.flat(), quotes.flat());
+    if (workspaceId === undefined) return learnContact(messages.flat(), quotes.flat());
+    const own = await this.jobsInWorkspace([...messages.flat().map((m) => m.job_id), ...quotes.flat().map((q) => q.job_id)], workspaceId);
+    return learnContact(messages.flat().filter((m) => m.job_id !== null && own.has(m.job_id)), quotes.flat().filter((q) => own.has(q.job_id)));
+  }
+
+  /** The ids among these that are jobs of this workspace. */
+  async jobsInWorkspace(jobIds: (string | null)[], workspaceId: string): Promise<Set<string>> {
+    const ids = [...new Set(jobIds.filter((x): x is string => !!x))];
+    const jobs = await Promise.all(ids.map((id) => this.repo.getJob(id)));
+    return new Set(jobs.filter((j): j is JobRow => j !== null && j.workspace_id === workspaceId).map((j) => j.id));
+  }
+
+  /** The vendors the operator authorized for this workspace (deal by name resolves against them). */
+  async workspaceVendors(workspaceId: string) {
+    return this.repo.listWorkspaceVendors(workspaceId);
   }
 
   /** An authorized absolute ceiling (budget_kind "limit"), else null. */
@@ -1305,7 +1324,7 @@ export class HaggleEngine {
         throw e;
       });
       await this.repo.finishOutbox(key, "sent", sent.messageId, this.now().toISOString());
-      if (viaSms) this.lastSms.set(b.phone, { kind: "business", jobId: job.id });
+      if (viaSms) await this.noteTextRoute(job, b.phone, "business", { businessId: b.business_id });
       const row = await this.repo.insertMessage({
         job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind, channel: "imessage", provider_email_id: `${viaSms ? "sms" : "imsg"}:${sent.messageId}`, idempotency_key: key,
         rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: body, attachments: [], attachments_download_url: null,
@@ -1327,13 +1346,33 @@ export class HaggleEngine {
     }
   }
 
-  /** The last SMS to each number: a texted reply answers whatever Haggle texted that number last. */
-  private lastSms = new Map<string, { kind: "business" | "human"; jobId: string; questionId?: string; approvalId?: string }>();
+  /**
+   * Haggle's own text line (its number; "default" when the identity's number isn't known). Routes and
+   * held texts are keyed by (line, remote number), so a second line never answers for the first.
+   */
+  private textLine(): string {
+    return this.d.config.identity?.phone?.replace(/[\s().-]/g, "") || "default";
+  }
+
+  /**
+   * Record what Haggle last texted a number for this job (text_routes, durable and workspace-scoped):
+   * a text back from that number answers it, on any instance and after a restart. Best effort.
+   */
+  private async noteTextRoute(job: JobRow, remote: string, purpose: "human" | "business", ids: { businessId?: string; questionId?: string; approvalId?: string }) {
+    await this.repo.recordTextRoute({
+      line: this.textLine(), remote, workspace_id: job.workspace_id, job_id: job.id, purpose, business_id: purpose === "business" ? ids.businessId ?? null : null,
+      question_id: purpose === "human" ? ids.questionId ?? null : null, approval_id: purpose === "human" ? ids.approvalId ?? null : null, last_out_at: this.now().toISOString(),
+    }).catch((err: Error) => this.log("text_route_failed", { job_id: job.id, error: err.message.slice(0, 200) }));
+  }
+
+  /** What Haggle last texted this number within the scope (never another workspace's deal). */
+  private async lastTextRoute(remote: string, scope: TextScope) {
+    return lastRoute(await this.repo.listTextRoutes(this.textLine(), remote), scope);
+  }
+
   private notified = new Set<string>();
   /** `${to}|${text}` already texted: the same words again (a re-read, an unchanged revision) aren't news. */
   private notifiedText = new Set<string>();
-  /** Texts that need the human (questions, approvals, results) refused while their number was paused; re-sent when it texts back. */
-  private heldTexts = new Map<string, (HeldText & { jobId: string })[]>();
   /** `${to}|${jobId}|${kind}`: the pause was already noted on that deal. */
   private pausedNoted = new Set<string>();
 
@@ -1511,7 +1550,7 @@ export class HaggleEngine {
       if (q.total_cents && !declinedQuote) {
         try {
           const a = await this.openApproval(jobId, q.id, "imessage", undefined, { text: true, email: false }, true);
-          if (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`) || this.isHeld(a.id)) {
+          if (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`) || (await this.isHeld(a.id))) {
             await this.repo.appendEvent(jobId, "reply", {
               business_id: null, kind: "ready_texted", approval_id: a.id,
               summary: `All quotes are in: texted the user Haggle's recommendation, ${name} ${usdText(q.total_cents)} (${a.payment_cents > 0 ? `a reply YES approves ${usdText(a.payment_cents)}; then their texted PAY <code> or your pay charges it` : "a reply YES confirms it, nothing paid"}). If the user picks another quote (board or approve), that replaces the suggestion.`,
@@ -1667,9 +1706,9 @@ export class HaggleEngine {
     if (offer?.text) await this.sendApprovalSms(job, a).catch(() => undefined); // already sent: a no-op
   }
 
-  private isHeld(approvalId: string): boolean {
-    for (const list of this.heldTexts.values()) if (list.some((h) => h.approvalId === approvalId)) return true;
-    return false;
+  /** Texts that need the human (questions, approvals, results) refused while their number was paused are held (held_texts) until it texts back. */
+  private async isHeld(approvalId: string): Promise<boolean> {
+    return this.repo.isApprovalHeld(approvalId).catch(() => false);
   }
 
   /**
@@ -1714,7 +1753,7 @@ export class HaggleEngine {
     const budget = this.textBudget!;
     const short = t.key.replace(`notify:${job.id}:`, "");
     if (budget.isBlocked(to)) {
-      this.holdText(to, job.id, t);
+      await this.holdText(to, job, t);
       this.log("notify_held", { job_id: job.id, key: short, reason: "unanswered_limit" });
       await this.noteTextsPaused(job, to);
       return { ok: false, reason: "unanswered_limit" };
@@ -1737,7 +1776,7 @@ export class HaggleEngine {
       await this.repo.finishOutbox(t.key, "sent", sent.messageId, this.now().toISOString()).catch(() => undefined);
       this.notifiedText.add(`${to}|${t.text}`);
       // Only a question or an approval expects the human's reply; other updates don't change where a reply goes.
-      if (t.questionId || t.approvalId) this.lastSms.set(to, { kind: "human", jobId: job.id, ...(t.questionId ? { questionId: t.questionId } : {}), ...(t.approvalId ? { approvalId: t.approvalId } : {}) });
+      if (t.questionId || t.approvalId) await this.noteTextRoute(job, to, "human", { ...(t.questionId ? { questionId: t.questionId } : {}), ...(t.approvalId ? { approvalId: t.approvalId } : {}) });
       return { ok: true, messageId: sent.messageId };
     } catch (err) {
       this.notified.delete(t.key);
@@ -1746,17 +1785,16 @@ export class HaggleEngine {
       const reason = blocked ? "unanswered_limit" : err instanceof ChannelSendError ? err.reason : "error";
       this.log(blocked ? "notify_blocked" : "notify_failed", { job_id: job.id, key: short, reason, error: (err as Error).message.slice(0, 300) });
       if (blocked) {
-        this.holdText(to, job.id, t);
+        await this.holdText(to, job, t);
         await this.noteTextsPaused(job, to);
       }
       return { ok: false, reason };
     }
   }
 
-  private holdText(to: string, jobId: string, t: HeldText) {
-    const list = (this.heldTexts.get(to) ?? []).filter((h) => h.key !== t.key);
-    list.push({ jobId, key: t.key, text: t.text, ...(t.questionId ? { questionId: t.questionId } : {}), ...(t.approvalId ? { approvalId: t.approvalId } : {}) });
-    this.heldTexts.set(to, list.slice(-3));
+  private async holdText(to: string, job: JobRow, t: HeldText) {
+    await this.repo.holdText({ line: this.textLine(), remote: to, key: t.key, workspace_id: job.workspace_id, job_id: job.id, text: t.text, question_id: t.questionId ?? null, approval_id: t.approvalId ?? null }, 3)
+      .catch((err: Error) => this.log("hold_text_failed", { job_id: job.id, error: err.message.slice(0, 200) }));
   }
 
   /** Once per deal and pause: say on the deal (wait_for_update) why texts stopped and how to resume. */
@@ -1779,13 +1817,14 @@ export class HaggleEngine {
 
   /** Re-send what the human missed while paused (still-open questions and approvals, results). */
   private async flushHeldTexts(from: string) {
-    const held = this.heldTexts.get(from);
-    if (!held?.length) return;
-    this.heldTexts.delete(from);
-    for (const h of held) {
+    // Taken atomically: another instance flushing the same number gets none of them.
+    const held = await this.repo.takeHeldTexts(this.textLine(), from).catch(() => []);
+    for (const row of held) {
+      const h = { jobId: row.job_id, key: row.key, text: row.text, ...(row.question_id ? { questionId: row.question_id } : {}), ...(row.approval_id ? { approvalId: row.approval_id } : {}) };
       try {
         const job = await this.repo.getJob(h.jobId);
-        if (!job) continue;
+        // Re-sent only to the job's own human: if its workspace's approver changed meanwhile, it isn't this number's any more.
+        if (!job || (await this.notifyTarget(job)) !== from) continue;
         if (h.approvalId) {
           const a = await this.repo.getApproval(h.approvalId);
           if (a?.status === "pending") await this.sendApprovalSms(job, a, this.now().getTime());
@@ -1796,7 +1835,8 @@ export class HaggleEngine {
           continue;
         }
         if (h.questionId && (await this.repo.listQuestions(job.id)).find((q) => q.id === h.questionId)?.status !== "pending") continue;
-        await this.textHuman(job, from, { ...h, attempt: this.now().getTime() });
+        const { jobId: _j, ...text } = h;
+        await this.textHuman(job, from, { ...text, attempt: this.now().getTime() });
       } catch (err) {
         this.log("notify_failed", { job_id: h.jobId, key: h.key, reason: "error", error: (err as Error).message });
       }
@@ -1809,9 +1849,12 @@ export class HaggleEngine {
    * notify number or a settings approver) it answers the open business question. Anyone else is
    * ignored. Idempotent per message id.
    */
-  async ingestText(m: { messageId: string; from: string; text: string; inbound?: boolean }): Promise<{ jobId: string | null; outcome: string }> {
+  async ingestText(m: { messageId: string; from: string; text: string; inbound?: boolean; to?: string }): Promise<{ jobId: string | null; outcome: string }> {
     if (m.inbound === false) return { jobId: null, outcome: "outbound" };
     const from = m.from.replace(/[\s().-]/g, "");
+    // A text to another of Haggle's numbers isn't this line's to answer (routes are per line).
+    const to = m.to?.replace(/[\s().-]/g, "");
+    if (to && /^\+\d{8,15}$/.test(to) && this.textLine() !== "default" && to !== this.textLine()) return { jobId: null, outcome: "not_our_line" };
     if (await this.repo.findMessageByProviderId(`sms-in:${m.messageId}`)) return { jobId: null, outcome: "duplicate" };
     // Any reply lifts Inkbox's pause on this number; what the human missed is re-sent after routing.
     this.textReplied(from);
@@ -1826,7 +1869,7 @@ export class HaggleEngine {
    * a bare yes/no counts only when the approval was the last thing Haggle texted that number;
    * otherwise it is left to the normal routing (an answer to a business, a business reply).
    */
-  private async ingestTextApproval(m: { messageId: string; text: string }, from: string, open: JobRow[]): Promise<{ jobId: string | null; outcome: string } | null> {
+  private async ingestTextApproval(m: { messageId: string; text: string }, from: string, open: JobRow[], last: ReturnType<typeof lastRoute>): Promise<{ jobId: string | null; outcome: string } | null> {
     const parsed = m.text.trim().match(TEXT_DECISION);
     if (!parsed) return null;
     const texted: ApprovalRow[] = [];
@@ -1842,7 +1885,6 @@ export class HaggleEngine {
         if (old && old.code === parsed[2] && !texted.some((x) => x.id === old.id)) texted.push(old);
       }
     }
-    const last = this.lastSms.get(from);
     // The approval texted last may belong to a deal that has since closed (approved on the card and paid).
     if (last?.approvalId && !texted.some((a) => a.id === last.approvalId)) {
       const a = await this.repo.getApproval(last.approvalId);
@@ -1882,7 +1924,7 @@ export class HaggleEngine {
    * number is ignored and recorded. Before YES it says to approve first; a confirm-only approval has
    * nothing to pay. Idempotent per message id.
    */
-  private async ingestPayText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined): Promise<{ jobId: string | null; outcome: string }> {
+  private async ingestPayText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined, scope: TextScope): Promise<{ jobId: string | null; outcome: string }> {
     const record = (jobId: string | null, approvalId: string | null, trusted: boolean) => this.repo.insertMessage({
       job_id: jobId, business_id: null, approval_id: approvalId, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
       rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
@@ -1891,7 +1933,7 @@ export class HaggleEngine {
     });
     // The deals this number approves for: the open ones and recently closed ones (a second PAY after paid).
     const jobs = new Map<string, JobRow>();
-    for (const j of [...open, ...(await this.repo.listRecentJobs(20))]) if (!jobs.has(j.id)) jobs.set(j.id, j);
+    for (const j of [...open, ...(await this.repo.listRecentJobs(20))]) if (!jobs.has(j.id) && inTextScope(scope, j)) jobs.set(j.id, j);
     const mine: JobRow[] = [];
     for (const j of jobs.values()) if (from === (await this.notifyTarget(j))) mine.push(j);
     if (!mine.length) {
@@ -1904,10 +1946,16 @@ export class HaggleEngine {
       return { jobId: named?.job_id ?? null, outcome: "pay_ignored_not_approver" };
     }
     const latest = (await Promise.all(mine.map((j) => this.repo.getLatestApproval(j.id)))).filter((a): a is ApprovalRow => a !== null);
-    const target = code ? latest.find((a) => a.code === code) ?? null : null;
+    // Two of this human's deals under one code: never pick one (the deal code says which).
+    const coded = code ? latest.filter((a) => a.code === code) : [];
+    const target = coded.length === 1 ? coded[0]! : null;
     const job = (target && mine.find((j) => j.id === target.job_id)) || mine.find((j) => !TERMINAL.has(j.state)) || mine[0]!;
     if (!(await record(job.id, target?.id ?? null, true))) return { jobId: job.id, outcome: "duplicate" };
     const reply = (text: string) => this.notifyHuman(job, `pay-ack:${m.messageId}`, text);
+    if (coded.length > 1) {
+      await reply(`more than one of your deals has code ${code}, so nothing was charged. Reply again with the deal code, e.g. "PAY ${code} HG-${job.short_code}".`);
+      return { jobId: job.id, outcome: "pay_ambiguous_code" };
+    }
     if (!target) {
       await reply(code ? `no approved payment has code ${code}, so nothing was charged. Use the code in Haggle's latest approval text, or pay on the deal board in Claude.` : "to charge an approved payment, reply PAY with its code (the one in Haggle's approval text).");
       return { jobId: job.id, outcome: code ? "pay_no_matching_approval" : "pay_code_required" };
@@ -1959,7 +2007,7 @@ export class HaggleEngine {
    * have changed since the approval); only then is the handoff final and the business told the
    * customer reports having paid. From any other number it is ignored and recorded.
    */
-  private async ingestPaidText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined): Promise<{ jobId: string | null; outcome: string }> {
+  private async ingestPaidText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined, scope: TextScope): Promise<{ jobId: string | null; outcome: string }> {
     const record = (jobId: string | null, approvalId: string | null, trusted: boolean) => this.repo.insertMessage({
       job_id: jobId, business_id: null, approval_id: approvalId, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
       rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
@@ -1967,7 +2015,7 @@ export class HaggleEngine {
       quarantine_reason: trusted ? null : "paid_not_from_approver", round: null, simulated: false,
     });
     const jobs = new Map<string, JobRow>();
-    for (const j of [...open, ...(await this.repo.listRecentJobs(20))]) if (!jobs.has(j.id)) jobs.set(j.id, j);
+    for (const j of [...open, ...(await this.repo.listRecentJobs(20))]) if (!jobs.has(j.id) && inTextScope(scope, j)) jobs.set(j.id, j);
     const mine: JobRow[] = [];
     for (const j of jobs.values()) if (from === (await this.notifyTarget(j))) mine.push(j);
     if (!mine.length) {
@@ -1976,10 +2024,16 @@ export class HaggleEngine {
       return { jobId: null, outcome: "paid_ignored_not_approver" };
     }
     const latest = (await Promise.all(mine.map((j) => this.repo.getLatestApproval(j.id)))).filter((a): a is ApprovalRow => a !== null);
-    const target = code ? latest.find((a) => a.code === code) ?? null : null;
+    // Two of this human's deals under one code: never pick one (the deal code says which).
+    const coded = code ? latest.filter((a) => a.code === code) : [];
+    const target = coded.length === 1 ? coded[0]! : null;
     const job = (target && mine.find((j) => j.id === target.job_id)) || mine.find((j) => !TERMINAL.has(j.state)) || mine[0]!;
     if (!(await record(job.id, target?.id ?? null, true))) return { jobId: job.id, outcome: "duplicate" };
     const reply = (text: string) => this.notifyHuman(job, `paid-ack:${m.messageId}`, text);
+    if (coded.length > 1) {
+      await reply(`more than one of your deals has code ${code}, so nothing was recorded. Reply again with the deal code, e.g. "PAID ${code} HG-${job.short_code}".`);
+      return { jobId: job.id, outcome: "paid_ambiguous_code" };
+    }
     const h = target ? await this.repo.getHandoffByApproval(target.id) : null;
     if (!target || !h) {
       await reply(code ? `no payment handoff has code ${code}; nothing was recorded.` : "to record that you paid, reply PAID with the code from Haggle's approval text.");
@@ -2069,9 +2123,17 @@ export class HaggleEngine {
   }
 
   private async routeText(m: { messageId: string; from: string; text: string }, from: string): Promise<{ jobId: string | null; outcome: string }> {
-    const open = await this.repo.listOpenJobs();
-    const paid = m.text.trim().match(PAID_TEXT);
-    if (paid) return this.ingestPaidText(m, from, open, paid[1]);
+    const all = await this.repo.listOpenJobs();
+    // Only the workspace (and, if the text names one, the deal) this number belongs to; between two
+    // workspaces nothing is guessed: the text is held and the human asked for the deal code.
+    const scope = await this.textScope(from, m.text, all);
+    if (scope.kind === "ambiguous") return this.holdAmbiguousText(m, from, scope, "sms-in");
+    const open = all.filter((j) => inTextScope(scope, j));
+    // The human's words without the deal code they added to say which deal (a business's text stays whole).
+    const hm = scope.kind === "workspace" ? { ...m, text: scope.text } : m;
+    const last = await this.lastTextRoute(from, scope);
+    const paid = hm.text.trim().match(PAID_TEXT);
+    if (paid) return this.ingestPaidText(hm, from, open, paid[1], scope);
     // STOP (or any opt-out) from a number Haggle texted as a business: never contacted again.
     if (isOptOut(m.text)) {
       for (const job of open) {
@@ -2088,17 +2150,17 @@ export class HaggleEngine {
       }
     }
     // "PAY <code>" is never an answer or a business reply: it charges (approver only) or is ignored.
-    const pay = m.text.trim().match(PAY_TEXT);
-    if (pay) return this.ingestPayText(m, from, open, pay[1]);
+    const pay = hm.text.trim().match(PAY_TEXT);
+    if (pay) return this.ingestPayText(hm, from, open, pay[1], scope);
     {
       // The human even when no deal is open any more (e.g. "YES <code>" after the card approved and paid).
-      let isHuman = (!!this.d.sms && from === this.d.config.notifyPhone?.replace(/[\s().-]/g, "")) || !!this.lastSms.get(from)?.approvalId;
+      let isHuman = (!!this.d.sms && from === this.d.config.notifyPhone?.replace(/[\s().-]/g, "")) || !!last?.approvalId;
       for (const job of open) if (from === (await this.notifyTarget(job))) isHuman = true;
       if (isHuman) {
-        const decided = await this.ingestTextApproval(m, from, open);
+        const decided = await this.ingestTextApproval(hm, from, open, last);
         if (decided) return decided;
         // "RESUME" (lifting Inkbox's pause on texts) is not an answer to a business.
-        if (/^\s*(resume|updates?|start)\s*[.!]*\s*$/i.test(m.text)) return { jobId: this.lastSms.get(from)?.jobId ?? null, outcome: "texts_resumed" };
+        if (/^\s*(resume|updates?|start)\s*[.!]*\s*$/i.test(hm.text)) return { jobId: last?.jobId ?? null, outcome: "texts_resumed" };
       }
     }
     const businesses: TextDealCandidate[] = [];
@@ -2115,7 +2177,6 @@ export class HaggleEngine {
     let human = false;
     for (const job of open) if (from === (await this.notifyTarget(job))) human = true;
     // The same number can be both (a teammate playing a business): the last text to it decides.
-    const last = this.lastSms.get(from);
     if (businesses.length > 0 && (!human || last?.kind !== "human")) {
       const { hit: { job, b }, via } = pickTextDeal(businesses, m.text);
       const stored = await this.repo.insertMessage({
@@ -2132,6 +2193,7 @@ export class HaggleEngine {
       return { jobId: job.id, outcome: "stored" };
     }
     if (!human) return { jobId: null, outcome: "unknown_sender" };
+    m = hm;
     // The human: numbered answers to the question list Haggle texted ("1: drop-off is fine. 2: no
     // dessert"), an answer naming the business ("answer Sunset Kitchen with ..." / "Sunset Kitchen: ..."),
     // else the question Haggle texted them about. Each answer goes to its business on its own channel.
@@ -2217,6 +2279,62 @@ export class HaggleEngine {
   }
 
   /**
+   * The workspace (and, if the text names one, the deal) a text from this number belongs to, from
+   * durable records only: deals whose workspace approver it is (open or recent), and open deals with
+   * a business at that number. See textRouting.ts.
+   */
+  private async textScope(from: string, text: string, open: JobRow[]): Promise<TextScope> {
+    const jobs = new Map<string, JobRow>();
+    for (const j of [...open, ...(await this.repo.listRecentJobs(50))]) if (!jobs.has(j.id)) jobs.set(j.id, j);
+    const openIds = new Set(open.map((j) => j.id));
+    const humanOf = new Map<string, boolean>();
+    const owners = new Map<string, JobRow[]>();
+    const human: JobRow[] = [];
+    for (const j of jobs.values()) {
+      if (!humanOf.has(j.workspace_id)) humanOf.set(j.workspace_id, from === (await this.notifyTarget(j)));
+      const isHuman = humanOf.get(j.workspace_id)!;
+      if (!isHuman && !(openIds.has(j.id) && (await this.repo.getBusinesses(j.id)).some((b) => b.phone === from))) continue;
+      owners.set(j.workspace_id, [...(owners.get(j.workspace_id) ?? []), j]);
+      if (isHuman) human.push(j);
+    }
+    if (owners.size < 2) return decideTextScope(owners, text);
+    // An approval code (YES / NO / PAY / PAID 4821) on exactly one workspace's latest approval for this human decides too.
+    const t = text.trim();
+    const code = t.match(TEXT_DECISION)?.[2] ?? t.match(PAY_TEXT)?.[1] ?? t.match(PAID_TEXT)?.[1];
+    const coded: string[] = [];
+    if (code) for (const j of human) if ((await this.repo.getLatestApproval(j.id))?.code === code) coded.push(j.workspace_id);
+    return decideTextScope(owners, text, coded);
+  }
+
+  /**
+   * A text from a number tied to deals in several workspaces that doesn't say which (no deal code,
+   * no approval code only one of them has): never routed by guess. Kept for audit (no job,
+   * quarantined); the human is asked to resend it with the deal code, and each business deal it
+   * might answer notes that a reply is waiting on the code. Nothing of one deal is shown to another.
+   */
+  private async holdAmbiguousText(m: { messageId: string; text: string }, from: string, scope: Extract<TextScope, { kind: "ambiguous" }>, prefix: "sms-in" | "imsg-in"): Promise<{ jobId: string | null; outcome: string }> {
+    const stored = await this.repo.insertMessage({
+      job_id: null, business_id: null, approval_id: null, direction: "in", kind: "quarantine", channel: "imessage", provider_email_id: `${prefix}:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 2000) || null, attachments: [], attachments_download_url: null,
+      sender_trusted: false, trust_reason: "text-number-on-several-workspaces", matched_via: null, parse_status: "none", quarantine_reason: "ambiguous_workspace", round: null, simulated: false,
+    });
+    if (!stored) return { jobId: null, outcome: "duplicate" };
+    this.log("text_held_ambiguous", { from: maskHandle(from), workspaces: scope.workspaces.length });
+    const tied = [...new Map(scope.jobs.map((j) => [j.id, j])).values()].filter((j) => !TERMINAL.has(j.state)).sort((a, b) => b.created_at.localeCompare(a.created_at));
+    let told = false;
+    for (const j of tied) {
+      const b = (await this.repo.getBusinesses(j.id)).find((x) => x.phone === from);
+      if (b) await this.repo.appendEvent(j.id, "reply", { business_id: b.business_id, kind: "text_held", summary: `A text from ${b.name} was held unread: its number is on more than one Haggle deal, so Haggle can't tell which one it answers. Ask ${b.name} to include HG-${j.short_code} in the reply (send_message).` });
+      if (!told && prefix === "sms-in" && from === (await this.notifyTarget(j))) {
+        told = true;
+        const codes = tied.slice(0, 4).map((x) => `HG-${x.short_code}`).join(", ");
+        await this.notifyHuman(j, `which-deal:${m.messageId}`, `this number has open deals in more than one Haggle account (${codes}), so nothing was done with "${clip(m.text, 40)}". Reply again starting with the deal code, e.g. "HG-${j.short_code}: ${clip(m.text, 30)}".`);
+      }
+    }
+    return { jobId: null, outcome: "ambiguous_workspace" };
+  }
+
+  /**
    * A text from a business on the iMessage channel (not the approver): matched by its pinned
    * number to the most recent open job that texted it, stored and parsed like an email body.
    * Trusted: iMessage sender handles are carrier/Apple-registered and Inkbox delivers them on the
@@ -2231,6 +2349,14 @@ export class HaggleEngine {
       for (const b of mine) hits.push({ job, b, at: Date.parse(b.contacted_at!), msgs });
     }
     if (!hits.length) return { jobId: null, outcome: "unknown_sender" };
+    // Deals in several workspaces with this number: only the deal code it quotes decides, never a guess.
+    const workspaces = [...new Set(hits.map((h) => h.job.workspace_id))].sort();
+    if (workspaces.length > 1) {
+      const code = jobCodeIn(m.text);
+      const named = code ? hits.filter((h) => h.job.short_code.toUpperCase() === code) : [];
+      if (!named.length) return this.holdAmbiguousText(m, m.from, { kind: "ambiguous", workspaces, jobs: hits.map((h) => h.job) }, "imsg-in");
+      hits.splice(0, hits.length, ...named);
+    }
     // Same number on several open jobs (decision 46): the HG-<code> it quotes wins, else the deal
     // waiting on its answer (newest ask), else the most recently contacted job.
     const { hit: { job, b }, via } = pickTextDeal(hits, m.text);
@@ -3992,9 +4118,10 @@ export class HaggleEngine {
   }
 
   /** Operator only (scripts/workspace-admin.ts): authorize a vendor contact for one workspace, recording the consent. */
-  async addWorkspaceVendor(v: { workspace_id: string; contact: string; name: string; consent: string; added_by: string }) {
+  async addWorkspaceVendor(v: { workspace_id: string; contact: string; name: string; consent: string; added_by: string; channel?: Channel | null }) {
     const contact = v.contact.includes("@") ? normalizeAddress(v.contact) : v.contact.replace(/[\s().-]/g, "");
     if (!EMAIL_RE.test(contact) && !E164_RE.test(contact)) throw new EngineError("bad_contact", "A vendor contact is an email address or an E.164 phone number.", "Fix the contact.", "none");
+    if (v.channel && (v.channel === "email") !== contact.includes("@")) throw new EngineError("bad_channel", `Channel ${v.channel} doesn't fit ${contact}.`, "Email for an address; phone (a call) or imessage (a text) for a number.", "none");
     if (v.consent.trim().length < 3) throw new EngineError("consent_required", "Record how the vendor agreed to be contacted.", "Pass the consent (who agreed, how, when).", "none");
     return this.repo.addWorkspaceVendor({ ...v, contact, consent: v.consent.trim() });
   }
@@ -4862,6 +4989,8 @@ export class HaggleEngine {
     if (!parsed) return { jobId: null, outcome: "not_a_decision" };
     const yes = /^(yes|y|approve|approved)$/i.test(parsed[1]!);
     const code = parsed[2];
+    // Two pending approvals under one code (another deal or another workspace): never pick one.
+    if (code && new Set(pending.filter((a) => a.code === code).map((a) => a.id)).size > 1) return { jobId: null, outcome: "ambiguous_code" };
     const target = code ? pending.find((a) => a.code === code) : !yes && pending.length === 1 ? pending[0] : undefined;
     if (!target && code && yes && pending.length === 1) {
       // A wrong code against the approver's only pending approval counts toward the lockout.
@@ -5310,7 +5439,12 @@ export class WorkspaceEngine {
   async callbackProposals(jobId: string) { await this.own(jobId); return this.engine.callbackProposals(jobId); }
   async placeCallback(jobId: string, businessId: string, authorizedBy: string) { await this.own(jobId); return this.engine.placeCallback(jobId, businessId, authorizedBy); }
   async businessAliases(b: Parameters<HaggleEngine["businessAliases"]>[0]) { return this.engine.businessAliases(b); }
-  async contactLearning(businessId: string, aliases?: string[]) { return this.engine.contactLearning(businessId, aliases); }
+  /** Learning from this workspace's own deals only. */
+  async contactLearning(businessId: string, aliases?: string[]) { return this.engine.contactLearning(businessId, aliases, this.workspaceId); }
+  /** Which of these job ids are this workspace's (e.g. to show only its own history from a shared profile). */
+  ownJobIds(jobIds: (string | null)[]) { return this.engine.jobsInWorkspace(jobIds, this.workspaceId); }
+  /** The operator-authorized vendors of this workspace (read-only: an agent can't add or change them). */
+  workspaceVendors() { return this.engine.workspaceVendors(this.workspaceId); }
   async revokeApproval(jobId: string, approvalId: string, reason: string) { await this.own(jobId); return this.engine.revokeApproval(jobId, approvalId, reason); }
   async approvalById(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalById(approvalId); }
   async advanceJob(jobId: string) { await this.own(jobId); return this.engine.advanceJob(jobId); }
