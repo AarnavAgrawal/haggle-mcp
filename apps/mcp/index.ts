@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { inputRequired, inputResponse, MCPServer } from "mcp-use";
@@ -101,6 +101,18 @@ function ok<T extends { mode?: Mode | undefined }>(data: T, text: string, meta?:
 function fail(mode: Mode, code: string, message: string, fix: string, next: string) {
   return { isError: true as const, content: [{ type: "text" as const, text: JSON.stringify({ ok: false, mode, error: { code, message, fix }, next }) }] };
 }
+
+/**
+ * Does this request come from a client that renders MCP App views? `visibility: "app"` only hides a
+ * tool from the model's list; mcp-use still runs it for any caller, so the button tools (and the
+ * one-time codes they hand the views) also require the client to declare the MCP Apps extension.
+ * A headless client can still declare it: this narrows the hole, it can't close it.
+ */
+const UI_EXTENSION = "io.modelcontextprotocol/ui";
+const rendersViews = (ctx: { client: { extension(id: string): unknown } }) => ctx.client.extension(UI_EXTENSION) !== undefined;
+const viewOnly = (mode: Mode) =>
+  fail(mode, "view_only", "This is a button on Haggle's deal board or approval card; it only runs from a client that shows those views, and only the human taps it.",
+    "To ask the human, call approve(job_id, quote_id) (or call_back for a callback); they decide on the card, the board, a form, or by replying to Haggle's text/email.", "approve");
 
 /** Everything a handler needs: the engine scoped to this connection's workspace. */
 type Scope = { rt: Runtime; mode: Mode; engine: WorkspaceEngine; brain: Runtime["brain"]; workspaceId: string };
@@ -748,7 +760,51 @@ export const approve = server.tool(
 const approveHasView = "view" in viewIf({ name: "approval" });
 
 // One-time codes for a callback authorized by a tap on the deal board (never shown to the model).
+// Random (crypto), unique while live, one per job+business, expired entries purged on each issue;
+// five wrong codes for a job+business lock its board callback (the approval form still works).
+const CALLBACK_CODE_TTL_MS = 10 * 60_000;
+const CALLBACK_LOCK_MS = 60 * 60_000;
+const MAX_CALLBACK_ATTEMPTS = 5;
 const callbackCodes = new Map<string, { job_id: string; business_id: string; expires: number }>();
+const callbackMisses = new Map<string, { attempts: number; until: number }>();
+const callbackKey = (job_id: string, business_id: string) => `${job_id}\u0000${business_id}`;
+
+function purgeCallbackCodes(now = Date.now()) {
+  for (const [code, c] of callbackCodes) if (c.expires < now) callbackCodes.delete(code);
+  for (const [key, m] of callbackMisses) if (m.until < now) callbackMisses.delete(key);
+}
+
+function issueCallbackCode(job_id: string, business_id: string): string {
+  const now = Date.now();
+  purgeCallbackCodes(now);
+  // A new tap request replaces this business's earlier code (one live code per job+business).
+  for (const [code, c] of callbackCodes) if (c.job_id === job_id && c.business_id === business_id) callbackCodes.delete(code);
+  let code: string;
+  do code = String(randomInt(100_000, 1_000_000)); while (callbackCodes.has(code));
+  callbackCodes.set(code, { job_id, business_id, expires: now + CALLBACK_CODE_TTL_MS });
+  return code;
+}
+
+/** Spend a board callback code: "ok" once, else why not. Wrong codes count toward the lock. */
+function redeemCallbackCode(job_id: string, business_id: string, code: string): "ok" | "locked" | { attempts_left: number } {
+  const now = Date.now();
+  purgeCallbackCodes(now);
+  const key = callbackKey(job_id, business_id);
+  const misses = callbackMisses.get(key);
+  if (misses && misses.attempts >= MAX_CALLBACK_ATTEMPTS) return "locked";
+  const c = callbackCodes.get(code);
+  if (c && c.job_id === job_id && c.business_id === business_id) {
+    callbackCodes.delete(code);
+    return "ok";
+  }
+  const attempts = (misses?.attempts ?? 0) + 1;
+  callbackMisses.set(key, { attempts, until: now + CALLBACK_LOCK_MS });
+  if (attempts >= MAX_CALLBACK_ATTEMPTS) {
+    for (const [k, v] of callbackCodes) if (v.job_id === job_id && v.business_id === business_id) callbackCodes.delete(k);
+    return "locked";
+  }
+  return { attempts_left: MAX_CALLBACK_ATTEMPTS - attempts };
+}
 
 const callbackOut = z.looseObject({ ok: z.boolean(), mode: z.enum(["mock", "live"]), next: z.string(), status: z.enum(["placed", "pending_human", "declined"]), business: z.string(), basis_total_usd: z.number(), their_total_usd: z.number() });
 
@@ -779,8 +835,10 @@ export const callBack = server.tool(
       const base = { ok: true, mode, business: proposal.business, basis_total_usd: proposal.basis_total_usd, their_total_usd: proposal.their_total_usd };
       const ask = `${mode === "mock" ? "[DEMO] " : ""}Call ${proposal.business} back now? Haggle's Voice AI will say it's an AI assistant, thank them for their ${usd(proposal.their_total_usd)} quote and ask if they can beat a real ${usd(proposal.basis_total_usd)} quote from ${proposal.basis_business}. Nothing is bought.`;
       const place = async (by: string) => {
-        await engine.placeCallback(job_id, business_id, by);
-        return ok({ ...base, status: "placed" as const, next: `Calling ${proposal.business} back. Call wait_for_update(job_id) for the result.` }, `Calling ${proposal.business} back (Voice AI), citing a real ${usd(proposal.basis_total_usd)} quote. next: wait_for_update`);
+        // Call hours, the cooldown or a call already on the line can defer it: it is then placed later, once.
+        const r = await engine.placeCallback(job_id, business_id, by);
+        const when = r.scheduledFor ? `Callback to ${proposal.business} scheduled for ${r.scheduledFor} (call hours or a recent call)` : `Calling ${proposal.business} back`;
+        return ok({ ...base, status: "placed" as const, ...(r.scheduledFor ? { scheduled_for: r.scheduledFor } : {}), next: `${when}. Call wait_for_update(job_id) for the result.` }, `${when} (Voice AI), citing a real ${usd(proposal.basis_total_usd)} quote. next: wait_for_update`);
       };
       if (ctx.client.can("elicitation")) {
         const key = `callback_${job_id}_${business_id}`;
@@ -791,9 +849,8 @@ export const callBack = server.tool(
         if (!(response.action === "accept" && response.content?.call === true)) return ok({ ...base, status: "declined" as const, next: "The human declined the callback. Continue with the quotes as they are." }, "The human declined the callback.");
         return place(`mcp-client:${ctx.client.info()?.name ?? "unknown"}`);
       }
-      if (ctx.client.extension("io.modelcontextprotocol/ui") !== undefined) {
-        const code = String(Math.floor(100_000 + Math.random() * 900_000));
-        callbackCodes.set(code, { job_id, business_id, expires: Date.now() + 10 * 60_000 });
+      if (rendersViews(ctx)) {
+        const code = issueCallbackCode(job_id, business_id);
         return ok({ ...base, status: "pending_human" as const, next: "Waiting for the human to tap 'Call back' on the deal board." }, `Waiting for the human to authorize the callback on the deal board. next: wait_for_update`, { "haggle/callback": { code } });
       }
       if (mode === "mock") return place("DEMO simulated human");
@@ -813,11 +870,13 @@ export const callBackInView = server.tool(
   },
   async ({ job_id, business_id, code }, ctx) =>
     run(ctx, async ({ engine, mode }) => {
-      const c = callbackCodes.get(code);
-      if (!c || c.job_id !== job_id || c.business_id !== business_id || c.expires < Date.now()) return fail(mode, "callback_not_authorized", "That callback authorization is missing, used or expired.", "Tap Call back again.", "get_quotes");
-      callbackCodes.delete(code);
-      const { proposal } = await engine.placeCallback(job_id, business_id, "human tap on the deal board");
-      return ok({ ok: true, mode, status: "placed" as const, business: proposal.business, basis_total_usd: proposal.basis_total_usd, their_total_usd: proposal.their_total_usd, next: "Calling them back. The board updates when the call ends." }, `Calling ${proposal.business} back.`);
+      if (!rendersViews(ctx)) return viewOnly(mode);
+      const r = redeemCallbackCode(job_id, business_id, code);
+      if (r === "locked") return fail(mode, "callback_locked", "Too many wrong callback codes for this business: the board's Call back is locked for this deal.", "Authorize the callback from a client that shows the approval form (call_back there), or continue with the current quotes.", "get_quotes");
+      if (r !== "ok") return fail(mode, "callback_not_authorized", `That callback authorization is missing, used or expired (${r.attempts_left} attempts left).`, "Tap Call back again.", "get_quotes");
+      const { proposal, scheduledFor } = await engine.placeCallback(job_id, business_id, "human tap on the deal board");
+      return ok({ ok: true, mode, status: "placed" as const, business: proposal.business, basis_total_usd: proposal.basis_total_usd, their_total_usd: proposal.their_total_usd, ...(scheduledFor ? { scheduled_for: scheduledFor } : {}),
+        next: scheduledFor ? `Callback scheduled for ${scheduledFor} (call hours or a recent call). The board updates when the call ends.` : "Calling them back. The board updates when the call ends." }, scheduledFor ? `Callback to ${proposal.business} scheduled.` : `Calling ${proposal.business} back.`);
     }),
 );
 
@@ -833,6 +892,7 @@ export const approveInView = server.tool(
   },
   async ({ approval_id, code }, ctx) =>
     run(ctx, async ({ engine, mode }) => {
+      if (!rendersViews(ctx)) return viewOnly(mode);
       const r = await engine.approveWithViewCode(approval_id, code);
       if (r.status !== "approved" && r.status !== "used") return ok({ ok: true, mode, status: r.status, next: `Approval is ${r.status}.` }, `Approval ${r.status}.`);
       // status stays "approved" (the human's decision is recorded); `outcome` says where the deal is now
@@ -851,7 +911,8 @@ export const chooseInView = server.tool(
     description:
       "Called only by the deal board when the human picks any safe quote and confirms (a confirm step shows the caveats). Hidden from the model. Starts a board-only approval for that exact quote: pay (the default) or confirm; nothing is texted or emailed " +
       "(the human is approving on the board right now). Hands the board the one-time code in _meta; the same confirm click then calls approve_in_view, which records the approval, and the board calls pay to charge it. " +
-      "An approval already waiting for this quote (e.g. one the model asked for by text) is reused; Haggle's own texted 'all quotes are in' suggestion for another quote is replaced (an approval the human or model asked for is not). Not an approval by itself.",
+      "An approval already waiting for this quote is reused, but its code is handed out only if it is a board/card-only approval: one already sent to the human by text, email or a form (e.g. one the model asked for, or Haggle's texted suggestion) gets no code here, and the human answers it there. " +
+      "Haggle's own texted 'all quotes are in' suggestion for another quote is replaced (an approval the human or model asked for is not). Not an approval by itself.",
     inputSchema: z.object({ job_id: jobId, quote_id: quoteId, action: z.enum(["confirm", "pay"]).optional() }),
     outputSchema: z.looseObject({ ...envelope, approval_id: z.string(), status: z.string() }),
     visibility: "app",
@@ -859,10 +920,26 @@ export const chooseInView = server.tool(
   },
   async ({ job_id, quote_id, action }, ctx) =>
     run(ctx, async ({ engine, mode }) => {
+      if (!rendersViews(ctx)) return viewOnly(mode);
       const a = await engine.requestApproval(job_id, quote_id, "view", action, { text: false, email: false });
-      const next = a.status === "pending" ? "Waiting for the human's confirm click on the board (approve_in_view)." : `Approval is ${a.status}.`;
+      const base = { ok: true, mode, approval_id: a.id, status: a.status, action: a.action === "confirm" ? "confirm" : "pay", amount_usd: a.payment_cents / 100 };
+      if (a.status !== "pending") return ok({ ...base, next: `Approval is ${a.status}.` }, `Board approval ${a.status}.`);
+      // The engine reuses an approval already waiting for this quote. Its code goes to the board only
+      // when it is a board/card-only approval: one already offered to the human by text, email or a
+      // form (the model's approve, Haggle's texted suggestion) is answered there, so a caller can't
+      // fetch its code here and approve it without the human (CLAUDE.md §7).
+      const offered = await engine.approvalOffers(a.id);
+      const elsewhere = [
+        offered.text || offered.imessage || a.channel === "imessage" ? "reply YES <code> to the text Haggle sent" : null,
+        offered.email || a.channel === "email" ? "reply APPROVE <code> to the approval email" : null,
+        a.channel === "elicitation" ? "answer the approval form in the chat" : null,
+      ].filter((w): w is string => w !== null);
+      if (a.channel !== "view" || elsewhere.length) {
+        const next = `This quote's approval was already sent to the human${elsewhere.length ? `: ${elsewhere.join(", or ")}` : " on another channel"}. Call wait_for_update with until=approval_decided.`;
+        return ok({ ...base, next }, `Board approval pending on another channel. next: ${next}`);
+      }
       // The code goes only to the board (_meta), never to model-visible content.
-      return ok({ ok: true, mode, approval_id: a.id, status: a.status, action: a.action === "confirm" ? "confirm" : "pay", amount_usd: a.payment_cents / 100, next }, `Board approval ${a.status}.`, a.status === "pending" ? { "haggle/approval": { approval_id: a.id, code: a.code } } : undefined);
+      return ok({ ...base, next: "Waiting for the human's confirm click on the board (approve_in_view)." }, `Board approval ${a.status}.`, { "haggle/approval": { approval_id: a.id, code: a.code } });
     }),
 );
 
@@ -1269,7 +1346,10 @@ server.post("/webhooks/inkbox", async (c) => {
 server.post("/internal/tick", async (c) => {
   const secret = process.env.HAGGLE_TICK_SECRET?.trim() ?? "";
   const given = c.req.header("authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1] ?? "";
-  const okAuth = secret.length >= 16 && given.length === secret.length && timingSafeEqual(Buffer.from(given), Buffer.from(secret));
+  // Compare fixed-length digests: timingSafeEqual throws on unequal byte lengths, and a non-ASCII
+  // token can match the secret's character count but not its byte count (a 500, not a 401).
+  const digest = (s: string) => createHash("sha256").update(s, "utf8").digest();
+  const okAuth = secret.length >= 16 && given.length > 0 && timingSafeEqual(digest(given), digest(secret));
   if (!okAuth) return c.json({ error: secret ? "unauthorized" : "tick is disabled (set HAGGLE_TICK_SECRET, at least 16 chars)" }, secret ? 401 : 404);
   let rt: Runtime;
   try {

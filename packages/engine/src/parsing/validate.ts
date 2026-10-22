@@ -33,10 +33,11 @@ export function coerceField(f: AskField, raw: string | null | undefined): FieldV
   if (!v) return null;
   switch (f.type) {
     case "money": {
-      const m = v.replace(/usd|dollars?/gi, "").match(/-?\$?\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)/);
+      const m = v.replace(/usd|dollars?/gi, "").match(/-?\$?\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(\s*k\b)?/i);
       if (!m) return null;
       try {
-        const c = usdToCents(m[1]!.replace(/,/g, ""));
+        // "$4.5k" = $4,500: the k multiplies the exact cents (never dropped to $4.50).
+        const c = usdToCents(m[1]!.replace(/,/g, "")) * (m[2] ? 1000 : 1);
         return c >= 0 && c <= MAX_MONEY_USD * 100 ? c : null;
       } catch {
         return null;

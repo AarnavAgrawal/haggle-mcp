@@ -100,7 +100,11 @@ export interface DealInput {
 }
 
 const ASK_KEY_RE = /^[a-z][a-z0-9_]{0,31}$/;
+/** Flags that only say a reply didn't mention something (not news about the business's quote). */
+const ABSENCE_FLAGS = new Set(["delivery_unclear", "fees_unclear", "requirement_unknown", "low_confidence", "question_pending", "vague_price"]);
 const MAX_SEND_ATTEMPTS = 3;
+/** A `charging` Stripe row older than this is never re-POSTed (Stripe prunes idempotency keys after ~24h). */
+const STRIPE_RESUME_LIMIT_MS = 23 * 3_600_000;
 const DEFAULT_CALL_COOLDOWN_MS = 2 * 60_000;
 /**
  * A counteroffer call right after the business quoted on a call: a shorter gap (it just spoke to us
@@ -398,6 +402,8 @@ export function mergeCarryOver(next: QuoteRecord, prev: QuoteRecord | null): Quo
     if (out[k] !== null || prev[k] === null) continue;
     // An earlier tax amount belongs to the earlier total: not carried onto a new price.
     if (field === "tax" && out.total_cents !== prev.total_cents) continue;
+    // An earlier deposit larger than a new, lower total can't be the deposit on it (it would be charged).
+    if (field === "deposit" && out.total_cents !== null && prev[k]! > out.total_cents) continue;
     out[k] = prev[k];
     if (prev.sources[field]) out.sources[field] = prev.sources[field];
     out.missing_fields = out.missing_fields.filter((m) => m !== field);
@@ -1743,7 +1749,11 @@ export class HaggleEngine {
       // Already decided elsewhere (the card, email) or unknown: tell the human, never forward the code.
       const decided = texted.find((a) => a.code === code);
       if (decided || pending.length === 0) {
-        const job = await this.repo.getJob(decided?.job_id ?? last?.jobId ?? open.find(() => true)?.id ?? "");
+        // Fallback: an open deal this number approves for, never another workspace's deal (lastSms is in
+        // memory only, so after a restart it is empty).
+        let mine: JobRow | undefined;
+        if (!decided && !last?.jobId) for (const j of open) if (from === (await this.notifyTarget(j))) { mine = j; break; }
+        const job = await this.repo.getJob(decided?.job_id ?? last?.jobId ?? mine?.id ?? "");
         const stored = job ? await this.repo.insertMessage({
           job_id: job.id, business_id: null, approval_id: decided?.id ?? null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
           rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
@@ -2041,7 +2051,7 @@ export class HaggleEngine {
    * says it is an AI assistant, and may cite only the real competing total (re-checked now). Recorded
    * as a counteroffer so the board's negotiation history shows it; the answer arrives via call.ended.
    */
-  async placeCallback(jobId: string, businessId: string, authorizedBy: string): Promise<{ placed: boolean; proposal: CallbackProposal }> {
+  async placeCallback(jobId: string, businessId: string, authorizedBy: string): Promise<{ placed: boolean; scheduledFor?: string; proposal: CallbackProposal }> {
     const current = await this.loadJob(jobId);
     if (!TERMINAL.has(current.state) && !this.hasRoundLeft(current)) {
       throw new EngineError("no_rounds_left", `This deal has no negotiation round left (round ${current.round} of ${Math.min(current.max_rounds, MAX_ROUND)}); a callback would open another.`,
@@ -2055,17 +2065,22 @@ export class HaggleEngine {
     const reqs = job.request.requirements.filter((r) => r.hard).map((r) => r.text);
     const mine = await this.repo.getQuote(proposal.their_quote_id);
     const reason = HaggleEngine.callBrief(b.name, job, reqs, { competingTotalUsd: proposal.basis_total_usd, competingApproximate: proposal.basis_approximate === true, followUpOnQuoteUsd: proposal.their_total_usd, followUpApproximate: isApproximate(mine?.record), customer: this.customer(job) });
-    const { callId } = await this.d.phone!.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone!, reason, idempotencyKey: key });
-    await this.repo.insertMessage({
-      job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind: "call", channel: "phone", provider_email_id: callId, idempotency_key: key,
-      rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: reason, attachments: [], attachments_download_url: null,
-      sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null, round: proposal.round, simulated: job.mode === "mock",
-    });
-    await this.repo.updateBusiness(job.id, b.business_id, { status: "ringing", countered_round: proposal.round });
+    // Through callBusiness like every other call: call hours, the cooldown and a call already on the
+    // line defer it (scheduled, placed later by dueScheduledCalls) instead of ringing anyway.
+    let r: { placed: MessageRow | null; scheduledFor?: string };
+    try {
+      r = await this.callBusiness(job, b, { key, kind: "call", reason, body: reason, round: proposal.round });
+    } catch (err) {
+      const f = err instanceof ChannelSendError ? err : null;
+      throw new EngineError("callback_failed", `The callback to ${b.name} couldn't be placed${f ? ` (${f.reason.replace(/_/g, " ")})` : ""}; nothing was said to them.`,
+        f?.retryable ? "Try call_back again in a minute." : "Call get_quotes; reach the business another way (send_message) or choose among the current quotes.", "get_quotes");
+    }
+    // A business that already quoted keeps "quoted": an unanswered callback must not turn it into no_reply/declined.
+    await this.repo.updateBusiness(job.id, b.business_id, { countered_round: proposal.round, ...(r.placed && !["quoted", "declined"].includes(b.status) ? { status: "ringing" as const } : {}) });
     await this.repo.appendEvent(job.id, "counteroffer", { business_id: b.business_id, round: proposal.round, target_total_usd: proposal.basis_total_usd, basis_quote_id: proposal.basis_quote_id, ...(proposal.basis_approximate ? { basis_approximate: true } : {}), channel: "phone", authorized_by: authorizedBy });
-    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} back (Voice AI), citing ${proposal.basis_approximate ? `another business's estimate of about $${proposal.basis_total_usd.toLocaleString("en-US")}` : `a real $${proposal.basis_total_usd.toLocaleString("en-US")} quote`}`, channel: "phone" });
+    if (r.placed) await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} back (Voice AI), citing ${proposal.basis_approximate ? `another business's estimate of about $${proposal.basis_total_usd.toLocaleString("en-US")}` : `a real $${proposal.basis_total_usd.toLocaleString("en-US")} quote`}`, channel: "phone" });
     await this.repo.touchJob(job.id);
-    return { placed: true, proposal };
+    return { placed: r.placed !== null, ...(r.scheduledFor ? { scheduledFor: r.scheduledFor } : {}), proposal };
   }
 
   /** The deal still has a negotiation round to spend: its current round < max_rounds (never past MAX_ROUND). */
@@ -2086,7 +2101,8 @@ export class HaggleEngine {
       if (!b.phone || (await this.repo.findMessageByIdempotencyKey(`call:${job.id}:${b.business_id}`))) continue;
       if (b.next_attempt_at && Date.parse(b.next_attempt_at) > now) continue; // deferred (call hours, cooldown, retry)
       if (b.channel === "phone" && b.status === "contacted" && now >= created + (this.d.config.callDelayMs ?? 0)) await this.placeRfqCall(job, b);
-      else if (esc !== undefined && b.channel === "email" && ((b.status === "contacted" && b.contacted_at && now >= Date.parse(b.contacted_at) + esc) || b.status === "bounced")) await this.placeRfqCall(job, b, { escalation: true });
+      // escalated_at: an escalation already tried (placed, or failed for good) is never retried.
+      else if (esc !== undefined && b.channel === "email" && !b.escalated_at && ((b.status === "contacted" && b.contacted_at && now >= Date.parse(b.contacted_at) + esc) || b.status === "bounced")) await this.placeRfqCall(job, b, { escalation: true });
     }
   }
 
@@ -2583,7 +2599,8 @@ export class HaggleEngine {
     if (match.kind === "unmatched" || match.kind === "quarantine" || !msg.from) {
       const reason = !msg.from ? "from_unparseable" : match.kind === "quarantine" || match.kind === "unmatched" ? match.reason : "unexpected";
       const jobId = match.kind === "quarantine" ? match.jobId : null;
-      await this.repo.insertMessage({ ...base, job_id: jobId, business_id: match.kind === "quarantine" ? match.businessId : null, kind: "quarantine", sender_trusted: false, trust_reason: null, matched_via: match.kind === "quarantine" ? match.via : null, parse_status: "none", quarantine_reason: reason });
+      const stored = await this.repo.insertMessage({ ...base, job_id: jobId, business_id: match.kind === "quarantine" ? match.businessId : null, kind: "quarantine", sender_trusted: false, trust_reason: null, matched_via: match.kind === "quarantine" ? match.via : null, parse_status: "none", quarantine_reason: reason });
+      if (!stored) return { jobId, outcome: "duplicate" }; // a webhook redelivery: flagged once
       if (jobId) await this.repo.appendEvent(jobId, "flag", { business_id: match.kind === "quarantine" ? match.businessId : "", flag: "unverified_sender", summary: "message in a business thread from another address was quarantined" });
       this.log("inbound_quarantined", { reason, job_id: jobId });
       return { jobId, outcome: `quarantined:${reason}` };
@@ -2795,6 +2812,13 @@ export class HaggleEngine {
       const p = await this.repo.getPaymentForJob(job.id);
       if (p?.status === "settled") return { type: "payment_settled" };
       if (p && (p.status === "rejected" || p.status === "failed")) return { type: "payment_failed_final" };
+      // An approval that lapsed after the human's yes, before any charge started, can't be paid:
+      // back to choosing (approve again), instead of a deal stuck in paying that refuses approve.
+      const a = await this.repo.getLatestApproval(job.id);
+      if (a?.status === "approved" && (!p || p.approval_id !== a.id) && now > Date.parse(a.expires_at)) {
+        if (await this.repo.transitionApproval(a.id, "approved", { status: "expired" })) await this.repo.appendEvent(job.id, "approval_expired", { approval_id: a.id });
+        return { type: "approval_void" };
+      }
     }
     return null;
   }
@@ -3101,11 +3125,16 @@ export class HaggleEngine {
       return;
     }
     let quoteRow: QuoteRow | null = null;
+    // A reply that states nothing new ("Thanks, looking forward to it!") only carries the current quote
+    // over: it is not a revision, so it never supersedes that quote or voids an approval of it.
+    const statesNothing = !!priorRecord && fresh.available && fresh.total_cents === null && fresh.subtotal_cents === null && fresh.price_per_head_cents === null
+      && !statesTerms && !firmed && fresh.questions.length === 0 && fresh.menu_items.length === 0
+      && !Object.values(fresh.fields ?? {}).some((v) => v !== null) && fresh.flags.every((f) => priorRecord.flags.includes(f) || ABSENCE_FLAGS.has(f));
     // Every priced reply is reported as a quote, even without a single stated total (flagged; Haggle
     // asks for the exact total below when it can).
     const priced = record.total_cents !== null || record.subtotal_cents !== null || record.price_per_head_cents !== null || record.deposit_cents !== null;
     const statedField = Object.values(record.fields ?? {}).some((v) => v !== null);
-    if (priced || !record.available || statedField) {
+    if ((priced || !record.available || statedField) && !statesNothing) {
       const source = record.sources.total?.source ?? (kind === "quote.json" ? "quote.json" : kind);
       // The quote's round is the negotiation round it answers (1 until the business is countered),
       // not its reply count: a clarification before any counteroffer (the exact total, a confirmed
@@ -3151,7 +3180,7 @@ export class HaggleEngine {
     const computed = /^computed/.test(record.sources.total?.source ?? "");
     const stated = record.total_cents !== null && (!computed || (allInKnown(record, this.needsDelivery(job)) && !isApproximate(record)));
     // A request compared on a non-money answer (e.g. earliest date) needs that answer, not a total.
-    const needExact = record.available && record.questions.length === 0 && !(quoteRow && stated) && !nonMoneyCompare(job.request);
+    const needExact = record.available && record.questions.length === 0 && !(quoteRow && stated) && !statesNothing && !nonMoneyCompare(job.request);
     // One automatic follow-up for whatever the quote still lacks (required answers, unstated hard
     // requirements), with the total ask folded in: one message, not two.
     const chase = record.available && job.request.auto_follow_up !== false && !TERMINAL.has(job.state) && !job.ready;
@@ -3179,7 +3208,7 @@ export class HaggleEngine {
       if (!priorCurrent) for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
     }
     if (needExact && missing.length === 0) await this.askExactTotal(job, b, record.total_cents);
-    const status = !record.available ? "declined" : quoteRow ? "quoted" : record.questions.length ? "question" : followupsBefore >= 1 ? "silent" : "replied";
+    const status = !record.available ? "declined" : quoteRow || statesNothing ? "quoted" : record.questions.length ? "question" : followupsBefore >= 1 ? "silent" : "replied";
     await this.repo.updateBusiness(job.id, b.business_id, { status });
     if (asked.length && record.available && !record.flags.some((f) => f === "external_payment_link" || f === "prompt_injection")) await this.answerFromRequest(job, b, asked);
     // The window waits briefly for the answer (collectionWaiting), never past the deadline. One
@@ -3189,10 +3218,13 @@ export class HaggleEngine {
     // Partner's brain learns from every parsed reply; a brain failure never blocks the deal.
     try {
       const contractQuote = quoteRow ? toContractQuote(quoteRow, b, { budgetCents: job.budget_cents }) : null;
+      // A revised quote answers a counter: did that counter cite a real competing quote?
+      const counter = quoteRow && quoteRow.round >= 2 ? (await this.repo.listEvents(job.id)).filter((e) => e.type === "counteroffer" && e.data.business_id === b.business_id && Number(e.data.round) === quoteRow!.round).at(-1) : undefined;
       await this.d.brain.learnFromReply(b.business_id, toParsedReply(x, contractQuote, questionIds), {
         job_id: job.id, business_id: b.business_id, business_name: b.name, business_email: b.email ?? `tel:${b.phone ?? ""}`, message_id: msg.id, thread_id: msg.thread_id ?? "",
         received_at: msg.created_at, rfq_sent_at: b.contacted_at ?? job.created_at, channel: kind === "quote.json" ? "quote.json" : kind === "pdf" ? "pdf" : kind === "a2a task" ? "a2a" : kind === "call transcript" ? "transcript" : "text", reply_channel: msg.channel,
         sender_trusted: msg.sender_trusted === true, sender_trust_reason: msg.trust_reason ?? "unknown", request: job.request, simulated: b.simulated,
+        ...(counter ? { cited_competing_quote: Boolean(counter.data.basis_quote_id) } : {}),
       });
     } catch (err) {
       this.log("brain_learn_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -3491,6 +3523,16 @@ export class HaggleEngine {
     // crash between insert and result). A fresh one is in flight in another call: don't call Stripe
     // again (its idempotency key would dedupe, but we never rely on that alone).
     if (pay && pay.approval_id === approval.id && pay.status === "charging" && !pay.reason?.startsWith("retryable:") && Date.now() - Date.parse(pay.updated_at) < 60_000) return {};
+    // Stripe keeps an idempotency key about 24 hours: a charge first tried longer ago than that could
+    // be charged twice if re-POSTed (the first may have succeeded unseen). Stop and leave it to a person.
+    if (pay && pay.approval_id === approval.id && pay.status === "charging" && this.now().getTime() - Date.parse(pay.created_at) > STRIPE_RESUME_LIMIT_MS) {
+      const reason = `charge_unconfirmed: not retried after ${Math.round(STRIPE_RESUME_LIMIT_MS / 3_600_000)}h (Stripe's idempotency window); check Stripe for a PaymentIntent with metadata approval_id=${approval.id} before charging again`;
+      if (await this.repo.transitionPayment(pay.id, ["charging"], { status: "failed", reason })) {
+        await this.repo.appendEvent(jobId, "payment", { status: "failed", rail: "stripe", reason });
+        this.log("payment_resume_expired", { job_id: jobId, payment_id: pay.id, approval_id: approval.id });
+      }
+      return {};
+    }
     if (!pay || pay.approval_id !== approval.id) {
       if (!job.pay_intent) return {};
       const quote = await this.repo.getQuote(approval.quote_id);
@@ -3506,6 +3548,9 @@ export class HaggleEngine {
         now: this.now(),
       });
       if (!verdict.ok) {
+        // The pay request is spent: logged once, and no later advance (or later approval) charges
+        // without another pay() call.
+        await this.repo.touchJob(jobId, { pay_intent: false });
         await this.repo.appendEvent(jobId, "payment_refused", { code: verdict.code, approval_id: approval.id });
         return { refused: verdict.code };
       }
@@ -4217,6 +4262,8 @@ export class HaggleEngine {
       throw new EngineError("quote_not_eligible", `That quote can't be approved: ${reason}.`, fix, "get_quotes");
     }
     if (pays && !payNow) throw new EngineError("no_deposit", "This quote has no amount to pay now.", "Ask the business for its price first, or approve with action 'confirm' (no payment).", "get_quotes");
+    // Defense in depth: never approve paying more than the quote's own total.
+    if (pays && q.total_cents !== null && payNow! > q.total_cents) throw new EngineError("deposit_over_total", `The $${centsToUsd(payNow!).toFixed(2)} deposit is more than the $${centsToUsd(q.total_cents).toFixed(2)} total; one of the figures is wrong.`, "Ask the business to confirm its total and deposit (answer_business or send_message), then approve the corrected quote.", "get_quotes");
     const payment = pays ? payNow! : 0;
     // The operator's per-payment ceiling is the one hard money limit (CLAUDE.md §7: amount ≤ approved ≤ cap).
     const cap = this.d.config.globalPaymentCapCents;
@@ -4238,6 +4285,8 @@ export class HaggleEngine {
       expires_at: new Date(this.now().getTime() + this.d.config.approvalTtlMs).toISOString(), decided_at: null, outbound_message_id: null, thread_id: null,
     });
     if (!approval) throw new EngineError("approval_pending", "An approval is already pending for this job.", "Wait for the human, or let it expire.", "wait_for_update");
+    // A pay() made for an earlier approval never charges this one (approve, then pay: decision 2).
+    if (job.pay_intent) await this.repo.touchJob(jobId, { pay_intent: false });
     const fired = await this.fire(jobId, { type: "approval_requested" });
     if (!fired.ok) {
       await this.repo.transitionApproval(approval.id, "pending", { status: "expired" });

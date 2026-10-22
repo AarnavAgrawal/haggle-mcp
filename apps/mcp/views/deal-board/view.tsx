@@ -849,9 +849,10 @@ function useApprovalFlow(board: DealBoard, q: Quote, onChanged: () => Promise<vo
       const res = await start.callTool({ job_id: board.job.id, quote_id: q.quote_id, action: "pay" });
       const ticket = viewTicket((res as { _meta?: Record<string, unknown> })._meta);
       if (!ticket) {
-        const s = res.structuredContent as { status?: string } | undefined;
+        const s = res.structuredContent as { status?: string; next?: string } | undefined;
         if (!s) throw new Error(resultText(res) ?? "The approval couldn't be started.");
-        return `Approval is ${s.status ?? "not available here"}.`;
+        // e.g. the approval already went to the human by text or email: say how to answer it.
+        return s.next && s.status === "pending" ? s.next : `Approval is ${s.status ?? "not available here"}.`;
       }
       const r = (await approveInView.callTool(ticket)).structuredContent as { status: string; outcome?: string; reason?: string; next?: string } | undefined;
       if (!r) throw new Error("The approval wasn't recorded.");

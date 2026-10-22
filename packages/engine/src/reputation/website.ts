@@ -7,7 +7,9 @@
 // - A published price is an advertised claim ("from $25/person"), never a quote: nothing is binding
 //   until the business confirms it to Haggle directly.
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { isIP, type LookupFunction } from "node:net";
 
 export interface WebsiteEvidence {
   url: string;
@@ -28,14 +30,40 @@ type Fetch = (url: string, init: { method: string; headers: Record<string, strin
 const MAX_BYTES = 400_000;
 const UA = "HaggleBot/0.5 (+https://calm-spark-ck3qm.run.mcp-use.com/llms.txt; read-only business info)";
 
-function privateAddress(ip: string): boolean {
-  if (isIP(ip) === 6) return /^(::1|fc|fd|fe80|::ffff:(10|127|192\.168|169\.254|172\.(1[6-9]|2\d|3[01]))\.)/i.test(ip) || ip === "::";
-  const [a, b] = ip.split(".").map(Number);
-  return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b! >= 16 && b! <= 31) || (a === 192 && b === 168) || (a === 100 && b! >= 64 && b! <= 127);
+/** Loopback, private, CGNAT, link-local, benchmark (198.18/15), documentation, multicast and reserved (224/3). */
+function privateV4(a: number, b: number, c: number): boolean {
+  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 0 || c === 2)) || (a === 198 && (b === 18 || b === 19)) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113);
 }
 
+/** An IPv6 address as its 8 16-bit groups (a trailing dotted IPv4 folded into the last two). */
+function v6Groups(ip: string): number[] {
+  let s = ip.toLowerCase().split("%")[0]!;
+  const v4 = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(s);
+  if (v4) { const [a, b, c, d] = v4.slice(1).map(Number) as [number, number, number, number]; s = `${s.slice(0, v4.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`; }
+  const [head, tail] = s.includes("::") ? s.split("::") as [string, string] : [s, null];
+  const h = head ? head.split(":") : [], t = tail ? tail.split(":") : [];
+  return [...h, ...Array(tail === null ? 0 : 8 - h.length - t.length).fill("0"), ...t].map((x) => parseInt(x || "0", 16));
+}
+
+function privateAddress(ip: string): boolean {
+  const v = isIP(ip);
+  if (v === 4) { const [a, b, c] = ip.split(".").map(Number) as [number, number, number]; return privateV4(a, b, c); }
+  if (v !== 6) return true; // not an address: never connect
+  const g = v6Groups(ip);
+  const embedded = (hi: number, lo: number) => privateV4(hi >> 8, hi & 0xff, lo >> 8);
+  // ::/96 (incl. :: and ::1) and IPv4-mapped ::ffff:0:0/96: judged by the IPv4 inside.
+  if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0 || g[5] === 0xffff)) return embedded(g[6]!, g[7]!);
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return embedded(g[6]!, g[7]!); // NAT64
+  if (g[0] === 0x2002) return embedded(g[1]!, g[2]!); // 6to4
+  // ULA fc00::/7, link-local fe80::/10, site-local fec0::/10, multicast ff00::/8, documentation 2001:db8::/32.
+  return (g[0]! & 0xfe00) === 0xfc00 || (g[0]! & 0xffc0) === 0xfe80 || (g[0]! & 0xffc0) === 0xfec0 || (g[0]! & 0xff00) === 0xff00 || (g[0] === 0x2001 && g[1] === 0xdb8);
+}
+
+const systemResolve = async (h: string) => (await lookup(h, { all: true })).map((x) => x.address);
+
 /** True when the URL may be fetched: http(s), a public DNS name (resolved to public addresses). */
-export async function publicUrl(u: string, resolve: (host: string) => Promise<string[]> = async (h) => (await lookup(h, { all: true })).map((x) => x.address)): Promise<URL | null> {
+export async function publicUrl(u: string, resolve: (host: string) => Promise<string[]> = systemResolve): Promise<URL | null> {
   let url: URL;
   try { url = new URL(u); } catch { return null; }
   if (!/^https?:$/.test(url.protocol) || url.username || url.password) return null;
@@ -48,18 +76,68 @@ export async function publicUrl(u: string, resolve: (host: string) => Promise<st
   return url;
 }
 
+/**
+ * A connect-time DNS lookup that refuses private addresses. publicUrl's check alone is not enough: a
+ * second resolution by fetch could return another address (DNS rebinding); with this lookup the
+ * address checked is the address connected to, on every request and redirect hop.
+ */
+export function guardedLookup(resolve: (host: string) => Promise<string[]> = systemResolve): LookupFunction {
+  return (host, options, cb) => {
+    const done = cb as (err: Error | null, address?: string | { address: string; family: number }[], family?: number) => void;
+    resolve(host).then((addrs) => {
+      const fam = (options as { family?: number | string }).family;
+      const want = fam === 4 || fam === "IPv4" ? 4 : fam === 6 || fam === "IPv6" ? 6 : 0;
+      if (!addrs.length || addrs.some(privateAddress)) return done(Object.assign(new Error(`blocked address for ${host}`), { code: "EHOSTBLOCKED" }));
+      const all = addrs.map((address) => ({ address, family: isIP(address) })).filter((a) => !want || a.family === want);
+      if (!all.length) return done(Object.assign(new Error(`no usable address for ${host}`), { code: "ENOTFOUND" }));
+      if ((options as { all?: boolean }).all) done(null, all);
+      else done(null, all[0]!.address, all[0]!.family);
+    }, (e: Error) => done(e));
+  };
+}
+
+/** The default Fetch: node:http(s) through guardedLookup, no redirects followed, body read up to MAX_BYTES. */
+export function pinnedFetch(resolve?: (host: string) => Promise<string[]>): Fetch {
+  const lookup = guardedLookup(resolve);
+  return (u, init) => new Promise((ok, fail) => {
+    const url = new URL(u);
+    const req = (url.protocol === "https:" ? httpsRequest : httpRequest)(url, { method: init.method, headers: { ...init.headers, "accept-encoding": "identity" }, lookup, agent: false, ...(init.signal ? { signal: init.signal } : {}) }, (res) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      res.on("data", (c: Buffer) => { if (size < MAX_BYTES) { chunks.push(c); size += c.length; } else res.destroy(); });
+      res.on("error", fail);
+      res.on("close", () => {
+        const status = res.statusCode ?? 0;
+        const body = Buffer.concat(chunks).toString("utf8");
+        ok({ ok: status >= 200 && status < 300, status, headers: { get: (n) => { const v = res.headers[n.toLowerCase()]; return v === undefined ? null : Array.isArray(v) ? v.join(", ") : String(v); } }, text: async () => body });
+      });
+    });
+    req.on("error", fail);
+    req.end();
+  });
+}
+
 /** robots.txt: is `path` disallowed for us (or for "*")? Missing/unreadable robots = allowed. */
 export function robotsDisallows(robots: string, path: string): boolean {
   let applies = false;
   let matched = false;
+  let inAgents = false; // consecutive User-agent lines name one group: they OR together
   const rules: string[] = [];
   for (const raw of robots.split(/\r?\n/)) {
     const line = raw.replace(/#.*/, "").trim();
     const m = /^([a-z-]+)\s*:\s*(.*)$/i.exec(line);
     if (!m) continue;
     const [k, v] = [m[1]!.toLowerCase(), m[2]!.trim()];
-    if (k === "user-agent") { if (matched && rules.length) break; applies = v === "*" || /hagglebot/i.test(v); matched ||= applies; }
-    else if (k === "disallow" && applies && v) rules.push(v);
+    if (k === "user-agent") {
+      if (!inAgents) { if (matched && rules.length) break; applies = false; }
+      const hit = v === "*" || /hagglebot/i.test(v);
+      applies ||= hit;
+      matched ||= hit;
+      inAgents = true;
+    } else {
+      inAgents = false;
+      if (k === "disallow" && applies && v) rules.push(v);
+    }
   }
   return rules.some((r) => path.startsWith(r));
 }
@@ -89,7 +167,8 @@ export function extractWebsite(html: string, pageUrl: string): Omit<WebsiteEvide
 export async function websiteEvidence(url: string, opts: { fetch?: Fetch; resolve?: (host: string) => Promise<string[]>; now?: () => Date } = {}): Promise<WebsiteEvidence> {
   const now = (opts.now ?? (() => new Date()))().toISOString();
   const empty = (status: WebsiteEvidence["status"]): WebsiteEvidence => ({ url, fetched_at: now, status, emails: [], phones: [], price_claims: [] });
-  const doFetch: Fetch = opts.fetch ?? ((u, i) => fetch(u, i) as never);
+  // The default fetch re-checks every address at connect time (DNS rebinding), redirect hops included.
+  const doFetch: Fetch = opts.fetch ?? pinnedFetch(opts.resolve);
   let target = await publicUrl(url, opts.resolve);
   if (!target) return empty("blocked_host");
   const get = async (u: URL) => {

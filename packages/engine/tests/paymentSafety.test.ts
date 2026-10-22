@@ -79,6 +79,21 @@ describe("payment safety", () => {
     expect(new Set(stripe.calls.map((c) => c.key)).size).toBe(1); // every attempt used the same idempotency key
   });
 
+  it("a charge first tried more than a day ago is never re-sent (Stripe's idempotency key may be gone)", async () => {
+    const stripe = countingStripe(1_000); // Stripe unreachable throughout
+    const repo = new InMemoryRepository();
+    const first = engine(stripe, repo);
+    const { deal, q } = await approved(first);
+    await first.pay(deal.job_id, q.quote_id).catch(() => undefined);
+    const p = (await repo.getPaymentForJob(deal.job_id))!;
+    expect(p.status).toBe("charging");
+    await repo.transitionPayment(p.id, ["charging"], { created_at: new Date(Date.now() - 25 * 3_600_000).toISOString() });
+    const before = stripe.calls.length;
+    await engine(stripe, repo).pay(deal.job_id, q.quote_id).catch(() => undefined);
+    expect(stripe.calls.length).toBe(before);
+    expect((await repo.getPaymentForJob(deal.job_id))!).toMatchObject({ status: "failed", reason: expect.stringMatching(/^charge_unconfirmed/) });
+  });
+
   it("an approval past its expiry, or for a revised quote, is never charged", async () => {
     const stripe = countingStripe();
     let t = Date.now();

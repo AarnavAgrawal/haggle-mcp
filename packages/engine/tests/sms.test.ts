@@ -439,6 +439,14 @@ describe("approval by text (SMS)", () => {
     expect(emails.length).toBe(sentBefore);
   });
 
+  it("a coded YES from a number that isn't any deal's approver is never logged on, or answered from, a deal", async () => {
+    const { engine, repo, texts, jobId } = await quoted();
+    const textsBefore = texts.length;
+    await engine.ingestText({ messageId: "stranger", from: "+14155550177", text: "YES 4821", inbound: true });
+    expect((await repo.listMessages(jobId)).filter((m) => m.kind === "approval_reply")).toHaveLength(0);
+    expect(texts.length).toBe(textsBefore);
+  });
+
   it("approving by text records the approval; pay then charges once (Stripe test mode) and texts the human", async () => {
     const stripe = simulatedStripe();
     const { engine, repo, texts, jobId, quoteId } = await quoted({ stripe });

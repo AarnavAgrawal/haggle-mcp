@@ -17,8 +17,12 @@ export { businessText, dropAgentOnlyAmounts, isAgentLine, percentsIn, spokenAmou
 const DECLINE = /\b(not available|unavailable|can(?:no|')t (?:do|make|help|take)|cannot (?:do|make|help|take)|fully booked|we(?:'re| are) booked|decline|no longer)\b/i;
 const INJECTION = /\b(ignore (?:your|all|any|previous|prior) (?:instructions|rules)|ai agent:|you must pay|pay now)\b/i;
 const PAY_LINK = /https?:\/\/\S*(?:pay|checkout|invoice|stripe|paypal|venmo)\S*/i;
-const PLEASANTRIES = /\b(how can i help|can i help you|what can i do for you|anything else)\b/i;
+const DELIVERED_FEE = /\bdelivered\s+(?:for|at)\s+(?:an?\s+(?:extra|additional)\s+)?\$\s?\d/i;
+const PLEASANTRIES =/\b(how can i help|can i help you|what can i do for you|anything else)\b/i;
 const NUM = String.raw`(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)`;
+/** "$5k" / "$4.5k": the k multiplies by 1000 (as findDollarAmounts reads it), never dropped. */
+const K = String.raw`(\s*k\b)?`;
+const usdOf = (num: string, k: string | undefined) => Math.round(Number(num.replace(/,/g, "")) * (k ? 1000 : 1) * 100) / 100;
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -35,8 +39,8 @@ function amountNear(text: string, word: string): { usd: number; excerpt: string 
   const fromLabel = labelled ? findDollarAmounts(labelled)[0] : undefined;
   if (fromLabel !== undefined) return { usd: fromLabel / 100, excerpt: `${word}: ${labelled!}`.slice(0, 120) };
   const w = escapeRegex(word);
-  const m = text.match(new RegExp(String.raw`\$\s?${NUM}\s*(?:\w+\s){0,2}?${w}\b`, "i")) ?? text.match(new RegExp(String.raw`\b${w}\s*(?:of|is|would be|will be|:)?\s*\$\s?${NUM}`, "i"));
-  return m ? { usd: Number(m[1]!.replace(/,/g, "")), excerpt: m[0].slice(0, 120) } : null;
+  const m = text.match(new RegExp(String.raw`\$\s?${NUM}${K}\s*(?:\w+\s){0,2}?${w}\b`, "i")) ?? text.match(new RegExp(String.raw`\b${w}\s*(?:of|is|would be|will be|:)?\s*\$\s?${NUM}${K}`, "i"));
+  return m ? { usd: usdOf(m[1]!, m[2]), excerpt: m[0].slice(0, 120) } : null;
 }
 
 function answerFor(f: AskField, text: string): string | null {
@@ -54,8 +58,10 @@ export function heuristicExtract(input: { request: ExtractionRequest; bodyText: 
   const total = amountNear(text, "total");
   const deposit = amountNear(text, "deposit");
   const perHead = amountNear(text, "per person") ?? amountNear(text, "per head");
-  const deliveryIncluded = /delivery (?:is )?(?:included|free)|free delivery|\bdelivered\b/i.test(text) ? true : /no delivery|pick[- ]?up only/i.test(text) ? false : null;
-  const delivery = deliveryIncluded ? null : amountNear(text, "delivery");
+  // "$1,080 delivered" is a delivered price; "can be delivered for $75" is a fee, never "included".
+  const deliveredFree = /\bdelivered\b/i.test(text) && !DELIVERED_FEE.test(text);
+  const deliveryIncluded = /delivery (?:is )?(?:included|free)|free delivery/i.test(text) || deliveredFree ? true : /no delivery|pick[- ]?up only/i.test(text) ? false : null;
+  const delivery = deliveryIncluded ? null : amountNear(text, "delivery") ?? amountNear(text, "delivered for");
   const dietary = input.request.dietary.flatMap((d) => {
     // "veg" / "veggie" in texts and calls mean vegetarian.
     const word = /^vegetarian$/i.test(d.need) ? String.raw`(?:vegetarian|veggie|veg)\b` : escapeRegex(d.need);
@@ -75,7 +81,8 @@ export function heuristicExtract(input: { request: ExtractionRequest; bodyText: 
   if (perHead) sources.push({ field: "price_per_head", source: src, excerpt: perHead.excerpt });
   if (delivery) sources.push({ field: "delivery_fee", source: src, excerpt: delivery.excerpt });
   return {
-    available: !DECLINE.test(text),
+    // "We can't do it cheaper than this. Total: $900" holds a price: only a reply without one declines.
+    available: !(DECLINE.test(text) && total === null && perHead === null),
     price_per_head_usd: perHead?.usd ?? null,
     headcount: null,
     subtotal_usd: null,

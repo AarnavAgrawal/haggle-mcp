@@ -126,6 +126,7 @@ export class BrainAdapter implements Brain {
     }
   }
 
+  /** `cited_competing_quote`: whether Haggle's counter cited a real competing quote (when the caller knows). */
   async learnFromReply(businessId: string, parsed: ParsedReply, meta: ReplyMeta): Promise<Profile> {
     const phone = meta.business_email.startsWith("tel:") ? meta.business_email.slice(4) : undefined;
     const email = phone ? undefined : meta.business_email;
@@ -135,11 +136,15 @@ export class BrainAdapter implements Brain {
     let last: CoreProfile | null = null;
     if (meta.sender_trusted) {
       const request = toCoreRequest(meta.request);
+      // A revised quote carries the total it replaced: the brain learns discounts only from these.
+      const from = negotiatedFromOf(parsed);
       for (const reply of toCoreReplies(parsed, meta)) {
+        const revised = reply.kind === "quote" && from !== undefined;
         last = await this.core.learnFromReply(brainId, reply, {
           job_id: meta.job_id, business_name: name, channel: meta.reply_channel ?? (phone ? "phone" : "email"), received_at: meta.received_at,
           contacted_at: meta.rfq_sent_at, round: reply.kind === "quote" ? roundOf(parsed) : 1, request,
           business_id: brainId, message_id: meta.message_id, format: meta.channel, sender_trusted: true, simulated: meta.simulated,
+          ...(revised ? { negotiated_from: from } : {}), ...(revised && meta.cited_competing_quote !== undefined ? { cited_competing_quote: meta.cited_competing_quote } : {}),
         });
       }
     }
@@ -152,7 +157,8 @@ export class BrainAdapter implements Brain {
 
   async checkPrice(q: QuoteLike): Promise<PriceVerdict> {
     const v = await this.core.checkPrice({
-      total_usd: q.total_usd, quantity: q.request.quantity, area: q.request.area,
+      // The brain maps free text to its category ("fix a leak" isn't judged against catering prices).
+      total_usd: q.total_usd, quantity: q.request.quantity, area: q.request.area, category: q.request.what,
       ...(q.business_id ? { business_id: await this.profileIdFor(q.business_id) } : {}),
     });
     const qty = q.request.quantity;
@@ -223,6 +229,11 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 function roundOf(parsed: ParsedReply): number {
   for (const it of parsed.items) if (it.kind === "quote") return Math.max(1, it.quote.round);
   return 1;
+}
+
+function negotiatedFromOf(parsed: ParsedReply): number | undefined {
+  for (const it of parsed.items) if (it.kind === "quote") return it.quote.negotiated_from;
+  return undefined;
 }
 
 export function toCoreRequest(r: Request): CoreRequest {

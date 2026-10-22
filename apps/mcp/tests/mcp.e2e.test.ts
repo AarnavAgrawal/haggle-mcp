@@ -40,6 +40,26 @@ async function rpc(method: string, params: Record<string, unknown> = {}) {
   return msg.result;
 }
 const call = async (name: string, args: Record<string, unknown>) => rpc("tools/call", { name, arguments: args });
+// A client that renders MCP App views (Claude, ChatGPT): it declares the io.modelcontextprotocol/ui
+// extension in the per-request envelope (protocol 2026-07-28), which mcp-use exposes as
+// ctx.client.extension(). The board/card button tools only run for such a client.
+const UI_EXT = { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } };
+async function clientCall(name: string, args: Record<string, unknown>, capabilities: Record<string, unknown>) {
+  const res = await fetch(`${BASE}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call", "mcp-name": name },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: ++id, method: "tools/call",
+      params: { name, arguments: args, _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "haggle-e2e-host", version: "1" }, "io.modelcontextprotocol/clientCapabilities": capabilities } },
+    }),
+  });
+  const text = await res.text();
+  const line = text.split("\n").find((l) => l.startsWith("data: "));
+  const msg = JSON.parse(line ? line.slice(6) : text);
+  if (msg.error) throw Object.assign(new Error(`tools/call ${name}: ${JSON.stringify(msg.error)}`), { rpcError: msg.error });
+  return msg.result;
+}
+const viewCall = (name: string, args: Record<string, unknown>) => clientCall(name, args, { extensions: UI_EXT });
 const errorOf = (r: { isError?: boolean; content: { text: string }[] }) => (r.isError ? JSON.parse(r.content[0]!.text) : null);
 
 const REQUEST = {
@@ -225,8 +245,14 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect((board.callbacks ?? []).find((c: { business: string }) => c.business === "Mission Eats")).toBeUndefined();
     const mission = biz("Mission Eats").id;
     expect(errorOf(await call("call_back", { job_id: job, business_id: mission }))).toMatchObject({ error: { code: "no_rounds_left", fix: expect.stringMatching(/get_quotes, then approve/) }, next: "get_quotes" });
-    const tap = await call("call_back_in_view", { job_id: job, business_id: mission, code: "123456" });
+    // The board's button tools refuse a client that doesn't render views (visibility "app" only hides them).
+    expect(errorOf(await call("call_back_in_view", { job_id: job, business_id: mission, code: "123456" }))).toMatchObject({ error: { code: "view_only" } });
+    const tap = await viewCall("call_back_in_view", { job_id: job, business_id: mission, code: "123456" });
     expect(errorOf(tap).error.code).toBe("callback_not_authorized");
+    // Wrong codes count per job+business: the fifth locks the board's Call back (guessing 6 digits is no way in).
+    for (const guess of ["234567", "345678", "456789"]) expect(errorOf(await viewCall("call_back_in_view", { job_id: job, business_id: mission, code: guess })).error.code).toBe("callback_not_authorized");
+    expect(errorOf(await viewCall("call_back_in_view", { job_id: job, business_id: mission, code: "567890" })).error.code).toBe("callback_locked");
+    expect(errorOf(await viewCall("call_back_in_view", { job_id: job, business_id: mission, code: "678901" })).error.code).toBe("callback_locked");
 
     // Unauthorized operations are refused with a fix.
     const early = await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
@@ -238,7 +264,8 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(errorOf(scam).error.code).toBe("quote_not_eligible");
     const ghost = await call("approve", { job_id: job, quote_id: "q_does_not_exist" });
     expect(errorOf(ghost).error.code).toBe("quote_not_found");
-    const fakeTap = await call("approve_in_view", { approval_id: "ap_nope", code: "1234" });
+    expect(errorOf(await call("approve_in_view", { approval_id: "ap_nope", code: "1234" }))).toMatchObject({ error: { code: "view_only" } });
+    const fakeTap = await viewCall("approve_in_view", { approval_id: "ap_nope", code: "1234" });
     expect(errorOf(fakeTap).error.code).toBe("approval_not_found");
 
     // Approval (simulated human in mock mode: this client has no approval card or form).
@@ -300,25 +327,60 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(board.ready).toBe(true);
     const q = (name: string) => board.quotes.find((x: { business: string }) => x.business === name);
 
+    // A client that renders no views (a headless agent) can't press the board's buttons: no approval, no code.
+    const headless = await call("choose_in_view", { job_id: job, quote_id: q("Bay Catering").quote_id });
+    expect(errorOf(headless)).toMatchObject({ error: { code: "view_only" }, next: "approve" });
+    expect(headless._meta).toBeUndefined();
     // The board gets the one-time code in _meta only; nothing model-visible carries it.
-    const started = await call("choose_in_view", { job_id: job, quote_id: q("Bay Catering").quote_id });
+    const started = await viewCall("choose_in_view", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(started.structuredContent).toMatchObject({ status: "pending", mode: "mock" });
     const ticket = started._meta["haggle/approval"];
     expect(ticket.code).toMatch(/^\d{4}$/);
     expect(JSON.stringify(started.structuredContent) + started.content[0].text).not.toContain(ticket.code);
     // One approval per job: choosing another option now is refused with a fix, not silently swapped.
-    const other = await call("choose_in_view", { job_id: job, quote_id: q("Mission Eats").quote_id });
+    const other = await viewCall("choose_in_view", { job_id: job, quote_id: q("Mission Eats").quote_id });
     expect(errorOf(other)).toMatchObject({ error: { code: "not_approvable" } });
-    // Choosing the same quote again reuses the waiting approval.
-    expect((await call("choose_in_view", { job_id: job, quote_id: q("Bay Catering").quote_id }))._meta["haggle/approval"]).toEqual(ticket);
+    // Choosing the same quote again reuses the waiting (board-only) approval.
+    expect((await viewCall("choose_in_view", { job_id: job, quote_id: q("Bay Catering").quote_id }))._meta["haggle/approval"]).toEqual(ticket);
     // Unsafe quotes can't be chosen from the board either.
-    expect(errorOf(await call("choose_in_view", { job_id: job, quote_id: q("QuickQuote Deli").quote_id }))).toBeTruthy();
+    expect(errorOf(await viewCall("choose_in_view", { job_id: job, quote_id: q("QuickQuote Deli").quote_id }))).toBeTruthy();
     // The human's confirm click records the approval (nothing charged); the board then calls pay.
-    const yes = await call("approve_in_view", ticket);
+    expect(errorOf(await call("approve_in_view", ticket))).toMatchObject({ error: { code: "view_only" } });
+    const yes = await viewCall("approve_in_view", ticket);
     expect(yes.structuredContent).toMatchObject({ status: "approved", outcome: "approved", action: "pay" });
     expect(yes.structuredContent.card).toMatchObject({ status: "approved", business: "Bay Catering" });
     const paid = await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(paid.structuredContent).toMatchObject({ status: "paid" });
+  }, 120_000);
+
+  it("the board never hands out the code of an approval already offered to the human on another channel", async () => {
+    const job = (await call("deal", { request: REQUEST, budget_usd: 1200, client_request_id: "e2e-choose-elsewhere" })).structuredContent.job_id;
+    let cursor = "0";
+    let board;
+    for (let i = 0; i < 60; i++) {
+      const w = await call("wait_for_update", { job_id: job, cursor, timeout_s: 1 });
+      cursor = w.structuredContent.cursor;
+      board = (await call("get_quotes", { job_id: job })).structuredContent;
+      for (const q of board.open_questions) await call("answer_business", { job_id: job, question_id: q.question_id, answer: "Yes, plates for 40." });
+      if (board.ready) break;
+    }
+    expect(board.ready).toBe(true);
+    const bay = board.quotes.find((x: { business: string }) => x.business === "Bay Catering").quote_id;
+    // The agent asks the human through the client's approval form (a view-capable client too): the
+    // approval waits on the form. Its code must not reach whoever calls the board's Choose button.
+    const asked = await clientCall("approve", { job_id: job, quote_id: bay }, { elicitation: {}, extensions: UI_EXT });
+    expect(asked.isError).toBeFalsy();
+    const pending = (await call("get_quotes", { job_id: job })).structuredContent.approval;
+    expect(pending).toMatchObject({ status: "pending" });
+    const chosen = await viewCall("choose_in_view", { job_id: job, quote_id: bay });
+    expect(chosen.isError).toBeFalsy();
+    expect(chosen.structuredContent).toMatchObject({ status: "pending", approval_id: pending.approval_id });
+    expect(chosen.structuredContent.next).toMatch(/approval form/);
+    expect(chosen._meta?.["haggle/approval"]).toBeUndefined();
+    // Nothing was approved: pay still needs the human.
+    const p = await call("pay", { job_id: job, quote_id: bay });
+    expect(p.isError ? errorOf(p).error.code : p.structuredContent.status).not.toMatch(/^(paid|approved)$/);
+    await call("cancel_deal", { job_id: job });
   }, 120_000);
 
   it("the Inkbox webhook route is off in mock mode", async () => {
@@ -369,6 +431,11 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(badSecret.status).toBe(401);
     const tickNo = await fetch(`${BASE}/internal/tick`, { method: "POST" });
     expect(tickNo.status).toBe(401);
+    // A wrong token is a 401 whatever its bytes: same character count as the secret, more UTF-8 bytes.
+    const tickWide = await fetch(`${BASE}/internal/tick`, { method: "POST", headers: { authorization: `Bearer ${"é".repeat(TICK_SECRET.length)}` } });
+    expect(tickWide.status).toBe(401);
+    const tickWrong = await fetch(`${BASE}/internal/tick`, { method: "POST", headers: { authorization: `Bearer ${TICK_SECRET.slice(0, -1)}x` } });
+    expect(tickWrong.status).toBe(401);
     const tick = await fetch(`${BASE}/internal/tick`, { method: "POST", headers: { authorization: `Bearer ${TICK_SECRET}` } });
     expect(await tick.json()).toMatchObject({ ok: true, failed: 0 });
     const health = await (await fetch(`${BASE}/health`)).json();

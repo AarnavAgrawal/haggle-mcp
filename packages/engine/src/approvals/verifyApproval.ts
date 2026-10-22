@@ -65,9 +65,12 @@ export function verifyApproval(approval: ApprovalForVerify, reply: ApprovalReply
 
   const line = firstReplyLine(reply.bodyText);
   if (line) {
+    // Decline first: "No, don't approve 4821" carries the code but is a refusal.
+    if (/^\W*NO\b/i.test(line)) return { decision: "decline" };
+    // Any other negation of the approve ("I can't approve 4821 yet") is never an approval.
+    if (/\b(?:not|don'?t|can'?t|cannot|won'?t|never)\b[^.!?]*\bAPPROVE\b/i.test(line)) return { decision: "ignore", reason: "no_valid_command" };
     const approve = line.match(/\bAPPROVE\b\W{0,3}(\d{4})\b/i);
     if (approve && approve[1] === approval.code) return { decision: "approve" };
-    if (/^NO\b/i.test(line)) return { decision: "decline" };
   }
   return { decision: "ignore", reason: "no_valid_command" };
 }

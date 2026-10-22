@@ -182,6 +182,8 @@ export interface ReplyMeta {
   sender_trust_reason: string;     // e.g. "trusted" | "dmarc-domain-mismatch"
   request: Request;                // what was asked, so the brain can normalise per-unit prices
   simulated: boolean;
+  /** A revised quote: whether Haggle's counter for that round cited a real competing quote (the brain learns what moves the business). */
+  cited_competing_quote?: boolean;
 }
 
 /* ───────────────────────── brain outputs ───────────────────────── */

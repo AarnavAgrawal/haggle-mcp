@@ -312,7 +312,11 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     expect(calls).toHaveLength(1); // proposed, never placed without a human
 
     // A human authorizes it: one AI-disclosed call citing only that real total.
-    await engine.placeCallback(deal.job_id, board.callbacks![0]!.business_id, "human via approval form");
+    // Like every call it respects the cooldown after the quote call: scheduled, then placed.
+    expect(await engine.placeCallback(deal.job_id, board.callbacks![0]!.business_id, "human via approval form")).toMatchObject({ placed: false, scheduledFor: expect.any(String) });
+    expect(calls).toHaveLength(1);
+    clock.advance(2 * 60_000);
+    await engine.advanceJob(deal.job_id);
     expect(calls).toHaveLength(2);
     expect(calls[1]!.reason).toMatch(/AI assistant who called earlier/);
     expect(calls[1]!.reason).toMatch(/real quote of \$1,080 total/);
@@ -383,6 +387,42 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     await engine.advanceJob(deal.job_id);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.reason).toMatch(/emailed earlier/);
+  });
+
+  it("an escalation call that fails for good is not retried on every advance", async () => {
+    const { engine, repo, clock } = demoEngine({ escalateEmailToCallAfterMs: 5 * 60_000 });
+    let attempts = 0;
+    (engine as unknown as { d: { phone: { placeCall(): Promise<never> } } }).d.phone = { async placeCall() { attempts++; throw new Error("rejected number"); } };
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Quiet Bistro", email: "quiet@inkboxmail.test", phone: "+14155550122" }] });
+    for (let i = 0; i < 4; i++) {
+      clock.advance(6 * 60_000);
+      await engine.advanceJob(deal.job_id);
+    }
+    expect(attempts).toBe(1);
+    expect((await repo.listEvents(deal.job_id)).filter((e) => /Call to Quiet Bistro failed/.test(String(e.data.summary)))).toHaveLength(1);
+  });
+
+  it("an unanswered callback leaves a business that already quoted as quoted", async () => {
+    const { engine, repo, clock, calls } = demoEngine({ callDelayMs: 0, globalPaymentCapCents: 500_000 });
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, max_rounds: 2, businesses: [
+      { name: "Sunset Kitchen", phone: "+14155550111", channel: "imessage" },
+      { name: "Mission Eats", phone: "+14155550104" },
+      { name: "Quiet Bistro", email: "quiet-bistro@inkboxmail.test" },
+    ] });
+    await engine.ingestIMessage({ messageId: "im_in_1", from: "+14155550111", text: "We can do $1,080 total, 14 vegetarian, delivered, $100 deposit", isGroup: false });
+    clock.advance(1_000);
+    await engine.advanceJob(deal.job_id);
+    await engine.ingestCall({ callId: "call_1", outcome: "completed", transcript: "remote: $1,150 total all-in, 12 vegetarian, delivery included, $150 deposit." });
+    await engine.advanceJob(deal.job_id);
+    const mission = (await engine.getQuotes(deal.job_id)).callbacks!.find((c) => c.business === "Mission Eats")!;
+    await engine.placeCallback(deal.job_id, mission.business_id, "human");
+    clock.advance(2 * 60_000);
+    await engine.advanceJob(deal.job_id);
+    expect(calls).toHaveLength(2);
+    await engine.ingestCall({ callId: "call_2", outcome: "no_answer", transcript: "" });
+    expect((await repo.getBusinesses(deal.job_id)).find((b) => b.name === "Mission Eats")!.status).toBe("quoted");
   });
 
   // Regression (live job_8eebfe8012ff43a2bf0a, 2026-10-18): iPhone call screening answered first, Inkbox

@@ -11,8 +11,8 @@
 //                     safety flags seen); no history = neutral 0.5
 //        completeness how much of the quote is stated (total, deposit, delivery, tax, dietary counts, items)
 //        terms        deposit share (lower is better) and delivery included
-//   3. Deterministic: same evidence + weights → same ranking. Ties (within TIE) go to the lower total,
-//      then the higher extraction confidence, then the quote id.
+//   3. Deterministic: same evidence + weights → same ranking, whatever the input order. Ties (scores in
+//      the same TIE-wide bucket) go to the lower total, then the higher extraction confidence, then the id.
 // Missing data is neutral, never a penalty; ratings are only ever what a source returned (with the
 // source name and review count). The LLM extracts evidence and may phrase explanations; it never
 // picks the winner.
@@ -178,7 +178,10 @@ export function scoreQuotes(quotes: ValueInput[], weights: Partial<ValueWeights>
 
   const conf = new Map(quotes.map((q) => [q.quoteId, q.confidence]));
   const tier = new Map(quotes.map((q) => [q.quoteId, q.tier ?? 0]));
-  ranked.sort((a, b) => (tier.get(a.quoteId)! - tier.get(b.quoteId)!) || (Math.abs(b.score - a.score) > TIE ? b.score - a.score : a.totalCents - b.totalCents || (conf.get(b.quoteId)! - conf.get(a.quoteId)!) || a.quoteId.localeCompare(b.quoteId)));
+  // Scores are compared in TIE-wide buckets, not pairwise "within TIE" (not transitive: A~B, B~C, A<C
+  // made the winner depend on input order). A bucket is a sort key, so this is a total order.
+  const bucket = (s: ValueScore) => Math.round(s.score / TIE);
+  ranked.sort((a, b) => (tier.get(a.quoteId)! - tier.get(b.quoteId)!) || (bucket(b) - bucket(a)) || a.totalCents - b.totalCents || (conf.get(b.quoteId)! - conf.get(a.quoteId)!) || a.quoteId.localeCompare(b.quoteId));
   const win = ranked[0]!;
   return { method: "best_value", weights: w, ranked, recommendedQuoteId: win.quoteId, explanation: explain(win, ranked.slice(1), quotes) };
 }

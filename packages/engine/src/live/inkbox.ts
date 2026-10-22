@@ -52,12 +52,12 @@ export function inkboxMailApi(inkbox: Inkbox): InkboxMailApi {
 const retryable = (e: unknown) => e instanceof InkboxConnectionError || (e instanceof InkboxAPIError && (e.statusCode === 429 || e.statusCode >= 500));
 
 /** Bounded retries (3 attempts) with the SAME idempotency key, so a retry can never double-send. */
-async function withRetry<T>(fn: () => Promise<T>, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)), canRetry: (e: unknown) => boolean = retryable): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
     } catch (e) {
-      if (attempt >= 2 || !retryable(e)) throw e;
+      if (attempt >= 2 || !canRetry(e)) throw e;
       await sleep(250 * 2 ** attempt);
     }
   }
@@ -308,7 +308,8 @@ export type CallOriginChoice = "dedicated_number" | "shared_imessage_number";
 /**
  * PhonePort over Inkbox Voice AI (hosted agent). NOT wired by default: live calls need explicit
  * approval (HAGGLE_ENABLE_CALLS=true) and may only go to simulated businesses or people who agreed.
- * `503 hosted_agent_at_capacity` and other 5xx are retried (bounded) with backoff.
+ * placeCall has no idempotency key, so only a refusal that proves nothing rang is retried (bounded,
+ * with backoff): `503 hosted_agent_at_capacity` (and the other capacity codes) or a 429.
  */
 export function inkboxPhone(identity: { placeCall(o: { toNumber: string; origination?: CallOrigin; mode?: CallMode; reason?: string }): Promise<{ id: string }> }, origin: CallOriginChoice = "dedicated_number", sleep?: (ms: number) => Promise<void>): PhonePort {
   return {
@@ -317,13 +318,29 @@ export function inkboxPhone(identity: { placeCall(o: { toNumber: string; origina
         const call = await withRetry(() => identity.placeCall({
           toNumber: req.toNumber, origination: origin === "shared_imessage_number" ? CallOrigin.SHARED_IMESSAGE_NUMBER : CallOrigin.DEDICATED_NUMBER,
           mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000),
-        }), sleep);
+        }), sleep, nothingPlaced);
         return { callId: call.id };
       } catch (e) {
-        throw mapInkboxError(e);
+        const f = mapInkboxError(e);
+        // Any other 5xx or a dropped connection may have rung the business with the response lost:
+        // never retried here, and not retryable by the engine either (a second call would ring twice).
+        throw f.retryable && !nothingPlaced(e) ? new ChannelSendError(f.reason, false, 0, `${f.message} (the call may have been placed; not retried)`) : f;
       }
     },
   };
+}
+
+const CAPACITY_CODES = new Set(["hosted_agent_at_capacity", "call_capacity_busy", "concurrent_calls_limit"]);
+
+/** An Inkbox refusal that proves no call was placed: rate limited, or a capacity code on a 503/429. */
+function nothingPlaced(e: unknown): boolean {
+  if (!(e instanceof InkboxAPIError)) return false;
+  if (e.statusCode === 429) return true;
+  if (e.statusCode !== 503) return false;
+  const d = e.detail as unknown;
+  const inner = d && typeof d === "object" ? ((d as { detail?: unknown }).detail ?? d) : d;
+  const code = typeof inner === "string" ? inner : inner && typeof inner === "object" ? (inner as { error?: unknown; code?: unknown }).error ?? (inner as { code?: unknown }).code : undefined;
+  return typeof code === "string" && CAPACITY_CODES.has(code.trim().toLowerCase());
 }
 
 /**

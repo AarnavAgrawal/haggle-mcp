@@ -28,6 +28,10 @@ export interface ContactLearning {
 
 const OUT_KINDS = new Set(["rfq", "call", "followup", "counter", "answer"]);
 
+// Every call.ended is stored as an inbound "reply"; one that reached no one (no_answer, declined,
+// failed, voicemail) has parse_status "none" (a completed call is "pending", then parsed): not a reply.
+const unansweredCall = (m: MessageRow) => !!m.provider_email_id?.startsWith("call-ended:") && m.parse_status === "none";
+
 export function learnContact(messages: MessageRow[], quotes: QuoteRow[]): ContactLearning {
   const byChannel = new Map<Channel, { jobs: Set<string>; replied: Set<string>; minutes: number[]; quotes: number }>();
   const get = (c: Channel) => byChannel.get(c) ?? (byChannel.set(c, { jobs: new Set(), replied: new Set(), minutes: [], quotes: 0 }), byChannel.get(c)!);
@@ -39,7 +43,7 @@ export function learnContact(messages: MessageRow[], quotes: QuoteRow[]): Contac
     if (m.direction === "out" && OUT_KINDS.has(m.kind)) {
       get(ch).jobs.add(m.job_id);
       if (!firstOut.has(key)) firstOut.set(key, Date.parse(m.created_at));
-    } else if (m.direction === "in" && m.kind === "reply" && m.sender_trusted) {
+    } else if (m.direction === "in" && m.kind === "reply" && m.sender_trusted && !unansweredCall(m)) {
       const r = get(ch);
       if (!r.replied.has(m.job_id) && firstOut.has(key)) r.minutes.push((Date.parse(m.created_at) - firstOut.get(key)!) / 60_000);
       r.replied.add(m.job_id);
