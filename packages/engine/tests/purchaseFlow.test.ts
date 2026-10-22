@@ -194,7 +194,11 @@ describe("cancellation", () => {
     const env = setup();
     const { jobId, a } = await approved(env);
     await mail(env, jobId, VENDOR, "Confirmed. Zelle us at pay@harbor.");
-    expect((await env.engine.cancel(jobId)).state).toBe("cancelled");
+    // Vendor-confirmed: cancel_deal asks the approver; their CANCEL <code> cancels (decision H3).
+    expect(await env.engine.cancel(jobId)).toMatchObject({ state: "paying", needs_approver: true });
+    const code = /CANCEL (\d{6})/.exec(env.texts.filter((t) => t.to === APPROVER).at(-1)!.text)![1]!;
+    expect((await env.engine.ingestText({ messageId: "cancel-ok", from: APPROVER, text: `CANCEL ${code}`, inbound: true })).outcome).toBe("cancelled");
+    expect((await env.repo.getJob(jobId))!.state).toBe("cancelled");
     expect(toVendor(env).at(-1)!.bodyText).toMatch(/cancelled this order before paying.*No payment was made/s);
     expect(env.emails.filter((e) => e.to === OTHER).at(-1)!.bodyText).toMatch(/Thank you for your quote/);
     expect((await env.repo.getBookingByApproval(a.id))!.status).toBe("cancelled");

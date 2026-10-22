@@ -6,9 +6,9 @@ Tick an item only when it has been done on the real system, not in tests. `[YOU]
 
 ## A. Decisions (before anything is provisioned)
 - [ ] [YOU + Aarnav] Approve the `packages/core` additions in `docs/aarnav-handoff.md` §4 (stages, vendor-contact statuses, flags). Until then the agent sees them only as text.
-- [ ] [YOU] Decide H1, H2 and H3 from `docs/security-review-s5.md` §4: whether a texted "confirmed" from a vendor's number needs `BOOKED <code>`, whether "the business called us" counts as callback consent, and whether the model may cancel a vendor-confirmed booking.
+- [x] [YOU] Decide H1, H2 and H3 (decided 2026-10-22, implemented): a texted "confirmed" needs the approver's `BOOKED <code>` and a texted "received" never verifies payment; caller ID is never callback consent; cancelling a vendor-confirmed booking needs the approver's `CANCEL <code>`.
 - [ ] [YOU] Accept the contact-hour defaults (Mon–Sat 08:00–19:00 Pacific, at most 2 reminders) or set `HAGGLE_CONTACT_*`.
-- [ ] [YOU] Accept `BOOKED <code>` as the booking confirmation for phone vendors and for email vendors whose sender can't be authenticated.
+- [ ] [YOU] Accept `BOOKED <code>` as the booking confirmation for phone and text vendors and for email vendors whose sender can't be authenticated.
 - [ ] [YOU] Write the pilot terms: Haggle never holds money, the customer pays the vendor directly, and who bears the risk of a vendor no-show. Settle the vendor consent wording.
 
 ## B. Staging (all of `docs/staging.md`)

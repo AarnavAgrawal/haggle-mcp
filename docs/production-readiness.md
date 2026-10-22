@@ -224,7 +224,7 @@ Verified on the integrated tree: typecheck and build clean; unit 1,561 passed / 
 | Security review | 14 fixes plus H9 from an independent adversarial review: stale approver, cross-workspace texts, code guessing, message guard, invented offers, opt-outs across channels, unauthorized phone sends, payment-instruction swaps, approval immutability (121), tenant menu leak (`securityS5`) |
 | Metrics | Database-only metrics with a tested simulated-vs-real rule; per-job AI usage (122) and approximate cost; seeded pilot benchmark (`metrics`, `benchmark`) |
 
-**Blockers after pass 5:** real-mail evidence; staging and live migrations 103–122; Inkbox bounce events; decisions H1–H3; brain tenancy and view stages (Aarnav).
+**Blockers after pass 5:** real-mail evidence; staging and live migrations 103–122; Inkbox bounce events; brain tenancy and view stages (Aarnav). Decisions H1–H3 were made and implemented the same day: texted confirmations and receipts never bind on their own, caller ID is never callback consent, and only the approver's `CANCEL <code>` cancels a vendor-confirmed booking (`securityDecisions`, `purchaseFlow.e2e`).
 
 ## 1. Production infrastructure
 - [ ] Finalize and verify the shared TypeScript contracts between the deal engine and the business brain.

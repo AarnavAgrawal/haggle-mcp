@@ -34,7 +34,7 @@ describe("failure drill: crash, storm, takeover, lost webhook, database outage, 
     const clock = newClock(Date.parse("2026-10-22T16:00:00Z"));
     const api = new TimedInkbox(clock);
     const providers = new FakeProviders(clock); // calls and texts to the human
-    const base = new InMemoryRepository();
+    const base = new InMemoryRepository({ now: clock.now });
     const db = flakyDb(base);
     const logs: { who: string; event: string; data: Record<string, unknown> }[] = [];
     const engineFor = (who: string, repo: Repository) => new HaggleEngine({

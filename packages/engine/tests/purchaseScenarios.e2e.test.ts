@@ -109,12 +109,14 @@ describe("SIMULATED purchase scenarios (manual rail)", () => {
     expect(["collecting", "negotiating"]).toContain((await env.repo.getJob(d.jobId))!.state);
   });
 
-  it("customer cancels mid-booking (vendor confirmed, not yet paid): the vendor hears no payment was made; a later PAID records nothing", async () => {
+  it("customer cancels mid-booking (vendor confirmed, not yet paid): the approver's CANCEL <code> cancels it; the vendor hears no payment was made; a later PAID records nothing", async () => {
     const env = purchaseEnv();
     const d = await compared(env);
     const { a } = await humanApproves(env, d.jobId, d.harbor.quote_id);
     expect((await env.mail(d.jobId, HARBOR, "Confirmed for Nov 14. Zelle payments@harbor.example for the deposit.")).outcome).toBe("booking_confirmed");
-    expect((await env.engine.cancel(d.jobId)).state).toBe("cancelled");
+    // The vendor confirmed: the agent's cancel only asks the approver (decision H3).
+    expect(await env.engine.cancel(d.jobId)).toMatchObject({ state: "paying", needs_approver: true });
+    expect((await env.human(`CANCEL ${/CANCEL (\d{6})/.exec(env.lastToApprover())![1]}`)).outcome).toBe("cancelled");
     expect(env.to(HARBOR).at(-1)!.bodyText).toMatch(/cancelled this order before paying.*No payment was made or sent through Haggle/s);
     expect(env.to(GRILL).at(-1)!.bodyText).toMatch(/Thank you for your quote/);
     expect((await env.repo.getHandoffByApproval(a.id))!.status).toBe("cancelled");

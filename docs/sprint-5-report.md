@@ -12,7 +12,7 @@ Companion docs: `docs/pilot-launch-checklist.md` (prerequisites), `docs/manual-a
 2. **No staging environment exists**, and the live database is at migration 102 (sprint 5 adds 118, 119, 121, 122).
 3. **The Inkbox subscription lacks bounce events**; the launch gate now refuses to pass without them.
 4. **Brain profiles are shared across workspaces** (Aarnav). Acceptable for a single-customer pilot; not for two.
-5. **Three product/security decisions** (H1–H3, `docs/manual-actions.md` §1).
+5. ~~Three product/security decisions (H1–H3)~~: decided and implemented after the sprint (§8).
 
 With those done on staging (`docs/pilot-launch-checklist.md` §A–D), a single-workspace pilot with 3+ consenting vendors and manual payment is a reasonable, controlled next step.
 
@@ -77,11 +77,11 @@ With those done on staging (`docs/pilot-launch-checklist.md` §A–D), a single-
 ## 5. Prioritized outstanding production risks
 1. **Critical, unverified real email path** (Message-ID matching, real Gmail/Outlook replies).
 2. **High, no staging; live database at 102.** Every sprint-4/5 safeguard that lives in a migration (112–122) is absent in production until applied.
-3. **High, sender identity on text.** A texted "confirmed"/"paid" from a vendor's number is trusted (H2); caller-ID consent for callbacks (H1). Decisions pending.
+3. ~~High, sender identity on text (H2) and caller-ID consent (H1)~~: fixed after the sprint (§8).
 4. **High, bounce events not subscribed** (dashboard action).
 5. **Medium, brain tenancy** (Aarnav): shared profiles across workspaces; mock-job replies can teach live profiles.
 6. **Medium, views don't show booking stages, reasons or flags** (Aarnav); the agent relays them as text.
-7. **Medium, the model can cancel a vendor-confirmed booking** (H3).
+7. ~~Medium, the model can cancel a vendor-confirmed booking (H3)~~: fixed after the sprint (§8).
 8. **Medium, board size grows with workspace history** (one measured board 10,851 chars vs 10,000 budget).
 9. **Low, approver verification is operator-recorded**, not a coded round trip; approvals aren't gated on it (preflight blocks instead).
 10. **Low, per-process rate/AI limits and alert dedupe**; text routing scans recent jobs (H10).
@@ -96,3 +96,12 @@ With those done on staging (`docs/pilot-launch-checklist.md` §A–D), a single-
 
 ## 7. Migrations added
 118 `engine_booking` (attestation before handoff), 119 `engine_pilot` (operator log), 121 `engine_security2` (approval immutability), 122 `engine_metrics` (AI usage). Each applies alone on 100–117 and in order from 102; none applied anywhere live.
+
+## 8. After the sprint: decisions H1–H3 (2026-10-22)
+Yash approved the three recommendations; implemented test-first (`packages/engine/tests/securityDecisions.test.ts`, MCP-level `apps/mcp/tests/purchaseFlow.e2e.test.ts`).
+- **H2:** texts from a vendor's number (SMS and iMessage) and caller-ID-matched calls are `text_only` identity. A texted "confirmed" waits for the approver's `BOOKED <code>`; a texted "received" never records `settled_verified`; texted payment details always carry the confirm-by-phone warning. Provider-authenticated email books and verifies as before.
+- **H1:** `called_us` callback consent needs an authenticated inbound call; caller ID alone (even with `HAGGLE_TRUST_INBOUND_CALLER_ID`) never counts. Today that leaves operator-recorded consent as the only basis for live callbacks.
+- **H3:** after the vendor confirmed (or the approver attested) a booking, `cancel_deal` texts the approver a one-time `CANCEL <code>` and cancels nothing; their coded reply cancels and tells the vendor. Re-approving a different quote can't withdraw a confirmed booking. Unconfirmed deals cancel as before. The operator's `job-ops fail-safe-close` is unchanged (an audited operator path, not a model tool).
+- **Test-infrastructure fix:** `InMemoryRepository` stamped rows with the real clock; from 2026-10-22 16:00Z (the fixed date tests use) the failure drill saw future-dated rows and failed, also on `b0d1893`. The store now takes an optional clock and the drill passes it.
+
+- **Verified (final tree):** typecheck and build clean; unit 1,576 passed / 31 skipped; Postgres 1,039 passed / 1 skipped plus 6 apps/mcp Postgres tests; `verify-migrations`, `migration-compat`, `smoke-local`, secret scan and env-manifest check OK.

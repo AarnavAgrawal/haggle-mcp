@@ -140,7 +140,7 @@ When a phone vendor quoted more than a real competing quote on the same deal and
 job-ops.ts callback --job job_… --business biz_… --by <you> --reason "<what you reviewed>"
 ```
 
-- The script refuses at once if the job is closed, held or suspended, if the business isn't on the deal, or (live) if the callee has no recorded consent: a workspace vendor with consent, or a business that itself called Haggle on this deal. Never a suppressed number.
+- The script refuses at once if the job is closed, held or suspended, if the business isn't on the deal, or (live) if the callee has no recorded consent: a workspace vendor with consent, or a business that itself called Haggle on this deal from an authenticated line (caller ID alone never counts: decision H1). Never a suppressed number.
 - Otherwise it records the request. On the job's next advance the engine (`operatorCallback`) re-checks the proposal (a cheaper real competing quote, a round left, not already called back) and the consent, then places at most one call, recorded as `operator:<you>`.
 - A refusal at that point (for example, the number opted out meanwhile) closes the request with the reason. A transient failure is retried on the next two advances, then closed as failed. `job-ops inspect` shows each outcome.
 

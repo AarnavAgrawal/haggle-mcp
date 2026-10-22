@@ -4,12 +4,10 @@ Only actions that need a person, a provider dashboard, new credentials, a live s
 
 ## 1. Decide (30 minutes, Yash; some with Aarnav)
 - [ ] **Review and merge plan for draft PR #1** (`yashnil` → `main`); nothing merges without your approval.
-- [ ] **Security decisions** (`docs/security-review-s5.md` §4):
-  - H2: should a texted "confirmed" or "paid" from a vendor's number require `BOOKED <code>` / never count as a verified receipt? Recommended yes (changes `purchasingPilot.test.ts`).
-  - H1: should "the business called us" count as callback consent only for trusted calls? Recommended yes (changes `security.test.ts`).
-  - H3: should cancelling a vendor-confirmed booking need the approver's `CANCEL <code>` instead of the model's `cancel_deal`?
+- [x] **Security decisions H1–H3**: decided 2026-10-22 and implemented (`docs/security-review-s5.md` §4).
+- [ ] **Ask Inkbox** whether a text that is exactly "CANCEL …" with a code is ever intercepted as a carrier opt-out keyword on its line (Haggle needs "CANCEL 482913" delivered; a bare "CANCEL" is a standard opt-out word).
 - [ ] **With Aarnav:** the `packages/core` additions and brain tenancy option (`docs/aarnav-handoff.md`).
-- [ ] **Shared files** (both must agree; I can't edit them): bump `apps/mcp/package.json` version to `0.6.0` (the server already reports 0.6.0); add `scripts/migration-compat.sh` and `scripts/smoke-local.sh` to the root `verify` script so it matches CI.
+- [ ] **Shared files** (both must agree, so they stay undone until Aarnav agrees): bump `apps/mcp/package.json` version to `0.6.0` (the server already reports 0.6.0); add `scripts/migration-compat.sh` and `scripts/smoke-local.sh` to the root `verify` script so it matches CI.
 - [ ] **Whether to regenerate `docs/eval-report.md`**: regenerating on current code changes rows unrelated to this sprint (`docs/sprint-5-report.md` §7); someone should re-read its "Open findings" first.
 
 ## 2. Provider dashboards (Yash)

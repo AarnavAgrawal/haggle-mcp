@@ -55,8 +55,10 @@ never guesses an amount or a detail.
 | If a vendor asks something | The question shows up in your chat or comes to you by text. | Answer it. Haggle passes on only what you said. |
 | Quotes are in | Haggle compares them on price, what's included, deposit and your must-haves. It may ask the vendors once for a better price, citing only real competing quotes. Approximate prices are marked as approximate. | Read the comparison. Ask *"why this one?"* or *"compare the top two"*. |
 | You choose | Your assistant asks Haggle for your approval. Haggle **texts your phone** a summary and a code. | Reply `YES 4821` (your code) to book it, or `NO 4821` to decline. |
-| After YES | Haggle asks the vendor to confirm the booking in writing. | Wait. If Haggle texts that it can't verify who sent the vendor's confirmation, check with the vendor, then reply `BOOKED <code>`. |
+| After YES | Haggle asks the vendor to confirm the booking in writing. | Wait. If the vendor confirmed by text, or Haggle can't verify who sent its email, Haggle texts you: check with the vendor, then reply `BOOKED <code>`. |
 | Booking confirmed | The vendor sends payment instructions. Haggle passes them on with a reminder to check them with the vendor before paying. | Pay the vendor directly (§4), then reply `PAID <code>`. |
+
+To cancel a booking the vendor already confirmed, ask your assistant; Haggle then texts you a code and cancels only when you reply `CANCEL <code>`.
 
 Your assistant can't approve for you. Approval comes only from the text to your phone, never from the
 chat, so an AI can't book anything on its own.

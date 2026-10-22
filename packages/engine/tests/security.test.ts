@@ -160,7 +160,7 @@ describe("callback authorization: only the approver's coded text or an operator 
     expect(env.calls).toHaveLength(callsBefore);
   });
 
-  it("consent: no recorded consent refuses the request; an operator-authorized vendor or a business that called Haggle may be called", async () => {
+  it("consent: no recorded consent refuses the request; a caller-ID-only inbound call isn't consent (H1); an operator-authorized vendor may be called", async () => {
     const env = setup();
     await workspace(env, "ws_alpha", ALPHA_HUMAN);
     const { w, jobId, mission, callsBefore } = await justifiedCallback(env);
@@ -171,9 +171,14 @@ describe("callback authorization: only the approver's coded text or an operator 
     await workspace(env, "ws_beta", BETA_HUMAN);
     await consent(env, "ws_beta");
     await expect(w.requestCallbackAuthorization(jobId, mission.business_id)).rejects.toMatchObject({ code: "callback_no_consent" });
-    // The business itself called Haggle on this deal (inbound call from its pinned number).
+    // An inbound call from its pinned number proves nothing on its own: caller ID can be spoofed (decision H1).
     expect((await env.engine.ingestCall({ callId: "in_call_1", outcome: "completed", transcript: "remote: Hi, it's Mission Eats calling back about the quote.", direction: "inbound", remoteNumber: MISSION })).jobId).toBe(jobId);
-    expect(await env.engine.callbackConsentFor(jobId, mission.business_id)).toEqual({ ok: true, basis: "called_us" });
+    expect(await env.engine.callbackConsentFor(jobId, mission.business_id)).toMatchObject({ ok: false, reason: expect.stringMatching(/caller ID alone/) });
+    await expect(env.engine.operatorCallback(jobId, mission.business_id, "ops-alice")).rejects.toMatchObject({ code: "callback_no_consent" });
+    expect(env.calls).toHaveLength(callsBefore);
+    // Explicit consent the operator recorded for this workspace does count.
+    await consent(env, "ws_alpha");
+    expect(await env.engine.callbackConsentFor(jobId, mission.business_id)).toEqual({ ok: true, basis: "workspace_vendor" });
     expect((await env.engine.operatorCallback(jobId, mission.business_id, "ops-alice")).placed).toBe(true);
     expect(env.calls).toHaveLength(callsBefore + 1);
     expect(String((await env.repo.listEvents(jobId)).find((e) => e.type === "counteroffer" && e.data.channel === "phone")!.data.authorized_by)).toBe("operator:ops-alice");
@@ -226,7 +231,7 @@ describe("callback authorization: only the approver's coded text or an operator 
     expect(callbackConsent({ business: b, workspaceVendors: [{ contact: MISSION, consent: "ok by phone" }], messages: [], suppressed: false })).toEqual({ ok: true, basis: "workspace_vendor" });
     expect(callbackConsent({ business: b, workspaceVendors: [{ contact: MISSION, consent: "ok by phone" }], messages: [], suppressed: true }).ok).toBe(false);
     // A caller-ID match on another business, or an outbound call, isn't the business calling us.
-    expect(callbackConsent({ business: b, workspaceVendors: [], messages: [{ direction: "out", business_id: "b1", channel: "phone", matched_via: null, from_address: null }], suppressed: false }).ok).toBe(false);
+    expect(callbackConsent({ business: b, workspaceVendors: [], messages: [{ direction: "out", business_id: "b1", channel: "phone", matched_via: null, from_address: null, sender_trusted: null, trust_reason: null }], suppressed: false }).ok).toBe(false);
     expect(callbackConsent({ business: { ...b, simulated: true }, workspaceVendors: [], messages: [], suppressed: false })).toEqual({ ok: true, basis: "simulated_vendor" });
   });
 });

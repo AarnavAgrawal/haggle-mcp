@@ -13,9 +13,16 @@
 /** Trust reasons that prove only continuity with Haggle's thread, not who sent the mail. */
 export const CONTINUITY_ONLY_REASONS: ReadonlySet<string> = new Set(["external-reply-token", "operator_verified"]);
 
-/** Trusted, and by something stronger than thread continuity (provider authentication, a pinned identity, channel). */
+/**
+ * Trust reasons that rest on a phone number the sender claims (decision H2/H1, 2026-10-22): a text from
+ * the business's pinned number (SMS or iMessage) or an inbound call matched by caller ID. Both can be
+ * spoofed, so they are enough to read a quote, never to confirm a booking, verify a payment or name a payee.
+ */
+export const TEXT_OR_CALLER_ID_REASONS: ReadonlySet<string> = new Set(["sms-reply-to-pinned-number", "imessage-from-pinned-number", "inbound-caller-id-match (operator opt-in)"]);
+
+/** Trusted, and by something stronger than thread continuity or a claimed number (provider authentication, a pinned identity Haggle reached itself). */
 export function provesSenderIdentity(m: { sender_trusted: boolean | null; trust_reason: string | null }): boolean {
-  return m.sender_trusted === true && !!m.trust_reason && !CONTINUITY_ONLY_REASONS.has(m.trust_reason);
+  return m.sender_trusted === true && !!m.trust_reason && !CONTINUITY_ONLY_REASONS.has(m.trust_reason) && !TEXT_OR_CALLER_ID_REASONS.has(m.trust_reason);
 }
 
 export const CONTINUITY_ONLY_WARNING = "the sender was verified only by Haggle's reply reference (anyone with access to that email thread could send this), not by its mail provider: confirm these payment details with the business by phone before paying";
@@ -23,7 +30,10 @@ export const CONTINUITY_ONLY_WARNING = "the sender was verified only by Haggle's
 /** What the human is told when a binding confirmation arrives from a continuity-only sender. */
 export const UNVERIFIED_CONFIRMATION_WARNING = "this confirmation was verified only by Haggle's reply reference, not by the business's mail provider: confirm the booking with the business on a number you already know before relying on it or paying";
 
-export type SenderIdentity = "verified" | "thread_only" | "unverified";
+/** What the human is told when a binding confirmation arrives by text (or a caller-ID-matched call). */
+export const TEXT_CONFIRMATION_WARNING = "this confirmation came by text from the business's number, which can't prove who sent it: confirm the booking with the business on a number you already know before relying on it or paying";
+
+export type SenderIdentity = "verified" | "thread_only" | "text_only" | "unverified";
 
 /**
  * How far a reply may move a purchase, by the strength of its sender verification. Binding
@@ -33,6 +43,7 @@ export type SenderIdentity = "verified" | "thread_only" | "unverified";
  *   - thread_only: the reply token or an operator release. Recorded and shown, but a confirmation
  *     needs the human's explicit acknowledgement (`requiresHumanAck`), payment details carry a
  *     confirm-by-phone warning, and it never names a payee or marks money received.
+ *   - text_only: a text from the business's number or a caller-ID-matched call; treated like thread_only.
  *   - unverified: never read for any of it (callers should not reach this; it is the safe default).
  */
 export function bindingTermsTrust(m: { sender_trusted: boolean | null; trust_reason: string | null }): {
@@ -48,12 +59,19 @@ export function bindingTermsTrust(m: { sender_trusted: boolean | null; trust_rea
   /** Text for the human and the job event when not fully verified. */
   warning: string | null;
 } {
-  const identity: SenderIdentity = provesSenderIdentity(m) ? "verified" : m.sender_trusted === true ? "thread_only" : "unverified";
+  const identity = senderIdentityOf(m);
   const verified = identity === "verified";
   return {
-    senderIdentity: identity, mayConfirmBooking: verified, requiresHumanAck: identity === "thread_only", mayNamePayee: verified, mayVerifySettlement: verified,
-    warning: verified ? null : identity === "thread_only" ? UNVERIFIED_CONFIRMATION_WARNING : "the sender could not be verified at all: ignore it",
+    senderIdentity: identity, mayConfirmBooking: verified, requiresHumanAck: identity === "thread_only" || identity === "text_only", mayNamePayee: verified, mayVerifySettlement: verified,
+    warning: verified ? null : identity === "thread_only" ? UNVERIFIED_CONFIRMATION_WARNING : identity === "text_only" ? TEXT_CONFIRMATION_WARNING : "the sender could not be verified at all: ignore it",
   };
+}
+
+/** How strongly a trusted message's sender is identified (see bindingTermsTrust). */
+export function senderIdentityOf(m: { sender_trusted: boolean | null; trust_reason: string | null }): SenderIdentity {
+  if (provesSenderIdentity(m)) return "verified";
+  if (m.sender_trusted !== true) return "unverified";
+  return m.trust_reason && TEXT_OR_CALLER_ID_REASONS.has(m.trust_reason) ? "text_only" : "thread_only";
 }
 
 /** The same verdict from a trust reason alone (the booking hook has the reason, not a stored row). */

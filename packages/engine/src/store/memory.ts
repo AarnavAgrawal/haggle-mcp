@@ -38,6 +38,10 @@ const clone = <T>(v: T): T => structuredClone(v);
 const norm = (id: string) => id.trim().replace(/^<|>$/g, "").toLowerCase();
 
 export class InMemoryRepository implements Repository {
+  /** `now`: the clock rows are stamped with (tests pass their fake clock so stored times and the engine's agree). */
+  private readonly opts: { now?: () => Date };
+  constructor(opts: { now?: () => Date } = {}) { this.opts = opts; }
+  private stamp() { return (this.opts.now?.() ?? new Date()).toISOString(); }
   private jobs = new Map<string, JobRow>();
   private businesses: JobBusinessRow[] = [];
   private messages: MessageRow[] = [];
@@ -55,7 +59,7 @@ export class InMemoryRepository implements Repository {
     const all = [...this.workspaces.values()];
     if (w.token_hash && all.some((x) => x.token_hash === w.token_hash)) throw new Error("duplicate token_hash");
     if (w.connector_secret_hash && all.some((x) => x.connector_secret_hash === w.connector_secret_hash)) throw new Error("duplicate connector_secret_hash");
-    const row = { ...clone(w), created_at: now() };
+    const row = { ...clone(w), created_at: this.stamp() };
     this.workspaces.set(w.id, row);
     return clone(row);
   }
@@ -116,7 +120,7 @@ export class InMemoryRepository implements Repository {
     return r ? clone(r) : null;
   }
   async addSuppression(s: Omit<SuppressionRow, "created_at">) {
-    if (!this.suppressions.has(s.contact)) this.suppressions.set(s.contact, { ...s, created_at: now() });
+    if (!this.suppressions.has(s.contact)) this.suppressions.set(s.contact, { ...s, created_at: this.stamp() });
   }
   async findSuppressions(contacts: string[]) {
     return contacts.map((c) => this.suppressions.get(c.toLowerCase())).filter((x): x is SuppressionRow => !!x).map(clone);
@@ -124,7 +128,7 @@ export class InMemoryRepository implements Repository {
   async addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">) {
     if (!this.workspaces.has(v.workspace_id)) throw new Error("unknown workspace_id");
     this.vendors = this.vendors.filter((x) => !(x.workspace_id === v.workspace_id && x.contact === v.contact));
-    const row = { ...v, created_at: now() };
+    const row = { ...v, created_at: this.stamp() };
     this.vendors.push(row);
     return clone(row);
   }
@@ -143,7 +147,7 @@ export class InMemoryRepository implements Repository {
     // 110: a handoff starts only after the booking is confirmed (or confirmed by the human directly).
     // 118: a booking Haggle can't confirm in writing counts only once the human accepted it (BOOKED <code>).
     if (!this.bookings.some((x) => x.approval_id === h.approval_id && (x.status === "confirmed" || (x.status === "not_in_writing" && !!x.human_attested_at)))) throw new Error("a payment handoff starts only after the booking is confirmed");
-    const row = { stalled_at: null, ...h, created_at: now(), updated_at: now() };
+    const row = { stalled_at: null, ...h, created_at: this.stamp(), updated_at: this.stamp() };
     this.handoffs.push(row);
     return clone(row);
   }
@@ -154,13 +158,13 @@ export class InMemoryRepository implements Repository {
   async updateHandoff(id: string, fromStatuses: PaymentHandoffRow["status"][], patch: Partial<Pick<PaymentHandoffRow, "status" | "instructions_text" | "instructions_message_id" | "confirmed_by" | "confirmed_at">>) {
     const i = this.handoffs.findIndex((x) => x.id === id);
     if (i < 0 || !fromStatuses.includes(this.handoffs[i]!.status) || ["human_confirmed", "cancelled"].includes(this.handoffs[i]!.status)) return null;
-    this.handoffs[i] = { ...this.handoffs[i]!, ...patch, updated_at: now() };
+    this.handoffs[i] = { ...this.handoffs[i]!, ...patch, updated_at: this.stamp() };
     return clone(this.handoffs[i]!);
   }
   async setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }) {
     const w = this.workspaces.get(id);
     if (!w) return null;
-    const next = { ...w, ...(c.token_hash !== undefined ? { token_hash: c.token_hash } : {}), ...(c.connector_secret_hash !== undefined ? { connector_secret_hash: c.connector_secret_hash } : {}), revoked_at: c.revoked ? now() : null };
+    const next = { ...w, ...(c.token_hash !== undefined ? { token_hash: c.token_hash } : {}), ...(c.connector_secret_hash !== undefined ? { connector_secret_hash: c.connector_secret_hash } : {}), revoked_at: c.revoked ? this.stamp() : null };
     this.workspaces.set(id, next);
     return clone(next);
   }
@@ -189,13 +193,13 @@ export class InMemoryRepository implements Repository {
   async casJob(id: string, expectedVersion: number, patch: Partial<JobRow>) {
     const j = this.jobs.get(id);
     if (!j || j.version !== expectedVersion) return null;
-    Object.assign(j, patch, { version: j.version + 1, updated_at: now() });
+    Object.assign(j, patch, { version: j.version + 1, updated_at: this.stamp() });
     return clone(j);
   }
   async touchJob(id: string, patch: Partial<JobRow> = {}) {
     const j = this.jobs.get(id);
     if (!j) return null;
-    Object.assign(j, patch, { version: j.version + 1, updated_at: now() });
+    Object.assign(j, patch, { version: j.version + 1, updated_at: this.stamp() });
     return clone(j);
   }
   async listOpenJobs() {
@@ -232,7 +236,7 @@ export class InMemoryRepository implements Repository {
   async insertMessage(m: NewMessage) {
     if (m.provider_email_id && this.messages.some((x) => x.provider_email_id === m.provider_email_id)) return null;
     if (m.idempotency_key && this.messages.some((x) => x.idempotency_key === m.idempotency_key)) return null;
-    this.lastMessageMs = Math.max(Date.now(), this.lastMessageMs + 1);
+    this.lastMessageMs = Math.max(Date.parse(this.stamp()), this.lastMessageMs + 1);
     const row: MessageRow = { ...clone(m), channel: m.channel ?? "email", id: newId("msg"), created_at: new Date(this.lastMessageMs).toISOString() };
     this.messages.push(row);
     return clone(row);
@@ -287,7 +291,7 @@ export class InMemoryRepository implements Repository {
   async insertCurrentQuote(q: Omit<QuoteRow, "id" | "created_at" | "status">) {
     if (this.quotes.some((x) => x.message_id === q.message_id)) return null;
     for (const x of this.quotes) if (x.job_id === q.job_id && x.business_id === q.business_id && x.status === "current") x.status = "superseded";
-    const row: QuoteRow = { ...clone(q), id: newId("q"), status: "current", created_at: now() };
+    const row: QuoteRow = { ...clone(q), id: newId("q"), status: "current", created_at: this.stamp() };
     this.quotes.push(row);
     return clone(row);
   }
@@ -303,7 +307,7 @@ export class InMemoryRepository implements Repository {
   }
 
   async insertQuestion(q: Omit<QuestionRow, "id" | "created_at" | "status" | "answer" | "answered_at">) {
-    const row: QuestionRow = { ...clone(q), id: newId("qn"), status: "pending", answer: null, answered_at: null, created_at: now() };
+    const row: QuestionRow = { ...clone(q), id: newId("qn"), status: "pending", answer: null, answered_at: null, created_at: this.stamp() };
     this.questions.push(row);
     return clone(row);
   }
@@ -317,7 +321,7 @@ export class InMemoryRepository implements Repository {
   async answerQuestion(id: string, answer: string) {
     const q = this.questions.find((x) => x.id === id);
     if (!q || q.status !== "pending") return false;
-    Object.assign(q, { status: "answered", answer, answered_at: now() });
+    Object.assign(q, { status: "answered", answer, answered_at: this.stamp() });
     return true;
   }
 
@@ -326,7 +330,7 @@ export class InMemoryRepository implements Repository {
     const q = this.quotes.find((x) => x.id === a.quote_id);
     if (!q || q.job_id !== a.job_id || q.business_id !== a.business_id || q.total_cents !== a.quote_total_cents) throw new Error("approval must name its own job's quote, business and total");
     if (this.approvals.some((x) => x.job_id === a.job_id && x.status === "pending")) return null;
-    const row: ApprovalRow = { ...clone(a), created_at: now() };
+    const row: ApprovalRow = { ...clone(a), created_at: this.stamp() };
     this.approvals.push(row);
     return clone(row);
   }
@@ -371,14 +375,14 @@ export class InMemoryRepository implements Repository {
     if (!a || a.status !== "pending") return null;
     a.attempts += 1;
     const locked = a.attempts >= maxAttempts;
-    if (locked) Object.assign(a, { status: "locked", decided_at: now() });
+    if (locked) Object.assign(a, { status: "locked", decided_at: this.stamp() });
     return { attempts: a.attempts, locked };
   }
 
   async insertPayment(p: Omit<PaymentRow, "created_at" | "updated_at">) {
     if (this.payments.some((x) => x.approval_id === p.approval_id)) return null;
     if (this.payments.some((x) => x.job_id === p.job_id && !["failed", "rejected", "expired"].includes(x.status))) return null;
-    const row: PaymentRow = { ...clone(p), created_at: now(), updated_at: now() };
+    const row: PaymentRow = { ...clone(p), created_at: this.stamp(), updated_at: this.stamp() };
     this.payments.push(row);
     return clone(row);
   }
@@ -390,13 +394,13 @@ export class InMemoryRepository implements Repository {
     const p = this.payments.find((x) => x.id === id);
     if (!p || !from.includes(p.status)) return null;
     if (patch.challenge_step_id && this.payments.some((x) => x.id !== id && x.challenge_step_id === patch.challenge_step_id)) return null;
-    Object.assign(p, patch, { updated_at: now() });
+    Object.assign(p, patch, { updated_at: this.stamp() });
     return clone(p);
   }
 
   async appendEvent(jobId: string, type: string, data: Record<string, unknown> = {}) {
     const seq = this.events.filter((e) => e.job_id === jobId).length + 1;
-    const row: JobEventRow = { job_id: jobId, seq, type, data: clone(data), at: now() };
+    const row: JobEventRow = { job_id: jobId, seq, type, data: clone(data), at: this.stamp() };
     this.events.push(row);
     return clone(row);
   }
@@ -419,7 +423,7 @@ export class InMemoryRepository implements Repository {
     return s ? clone(s) : null;
   }
   async saveSettings(s: Omit<SettingsRow, "updated_at">, workspaceId = DEFAULT_WORKSPACE_ID) {
-    const row = { ...clone(s), updated_at: now() };
+    const row = { ...clone(s), updated_at: this.stamp() };
     this.settings.set(workspaceId, row);
     return clone(row);
   }
@@ -444,7 +448,7 @@ export class InMemoryRepository implements Repository {
     this.sameWorkspace(h);
     const mine = (x: HeldTextRow) => x.line === h.line && x.remote === h.remote;
     this.held = this.held.filter((x) => !(mine(x) && x.key === h.key));
-    this.held.push({ ...clone(h), held_at: now() });
+    this.held.push({ ...clone(h), held_at: this.stamp() });
     const forNumber = this.held.filter(mine);
     const drop = new Set(forNumber.slice(0, Math.max(0, forNumber.length - keep)));
     this.held = this.held.filter((x) => !drop.has(x));
@@ -462,7 +466,7 @@ export class InMemoryRepository implements Repository {
     if (!s) return null;
     if (why.trim().length < 3 || !removedBy.trim()) throw new Error("a removal records who and why");
     this.suppressions.delete(s.contact);
-    const r: SuppressionRemovalRow = { contact: s.contact, reason: s.reason, job_id: s.job_id, evidence: s.evidence, suppressed_at: s.created_at, removed_by: removedBy, why, removed_at: now() };
+    const r: SuppressionRemovalRow = { contact: s.contact, reason: s.reason, job_id: s.job_id, evidence: s.evidence, suppressed_at: s.created_at, removed_by: removedBy, why, removed_at: this.stamp() };
     this.suppressionRemovals.push(r);
     return clone(r);
   }
@@ -538,7 +542,7 @@ export class InMemoryRepository implements Repository {
     }
     if (!["awaiting_vendor_confirmation", "not_in_writing"].includes(b.status)) throw new Error("a booking starts awaiting the business (or not in writing)");
     if (b.human_attested_at) throw new Error("a booking starts unattested");
-    const row = { ...b, created_at: now(), updated_at: now() };
+    const row = { ...b, created_at: this.stamp(), updated_at: this.stamp() };
     this.bookings.push(row);
     return clone(row);
   }
@@ -553,21 +557,21 @@ export class InMemoryRepository implements Repository {
     if (["confirmed", "not_in_writing"].includes(cur.status) && patch.status && patch.status !== cur.status && patch.status !== "cancelled") return null;
     // 118: the human's attestation is set once, only on a booking Haggle can't confirm in writing.
     if (patch.human_attested_at !== undefined && patch.human_attested_at !== (cur.human_attested_at ?? null) && (cur.human_attested_at || (patch.status ?? cur.status) !== "not_in_writing")) throw new Error("only a not_in_writing booking is attested by the human, once");
-    this.bookings[i] = { ...cur, ...patch, updated_at: now() };
+    this.bookings[i] = { ...cur, ...patch, updated_at: this.stamp() };
     return clone(this.bookings[i]!);
   }
   async markHandoffStalled(id: string, at: string) {
     const i = this.handoffs.findIndex((x) => x.id === id);
     const cur = this.handoffs[i];
     if (!cur || cur.stalled_at || !["instructions_requested", "instructions_received"].includes(cur.status)) return null;
-    this.handoffs[i] = { ...cur, stalled_at: at, updated_at: now() };
+    this.handoffs[i] = { ...cur, stalled_at: at, updated_at: this.stamp() };
     return clone(this.handoffs[i]!);
   }
   async insertHandoffReceipt(r: Omit<HandoffReceiptRow, "created_at">) {
     if (this.receipts.some((x) => x.handoff_id === r.handoff_id)) return null;
     const h = this.handoffs.find((x) => x.id === r.handoff_id);
     if (!h || h.job_id !== r.job_id || h.status !== "human_confirmed") throw new Error("a receipt is recorded only after the customer reported paying");
-    const row = { ...r, created_at: now() };
+    const row = { ...r, created_at: this.stamp() };
     this.receipts.push(row);
     return clone(row);
   }
@@ -581,7 +585,7 @@ export class InMemoryRepository implements Repository {
     if (this.resolutions.some((x) => x.message_id === r.message_id)) return null;
     if (r.decision === "released" ? r.released_trust_reason !== "operator_verified" || !r.job_id || !r.business_id : r.released_trust_reason !== null) throw new Error("quarantine resolution check failed");
     if (r.resolved_by.trim().length < 2 || r.resolved_by.trim().length > 80 || r.verification.trim().length < 10 || r.verification.trim().length > 500) throw new Error("quarantine resolution check failed");
-    const row = { ...clone(r), resolved_at: now() };
+    const row = { ...clone(r), resolved_at: this.stamp() };
     this.resolutions.push(row);
     return clone(row);
   }
@@ -609,7 +613,7 @@ export class InMemoryRepository implements Repository {
     const why = a.reason.trim().length;
     if (op < 2 || op > 80 || why < 3 || why > 500 || JSON.stringify(a.detail).length > 4000 || (!a.workspace_id && !a.job_id && a.action !== "suppression_removed")) throw new Error("operator action check failed");
     if (this.operatorActions.some((x) => x.id === a.id)) throw new Error("duplicate operator action id");
-    const row = { ...clone(a), at: now() };
+    const row = { ...clone(a), at: this.stamp() };
     this.operatorActions.push(row);
     return clone(row);
   }
@@ -620,7 +624,7 @@ export class InMemoryRepository implements Repository {
   // per-call AI usage (migration 122): append-only
   private aiUsage: AiUsageRow[] = [];
   async recordAiUsage(u: Omit<AiUsageRow, "id" | "at"> & { at?: string }) {
-    this.aiUsage.push({ ...u, id: this.aiUsage.length + 1, at: u.at ?? now() });
+    this.aiUsage.push({ ...u, id: this.aiUsage.length + 1, at: u.at ?? this.stamp() });
   }
   async listAiUsage(q: { jobIds?: string[]; since?: string; until?: string }) {
     return this.aiUsage.filter((r) => (!q.jobIds || (r.job_id !== null && q.jobIds.includes(r.job_id))) && (!q.since || r.at >= q.since) && (!q.until || r.at < q.until)).map(clone);

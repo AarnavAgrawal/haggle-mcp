@@ -666,6 +666,7 @@ export const cancelDeal = server.tool(
     title: "Cancel a deal",
     description:
       "Stop a deal the user no longer wants. Before the human pays: any approval is withdrawn, a vendor that was asked to confirm (or confirmed) the booking is told not to hold it and that nothing was paid, and other vendors that replied get a short thank-you. " +
+      "Once the vendor confirmed the booking, only the approver can cancel it: this texts them a one-time code (they reply CANCEL <code>) and nothing is cancelled until they do. " +
       "After the customer reported paying a vendor directly, Haggle can't cancel or refund it: the deal stays as it is, the operator is flagged, and the response says what to tell the user. Refused while a Stripe charge is in flight. " +
       "Don't use it to switch to another quote before approving (just approve the other quote). Next: none (start a new deal if needed).",
     inputSchema: z.object({ job_id: jobId }),
@@ -677,6 +678,11 @@ export const cancelDeal = server.tool(
       // Where the purchase stood, so the answer says exactly what the vendor was told.
       const before = await engine.getQuotes(job_id).catch(() => null);
       const r = await engine.cancel(job_id);
+      if (r.needs_approver) {
+        // A vendor-confirmed booking (decision H3): only the approver's coded text cancels it; the code never reaches the model.
+        const next = "Tell the user the vendor already confirmed, so Haggle texted the approver a code: the booking is cancelled only when they reply CANCEL <code>. Nothing was cancelled or sent to the vendor yet. Use wait_for_update to see when it is.";
+        return ok({ ok: true, mode, state: r.state, needs_approver: true, note: r.note, next }, `NOT cancelled yet: ${r.note} next: ${next}`);
+      }
       if (r.flagged) {
         // After the customer reported paying the business directly: nothing to reverse through Haggle.
         const next = "Tell the user exactly this: Haggle can't cancel or refund a payment they made directly; they must contact the business. The operator was flagged. Don't promise a refund.";

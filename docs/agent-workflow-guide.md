@@ -200,9 +200,13 @@ reports the stage above (and starts the booking if it hasn't started). Then:
 
 Use it only when the user wants to stop. To switch quotes before approving, just approve the other one.
 
-- **Before the customer paid:** any approval is withdrawn, a vendor asked to confirm (or that
-  confirmed) the booking is told not to hold it and that nothing was paid, and other vendors that
-  replied get a thank-you note.
+- **Before the vendor confirmed the booking:** any approval is withdrawn, a vendor asked to confirm
+  the booking is told not to hold it and that nothing was paid, and other vendors that replied get a
+  thank-you note.
+- **The vendor confirmed, the customer hasn't paid:** only the approver can cancel. The response is
+  `needs_approver: true` ("NOT cancelled yet"): Haggle texted the approver a one-time code, and the
+  deal is cancelled (and the vendor told) only when they reply `CANCEL <code>`. Tell the user that;
+  the code never reaches you. Approving a different quote doesn't drop a confirmed booking either.
 - **After the customer reported paying:** Haggle can't cancel or refund a direct payment. The deal
   stays as it is, the operator is flagged, and the response says what to tell the user: contact the
   vendor about a refund under its terms. Never promise a refund. The same holds if the vendor backs

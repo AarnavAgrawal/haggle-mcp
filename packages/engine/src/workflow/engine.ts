@@ -21,7 +21,7 @@ import type {
 import { businessIdForContact, newApprovalCode, newId, newShortCode, normalizeBusinessName, slugify } from "../ids.ts";
 import { cleanEmailBody } from "../inbound/emailBody.ts";
 import { applyDeliveryStatus, type DeliveryStatusInput } from "../inbound/deliveryStatus.ts";
-import { CONTINUITY_ONLY_REASONS, CONTINUITY_ONLY_WARNING, provesSenderIdentity } from "../inbound/trustStrength.ts";
+import { CONTINUITY_ONLY_REASONS, CONTINUITY_ONLY_WARNING, provesSenderIdentity, senderIdentityOf, TEXT_OR_CALLER_ID_REASONS } from "../inbound/trustStrength.ts";
 import { explainQuarantine, quarantineEventData } from "../inbound/quarantineReasons.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
 import { isDsnSender, isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
@@ -65,7 +65,7 @@ import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effec
 import { ChannelSendError, type EngineDeps, type PhoneCallRequest } from "./ports.ts";
 import { buildVoiceInstructions, isWithinCallHours, nextCallHoursStart } from "./callPolicy.ts";
 import { decideTextScope, inTextScope, jobCodeIn, lastRoute, withoutJobCode, type TextScope } from "./textRouting.ts";
-import { CALL_TEXT, CALLBACK_AUTH_TTL_MS, callbackCodeHash, callbackConsent, codeMatches, MAX_CALLBACK_CODE_ATTEMPTS, newCallbackCode, pendingCallbackAuths, type CallbackConsent } from "./callbackAuth.ts";
+import { CALL_TEXT, CALLBACK_AUTH_TTL_MS, CANCEL_TEXT, callbackCodeHash, callbackConsent, codeMatches, MAX_CALLBACK_CODE_ATTEMPTS, newCallbackCode, pendingCallbackAuths, type CallbackConsent } from "./callbackAuth.ts";
 import { closeSubject, decideChargeResume, decideClaim, holdSubject, redactError } from "./deadLetter.ts";
 import { planRecovery, type StuckFinding } from "./recovery.ts";
 import type { OperatorReviewRow, OutboxRow } from "../store/types.ts";
@@ -179,7 +179,7 @@ const FRESH_ADVANCE_MS = 3_000;
 const MESSAGE_LIMIT: Record<Channel, number> = { email: 5000, a2a: 5000, phone: 1500, imessage: 159 };
 /** Two SMS segments: long enough for a quote update, short enough to read at a glance. */
 const SMS_LIMIT = 320;
-/** Payment details that arrived by SMS: the From number can be spoofed, so the human checks them by phone. */
+/** Payment details that arrived by text (SMS or iMessage): the From number can be spoofed, so the human checks them by phone. */
 const SMS_PAYMENT_WARNING = "sent by text from the business's number, which can't prove who wrote it: confirm these payment details with the business by phone before paying";
 const usdText = (cents: number) => `$${centsToUsd(cents).toLocaleString("en-US", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
 /** One line, at most n characters (an ellipsis when cut). */
@@ -205,14 +205,19 @@ const PAID_TEXT = /^paid\b[\s,.:!-]*(\d{4})?[\s.!]*$/i;
 /** "BOOKED 4821": the approver accepts a booking the business confirmed from a sender Haggle can't verify. */
 const BOOKED_TEXT = /^booked\b[\s,.:!-]*(\d{4})?[\s.!]*$/i;
 /**
- * Trust that proves only continuity with Haggle's thread (the reply token; an operator release), never
- * who wrote it: enough to read a quote, not to bind the booking or to verify a settlement on its own.
- * (Workstream A's bindingTermsTrustFor in inbound/trustStrength.ts is the shared form; reconciled at integration.)
+ * Trust that proves only continuity with Haggle's thread (the reply token; an operator release) or a
+ * claimed phone number (a text from the business's number: decision H2), never who wrote it: enough to
+ * read a quote, not to bind the booking or to verify a settlement on its own.
  */
 function bindsTermsAlone(trustReason: string): boolean {
-  return !CONTINUITY_ONLY_REASONS.has(trustReason) && trustReason !== "operator_verified";
+  return provesSenderIdentity({ sender_trusted: true, trust_reason: trustReason });
 }
+/** "thread_only" (reply token, operator release) or "text_only" (the business's number): who can't be proven. */
+const weakIdentity = (trustReason: string) => (senderIdentityOf({ sender_trusted: true, trust_reason: trustReason }) === "text_only" ? "text_only" : "thread_only");
+/** The business confirmed the booking in writing, or the approver attested it (BOOKED <code>): cancelling it needs the approver (H3). */
+const isVendorConfirmed = (b: Pick<BookingRow, "status" | "human_attested_at">) => b.status === "confirmed" || (b.status === "not_in_writing" && !!b.human_attested_at);
 const THREAD_ONLY_BOOKING_WARNING = "the business's confirmation came from its email thread, but Haggle can't verify the sender (anyone with access to that thread could send it): the human accepts the booking after checking with the business";
+const TEXT_ONLY_BOOKING_WARNING = "the business's confirmation came by text from its number, which can't prove who sent it: the human accepts the booking after checking with the business";
 
 /** Detail labels that name who the order is for (the person or company the AI assistant acts for). */
 const CUSTOMER_LABEL_RE = /^(customer|client|company|organi[sz]ation|requester|requested by|on behalf of|ordered by|customer name|company name)$/i;
@@ -2315,7 +2320,8 @@ export class HaggleEngine {
     }
     const name = clip(await this.businessName(job.id, a.business_id), 30);
     if (!(await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { status: "confirmed", confirmed_at: this.now().toISOString() }))) return { jobId: job.id, outcome: "booked_nothing_pending" };
-    await this.repo.appendEvent(job.id, "booking", { status: "confirmed", approval_id: a.id, by: "human_ack", sender_identity: "thread_only", at: this.now().toISOString() });
+    const identity = claim.data.sender_identity === "text_only" ? "text_only" : "thread_only";
+    await this.repo.appendEvent(job.id, "booking", { status: "confirmed", approval_id: a.id, by: "human_ack", sender_identity: identity, at: this.now().toISOString() });
     await this.repo.appendEvent(job.id, "reply", { business_id: a.business_id, summary: `The human accepted ${name}'s booking confirmation (its sender couldn't be verified)` });
     if (a.action === "confirm") {
       await this.fire(job.id, { type: "booking_confirmed" });
@@ -2330,7 +2336,7 @@ export class HaggleEngine {
     }
     if (withInstructions && booking.reply_text) {
       await this.repo.updateHandoff(ho.id, ["instructions_requested"], { status: "instructions_received", instructions_text: booking.reply_text, instructions_message_id: booking.reply_message_id });
-      await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: a.business_id, warning: CONTINUITY_ONLY_WARNING, sender_identity: "thread_only" });
+      await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: a.business_id, warning: identity === "text_only" ? SMS_PAYMENT_WARNING : CONTINUITY_ONLY_WARNING, sender_identity: identity });
       await reply(`accepted the booking with ${name}. Their payment instructions are on the deal board; confirm them with ${name} by phone before paying ${usdText(a.payment_cents)} directly, then reply PAID ${a.code}.`);
     } else {
       await reply(`accepted the booking with ${name}. Haggle asked how they take payment; don't pay until you have their instructions.`);
@@ -2514,6 +2520,9 @@ export class HaggleEngine {
     if (!a || a.status !== "approved") return false;
     const [booking, h, events] = await Promise.all([this.repo.getBookingByApproval(a.id), this.repo.getHandoffByApproval(a.id), this.repo.listEvents(job.id)]);
     if (!booking || (h && !["instructions_requested", "instructions_received"].includes(h.status))) return false;
+    // A booking the business confirmed is dropped only by the approver's CANCEL <code> (decision H3), never by
+    // re-approving another quote. Re-approving the same quote (a refused handoff, once fixed) tells the business nothing.
+    if (isVendorConfirmed(booking) && nextQuoteId !== a.quote_id) return false;
     const refused = !h && events.some((e) => e.type === "payment_refused" && e.data.approval_id === a.id && e.data.rail === "manual");
     const stalled = !!booking.stalled_at && (booking.status === "awaiting_vendor_confirmation" || (booking.status === "not_in_writing" && !booking.human_attested_at));
     if (!refused && !stalled) return false;
@@ -2833,11 +2842,14 @@ export class HaggleEngine {
         return { jobId: job.id, outcome: "booking_unclear" };
       }
       if (!bindsTermsAlone(trustReason)) {
-        // Continuity isn't identity: the booking stays unconfirmed until the human accepts it (BOOKED <code>).
+        // Continuity (or a texted number) isn't identity: the booking stays unconfirmed until the human accepts it (BOOKED <code>).
+        const identity = weakIdentity(trustReason);
         await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { reply_text: r.ownText, reply_message_id: stored.id, reply_has_link: r.hasLink });
-        await this.repo.appendEvent(job.id, "booking", { status: "vendor_claims_confirmed", approval_id: a.id, message_id: stored.id, sender_identity: "thread_only", warning: THREAD_ONLY_BOOKING_WARNING, payment_instructions: r.paymentInstructions, at: this.now().toISOString() });
+        await this.repo.appendEvent(job.id, "booking", { status: "vendor_claims_confirmed", approval_id: a.id, message_id: stored.id, sender_identity: identity, warning: identity === "text_only" ? TEXT_ONLY_BOOKING_WARNING : THREAD_ONLY_BOOKING_WARNING, payment_instructions: r.paymentInstructions, at: this.now().toISOString() });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "booking_unverified", summary: `${b.name} says the booking is confirmed, but Haggle can't verify the sender; waiting for the human to accept it (BOOKED <code>)` });
-        await this.notifyHuman(job, `booking-ack:${a.id}`, `${name} says it's confirmed, but Haggle can't verify that email came from them. Check with them directly; if it's right, reply BOOKED ${a.code} to accept the booking. Don't pay yet.`);
+        await this.notifyHuman(job, `booking-ack:${a.id}`, identity === "text_only"
+          ? `${name} says it's confirmed by text, but a text can't prove who sent it. Check with them directly; if it's right, reply BOOKED ${a.code} to accept the booking. Don't pay yet.`
+          : `${name} says it's confirmed, but Haggle can't verify that email came from them. Check with them directly; if it's right, reply BOOKED ${a.code} to accept the booking. Don't pay yet.`);
         await this.repo.touchJob(job.id);
         return { jobId: job.id, outcome: "booking_unverified" };
       }
@@ -2854,11 +2866,11 @@ export class HaggleEngine {
       const ho = await this.startHandoff(job, a, { ask: !r.paymentInstructions });
       if (ho && r.paymentInstructions) {
         // Thread continuity (an email proven only by the reply token) or a texted number is not proof of who wrote payment details.
-        const sms = trustReason === "sms-reply-to-pinned-number";
+        const sms = TEXT_OR_CALLER_ID_REASONS.has(trustReason);
         const weak = CONTINUITY_ONLY_REASONS.has(trustReason) || sms;
         const warning = [r.hasLink ? "contains a link: verify it with the business independently; Haggle never opens it" : null, sms ? SMS_PAYMENT_WARNING : weak ? CONTINUITY_ONLY_WARNING : null].filter(Boolean).join("; ");
         await this.repo.updateHandoff(ho.id, ["instructions_requested"], { status: "instructions_received", instructions_text: r.ownText, instructions_message_id: stored.id });
-        await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(warning ? { warning } : {}), ...(weak ? { sender_identity: "thread_only" } : {}) });
+        await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(warning ? { warning } : {}), ...(weak ? { sender_identity: weakIdentity(trustReason) } : {}) });
         await this.notifyHuman(job, `booked:${a.id}`, `${name} confirmed the booking and sent payment instructions (on the deal board${r.hasLink ? "; it has a link, so check it with them before paying" : ""}${weak ? "; confirm the payment details with them by phone first" : ""}). Pay them ${usdText(a.payment_cents)} directly; then reply PAID ${a.code}.`);
       } else if (!ho) {
         // The payment guard refused the handoff (e.g. the cap was lowered after approval): nobody is told to pay.
@@ -2896,9 +2908,12 @@ export class HaggleEngine {
       return { jobId: job.id, outcome: "operator_attention" };
     }
     if (!bindsTermsAlone(trustReason)) {
-      // A "received" Haggle can't attribute to the business never verifies the money: the human is told instead.
-      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "receipt_unverified", sender_identity: "thread_only", summary: `${b.name}'s thread says the payment was received, but Haggle can't verify the sender; not recorded as verified` });
-      await this.notifyHuman(job, `received-unverified:${a.id}`, `${clip(b.name, 30)}'s email thread says your ${usdText(h.amount_cents)} payment arrived, but Haggle can't verify who sent it. Check with them directly if it matters.`);
+      // A "received" Haggle can't attribute to the business (an email thread, a text) never verifies the money: the human is told instead.
+      const texted = weakIdentity(trustReason) === "text_only";
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "receipt_unverified", sender_identity: weakIdentity(trustReason), summary: `${b.name}'s ${texted ? "text" : "thread"} says the payment was received, but Haggle can't verify the sender; not recorded as verified` });
+      await this.notifyHuman(job, `received-unverified:${a.id}`, texted
+        ? `${clip(b.name, 30)} says by text that your ${usdText(h.amount_cents)} payment arrived, but Haggle can't verify who sent it. Check with them directly if it matters.`
+        : `${clip(b.name, 30)}'s email thread says your ${usdText(h.amount_cents)} payment arrived, but Haggle can't verify who sent it. Check with them directly if it matters.`);
       await this.repo.touchJob(job.id);
       return { jobId: job.id, outcome: "receipt_unverified" };
     }
@@ -3004,6 +3019,12 @@ export class HaggleEngine {
     const call = hm.text.trim().match(CALL_TEXT);
     if (call) {
       const r = await this.ingestCallbackText(hm, from, open, call[1]!);
+      if (r) return r;
+    }
+    // "CANCEL <code>": the approver cancelling a booking the business confirmed (never the model's or a business's say-so).
+    const cancelText = hm.text.trim().match(CANCEL_TEXT);
+    if (cancelText) {
+      const r = await this.ingestCancelText(hm, from, open, cancelText[1]!);
       if (r) return r;
     }
     {
@@ -3165,6 +3186,8 @@ export class HaggleEngine {
     // A callback code (CALL 482913) only one workspace's pending callback has decides too.
     const callCode = t.match(CALL_TEXT)?.[1];
     if (callCode) for (const j of human) if (await this.hasCallbackCode(j.id, callCode)) coded.push(j.workspace_id);
+    const cancelCode = t.match(CANCEL_TEXT)?.[1];
+    if (cancelCode) for (const j of human) if (await this.hasCancelCode(j.id, cancelCode)) coded.push(j.workspace_id);
     return decideTextScope(owners, text, coded);
   }
 
@@ -3217,8 +3240,8 @@ export class HaggleEngine {
     const from = held.from_address;
     const text = held.body_text ?? "";
     const t = withoutJobCode(text);
-    if (TEXT_DECISION.test(t) || PAY_TEXT.test(t) || PAID_TEXT.test(t) || CALL_TEXT.test(t) || BOOKED_TEXT.test(t.trim())) {
-      throw new EngineError("decision_not_releasable", "A held approval, payment or callback reply is never attributed by an operator.", "Ask the human to resend it with the deal code (e.g. \"YES 4821 HG-AB12\").", "none");
+    if (TEXT_DECISION.test(t) || PAY_TEXT.test(t) || PAID_TEXT.test(t) || CALL_TEXT.test(t) || BOOKED_TEXT.test(t.trim()) || CANCEL_TEXT.test(t.trim())) {
+      throw new EngineError("decision_not_releasable", "A held approval, payment, callback or cancellation reply is never attributed by an operator.", "Ask the human to resend it with the deal code (e.g. \"YES 4821 HG-AB12\").", "none");
     }
     const tied = from === (await this.notifyTarget(job)) || (await this.repo.getBusinesses(job.id)).some((b) => b.phone === from && b.contacted_at);
     if (!tied) throw new EngineError("not_tied", "That number isn't this deal's approver or a business Haggle contacted on it.", "Release the text to a deal the number belongs to.", "none");
@@ -3464,6 +3487,96 @@ export class HaggleEngine {
   /** Is this one of the job's pending callback codes (text scoping between workspaces)? */
   private async hasCallbackCode(jobId: string, code: string): Promise<boolean> {
     return pendingCallbackAuths(await this.repo.listEvents(jobId), this.now()).some((a) => codeMatches(a.auth_id, code, a.code_hash));
+  }
+
+  /** Is this one of the job's pending cancellation codes (text scoping between workspaces)? */
+  private async hasCancelCode(jobId: string, code: string): Promise<boolean> {
+    return pendingCallbackAuths(await this.repo.listEvents(jobId), this.now(), "cancel").some((a) => codeMatches(a.auth_id, code, a.code_hash));
+  }
+
+  /** The deal's booking the business confirmed in writing (or the approver attested), still before any reported payment. */
+  private async vendorConfirmedBooking(job: JobRow): Promise<{ a: ApprovalRow; booking: BookingRow } | null> {
+    if (job.state !== "paying" || !this.d.config.manualPaymentHandoff) return null;
+    const a = await this.repo.getLatestApproval(job.id);
+    if (!a || !["approved", "used"].includes(a.status)) return null;
+    const booking = await this.repo.getBookingByApproval(a.id);
+    return booking && isVendorConfirmed(booking) ? { a, booking } : null;
+  }
+
+  /**
+   * Ask the workspace approver, out of band, to cancel a booking the business already confirmed: a text
+   * to their own phone with a one-time code ("Reply CANCEL <code>"). The code goes only to that phone (a
+   * hash is kept), never to the model or the response. Nothing is cancelled or sent to the business here.
+   */
+  private async requestCancelAuthorization(job: JobRow, a: ApprovalRow): Promise<{ ok: true; state: JobState; needs_approver: true; note: string }> {
+    const name = await this.businessName(job.id, a.business_id);
+    const to = await this.notifyTarget(job);
+    if (!to) throw new EngineError("NO_HUMAN_CHANNEL", `${name} already confirmed this booking; only the approver can cancel it (by texting CANCEL <code>), and this workspace has no approver phone.`, "Ask the operator to set the workspace approver phone (workspace-admin set-approver). Nothing was cancelled or sent.", "none");
+    // One open request per deal: a new one replaces an older, unanswered one.
+    for (const old of pendingCallbackAuths(await this.repo.listEvents(job.id), this.now(), "cancel")) {
+      await this.repo.appendEvent(job.id, "cancel_auth_decided", { auth_id: old.auth_id, business_id: old.business_id, decision: "superseded" });
+    }
+    const authId = newId("cna");
+    const code = newCallbackCode();
+    const expires = new Date(this.now().getTime() + CALLBACK_AUTH_TTL_MS).toISOString();
+    await this.repo.appendEvent(job.id, "cancel_auth_requested", { auth_id: authId, business_id: a.business_id, approval_id: a.id, code_hash: callbackCodeHash(authId, code), expires_at: expires });
+    const text = `Haggle: cancel the booking ${clip(name, 30)} confirmed (${usdText(a.quote_total_cents)})? Haggle will tell them not to hold it. Reply CANCEL ${code} to cancel (expires in 30 min). (HG-${job.short_code})`.slice(0, SMS_LIMIT);
+    const r = await this.textHuman(job, to, { key: `notify:${job.id}:cancel-auth:${authId}`, text });
+    await this.repo.appendEvent(job.id, "reply", { business_id: a.business_id, summary: `Asked the approver by text to confirm cancelling the booking with ${name}${r.ok ? "" : " (text not sent yet)"}; nothing was cancelled` });
+    await this.repo.touchJob(job.id);
+    const note = `${name} already confirmed this booking, so only the approver can cancel it: Haggle texted them a code to reply CANCEL <code>${r.ok ? "" : " (the text is held until they next text Haggle)"}. Nothing was cancelled or sent to ${name}.`;
+    return { ok: true as const, state: job.state, needs_approver: true as const, note };
+  }
+
+  /**
+   * "CANCEL <code>" texted to Haggle's line: only from a job's own text approver, only for that job's
+   * pending cancellation whose code matches, and only while it is still the same confirmed booking.
+   * Null when the sender is no job's approver (left to the normal routing). Idempotent per message id.
+   */
+  private async ingestCancelText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string): Promise<{ jobId: string | null; outcome: string } | null> {
+    const mine: JobRow[] = [];
+    for (const job of open) if (from === (await this.notifyTarget(job))) mine.push(job);
+    if (!mine.length) return null;
+    const pending: { job: JobRow; a: ReturnType<typeof pendingCallbackAuths>[number] }[] = [];
+    for (const job of mine) for (const a of pendingCallbackAuths(await this.repo.listEvents(job.id), this.now(), "cancel")) pending.push({ job, a });
+    const hit = pending.find((p) => codeMatches(p.a.auth_id, code, p.a.code_hash));
+    const home = hit?.job ?? pending[0]?.job ?? mine.sort((x, y) => y.created_at.localeCompare(x.created_at))[0]!;
+    const stored = await this.repo.insertMessage({
+      job_id: home.id, business_id: null, approval_id: null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 200), attachments: [], attachments_download_url: null,
+      sender_trusted: true, trust_reason: "sms-from-text-approver", matched_via: "approval_code", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+    });
+    if (!stored) return { jobId: home.id, outcome: "duplicate" };
+    if (!hit) {
+      // A wrong code counts against every cancellation waiting for this approver (a guess can't be retried forever).
+      for (const p of pending) {
+        await this.repo.appendEvent(p.job.id, "cancel_auth_wrong_code", { auth_id: p.a.auth_id });
+        if (p.a.wrong + 1 >= MAX_CALLBACK_CODE_ATTEMPTS) await this.repo.appendEvent(p.job.id, "cancel_auth_decided", { auth_id: p.a.auth_id, business_id: p.a.business_id, decision: "locked" });
+      }
+      await this.notifyHuman(home, `cancel-ack:${m.messageId}`, `no cancellation is waiting for code ${code}, so nothing was cancelled.`);
+      return { jobId: home.id, outcome: "cancel_no_match" };
+    }
+    const { job, a: auth } = hit;
+    const by = `approver-text:${maskHandle(from)}`;
+    await this.repo.appendEvent(job.id, "cancel_auth_decided", { auth_id: auth.auth_id, business_id: auth.business_id, decision: "authorized", by });
+    const asked = (await this.repo.listEvents(job.id)).find((e) => e.type === "cancel_auth_requested" && e.data.auth_id === auth.auth_id);
+    const held = await this.vendorConfirmedBooking(await this.loadJob(job.id));
+    const name = clip(await this.businessName(job.id, auth.business_id), 30);
+    if (held && held.a.id !== asked?.data.approval_id) {
+      await this.notifyHuman(job, `cancel-ack:${m.messageId}`, `the booking changed since Haggle asked, so nothing was cancelled. Ask again if you still want to cancel.`);
+      return { jobId: job.id, outcome: "cancel_refused" };
+    }
+    try {
+      const r = await this.cancelJob(job.id, by);
+      await this.notifyHuman(job, `cancel-ack:${m.messageId}`, r.state === "cancelled"
+        ? `cancelled: Haggle told ${name} not to hold the booking. Nothing was paid through Haggle; don't pay them.`
+        : `nothing was cancelled: ${clip(r.note ?? "the deal can't be cancelled now", 160)}`);
+      return { jobId: job.id, outcome: r.state === "cancelled" ? "cancelled" : "cancel_refused" };
+    } catch (err) {
+      if (!(err instanceof EngineError)) throw err;
+      await this.notifyHuman(job, `cancel-ack:${m.messageId}`, `nothing was cancelled: ${clip(err.message, 120)}`);
+      return { jobId: job.id, outcome: "cancel_refused" };
+    }
   }
 
   /** The deal still has a negotiation round to spend: its current round < max_rounds (never past MAX_ROUND). */
@@ -4294,7 +4407,7 @@ export class HaggleEngine {
     if (h.status === "instructions_received" && h.instructions_text && same(h.instructions_text) !== same(text)) {
       // Changed payee details after the human saw the first ones is the classic payment-redirect fraud:
       // the first instructions stay, the operator reviews, and the human confirms by phone (S5-D F12).
-      await this.repo.appendEvent(job.id, "payment", { status: "instructions_changed", rail: "manual", business_id: b.business_id, message_id: stored.id, warning: "the business's payment instructions changed after the first ones: Haggle kept the first; confirm by phone on a number you already know before paying", ...(provesSenderIdentity({ sender_trusted: true, trust_reason: trustReason }) ? {} : { sender_identity: "thread_only" }) });
+      await this.repo.appendEvent(job.id, "payment", { status: "instructions_changed", rail: "manual", business_id: b.business_id, message_id: stored.id, warning: "the business's payment instructions changed after the first ones: Haggle kept the first; confirm by phone on a number you already know before paying", ...(provesSenderIdentity({ sender_trusted: true, trust_reason: trustReason }) ? {} : { sender_identity: weakIdentity(trustReason) }) });
       await this.deadLetter({ kind: "payment", subject: `instructions_changed:${h.id}`, job_id: job.id, reason: "payment instructions changed after the human was told how to pay", attempts: 1 });
       await this.notifyHuman(job, `instructions-changed:${stored.id}`, `${clip(b.name, 30)} sent different payment instructions from the ones it gave before. Haggle kept the first ones. Don't pay until you confirm the details with them by phone on a number you already know; then reply PAID ${a.code}.`);
       await this.repo.touchJob(job.id);
@@ -4303,10 +4416,10 @@ export class HaggleEngine {
     await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "instructions_received", instructions_text: text, instructions_message_id: stored.id });
     const link = /https?:\/\/|www\./i.test(text);
     // Thread continuity (the reply token) isn't sender identity: payment details from such a reply are a BEC risk (inbound/trustStrength.ts).
-    const sms = trustReason === "sms-reply-to-pinned-number";
+    const sms = TEXT_OR_CALLER_ID_REASONS.has(trustReason);
     const weak = CONTINUITY_ONLY_REASONS.has(trustReason) || sms;
     const warning = [link ? "contains a link: verify it with the business independently; Haggle never opens it" : null, sms ? SMS_PAYMENT_WARNING : weak ? CONTINUITY_ONLY_WARNING : null].filter(Boolean).join("; ");
-    await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(warning ? { warning } : {}), ...(weak ? { sender_identity: "thread_only" } : {}) });
+    await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(warning ? { warning } : {}), ...(weak ? { sender_identity: weakIdentity(trustReason) } : {}) });
     await this.notifyHuman(job, `instructions:${stored.id}`, `${clip(b.name, 30)} sent payment instructions (see the deal board${link ? "; it has a link, so check it with them before paying" : ""}${weak ? `; ${sms ? "a text" : "its email"} can't be fully verified, so confirm the details with them by phone` : ""}). Pay them directly; then reply PAID ${a.code}.`);
     return { jobId: job.id, outcome: "payment_instructions" };
   }
@@ -7062,7 +7175,16 @@ export class HaggleEngine {
     return { status: after.status, approval: after };
   }
 
-  async cancel(jobId: string): Promise<{ ok: true; state: JobState; flagged?: true; note?: string }> {
+  /**
+   * Cancel a deal (the cancel_deal tool). A booking the business already confirmed is cancelled only on
+   * the approver's CANCEL <code> (decision H3): here it is only asked for (`needs_approver`).
+   */
+  async cancel(jobId: string): Promise<{ ok: true; state: JobState; flagged?: true; needs_approver?: true; note?: string }> {
+    return this.cancelJob(jobId, null);
+  }
+
+  /** `authorizedBy`: the approver's coded text (ingestCancelText); null for a tool call. */
+  private async cancelJob(jobId: string, authorizedBy: string | null): Promise<{ ok: true; state: JobState; flagged?: true; needs_approver?: true; note?: string }> {
     const job = await this.loadJob(jobId);
     if (job.state === "cancelled") return { ok: true as const, state: job.state };
     // After the customer reported paying the business directly: Haggle can't reverse a payment it never
@@ -7083,6 +7205,11 @@ export class HaggleEngine {
         return { ok: true as const, state: job.state, flagged: true as const, note };
       }
     }
+    if (!authorizedBy && this.callbacksNeedApproverText) {
+      const held = await this.vendorConfirmedBooking(job);
+      if (held) return this.requestCancelAuthorization(job, held.a);
+    }
+    if (authorizedBy) await this.repo.appendEvent(jobId, "cancel_authorized", { by: authorizedBy, at: this.now().toISOString() });
     if (job.state === "confirmed") {
       const a = await this.repo.getLatestApproval(jobId);
       const name = a ? await this.businessName(jobId, a.business_id) : "the business";

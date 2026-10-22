@@ -120,3 +120,42 @@ describe("SIMULATED: list_deals resumes a deal past approval without a board rea
     expect(JSON.stringify(list)).not.toMatch(new RegExp(`\\b${code}\\b`)); // the code never reaches the model
   });
 });
+
+describe("SIMULATED: the model can't cancel a vendor-confirmed booking (decision H3)", () => {
+  it("cancel_deal only texts the approver a code; nothing is cancelled or sent until they reply CANCEL <code>", { timeout: 30_000 }, async () => {
+    const APPROVER = "+14155550304";
+    const VENDOR = "events@harbor-cancel.example";
+    const token = await workspace("Cancel Co", "America/Los_Angeles", APPROVER, VENDOR);
+    const d = await call(token, "deal", { request: { what: "team lunch catering", quantity: 40, date: new Date(Date.now() + 21 * 86_400_000).toISOString().slice(0, 10), area: "San Francisco, CA" }, budget_usd: 2500 });
+    const jobId = d.structuredContent.job_id as string;
+    const trusted = (address: string): TrustVerdict => ({ trusted: true, address, reason: "inkbox-same-org", evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } }) as never;
+    const reply = async (id: string, bodyText: string) => {
+      const out = (await repo.listMessages(jobId)).filter((m) => m.direction === "out" && m.to_address === VENDOR).at(-1)!;
+      return engine.ingest({ providerEventId: `ev_${id}`, eventType: "message.received", providerEmailId: `in_${id}`, threadId: "th_c", messageId: `<${id}@mail.example>`, inReplyTo: [out.rfc_message_id!], references: [out.rfc_message_id!], from: VENDOR, to: ["haggle@inkboxmail.test"], subject: `Re: ${out.subject}`, bodyText, attachments: [], attachmentsDownloadUrl: null }, trusted);
+    };
+    await reply("c1", "$2,180 total incl tax, 14 vegetarian, delivered by 11:00, $500 deposit.");
+    await engine.advanceJob(jobId);
+    await call(token, "approve", { job_id: jobId, quote_id: (await engine.getQuotes(jobId)).recommended_quote_id! });
+    const yes = /YES (\d{4})/.exec(texts.filter((t) => t.to === APPROVER).at(-1)!.text)![1]!;
+    expect((await engine.ingestText({ messageId: "yes_c1", from: APPROVER, text: `YES ${yes}`, inbound: true })).outcome).toBe("approved");
+    expect((await reply("c2", "Confirmed, all set.")).outcome).toBe("booking_confirmed");
+    const toVendor = emails.filter((e) => e.to === VENDOR).length;
+
+    // Model-only sequence: cancel_deal, then cancel_deal again. Nothing is cancelled; the code never reaches the model.
+    for (let i = 0; i < 2; i++) {
+      const c = await call(token, "cancel_deal", { job_id: jobId });
+      expect(c.isError).toBeFalsy();
+      expect(c.structuredContent).toMatchObject({ state: "paying", needs_approver: true });
+      expect(c.content[0]!.text).toMatch(/NOT cancelled yet/);
+      const code = /CANCEL (\d{6})/.exec(texts.filter((t) => t.to === APPROVER).at(-1)!.text)![1]!;
+      expect(JSON.stringify(c)).not.toContain(code);
+    }
+    expect((await repo.getJob(jobId))!.state).toBe("paying");
+    expect(emails.filter((e) => e.to === VENDOR)).toHaveLength(toVendor);
+
+    const code = /CANCEL (\d{6})/.exec(texts.filter((t) => t.to === APPROVER).at(-1)!.text)![1]!;
+    expect((await engine.ingestText({ messageId: "cancel_c1", from: APPROVER, text: `CANCEL ${code}`, inbound: true })).outcome).toBe("cancelled");
+    expect((await repo.getJob(jobId))!.state).toBe("cancelled");
+    expect(emails.filter((e) => e.to === VENDOR).slice(toVendor).some((e) => /No payment was made/.test(e.bodyText))).toBe(true);
+  });
+});
