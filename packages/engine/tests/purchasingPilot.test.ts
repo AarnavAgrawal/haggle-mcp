@@ -18,7 +18,8 @@ const T0 = Date.parse("2026-10-22T16:00:00Z");
 /** Reads "$X total", "$Y deposit", "N vegetarian", "delivered by HH:MM" from the vendor's own words (email, text or call transcript). */
 export const pilotExtractor: ExtractorPort = {
   async extract(i) {
-    const t = vendorOwnWords(i.bodyText);
+    // A text reply comes with Haggle's last text for context: only the business's own words are read.
+    const t = vendorOwnWords(i.bodyText.split("[The business's reply]: ").at(-1)!);
     const money = (re: RegExp) => { const m = t.match(re); return m ? Number(m[1]!.replace(/,/g, "")) : null; };
     const total = money(/\$\s?([\d,]+(?:\.\d{2})?)\s*(?:all[- ]in\s*)?total/i) ?? money(/total[^$\d]{0,20}\$\s?([\d,]+(?:\.\d{2})?)/i);
     const deposit = money(/\$\s?([\d,]+(?:\.\d{2})?)\s*deposit/i);
