@@ -104,4 +104,36 @@ describe("workspace-admin (operator script) arguments", () => {
     expect(() => planAdmin(["add-vendor", "--id", "ws_acme", "--contact", "orders@caterer.example", "--name", "Caterer"])).toThrow(/consent/);
     expect(() => planAdmin(["add-vendor", "--id", "ws_acme", "--contact", "not-a-contact", "--name", "C", "--consent", "yes ok"])).toThrow(/contact/);
   });
+
+  it("operator onboarding: add-vendor channels, show, remove-suppression (who and why), shared approver phones refused unless accepted", async () => {
+    const { planAdmin, sharedApproverProblem, showText } = await import("../scripts/workspace-admin.ts");
+    expect(planAdmin(["add-vendor", "--id", "ws_acme", "--contact", "+1 (415) 555-0161", "--name", "Casa Lunch", "--consent", "Owner agreed by phone", "--channel", "text"])).toMatchObject({ contact: "+14155550161", channel: "imessage" });
+    expect(() => planAdmin(["add-vendor", "--id", "ws_acme", "--contact", "+14155550161", "--name", "C", "--consent", "agreed", "--channel", "email"])).toThrow(/doesn't fit/);
+    expect(() => planAdmin(["add-vendor", "--id", "ws_acme", "--contact", "a@b.example", "--name", "C", "--consent", "agreed", "--channel", "fax"])).toThrow(/--channel/);
+    expect(planAdmin(["show", "--id", "ws_acme"])).toEqual({ kind: "show", id: "ws_acme" });
+    expect(planAdmin(["remove-suppression", "--contact", "Orders@Caterer.example", "--by", "Yash", "--why", "mailbox was full, not a hard bounce"])).toEqual({ kind: "remove-suppression", contact: "orders@caterer.example", by: "Yash", why: "mailbox was full, not a hard bounce" });
+    expect(() => planAdmin(["remove-suppression", "--contact", "orders@caterer.example", "--by", "Yash"])).toThrow(/--why/);
+    expect(() => planAdmin(["remove-suppression", "--contact", "orders@caterer.example", "--why", "vendor asked again"])).toThrow(/--by/);
+    expect(planAdmin(["set-approver", "--id", "ws_acme", "--phone", "+14155550123", "--allow-shared-approver"])).toMatchObject({ allowShared: true });
+    expect(sharedApproverProblem("+14155550123", "ws_acme", ["ws_acme"])).toBeNull();
+    expect(sharedApproverProblem("+14155550123", "ws_acme", ["ws_other"])).toMatch(/already approves for ws_other.*--allow-shared-approver/);
+    expect(sharedApproverProblem("+14155550123", "ws_acme", ["ws_other"], true)).toBeNull();
+    const text = showText({
+      workspace: { id: "ws_acme", name: "Acme", token_hash: "a".repeat(64), connector_secret_hash: null, timezone: "America/Los_Angeles", created_at: "2026-10-22T00:00:00.000Z" },
+      settings: { spending_cap_cents: 150_000, approver_phone: "+14155550123", approver_email: null, default_area: null },
+      vendors: [{ workspace_id: "ws_acme", contact: "orders@casalunch.example", name: "Casa Lunch", consent: "Owner agreed", added_by: "operator", created_at: "2026-10-22T00:00:00.000Z", channel: null }],
+      suppressions: [{ contact: "orders@casalunch.example", reason: "bounce", job_id: null, evidence: null, created_at: "2026-10-22T01:00:00.000Z" }],
+      sharedApprover: ["ws_other"],
+    });
+    expect(text).toMatch(/bearer token set, connector URL none/);
+    expect(text).toMatch(/spending cap \$1500\.00/);
+    expect(text).toMatch(/Casa Lunch <o•••@casalunch\.example> by email.*SUPPRESSED \(bounce/);
+    expect(text).toMatch(/also approves for ws_other/);
+    expect(text).not.toContain("a".repeat(64));
+  });
+
+  it("workspace-create plans the approver and cap in one command and warns when live approvals would be impossible", () => {
+    expect(planWorkspace({ name: "Acme", approverPhone: "+14155550123", capUsd: 900 })).toMatchObject({ settings: { approver_phone: "+14155550123", spending_cap_cents: 90_000 }, warnings: [] });
+    expect(planWorkspace({ name: "Acme" }).warnings[0]).toMatch(/approver-phone/);
+  });
 });

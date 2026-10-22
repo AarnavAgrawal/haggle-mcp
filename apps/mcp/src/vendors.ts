@@ -224,3 +224,60 @@ export function resolveVendors(refs: string[], roster: RosterEntry[]): VendorRes
   if (notReady.length) return { ok: false, code: "vendor_not_ready", message: `${notReady.map((n) => n.blocker).join("; ")}. Nothing was sent (no other vendor was contacted instead).`, fix: "Tell the user this vendor can't be reached yet and what fixes it; contact others only if the user says so.", details: notReady };
   return { ok: true, vendors: out };
 }
+
+// ───────────────────────────── workspace vendors ─────────────────────────────
+
+/** A vendor the operator authorized for one workspace (workspace_vendors rows with one name; contacts stay server-side). */
+export interface WorkspaceVendor {
+  name: string;
+  /** "mission_eats": what the agent may pass instead of the name. */
+  business_ref: string;
+  email?: string;
+  phone?: string;
+  channel: Channel;
+}
+
+/** One vendor per name (an email row and a phone row of "Mission Eats" are one vendor); the operator's channel wins. */
+export function workspaceVendorList(rows: { name: string; contact: string; channel?: Channel | null }[]): WorkspaceVendor[] {
+  const byName = new Map<string, { name: string; email?: string; phone?: string; channel?: Channel }>();
+  for (const r of rows) {
+    const key = canonical(r.name);
+    const v = byName.get(key) ?? { name: r.name };
+    if (r.contact.includes("@")) v.email ??= r.contact;
+    else v.phone ??= r.contact;
+    if (r.channel && !v.channel) v.channel = r.channel;
+    byName.set(key, v);
+  }
+  return [...byName.entries()].map(([key, v]) => ({
+    name: v.name, business_ref: key.replace(/\s+/g, "_"), ...(v.email ? { email: v.email } : {}), ...(v.phone ? { phone: v.phone } : {}),
+    channel: v.channel && (v.channel === "email" ? v.email : v.phone) ? v.channel : v.email ? "email" : "phone",
+  }));
+}
+
+/** Workspace vendors a reference names: the exact (case/space/punctuation-insensitive) name or ref, else a whole-word partial name. */
+export function findWorkspaceVendors(ref: string, vendors: WorkspaceVendor[]): WorkspaceVendor[] {
+  const c = canonical(ref);
+  const exact = vendors.filter((v) => canonical(v.name) === c || canonical(v.business_ref) === c);
+  if (exact.length) return exact;
+  const words = c.split(" ").filter(Boolean);
+  return words.length ? vendors.filter((v) => { const n = canonical(v.name).split(" "); return words.every((w) => n.includes(w)); }) : [];
+}
+
+/** Can this server send on the workspace vendor's channel right now (the same checks as the roster)? */
+export function workspaceVendorReadiness(v: WorkspaceVendor, ch: ChannelStatus): { ready: boolean; blocker?: string; fix?: string } {
+  const off = (blocker: string, fix: string) => ({ ready: false, blocker, fix });
+  switch (v.channel) {
+    case "email":
+      return ch.email ? { ready: true } : off("email outreach is off", "Operator: check the Inkbox buyer identity.");
+    case "imessage":
+      if (!ch.imessage && ch.sms) return { ready: true };
+      if (!ch.imessage) return off("texting businesses is off on this server", "Operator: set HAGGLE_ENABLE_SMS=true or HAGGLE_ENABLE_IMESSAGE=true.");
+      return ch.connected?.has(v.phone!) ? { ready: true } : off("this number hasn't connected over iMessage yet", `Vendor: text "${ch.connectCommand}" to the Inkbox iMessage line.`);
+    case "phone":
+      if (!ch.phone) return off("Voice AI calls are off on this server", "Operator: set HAGGLE_ENABLE_CALLS=true (only vendors who agreed to calls).");
+      if (ch.callsViaSharedLine && !ch.connected?.has(v.phone!)) return off("calls go over the shared iMessage line and this number hasn't connected", `Vendor: text "${ch.connectCommand}" from that phone first.`);
+      return { ready: true };
+    default:
+      return off("this channel isn't available for workspace vendors", "Operator: re-add the vendor with an email or phone channel.");
+  }
+}

@@ -9,7 +9,7 @@
 import type { Channel, Profile } from "@haggle/core";
 import { businessIdForContact, normalizeBusinessName, placeDetails, PlacesError, websiteEvidence, type ContactLearning, type FoundBusiness, type WebsiteEvidence } from "@haggle/engine";
 import type { Runtime } from "./runtime.ts";
-import { businessRef, findVendors, type ChannelStatus, type RosterEntry } from "./vendors.ts";
+import { businessRef, findVendors, findWorkspaceVendors, workspaceVendorList, workspaceVendorReadiness, type ChannelStatus, type RosterEntry, type WorkspaceVendor } from "./vendors.ts";
 
 // ───────────────────────────── categories ─────────────────────────────
 
@@ -164,42 +164,78 @@ export function discoveredRoutes(b: Discovered, rt: Runtime, ch: ChannelStatus):
   return { routes, contacts };
 }
 
+/** Where learning comes from: the workspace-scoped engine for anything an agent sees (only its own deals). */
+export interface LearningSource {
+  contactLearning(businessId: string, aliases?: string[]): Promise<ContactLearning>;
+  businessAliases(b: { business_id: string; name: string; email?: string | null; phone?: string | null }): Promise<string[]>;
+}
+
 /** What Haggle observed reaching a business (all ids it had), or null. */
-export async function learningFor(rt: Runtime, name: string, c: { email?: string | null; phone?: string | null }): Promise<ContactLearning | null> {
+export async function learningFor(src: LearningSource, name: string, c: { email?: string | null; phone?: string | null }): Promise<ContactLearning | null> {
   if (!c.email && !c.phone) return null;
   const id = businessIdForContact({ email: c.email ?? null, phone: c.email ? null : c.phone ?? null }, name);
-  return rt.engine.contactLearning(id, await rt.engine.businessAliases({ business_id: id, name, email: c.email ?? null, phone: c.phone ?? null })).catch(() => null);
+  return src.contactLearning(id, await src.businessAliases({ business_id: id, name, email: c.email ?? null, phone: c.phone ?? null })).catch(() => null);
+}
+
+/** The route of a vendor the operator authorized for this workspace. */
+export function workspaceVendorRoutes(v: WorkspaceVendor, ch: ChannelStatus): Route[] {
+  const contact = v.channel === "email" ? v.email : v.phone;
+  if (!contact) return [];
+  const r = workspaceVendorReadiness(v, ch);
+  return [{ channel: v.channel, contact: mask(contact), found_via: "operator configuration", authorized: true, ready: r.ready, ...(r.blocker ? { blocker: r.blocker } : {}) }];
 }
 
 // ───────────────────────────── selection ─────────────────────────────
 
 export type Selected =
   | { kind: "vendor"; name: string; business_ref: string; vendor: RosterEntry; status: ContactStatus; send?: { email?: string; phone?: string; a2a_card_url?: string; channel: Channel } }
+  /** A vendor the operator authorized for this workspace (workspace-admin add-vendor), with its recorded consent. */
+  | { kind: "workspace_vendor"; name: string; business_ref: string; vendor: WorkspaceVendor; status: ContactStatus; send?: { email?: string; phone?: string; channel: Channel } }
   | { kind: "discovered"; name: string; business_ref: string; found: Discovered; status: ContactStatus; send?: { email?: string; phone?: string; channel: Channel } };
 
 export type Selection =
   | { ok: true; selected: Selected[] }
   | { ok: false; code: "unknown_business" | "ambiguous_business"; message: string; fix: string; details: { ref: string; candidates?: string[] }[] };
 
+/** The connection's workspace: its operator-authorized vendors, and learning from its own deals only. */
+export interface SelectionScope {
+  vendors: { name: string; contact: string; channel?: Channel | null }[];
+  learning: LearningSource;
+}
+
 /**
- * Resolve the businesses an agent named: configured vendors first (name, business_ref, id), then
- * businesses from recent discover calls (name or "place:<id>", re-fetched by id when needed).
- * Identity problems (unknown, ambiguous) fail the whole selection; reachability is reported per
- * business in `status` for the caller to enforce. One entry per ref, in order (callers dedupe).
+ * Resolve the businesses an agent named: this workspace's operator-authorized vendors first (by
+ * name or business_ref, case- and space-insensitive), then configured vendors (name, business_ref,
+ * id), then businesses from recent discover calls (name or "place:<id>", re-fetched by id when
+ * needed). Identity problems (unknown, ambiguous) fail the whole selection; reachability is reported
+ * per business in `status` for the caller to enforce. One entry per ref, in order (callers dedupe).
+ * The agent never supplies a contact here: a name only ever resolves to what the operator configured.
  */
-export async function resolveSelection(refs: string[], rt: Runtime): Promise<Selection> {
+export async function resolveSelection(refs: string[], rt: Runtime, scope?: SelectionScope): Promise<Selection> {
   const roster = await rt.roster();
   const ch = await rt.channels();
+  const learning = scope?.learning ?? rt.engine;
+  const mine = workspaceVendorList(scope?.vendors ?? []);
   const out: Selected[] = [];
   const unknown: { ref: string }[] = [];
   const ambiguous: { ref: string; candidates: string[] }[] = [];
   for (const ref of refs) {
+    const own = findWorkspaceVendors(ref, mine);
+    if (own.length > 1) { ambiguous.push({ ref, candidates: own.map((v) => v.name) }); continue; }
+    if (own.length === 1) {
+      const v = own[0]!;
+      const routes = workspaceVendorRoutes(v, ch);
+      const status = contactStatus(routes, await learningFor(learning, v.name, { email: v.email ?? null, phone: v.phone ?? null }));
+      out.push({ kind: "workspace_vendor", name: v.name, business_ref: v.business_ref, vendor: v, status,
+        ...(routes[0]?.ready ? { send: { channel: v.channel, ...(v.email ? { email: v.email } : {}), ...(v.phone ? { phone: v.phone } : {}) } } : {}) });
+      continue;
+    }
     const vendors = findVendors(ref, roster);
     if (vendors.length > 1) { ambiguous.push({ ref, candidates: vendors.map((v) => v.name) }); continue; }
     if (vendors.length === 1) {
       const v = vendors[0]!;
-      const learning = await learningFor(rt, v.name, { email: v.email ?? null, phone: v.phone ?? null });
-      out.push({ kind: "vendor", name: v.name, business_ref: businessRef(v), vendor: v, status: contactStatus(vendorRoutes(v), learning),
+      const learned = await learningFor(learning, v.name, { email: v.email ?? null, phone: v.phone ?? null });
+      out.push({ kind: "vendor", name: v.name, business_ref: businessRef(v), vendor: v, status: contactStatus(vendorRoutes(v), learned),
         ...(v.ready ? { send: { channel: v.channel, ...(v.email ? { email: v.email } : {}), ...(v.phone ? { phone: v.phone } : {}), ...(v.a2a_card_url ? { a2a_card_url: v.a2a_card_url } : {}) } } : {}) });
       continue;
     }
@@ -216,13 +252,12 @@ export async function resolveSelection(refs: string[], rt: Runtime): Promise<Sel
     if (!hits.length) { unknown.push({ ref }); continue; }
     const b = await withWebsite(hits[0]!, rt);
     const { routes, contacts } = discoveredRoutes(b, rt, ch);
-    const learning = await learningFor(rt, b.name, { email: contacts.find((c) => c.email)?.email ?? null, phone: contacts.find((c) => c.phone)?.phone ?? null });
-    const status = contactStatus(routes, learning);
+    const status = contactStatus(routes, await learningFor(learning, b.name, { email: contacts.find((c) => c.email)?.email ?? null, phone: contacts.find((c) => c.phone)?.phone ?? null }));
     const i = routes.findIndex((r) => r.ready);
     out.push({ kind: "discovered", name: b.name, business_ref: b.business_ref, found: b, status, ...(i >= 0 ? { send: { channel: routes[i]!.channel, ...contacts[i]! } } : {}) });
   }
   if (unknown.length) {
-    const names = roster.map((r) => `${r.name} (${businessRef(r)})`).join(", ");
+    const names = [...mine.map((v) => `${v.name} (${v.business_ref}, authorized for this workspace)`), ...roster.map((r) => `${r.name} (${businessRef(r)})`)].join(", ") || "none";
     return {
       ok: false, code: "unknown_business", message: `Haggle doesn't know ${unknown.map((u) => `"${u.ref}"`).join(", ")}. Nothing was sent.`,
       fix: `Ask the user which business they meant. Configured vendors: ${names}.${rt.placesKey ? " To find real businesses, call discover(category, area) first, then select them by name." : " Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY)."}`,

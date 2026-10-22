@@ -4,14 +4,21 @@
 // scripts/createWorkspace.ts (minus the per-workspace Inkbox identity: every workspace shares the
 // `haggle` buyer identity).
 //
-//   node --env-file=.env scripts/workspace-create.ts --name "Acme ops" [--id ws_acme] \
-//     [--approver-phone +14155550123] [--approver-email ops@acme.example] [--cap 1500] \
-//     [--area "San Francisco, CA"] [--timezone America/Los_Angeles] [--base-url https://<server>]
+//   node --env-file=.env scripts/workspace-create.ts --name "Acme ops" --approver-phone +14155550123 --cap 1500 \
+//     [--id ws_acme] [--approver-email ops@acme.example] [--area "San Francisco, CA"] \
+//     [--timezone America/Los_Angeles] [--base-url https://<server>] [--allow-shared-approver]
 //
-// Needs SUPABASE_DB_URL (the engine database, migrations 100-103 applied). Then set HAGGLE_AUTH=required
-// on the server so requests without a workspace credential are refused.
+// One command: the workspace, its human approver and spending cap, and its credentials (printed once).
+// Live approvals are only the approver's coded text, so a workspace without --approver-phone can't
+// approve anything (it is created, with a warning). An approver phone that already approves for
+// another workspace is refused unless --allow-shared-approver: Haggle has one text line, so a reply
+// from a shared number is held until the human adds the deal code.
+//
+// Needs SUPABASE_DB_URL (the engine database, migrations through 108 applied). Live servers always
+// refuse requests without a workspace credential. Vendors: scripts/workspace-admin.ts add-vendor.
 import { PostgresRepository } from "@haggle/engine";
 import { hashSecret, newSecret } from "../src/workspace.ts";
+import { sharedApproverProblem } from "./workspace-admin.ts";
 
 export interface WorkspaceArgs {
   name: string;
@@ -22,6 +29,7 @@ export interface WorkspaceArgs {
   approverEmail?: string;
   area?: string;
   baseUrl?: string;
+  allowSharedApprover?: boolean;
 }
 
 /** Validate the arguments and mint fresh credentials (pure apart from randomness). */
@@ -44,6 +52,7 @@ export function planWorkspace(a: WorkspaceArgs) {
       approver_email: a.approverEmail?.toLowerCase() ?? null, default_area: a.area ?? null,
     },
     token, connectorUrl: `${base}/c/${secret}/mcp`, mcpUrl: `${base}/mcp`,
+    warnings: a.approverPhone ? [] : ["No --approver-phone: on a live server nothing in this workspace can be approved until workspace-admin set-approver gives it one."],
   };
 }
 
@@ -61,11 +70,14 @@ async function main(argv = process.argv.slice(2)) {
     name: arg(argv, "name") ?? "", ...(arg(argv, "id") ? { id: arg(argv, "id")! } : {}), ...(arg(argv, "timezone") ? { timezone: arg(argv, "timezone")! } : {}),
     ...(cap ? { capUsd: Number(cap) } : {}), ...(arg(argv, "approver-phone") ? { approverPhone: arg(argv, "approver-phone")! } : {}),
     ...(arg(argv, "approver-email") ? { approverEmail: arg(argv, "approver-email")! } : {}), ...(arg(argv, "area") ? { area: arg(argv, "area")! } : {}),
-    ...(base ? { baseUrl: base } : {}),
+    ...(base ? { baseUrl: base } : {}), ...(argv.includes("--allow-shared-approver") ? { allowSharedApprover: true } : {}),
   });
   const schema = process.env.HAGGLE_DB_SCHEMA?.trim();
   const repo = new PostgresRepository(url, { max: 1, ...(schema ? { schema } : {}) });
   try {
+    if (await repo.getWorkspace(plan.workspace.id)) throw new Error(`workspace ${plan.workspace.id} already exists (use workspace-admin.ts to change it)`);
+    const problem = sharedApproverProblem(plan.settings.approver_phone, plan.workspace.id, plan.settings.approver_phone ? await repo.listWorkspacesByApproverPhone(plan.settings.approver_phone) : [], argv.includes("--allow-shared-approver"));
+    if (problem) throw new Error(problem);
     await repo.insertWorkspace(plan.workspace);
     await repo.saveSettings(plan.settings, plan.workspace.id);
   } finally {
@@ -82,6 +94,8 @@ async function main(argv = process.argv.slice(2)) {
     "",
     "Live servers always refuse requests without a workspace credential (mock: set HAGGLE_AUTH=required). Change the approver or cap, revoke or rotate with scripts/workspace-admin.ts.",
     ...(plan.settings.approver_phone ? ["For iMessage approvals the approver texts `connect @haggle` to Inkbox's router number once."] : []),
+    `Approver ${plan.settings.approver_phone ?? "none"}; spending cap $${(plan.settings.spending_cap_cents / 100).toFixed(2)} per payment. Add vendors: scripts/workspace-admin.ts add-vendor --id ${plan.workspace.id} ...; check with show --id ${plan.workspace.id}.`,
+    ...plan.warnings.map((w) => `WARNING: ${w}`),
   ].join("\n"));
 }
 
