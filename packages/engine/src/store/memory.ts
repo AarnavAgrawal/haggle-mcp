@@ -1,6 +1,7 @@
 // In-memory Repository for tests and mock mode. Enforces the same uniqueness rules as
 // supabase/migrations/100_engine_core.sql so tests exercise real invariants. Single-process only.
 import { newId } from "../ids.ts";
+import { approvalUpdateViolation } from "../payments/guard.ts";
 import {
   DEFAULT_WORKSPACE_ID,
   type ApprovalRow,
@@ -317,6 +318,9 @@ export class InMemoryRepository implements Repository {
   }
 
   async insertApproval(a: Omit<ApprovalRow, "created_at">) {
+    // Parity with Postgres (105 approvals_match_quote): the approval names its own job's quote, business and total.
+    const q = this.quotes.find((x) => x.id === a.quote_id);
+    if (!q || q.job_id !== a.job_id || q.business_id !== a.business_id || q.total_cents !== a.quote_total_cents) throw new Error("approval must name its own job's quote, business and total");
     if (this.approvals.some((x) => x.job_id === a.job_id && x.status === "pending")) return null;
     const row: ApprovalRow = { ...clone(a), created_at: now() };
     this.approvals.push(row);
@@ -347,11 +351,15 @@ export class InMemoryRepository implements Repository {
   async transitionApproval(id: string, from: ApprovalRow["status"], patch: Partial<ApprovalRow>) {
     const a = this.approvals.find((x) => x.id === id);
     if (!a || a.status !== from) return false;
+    const bad = approvalUpdateViolation(a, patch); // parity with 121_engine_security2
+    if (bad) throw new Error(bad);
     Object.assign(a, patch);
     return true;
   }
   async updateApproval(id: string, patch: Partial<ApprovalRow>) {
     const a = this.approvals.find((x) => x.id === id);
+    const bad = a ? approvalUpdateViolation(a, patch) : null;
+    if (bad) throw new Error(bad);
     if (a) Object.assign(a, patch);
   }
   async recordWrongApprovalCode(id: string, maxAttempts: number) {

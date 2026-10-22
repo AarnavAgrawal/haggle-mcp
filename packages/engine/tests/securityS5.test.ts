@@ -282,3 +282,26 @@ describe("S5-D F13: a deferred first contact re-checks the vendor's authorizatio
     expect(env.emails.filter((m) => m.to === email)).toHaveLength(0);
   });
 });
+
+describe("S5-D F14: an approval's terms are immutable and a decided approval never comes back (store parity with 121)", () => {
+  it("the in-memory store refuses changing an approval's quote, amounts, business or amounts, and resurrecting a used or declined approval", async () => {
+    const env = await setup();
+    const { agent, jobId, quoteId } = await quotedIn(env, "ws_alpha");
+    const a = await agent.requestApproval(jobId, quoteId, "imessage");
+    for (const patch of [{ quote_id: "q_other" }, { payment_cents: 1 }, { quote_total_cents: 1 }, { business_id: "biz_other" }, { cap_cents: 999_999 }, { job_id: "job_other" }]) {
+      await expect(env.repo.updateApproval(a.id, patch)).rejects.toThrow(/immutable/);
+      await expect(env.repo.transitionApproval(a.id, "pending", { status: "approved", ...patch })).rejects.toThrow(/immutable/);
+    }
+    expect(await env.repo.transitionApproval(a.id, "pending", { status: "declined", decided_at: new Date().toISOString() })).toBe(true);
+    await expect(env.repo.transitionApproval(a.id, "declined", { status: "approved" })).rejects.toThrow(/approval status/);
+    expect((await env.repo.getApproval(a.id))!.status).toBe("declined");
+  });
+  it("the in-memory store refuses an approval that doesn't name its own job's quote, business and total", async () => {
+    const env = await setup();
+    const { jobId, quoteId } = await quotedIn(env, "ws_alpha");
+    const q = (await env.repo.getQuote(quoteId))!;
+    const base = { id: "ap_forged", job_id: jobId, quote_id: quoteId, business_id: q.business_id, quote_total_cents: q.total_cents!, payment_cents: q.deposit_cents!, cap_cents: 150_000, approver: null, channel: "imessage" as const, status: "pending" as const, code: "1234", expires_at: new Date(Date.now() + 60_000).toISOString(), decided_at: null, outbound_message_id: null, thread_id: null, action: "pay" as const, attempts: 0 };
+    await expect(env.repo.insertApproval({ ...base, business_id: "biz_other" })).rejects.toThrow(/own job's quote/);
+    await expect(env.repo.insertApproval({ ...base, quote_total_cents: 1 })).rejects.toThrow(/own job's quote/);
+  });
+});
