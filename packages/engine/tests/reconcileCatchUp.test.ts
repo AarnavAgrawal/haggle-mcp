@@ -6,46 +6,13 @@
 // it won't cover automatically. Real engine; a fake Inkbox mailbox that honours start/end times.
 import { describe, expect, it } from "vitest";
 import { CATCH_UP, catchUpRange, disabledPayer, GOLDEN_REQUEST, HaggleEngine, InboundReconciler, inkboxEmail, InMemoryRepository, StubBrain, walkCatchUp, type CatchUpParams } from "../src/index.ts";
-import { BUYER, FakeInkbox } from "./helpers/fakeInkbox.ts";
-import { textExtractor } from "./helpers/reliabilityKit.ts";
+import { BUYER } from "./helpers/fakeInkbox.ts";
+import { textExtractor, TimedInkbox } from "./helpers/reliabilityKit.ts";
 
 const HARBOR = "harbor-table-sf@inkboxmail.test";
 const SUNSET = "sunset-kitchen-sf@inkboxmail.test";
 const H = 3_600_000;
 const { budget_usd: _b, ...request } = GOLDEN_REQUEST;
-
-/** FakeInkbox whose messages carry createdAt and whose listing honours startDatetime / endDatetime (newest first). */
-class TimedInkbox extends FakeInkbox {
-  readonly listed: { start?: string; end?: string }[] = [];
-  private readonly clock: { now: () => Date };
-  constructor(clock: { now: () => Date }) {
-    super();
-    this.clock = clock;
-  }
-  stamp<T extends object>(m: T): T {
-    (m as { createdAt?: string }).createdAt = this.clock.now().toISOString();
-    return m;
-  }
-  override reply(...a: Parameters<FakeInkbox["reply"]>) {
-    return this.stamp(super.reply(...a));
-  }
-  /** Mail to the buyer from no business (newsletters, noise): listed, never ingested. */
-  noise(n: number, spreadMs: number) {
-    const t0 = this.clock.now().getTime();
-    for (let i = 0; i < n; i++) {
-      const id = `noise_${t0}_${i}`;
-      this.messages.set(id, { id, mailbox: BUYER, direction: "inbound", threadId: null, messageId: `<${id}@news.test>`, fromAddress: "news@news.test", toAddresses: ["list@news.test"], subject: "news", bodyText: "x", inReplyTo: null, references: null, attachmentMetadata: null, createdAt: new Date(t0 - Math.floor((i * spreadMs) / n)).toISOString() } as never);
-    }
-  }
-  override async *list(mailbox: string, o?: { direction?: string; startDatetime?: string; endDatetime?: string }) {
-    if (this.listError) throw this.listError;
-    this.listed.push({ ...(o?.startDatetime ? { start: o.startDatetime } : {}), ...(o?.endDatetime ? { end: o.endDatetime } : {}) });
-    const at = (m: { createdAt?: string }) => Date.parse(m.createdAt ?? "1970-01-01T00:00:00Z");
-    const items = [...this.messages.values()].filter((m) => m.mailbox === mailbox && (!o?.direction || m.direction === o.direction)
-      && (!o?.startDatetime || at(m as never) >= Date.parse(o.startDatetime)) && (!o?.endDatetime || at(m as never) < Date.parse(o.endDatetime)));
-    for (const m of items.sort((a, b) => at(b as never) - at(a as never))) yield m;
-  }
-}
 
 function setup(o: { catchUp?: Partial<CatchUpParams> | false; maxItems?: number; repo?: InMemoryRepository } = {}) {
   let t = Date.parse("2026-10-20T09:00:00Z");
