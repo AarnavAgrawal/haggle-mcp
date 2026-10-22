@@ -1,7 +1,7 @@
 // POST /webhooks/inkbox: message.bounced / message.failed for Haggle's own outbound email, and
 // HTML-only replies. Real engine (live config, in-memory store), Inkbox fakes; no network.
 import { describe, expect, it } from "vitest";
-import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, inkboxEmail, type QuoteExtraction } from "@haggle/engine";
+import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, inkboxEmail, type InkboxMessageDetail, type QuoteExtraction } from "@haggle/engine";
 import { BUYER, FakeInkbox, SECRET, signed } from "../../../packages/engine/tests/helpers/fakeInkbox.ts";
 import { handleInkboxWebhook } from "../src/webhook.ts";
 import type { Runtime } from "../src/runtime.ts";
@@ -22,7 +22,7 @@ async function liveRuntime() {
     extractor: { extract: async (i) => { seen.push(i.bodyText); const m = i.bodyText.match(/\$([\d,]+) total/); return extraction(m ? Number(m[1]!.replace(/,/g, "")) : null); } },
     config: { mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: BUYER, collectionWindowMs: 600_000, negotiationWindowMs: 300_000, approvalTtlMs: 1_800_000, globalPaymentCapCents: 500_000, maxRounds: 1 },
   });
-  const rt: Runtime = { mode: "live", engine, missing: [], inkbox: { api, buyerMailbox: BUYER, webhookSecret: SECRET, senderTrust: { policy: "outbound-verified" } } };
+  const rt = { mode: "live", engine, missing: [], inkbox: { api, buyerMailbox: BUYER, webhookSecret: SECRET, senderTrust: { policy: "outbound-verified" } } } as unknown as Runtime;
   const { budget_usd, ...request } = GOLDEN_REQUEST;
   const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Bay Catering", email: SELLER }] });
   const rfqRow = (await repo.listMessages(deal.job_id)).find((m) => m.direction === "out")!;
@@ -69,7 +69,7 @@ describe("message.bounced / message.failed", () => {
 describe("HTML-only replies", () => {
   it("a reply with only an HTML part is read from its text, quoted history dropped", async () => {
     const { api, rt, engine, deal, rfqRow } = await liveRuntime();
-    const d = api.reply(SELLER, rfqRow.rfc_message_id!, "");
+    const d = api.reply(SELLER, rfqRow.rfc_message_id!, "") as InkboxMessageDetail;
     d.bodyText = null;
     d.bodyHtml = `<div>Yes, <b>$1,150 total</b>.</div><div class="gmail_quote">On Thu, Oct 22, 2026 at 10:15 AM Haggle &lt;${BUYER}&gt; wrote:<blockquote>Budget: up to $2,000 total</blockquote></div>`;
     const raw = event("evt_h1", "message.received", { message: { id: d.id }, agent_identities: [{ bucket: "from", address: SELLER }] });
