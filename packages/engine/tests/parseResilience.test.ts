@@ -19,7 +19,7 @@ function setup(fail: (call: number) => Error | null) {
   let t = Date.parse("2030-01-01T10:00:00Z");
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   let calls = 0;
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const e = new HaggleEngine({
     repo, now: clock.now, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     extractor: { async extract() { calls++; const err = fail(calls); if (err) throw err; return structuredClone(quote); } } as never,

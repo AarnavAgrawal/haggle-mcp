@@ -1,0 +1,117 @@
+# CI: the release gates (docs/deployment.md §3), on every push and pull request. Mock mode only: no secret,
+# no provider call, no real database. Postgres is a throwaway service container; the scripts create
+# their own database on it (HAGGLE_PG_ADMIN_URL) and drop it afterwards. Deploys stay manual
+# (Manufact CLI upload, docs/deployment.md): pushing never deploys.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      HAGGLE_ENV: development
+      HAGGLE_MODE: mock
+      # A disposable server: pg-common.sh refuses anything but localhost / the service host.
+      HAGGLE_PG_ADMIN_URL: postgres://postgres:postgres@localhost:5432/postgres
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # root package.json engines: node >= 22.22.2 (22.x resolves to the newest 22 release).
+          node-version: 22.x
+          cache: npm
+
+      - name: Node satisfies package.json engines
+        run: |
+          # shellcheck disable=SC2016 # the single quotes hold JavaScript, not shell
+          node -e '
+            const want = require("./package.json").engines.node.replace(/^>=\s*/, "").split(".").map(Number);
+            const have = process.versions.node.split(".").map(Number);
+            const ok = have[0] > want[0] || (have[0] === want[0] && (have[1] > want[1] || (have[1] === want[1] && have[2] >= want[2])));
+            console.log(`node ${process.versions.node}, engines >=${want.join(".")}`);
+            process.exit(ok ? 0 : 1);'
+
+      - name: Install
+        run: npm ci
+
+      # npm ci already refuses a lockfile out of sync with package.json; this also fails on missing or
+      # invalid installed dependencies (extraneous optional wasm shims are reported, not fatal).
+      - name: Dependency tree consistent
+        run: npm ls --all > /dev/null
+
+      # Committed docs and generated reports: no credential-shaped strings (file:line + pattern only).
+      - name: Secret scan (docs and reports)
+        run: node apps/mcp/scripts/secret-scan.ts
+
+      # docs/env-manifest.md's table is generated from apps/mcp/src/envManifest.ts.
+      - name: Env manifest doc is current
+        run: node apps/mcp/scripts/env-manifest.ts --check docs/env-manifest.md
+
+      - name: Shell scripts (shellcheck)
+        working-directory: scripts
+        run: |
+          command -v shellcheck || (sudo apt-get update -q && sudo apt-get install -y -q shellcheck)
+          shellcheck -x ./*.sh
+
+      - name: psql client
+        run: command -v psql || (sudo apt-get update -q && sudo apt-get install -y -q postgresql-client)
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Before the tests: the MCP end-to-end suites start the built server (as Manufact does).
+      - name: Build
+        run: npm run build
+
+      # Offline part of the launch gate: migration file numbers/names unique, build newer than the sources.
+      - name: Launch gate (migration files, build)
+        run: node apps/mcp/scripts/launch-gate.ts --target development --skip-config
+
+      - name: Unit and end-to-end tests (mock mode, no network)
+        run: npx vitest run
+
+      # The same engine and MCP suites with the wall clock moved before the fixtures' dates and a year
+      # after them: no test may depend on today's date (fake engine clocks vs. real-time stamps, literal dates).
+      - name: Tests don't depend on the real date (skewed clock)
+        env:
+          HAGGLE_TEST_CLOCK_SKEWS: 2026-01-15T12:00:00Z 2027-10-22T12:00:00Z
+        run: scripts/test-clock-skew.sh
+
+      # The built server in a clean mock-mode environment: /health, /ready, MCP, one simulated deal.
+      - name: Mock-mode smoke against the built server
+        run: scripts/smoke-local.sh
+
+      - name: Migrations apply in order; SQL assertions; re-runnable files re-run; each parallel-branch migration alone on its base
+        run: scripts/verify-migrations.sh
+
+      - name: Migration upgrade compatibility (102 with rows -> latest via the ledger CLI; every checkpoint)
+        run: scripts/migration-compat.sh
+
+      - name: Engine suite and migration ledger on Postgres 17
+        run: scripts/test-postgres.sh

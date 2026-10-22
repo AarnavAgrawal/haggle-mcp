@@ -1,7 +1,7 @@
 // Engine read models -> the shared view schemas (@haggle/core/views). Every tool that renders a view
 // returns exactly one of these shapes, parsed (validated and stripped of engine-only fields).
 import { Approval, DealBoard, DealBoardOrEmpty, Quote, requirementText, type Channel, type Mode } from "@haggle/core";
-import { eventPlace, eventWhen, type DealBoardData } from "@haggle/engine";
+import { eventPlace, eventWhen, type DealBoardData, type HaggleEngine } from "@haggle/engine";
 import { z } from "zod";
 
 export { BusinessProfile, Conversation, DealBoard, DealBoardOrEmpty, Estimates, Identity } from "@haggle/core";
@@ -104,6 +104,27 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   /** The best-value quote when it isn't the recommendation because it can't be approved; and why. */
   best_value_quote_id: z.string().optional(),
   recommendation_note: z.string().optional(),
+  /** No quote meets every must: the closest approvable one. Never the recommendation; the human may choose it knowingly. */
+  best_available_quote_id: z.string().optional(),
+  /** Per current quote: does it meet every must (compliant / unconfirmed / noncompliant), and what it misses. Only compliant quotes are recommended. */
+  compliance: z.record(z.string(), z.object({ status: z.enum(["compliant", "unconfirmed", "noncompliant"]), issues: z.array(z.object({ code: z.string(), text: z.string() })), /** Absent in the compact board when nothing was assumed. */ assumed: z.array(z.string()).optional() })).optional(),
+  /** Per current quote: until when it can be approved as is; a stale one is re-confirmed with the business first. */
+  freshness: z.record(z.string(), z.object({ stale: z.boolean(), good_until: z.string(), /** Absent in the compact board when it equals the quote's own valid_until. */ valid_until: z.string().nullable().optional(), reconfirmation: z.literal("requested").optional() })).optional(),
+  /**
+   * After approval under the manual handoff: booking, payment instructions (untrusted text, links never
+   * opened), the customer's reported payment and the business's confirmation of receipt. money_verified
+   * is true only when the business itself confirmed it received the money.
+   */
+  purchase: z.object({
+    stage: z.string(), rail: z.literal("manual"), booked: z.boolean(), booked_by_human: z.literal(true).optional(), money_verified: z.boolean(),
+    amount_usd: z.number(), total_usd: z.number(),
+    vendor_reply: z.object({ text: z.string(), untrusted: z.literal(true), has_link: z.boolean() }).optional(),
+    instructions: z.object({ text: z.string(), untrusted: z.literal(true), has_link: z.boolean() }).optional(),
+    reported_paid_at: z.string().optional(), verified_at: z.string().optional(), stalled: z.literal(true).optional(), operator_attention: z.string().optional(),
+    summary: z.string(), next: z.string(),
+    /** The order and must-haves restated at every stage (S4-B), and a confirm-only (no payment) approval. */
+    order: z.string().optional(), must_haves: z.string().optional(), confirm_only: z.literal(true).optional(),
+  }).optional(),
   /** Quote ids that counteroffers cited as estimates ("about $1,200"), not firm quotes. */
   negotiation_estimates: z.array(z.string()).optional(),
   /** deal(dry_run): who would be contacted; nothing was sent. */
@@ -123,7 +144,8 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   })).optional(),
   /** Per business: observed reply performance by channel across all jobs, and any stated contact preference. */
   contact_learning: z.record(z.string(), z.looseObject({
-    channels: z.record(z.string(), z.looseObject({ contacted_jobs: z.number(), replied_jobs: z.number(), quotes: z.number(), response_rate: z.number(), confidence: z.number() })),
+    /** The compact board keeps contacted/replied jobs and reply time (what the view shows); quotes, response_rate (= replied/contacted) and confidence are in detail: true. */
+    channels: z.record(z.string(), z.looseObject({ contacted_jobs: z.number(), replied_jobs: z.number(), quotes: z.number().optional(), response_rate: z.number().optional(), confidence: z.number().optional() })),
     stated_preference: z.looseObject({ channel: z.string(), excerpt: z.string() }).optional(),
   })).optional(),
   /** Per current quote: extra fees and commercial terms exactly as stated. */
@@ -138,8 +160,106 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   warnings: z.array(z.string()).optional(),
   /** Demo vendors this server can't contact yet, with the exact fix. Shown before and during a deal. */
   setup: z.object({ ready: z.number().int(), total: z.number().int(), blockers: z.array(Blocker) }).optional(),
+  /**
+   * Integration slot (sprint 4, workstream A: vendor comms): per business_id, where Haggle's contact
+   * with the vendor stands (e.g. delivered, bounced, opted_out, outside_contact_window, awaiting_reply)
+   * in one line. Copied from the engine read model's `vendor_contact` when present.
+   */
+  vendor_contact: z.record(z.string(), z.looseObject({ status: z.string(), detail: z.string().optional() })).optional(),
+  /**
+   * Integration slot (sprint 4, workstream B: purchasing): per quote_id, why the quote was selected or
+   * not, in one line. Copied from the engine read model's `selection` when present.
+   */
+  selection: z.record(z.string(), z.looseObject({ status: z.enum(["recommended", "selectable", "not_selectable"]), reason: z.string() })).optional(),
+  /** True when this is the compact board (the default); get_quotes(detail: true) returns every ranking factor and contact statistic. */
+  compact: z.boolean().optional(),
 });
 export type DealBoardPlus = z.infer<typeof DealBoardPlus>;
+
+/** get_quotes budget: a six-quote board's structuredContent stays under this many characters (about 2,500 tokens at ~4 chars/token; the full board is ~14,500). */
+export const BOARD_CHAR_BUDGET = 10_000;
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
+
+/**
+ * The compact board every tool returns by default (the agent reads it on each poll). It keeps every
+ * field the deal-board view renders and every decision-critical fact (totals, deposits, flags,
+ * approvability and its reason, non-compliance and assumptions, confidence, fees and exclusions),
+ * and drops what is redundant or never shown:
+ * - value.ranked: only the recommended quote (the only one whose factors the board shows); every
+ *   other quote's score and why-not stay in value.explanation.others;
+ * - contact_learning: only businesses with history from more than one job or a stated preference;
+ * - compliance: only quotes that aren't plainly compliant (absent = compliant, nothing assumed);
+ * - stages: current_total_usd only when negotiation changed it, no quote_version;
+ * - quotes: no message_id (get_conversation reads the thread), status only when not current,
+ *   excluded_reason only when `rejected` doesn't already say it;
+ * - businesses: the vendor's words and last event clipped to one line (`simulated` always kept: a
+ *   real business can appear in a mock-mode deal);
+ * - (sprint 5, measured on scripts/pilot-benchmark.ts) selection: a not_selectable reason that only
+ *   restates quote_status[id].block or rejected[].detail; contact_learning: quotes, response_rate
+ *   (= replied/contacted) and confidence, which the view never shows; compliance: an empty `assumed`.
+ */
+export function compactBoard(b: DealBoardPlus): DealBoardPlus {
+  const rec = b.value?.recommendedQuoteId ?? b.recommended_quote_id ?? null;
+  const rejected = new Set((b.rejected ?? []).map((r) => r.quote_id));
+  const out: DealBoardPlus = {
+    ...b,
+    compact: true,
+    businesses: b.businesses.map((x) => ({ ...x, last_event: clip(x.last_event, 120), ...(x.transcript_snippet ? { transcript_snippet: clip(x.transcript_snippet, 120) } : {}) })),
+    quotes: b.quotes.map((q) => {
+      const { message_id: _m, status, excluded_reason, ...rest } = q;
+      return { ...rest, ...(status && status !== "current" ? { status } : {}), ...(excluded_reason && !rejected.has(q.quote_id) ? { excluded_reason } : {}) };
+    }),
+  };
+  if (b.value) {
+    out.value = {
+      method: b.value.method, weights: b.value.weights, recommendedQuoteId: b.value.recommendedQuoteId,
+      ranked: b.value.ranked.filter((r) => r.quoteId === rec).map((r) => ({ quoteId: r.quoteId, business: r.business, score: r.score, confidence: r.confidence, factors: r.factors.filter((f) => f.weight > 0).map((f) => ({ name: f.name, score: f.score, weight: f.weight, neutral: f.neutral, note: f.note })) })),
+      // "Harbor Table: $1,008 (…), value 0.73 vs 0.77; <reason>" → "Harbor Table (value 0.73): <reason>":
+      // the board shows only the reason, and the total is on the quote row.
+      explanation: b.value.explanation && {
+        winner: b.value.explanation.winner,
+        others: b.value.explanation.others.map((o) => {
+          const m = o.text.match(/^([^:]+):\s*\$[\d,.]+(?:\s*\([^)]*\))?,\s*value ([\d.]+) vs [\d.]+;\s*(.*)$/s);
+          return m ? { quote_id: o.quote_id, text: `${m[1]} (value ${m[2]}): ${m[3]}` } : o;
+        }),
+      },
+    };
+  }
+  if (b.contact_learning) {
+    const kept = Object.entries(b.contact_learning).flatMap(([id, l]) => {
+      const channels = Object.fromEntries(Object.entries(l.channels).filter(([, c]) => c.contacted_jobs > 1));
+      return Object.keys(channels).length || l.stated_preference ? [[id, { channels, ...(l.stated_preference ? { stated_preference: l.stated_preference } : {}) }] as const] : [];
+    });
+    if (kept.length) out.contact_learning = Object.fromEntries(kept.map(([id, l]) => [id, { ...l, channels: Object.fromEntries(Object.entries(l.channels).map(([c, r]) => {
+      const { quotes: _q, response_rate: _r, confidence: _c, ...shown } = r;
+      return [c, shown];
+    })) }]));
+    else delete out.contact_learning;
+  }
+  if (b.compliance) out.compliance = Object.fromEntries(Object.entries(b.compliance).filter(([, c]) => c.status !== "compliant" || c.issues.length || c.assumed?.length).map(([id, c]) => {
+    const { assumed, ...rest } = c;
+    return [id, assumed?.length ? c : rest];
+  }));
+  if (b.stages) {
+    out.stages = Object.fromEntries(Object.entries(b.stages).map(([id, s]) => {
+      const { quote_version: _v, current_total_usd, ...rest } = s;
+      return [id, { ...rest, ...(current_total_usd !== undefined && current_total_usd !== s.first_total_usd ? { current_total_usd } : {}) }];
+    }));
+  }
+  // Stale quotes: valid_until is already on the quote row.
+  if (b.freshness) out.freshness = Object.fromEntries(Object.entries(b.freshness).map(([id, f]) => [id, { stale: f.stale, good_until: f.good_until, ...(f.valid_until !== null && f.valid_until === b.quotes.find((q) => q.quote_id === id)?.valid_until ? {} : { valid_until: f.valid_until }), ...(f.reconfirmation ? { reconfirmation: f.reconfirmation } : {}) }]));
+  // Selection reasons: a selectable (not recommended) quote's reason is already in value.explanation.others.
+  // A not_selectable reason that restates the approval block or the rejection word for word is already on the board.
+  const restates = (id: string, reason: string) => {
+    const said = reason.replace(/…$/, "");
+    const block = b.quote_status?.[id]?.block?.reason;
+    const rej = b.rejected?.find((r) => r.quote_id === id)?.detail;
+    return (!!block && `can't be approved yet: ${block}`.startsWith(said)) || (!!rej && `can't win: ${rej}`.startsWith(said));
+  };
+  if (b.selection) out.selection = Object.fromEntries(Object.entries(b.selection).filter(([id, s]) => s.status !== "selectable" && !(s.status === "not_selectable" && restates(id, s.reason))).map(([id, s]) => [id, { ...s, reason: clip(s.reason, 80) }]));
+  for (const k of ["freshness", "terms", "selection"] as const) if (out[k] && !Object.keys(out[k]!).length) delete out[k];
+  return out;
+}
 
 export function requestDetails(b: { job: Pick<DealBoardData["job"], "request" | "budget_usd"> }, budgetSource?: "request" | "settings_default"): NonNullable<DealBoardPlus["request_details"]> {
   const r = b.job.request;
@@ -150,12 +270,34 @@ export function requestDetails(b: { job: Pick<DealBoardData["job"], "request" | 
   };
 }
 
-/** Board + request details + payment ceiling (+ setup blockers when given). */
-export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus> = {}): DealBoardPlus {
+/** Board + request details + payment ceiling (+ setup blockers when given). Compact unless `detail` (see compactBoard). */
+export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus> = {}, opts: { detail?: boolean } = {}): DealBoardPlus {
+  const full = fullDealBoardPlus(b, mode, extra);
+  return opts.detail ? full : compactBoard(full);
+}
+
+/** Workstream A/B integration slots, read from the engine read model when it carries them. */
+function integrationSlots(b: DealBoardData): Partial<DealBoardPlus> {
+  const x = b as DealBoardData & { vendor_contact?: DealBoardPlus["vendor_contact"] };
+  // Per current quote: why it was recommended, is selectable, or can't be selected (ranking/selection.ts).
+  const selection = Object.fromEntries(b.quotes.flatMap((q) => {
+    const sel = (q as { selection?: { status: "recommended" | "selectable" | "not_selectable"; reason: string } }).selection;
+    return q.status === "current" && sel ? [[q.quote_id, sel]] : [];
+  }));
+  return { ...(x.vendor_contact && Object.keys(x.vendor_contact).length ? { vendor_contact: x.vendor_contact } : {}), ...(Object.keys(selection).length ? { selection } : {}) };
+}
+
+function fullDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus>): DealBoardPlus {
   return DealBoardPlus.parse({
+    ...integrationSlots(b),
     ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...(b.stages ? { stages: b.stages } : {}), ...(b.terms && Object.keys(b.terms).length ? { terms: b.terms } : {}), ...(b.contact_learning ? { contact_learning: b.contact_learning } : {}),
     quote_status: Object.fromEntries(b.quotes.filter((q) => q.total_usd !== null).map((q) => [q.quote_id, { approvable: q.approvable, ...(q.total_approximate ? { approximate: true } : {}), ...(q.approval_block ? { block: q.approval_block } : {}) }])),
     ...(b.best_value_quote_id ? { best_value_quote_id: b.best_value_quote_id } : {}), ...(b.recommendation_note ? { recommendation_note: b.recommendation_note } : {}),
+    ...(b.best_available_quote_id ? { best_available_quote_id: b.best_available_quote_id } : {}),
+    compliance: Object.fromEntries(b.quotes.filter((q) => q.status === "current" && q.compliance).map((q) => [q.quote_id, { status: q.compliance!.status, issues: q.compliance!.issues.map((x) => ({ code: x.code, text: x.text })), assumed: q.compliance!.assumed }])),
+    // Only quotes that need attention (stale, or being re-confirmed): keeps the output compact.
+    freshness: Object.fromEntries(b.quotes.filter((q) => q.status === "current" && q.freshness && (q.freshness.stale || q.freshness.reconfirmation)).map((q) => [q.quote_id, { stale: q.freshness!.stale, good_until: q.freshness!.good_until, valid_until: q.freshness!.valid_until, ...(q.freshness!.reconfirmation ? { reconfirmation: q.freshness!.reconfirmation } : {}) }])),
+    ...(b.purchase ? { purchase: b.purchase } : {}),
     ...(b.negotiation.some((n) => n.basis_approximate) ? { negotiation_estimates: [...new Set(b.negotiation.filter((n) => n.basis_approximate).map((n) => n.basis_quote_id))] } : {}), ...extra,
   });
 }
@@ -220,4 +362,31 @@ export function toApproval(
     ...(b.payment?.receipt_url ? { receipt_url: b.payment.receipt_url } : b.payment?.explorer_url ? { receipt_url: b.payment.explorer_url } : {}),
     mode, ...extra,
   });
+}
+
+type WaitResult = Awaited<ReturnType<HaggleEngine["waitForUpdate"]>>;
+
+/** wait_for_update returns at most this many updates (the newest); updates_omitted counts the rest. */
+export const WAIT_UPDATES_MAX = 12;
+
+/**
+ * wait_for_update's output (structuredContent and text). The 12 newest updates; quotes named by
+ * business. A poll that saw nothing after a cursor the agent already holds (no update, timed out)
+ * carries a one-line hint instead of repeating the engine's: no event means nothing changed since
+ * the response that handed out that cursor, whose hint still stands (measured on the pilot
+ * benchmark: most polls of a deal are these). Cursor 0 or any update: the engine's hint as is.
+ */
+export function waitOutput(w: WaitResult, requestedCursor: number, o: { until: string; timeoutS: number; names?: Map<string, string> }): { structured: WaitResult & { updates_omitted?: number }; text: string } {
+  const usd = (n: number | null | undefined) => (n === null || n === undefined ? "?" : money(n));
+  const quiet = w.timed_out && w.updates.length === 0 && requestedCursor > 0 && w.cursor === String(requestedCursor);
+  const next = quiet ? `Nothing new since cursor ${w.cursor}; the previous hint stands. Wait again with this cursor.` : w.next;
+  const omitted = Math.max(0, w.updates.length - WAIT_UPDATES_MAX);
+  const updates = w.updates.slice(-WAIT_UPDATES_MAX);
+  const lines = updates.map((u) =>
+    u.type === "quote" ? `quote ${u.quote_id} from ${o.names?.get(u.business_id) ?? "a business"}: ${usd(u.total_usd)} (round ${u.round})` : u.type === "question" ? `question ${u.question_id}: "${u.text.slice(0, 120)}"` : u.type === "state" ? `state ${u.from} -> ${u.to}` : u.type === "flag" ? `flag ${u.flag}` : u.type === "reply" ? u.summary : `payment ${u.status}`);
+  const head = w.timed_out ? `No ${o.until === "any_change" ? "change" : `"${o.until}"`} in ${o.timeoutS}s (${w.state}).` : `${w.updates.length} update(s), state ${w.state}:`;
+  return {
+    structured: { ...w, updates, next, ...(omitted ? { updates_omitted: omitted } : {}) },
+    text: [head, ...lines, `cursor=${w.cursor} · next: ${next}`].join("\n"),
+  };
 }

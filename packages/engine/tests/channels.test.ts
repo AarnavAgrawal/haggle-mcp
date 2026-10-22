@@ -249,7 +249,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     const sent: { to: string; subject: string; bodyText: string }[] = [];
     const texts: { to: string; text: string }[] = [];
     const calls: { toNumber: string; reason: string }[] = [];
-    const repo = new InMemoryRepository();
+    const repo = new InMemoryRepository({ now: clock.now });
     const engine = new HaggleEngine({
       repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
       email: { async send(m) { sent.push(m); return { providerId: `em_${sent.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${sent.length}@haggle.test>` }; } },
@@ -312,11 +312,8 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     expect(calls).toHaveLength(1); // proposed, never placed without a human
 
     // A human authorizes it: one AI-disclosed call citing only that real total.
-    // Like every call it respects the cooldown after the quote call: scheduled, then placed.
-    expect(await engine.placeCallback(deal.job_id, board.callbacks![0]!.business_id, "human via approval form")).toMatchObject({ placed: false, scheduledFor: expect.any(String) });
-    expect(calls).toHaveLength(1);
-    clock.advance(2 * 60_000);
-    await engine.advanceJob(deal.job_id);
+    // Authorized just now: placed at once (no spacing gap after the quote call, which has ended).
+    expect(await engine.placeCallback(deal.job_id, board.callbacks![0]!.business_id, "human via approval form")).toMatchObject({ placed: true });
     expect(calls).toHaveLength(2);
     expect(calls[1]!.reason).toMatch(/AI assistant who called earlier/);
     expect(calls[1]!.reason).toMatch(/real quote of \$1,080 total/);
@@ -400,7 +397,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
       await engine.advanceJob(deal.job_id);
     }
     expect(attempts).toBe(1);
-    expect((await repo.listEvents(deal.job_id)).filter((e) => /Call to Quiet Bistro failed/.test(String(e.data.summary)))).toHaveLength(1);
+    expect((await repo.listEvents(deal.job_id)).filter((e) => /Call to Quiet Bistro(?: failed|: outcome unknown)/.test(String(e.data.summary)))).toHaveLength(1);
   });
 
   it("an unanswered callback leaves a business that already quoted as quoted", async () => {

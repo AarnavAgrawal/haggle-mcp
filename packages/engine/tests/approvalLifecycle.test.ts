@@ -86,7 +86,7 @@ describe("approval lifecycle", () => {
     const { e, repo, deal } = await textVendorQuoted();
     const q = (await e.getQuotes(deal.job_id)).quotes[0]!;
     const a = await e.requestApproval(deal.job_id, q.quote_id, "view");
-    await e.decideApproval(a.id, "approve", "view", "human");
+    await e.decideApproval(a.id, "approve", "imessage", "human");
     await e.ingestIMessage({ messageId: "im2", from: "+14155550191", text: "Thanks so much, looking forward to it!", isGroup: false });
     await e.advanceJob(deal.job_id);
     expect((await repo.getApproval(a.id))!.status).toBe("approved");
@@ -107,8 +107,8 @@ describe("approval lifecycle", () => {
     const { engine, clock, deal, bay, repo } = await quotesIn();
     const a = await engine.requestApproval(deal.job_id, bay.quote_id, "simulated");
     await engine.decideApproval(a.id, "approve", "simulated", "DEMO human");
-    // A guard refusal while still paying: the approval's amount no longer matches the quote's deposit.
-    await repo.updateApproval(a.id, { payment_cents: a.payment_cents + 100 });
+    // A guard refusal while still paying: the job's payment ceiling is now below the approved amount.
+    await repo.touchJob(deal.job_id, { payment_cap_cents: a.payment_cents - 1 });
     await engine.pay(deal.job_id, bay.quote_id).catch(() => undefined);
     for (let i = 0; i < 3; i++) {
       clock.advance(2_000);

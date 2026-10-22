@@ -28,7 +28,7 @@ function engine(shared?: { repo: InMemoryRepository; t: number }) {
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const sent: { to: string; subject: string; bodyText: string }[] = [];
   const texts: { to: string; text: string }[] = [];
-  const repo = shared?.repo ?? new InMemoryRepository();
+  const repo = shared?.repo ?? new InMemoryRepository({ now: clock.now });
   const e = new HaggleEngine({
     repo, now: clock.now, extractor: extractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { sent.push(m); return { providerId: `em_${sent.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${sent.length}@haggle.test>` }; } },
@@ -42,6 +42,9 @@ const trusted = (expected: string) => ({ trusted: true as const, address: expect
 describe("a non-catering purchase: roof leak repair (contractor)", () => {
   it("RFQs speak the request's own units, a non-dietary requirement is confirmed only by the business's words, and the licensed roofer wins", async () => {
     const { engine: e, repo, sent, texts } = engine();
+    // The roofers state no deposit, so the full total is due at approval: the workspace cap must allow it,
+    // or no quote could be approved and none is recommended (workstream D: compliance gate).
+    await e.updateSettings({ spending_cap_cents: 300_000 });
     const deal = await e.deal({
       request: { what: "roof leak repair", quantity: 1, unit: "job", date: "2026-11-03", area: "Oakland, CA", venue: "412 Grand Ave", requirements: [{ id: "lic", kind: "other", text: "Licensed and insured", hard: true }] },
       budget_usd: 3000,

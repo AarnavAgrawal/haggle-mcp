@@ -73,6 +73,9 @@ function acceptsRequestFacts(q: QuoteRecord): boolean {
   return q.available && (q.total_cents !== null || q.subtotal_cents !== null || q.price_per_head_cents !== null);
 }
 
+/** A delivery requirement that names a time or deadline ("by 11:30", "before noon", "no later than 9am"). */
+const DELIVERY_DEADLINE = /\b(by|before|until|no later than|not later than|at)\s+(\d{1,2}([:.]\d{2})?\s*(a\.?m\.?|p\.?m\.?)?|noon|midday|midnight)\b|\b\d{1,2}([:.]\d{2})\s*(a\.?m\.?|p\.?m\.?)?\b|\b\d{1,2}\s*(a\.?m\.?|p\.?m\.?)\b/i;
+
 /** The keyword rules: used only when Claude gave no judgement for this requirement. */
 function keyword(q: QuoteRecord, r: EngineRequirement): RequirementResult {
   const res = (met: boolean | null, reason: string): RequirementResult => ({ requirement_id: r.id, met, reason, basis: "keyword" });
@@ -85,8 +88,11 @@ function keyword(q: QuoteRecord, r: EngineRequirement): RequirementResult {
       return res(null, "covered, count not stated");
     }
     case "delivery":
-      if (q.delivery_included === true || q.delivery_fee_cents !== null) return res(true, "delivery priced or included");
       if (q.delivery_included === false) return res(false, "delivery not offered");
+      // "Delivered by 11:30": offering delivery doesn't confirm the time. Only Claude's reading of the
+      // business's own words (or the business saying so) can; until then it's a follow-up.
+      if (DELIVERY_DEADLINE.test(r.text)) return res(null, "delivery time not confirmed");
+      if (q.delivery_included === true || q.delivery_fee_cents !== null) return res(true, "delivery priced or included");
       return res(null, "delivery not stated");
     default: {
       // Any other requirement (licensing, insurance, timing, service scope…): only the business's

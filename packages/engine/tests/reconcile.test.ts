@@ -44,7 +44,7 @@ function setup(opts: { identities?: () => Promise<string[]>; api?: FakeInkbox; s
   let t = Date.now();
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const api = opts.api ?? new FakeInkbox();
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const texts: { to: string; text: string }[] = [];
   const sms: SmsPort = { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } };
   const placed: string[] = [];

@@ -1,0 +1,42 @@
+{
+  "name": "adversarial-token-from-other-deal",
+  "client": "Gmail web",
+  "notes": "The vendor's reply in deal B's thread carries deal A's token (e.g. pasted from the other RFQ).",
+  "event": {
+    "agent_identities": []
+  },
+  "detail": {
+    "id": "in_fx_15",
+    "threadId": "thr_ext_15",
+    "messageId": "<CAfx15+abcDEF123@mail.gmail.com>",
+    "fromAddress": "{{VENDOR}}",
+    "fromDisplayName": "Maria at Valley Catering",
+    "toAddresses": [
+      "{{BUYER}}"
+    ],
+    "ccAddresses": null,
+    "subject": "Re: Quote request (ref {{TOKEN}})",
+    "snippet": null,
+    "bodyText": "$1,150 total.\n\nReference: {{TOKEN}}",
+    "bodyHtml": null,
+    "inReplyTo": "{{OTHER_DEAL_RFQ_MESSAGE_ID}}",
+    "references": [
+      "{{OTHER_DEAL_RFQ_MESSAGE_ID}}"
+    ],
+    "attachmentMetadata": null,
+    "direction": "inbound",
+    "status": "received",
+    "isRead": false,
+    "hasAttachments": false,
+    "sesMessageId": null,
+    "createdAt": "2026-10-21T17:20:00.000Z"
+  },
+  "expect": {
+    "outcome": "quarantined:identity_unverified",
+    "stored_as": "quarantine",
+    "sender_trusted": false,
+    "quarantine_reason": "identity_unverified:token_missing",
+    "quote_total_usd": null
+  },
+  "deal": "other_deal"
+}

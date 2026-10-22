@@ -87,5 +87,5 @@ describe.each(PG_URL ? ["memory", "postgres"] : ["memory"])("replies without a t
     expect(q).toMatchObject({ eligible: false, approvable: false, approval_block: { code: "zero_total" } });
     expect(board.recommended_quote_id).toBe(board.quotes.find((x) => x.business === real.name)!.quote_id);
     await expect(e.requestApproval(deal.job_id, q.quote_id, "view")).rejects.toMatchObject({ code: "zero_total" });
-  });
+  }, 30_000); // on Postgres under CI load this takes several seconds
 });

@@ -24,7 +24,10 @@ export class TextBudget {
   private readonly unansweredBy = new Map<string, number>();
   private readonly seeded = new Set<string>();
   private readonly blocked = new Set<string>();
-  constructor(private readonly port: SmsPort) {}
+  /** Numbers that texted a bare carrier opt-out keyword: nothing is sent until they text again (e.g. START). */
+  private readonly optedOut = new Set<string>();
+  private readonly port: SmsPort;
+  constructor(port: SmsPort) { this.port = port; }
 
   /** Texts sent to this number since it last replied (best effort). */
   async unanswered(to: string): Promise<number> {
@@ -41,20 +44,32 @@ export class TextBudget {
   }
 
   isBlocked(to: string): boolean {
-    return this.blocked.has(to);
+    return this.blocked.has(to) || this.optedOut.has(to);
   }
 
-  /** The number texted back: Inkbox lifts the block. Returns true when it was blocked. */
+  /** Why texts to this number are held: Inkbox's unanswered limit, or the number's own carrier opt-out. */
+  blockReason(to: string): "carrier_opt_out" | "unanswered_limit" | null {
+    return this.optedOut.has(to) ? "carrier_opt_out" : this.blocked.has(to) ? "unanswered_limit" : null;
+  }
+
+  /** The number texted STOP (or another carrier opt-out word): hold every text to it until it texts again. */
+  carrierOptOut(from: string) {
+    this.optedOut.add(from);
+  }
+
+  /** The number texted back: Inkbox lifts the block (and a texted START ends a carrier opt-out). Returns true when it was blocked. */
   replied(from: string): boolean {
     this.unansweredBy.set(from, 0);
     this.seeded.add(from);
-    return this.blocked.delete(from);
+    const opted = this.optedOut.delete(from);
+    return this.blocked.delete(from) || opted;
   }
 
   /** The SmsPort the engine uses: counts every text and stops calling Inkbox for a blocked number. */
   wrap(): SmsPort {
     return {
       send: async (req) => {
+        if (this.optedOut.has(req.to)) throw new ChannelSendError("rate_limited", false, 0, "carrier_opt_out: this number texted an opt-out keyword; nothing is sent until it texts again");
         if (this.blocked.has(req.to)) throw new ChannelSendError("rate_limited", false, 0, "unanswered_limit: texts to this number are paused until it texts back");
         await this.unanswered(req.to);
         try {

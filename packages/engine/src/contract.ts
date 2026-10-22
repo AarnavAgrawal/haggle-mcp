@@ -145,7 +145,11 @@ export type QuoteFlag =
   | "expired" | "external_payment_link" | "prompt_injection" | "unverified_sender"
   | "over_budget" | "low_confidence" | "question_pending" | "unsourced_figure"
   /** The business hedged its total ("around $1,300"): ranked and shown as ≈, never approved or paid until confirmed firm. */
-  | "approximate_total";
+  | "approximate_total"
+  /** Not the order asked for or not clearly from the business contacted (parsing/termsCheck.ts): never approvable as is. */
+  | "date_mismatch" | "delivery_window_mismatch" | "identity_mismatch"
+  /** A fee (gratuity, service charge) whose relation to the total is unclear: the all-in total is not confirmed. */
+  | "fees_unclear";
 
 /* ───────────────────────── replies (engine → brain) ───────────────────────── */
 

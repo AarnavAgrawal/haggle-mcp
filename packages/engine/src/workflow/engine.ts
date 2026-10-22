@@ -20,13 +20,17 @@ import type {
 } from "../contract.ts";
 import { businessIdForContact, newApprovalCode, newId, newShortCode, normalizeBusinessName, slugify } from "../ids.ts";
 import { cleanEmailBody } from "../inbound/emailBody.ts";
-import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, subjectShortCode } from "../inbound/matching.ts";
+import { applyDeliveryStatus, type DeliveryStatusInput } from "../inbound/deliveryStatus.ts";
+import { CONTINUITY_ONLY_REASONS, CONTINUITY_ONLY_WARNING, provesSenderIdentity, senderIdentityOf, TEXT_OR_CALLER_ID_REASONS } from "../inbound/trustStrength.ts";
+import { explainQuarantine, quarantineEventData } from "../inbound/quarantineReasons.ts";
+import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
+import { isCarrierOptOut, isDsnSender, isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers, type PlannedCounter } from "../negotiation/counteroffer.ts";
 import { applyStrategy, type StrategyContext } from "../negotiation/strategist.ts";
 import { imessageFailureReason } from "../outbound/imessageErrors.ts";
-import { checkMessage, findDollarAmounts } from "../negotiation/messageGuard.ts";
+import { amountsIn, checkMessage, citesCompetingOffer, findDollarAmounts } from "../negotiation/messageGuard.ts";
 import { buildRfqEmail, eventPlace, eventWhen, humanTime, quantityText } from "../outbound/rfq.ts";
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.ts";
@@ -35,6 +39,8 @@ import { answeredSomething, dropAgentOnlyAmounts } from "../parsing/callSafety.t
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
 import { dropUnstatedDietaryRefusals, dropUnsupportedRequirementAnswers, validateQuote } from "../parsing/validate.ts";
 import { APPROXIMATE_FLAG, confirmsFirm, isApproximateTotal } from "../parsing/approximate.ts";
+import { pdfBodyTotalConflict } from "../parsing/pdfBody.ts";
+import { termsMismatch } from "../parsing/termsCheck.ts";
 import { isTransientParseError, MAX_PARSE_RETRIES, parseErrorKind, parseRetryDelayMs } from "../parsing/parseErrors.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
 import { groundedAnswer } from "../parsing/answerQuestion.ts";
@@ -42,15 +48,33 @@ import { firstReplyLine, verifyApproval } from "../approvals/verifyApproval.ts";
 import { isUnansweredLimitError, TextBudget } from "./textBudget.ts";
 import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
 import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
-import { rankQuotes, rejectReason, type RankableQuote, type Ranking } from "../ranking/rank.ts";
+import { rankQuotes, rejectReason, softTierOf, type RankableQuote, type Ranking } from "../ranking/rank.ts";
+import { assessCompliance, complianceSummary, type Compliance } from "../ranking/compliance.ts";
+import { DEFAULT_QUOTE_VALIDITY_MS, quoteFreshness } from "../ranking/validity.ts";
+import { selectionOf, type QuoteSelection } from "../ranking/selection.ts";
+import { exclusionLine, exclusionOf, type ExclusionStatus } from "../ranking/exclusion.ts";
+import { confirmsReceipt, readBookingReply, vendorOwnWords } from "../approvals/bookingReply.ts";
+import { mustHaveLine, normalizeRequirements } from "./requestNormalize.ts";
+import { purchasePaymentLine, purchaseView, type PurchaseStage, type PurchaseView } from "../payments/purchase.ts";
 import { scoreQuotes, type ValueInput, type ValueRanking } from "../ranking/value.ts";
 import { chooseChannel, learnContact, type ContactLearning } from "../routing/channelStats.ts";
-import { DEFAULT_WORKSPACE_ID, type ApprovalRow, type Channel, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow } from "../store/types.ts";
+import { DEFAULT_WORKSPACE_ID, type ApprovalRow, type BookingRow, type Channel, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentHandoffRow, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow } from "../store/types.ts";
 import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
 import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
-import { ChannelSendError, type EngineDeps } from "./ports.ts";
+import { ChannelSendError, type EngineDeps, type PhoneCallRequest } from "./ports.ts";
 import { buildVoiceInstructions, isWithinCallHours, nextCallHoursStart } from "./callPolicy.ts";
+import { decideTextScope, inTextScope, jobCodeIn, lastRoute, withoutJobCode, type TextScope } from "./textRouting.ts";
+import { CALL_TEXT, CALLBACK_AUTH_TTL_MS, CANCEL_TEXT, callbackCodeHash, callbackConsent, codeMatches, MAX_CALLBACK_CODE_ATTEMPTS, newCallbackCode, pendingCallbackAuths, type CallbackConsent } from "./callbackAuth.ts";
+import { closeSubject, decideChargeResume, decideClaim, holdSubject, redactError } from "./deadLetter.ts";
+import { planRecovery, type StuckFinding } from "./recovery.ts";
+import type { OperatorReviewRow, OutboxRow } from "../store/types.ts";
+import { DEFAULT_CONTACT_TIMEZONE, decideFirstContact, decideFollowUp, localLabel } from "./contactWindow.ts";
+import { contactStatusOf, type BusinessContactStatus } from "../inbound/contactStatus.ts";
+/** Contact states the board lists per business (the rest are implied by its status). */
+const NOTABLE_CONTACT = new Set<BusinessContactStatus["contact_status"]>(["bounced", "failed", "opted_out", "quarantined_reply", "scheduled"]);
+import { listQuarantine, rejectQuarantined, releaseQuarantined } from "../inbound/quarantineReview.ts";
+import { runOperatorRequests, workspaceSuspension } from "../ops/operator.ts";
 
 /** Board text for a reply Haggle couldn't read (never the provider's raw error). */
 export const UNREADABLE_REPLY = "Reply received; Haggle couldn't read a price";
@@ -103,8 +127,6 @@ const ASK_KEY_RE = /^[a-z][a-z0-9_]{0,31}$/;
 /** Flags that only say a reply didn't mention something (not news about the business's quote). */
 const ABSENCE_FLAGS = new Set(["delivery_unclear", "fees_unclear", "requirement_unknown", "low_confidence", "question_pending", "vague_price"]);
 const MAX_SEND_ATTEMPTS = 3;
-/** A `charging` Stripe row older than this is never re-POSTed (Stripe prunes idempotency keys after ~24h). */
-const STRIPE_RESUME_LIMIT_MS = 23 * 3_600_000;
 const DEFAULT_CALL_COOLDOWN_MS = 2 * 60_000;
 /**
  * A counteroffer call right after the business quoted on a call: a shorter gap (it just spoke to us
@@ -128,6 +150,9 @@ const STALE_EVENT = "stale: the job changed since this event was decided";
 const DEFAULT_FOLLOW_UP_HOLD_MS = 3 * 60_000;
 /** The per-job advance queue, one per process (see advanceJob). */
 const ADVANCING: Map<string, Promise<void>> = ((globalThis as { __haggleAdvancing?: Map<string, Promise<void>> }).__haggleAdvancing ??= new Map());
+/** One id per process: engines in one process (a dev reload) share it; other processes hold their own job leases. */
+const PROCESS_INSTANCE: string = ((globalThis as { __haggleInstance?: string }).__haggleInstance ??= `proc_${Math.random().toString(36).slice(2, 10)}`);
+const DEFAULT_LEASE_TTL_MS = 5 * 60_000;
 /** The jobs the current async call chain is advancing (see advanceJob: a re-entrant call must not queue behind itself). */
 const ADVANCE_CTX: AsyncLocalStorage<ReadonlySet<string>> = ((globalThis as { __haggleAdvanceCtx?: AsyncLocalStorage<ReadonlySet<string>> }).__haggleAdvanceCtx ??= new AsyncLocalStorage());
 /** A text from the human that is only a greeting or an acknowledgement. */
@@ -135,6 +160,19 @@ const PLEASANTRY_TEXT = /^\s*(hi+|hey+|hello+|yo|ok(ay)?|k|thanks?( you)?|thx|ty
 /** Business questions wait at most this long for others to be batched into one text to the human. */
 const DEFAULT_QUESTION_BATCH_MS = 45_000;
 const DEFAULT_MAX_APPROVAL_ATTEMPTS = 5;
+/** True when a quote's figures come from the keyword fallback (heuristic.ts labels its sources "(heuristic)"). */
+const heuristicReading = (r: QuoteRow["record"]) => Object.values(r.sources ?? {}).some((x) => /\(heuristic\)/.test(x?.source ?? ""));
+/** A pending outbox claim older than this is a crashed send, not one in flight. */
+const OUTBOX_STALE_MS = 2 * 60_000;
+/** How long a job may sit in `created` / with unsent first contacts before an advance treats it as a crashed send. */
+const STUCK_AFTER_MS = 2 * 60_000;
+/** The backup tick's stuck-job sweep (recoverStuck) runs at most this often. */
+const RECOVERY_SWEEP_MS = 2 * 60_000;
+
+/** Approval channels a tool call can claim (form, card button, simulated human): not proof of a human. */
+const IN_BAND_CHANNELS = new Set<ApprovalRow["channel"]>(["elicitation", "view", "simulated"]);
+const needsHumanChannel = () => new EngineError("approval_needs_human_channel", "On this server only the approver's own reply approves: a coded text (YES <code>) from the workspace approver's phone.", "Ask the human to reply to Haggle's approval text; never ask them for the code.", "wait_for_update");
+const approverChangeRefused = () => new EngineError("approver_change_requires_operator", "The approver can only be changed by the operator, never through a tool call.", "Ask the operator to change it (scripts/workspace-admin.ts set-approver).", "settings");
 /** A placed call with no call-ended result after this long no longer blocks new calls. */
 const CALL_IN_PROGRESS_MS = 15 * 60_000;
 /** A read (get_quotes, a wait poll) reuses an advance this recent when nothing changed since (advanceForRead). */
@@ -143,6 +181,8 @@ const FRESH_ADVANCE_MS = 3_000;
 const MESSAGE_LIMIT: Record<Channel, number> = { email: 5000, a2a: 5000, phone: 1500, imessage: 159 };
 /** Two SMS segments: long enough for a quote update, short enough to read at a glance. */
 const SMS_LIMIT = 320;
+/** Payment details that arrived by text (SMS or iMessage): the From number can be spoofed, so the human checks them by phone. */
+const SMS_PAYMENT_WARNING = "sent by text from the business's number, which can't prove who wrote it: confirm these payment details with the business by phone before paying";
 const usdText = (cents: number) => `$${centsToUsd(cents).toLocaleString("en-US", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
 /** One line, at most n characters (an ellipsis when cut). */
 /** The exact-total ask folded into a missing-info follow-up (one message, not two). */
@@ -162,6 +202,24 @@ type HeldText = { key: string; text: string; questionId?: string; approvalId?: s
 const TEXT_DECISION = /^(yes|y|approve|approved|no|n|decline|declined)\b[\s,.:!-]*(\d{4})?[\s.!]*$/i;
 /** "PAY 4821": charge an approved payment by text (decision 48). */
 const PAY_TEXT = /^pay\b[\s,.:!-]*(\d{4})?[\s.!]*$/i;
+/** "PAID 4821": the human paid the business directly (manual handoff). */
+const PAID_TEXT = /^paid\b[\s,.:!-]*(\d{4})?[\s.!]*$/i;
+/** "BOOKED 4821": the approver accepts a booking the business confirmed from a sender Haggle can't verify. */
+const BOOKED_TEXT = /^booked\b[\s,.:!-]*(\d{4})?[\s.!]*$/i;
+/**
+ * Trust that proves only continuity with Haggle's thread (the reply token; an operator release) or a
+ * claimed phone number (a text from the business's number: decision H2), never who wrote it: enough to
+ * read a quote, not to bind the booking or to verify a settlement on its own.
+ */
+function bindsTermsAlone(trustReason: string): boolean {
+  return provesSenderIdentity({ sender_trusted: true, trust_reason: trustReason });
+}
+/** "thread_only" (reply token, operator release) or "text_only" (the business's number): who can't be proven. */
+const weakIdentity = (trustReason: string) => (senderIdentityOf({ sender_trusted: true, trust_reason: trustReason }) === "text_only" ? "text_only" : "thread_only");
+/** The business confirmed the booking in writing, or the approver attested it (BOOKED <code>): cancelling it needs the approver (H3). */
+const isVendorConfirmed = (b: Pick<BookingRow, "status" | "human_attested_at">) => b.status === "confirmed" || (b.status === "not_in_writing" && !!b.human_attested_at);
+const THREAD_ONLY_BOOKING_WARNING = "the business's confirmation came from its email thread, but Haggle can't verify the sender (anyone with access to that thread could send it): the human accepts the booking after checking with the business";
+const TEXT_ONLY_BOOKING_WARNING = "the business's confirmation came by text from its number, which can't prove who sent it: the human accepts the booking after checking with the business";
 
 /** Detail labels that name who the order is for (the person or company the AI assistant acts for). */
 const CUSTOMER_LABEL_RE = /^(customer|client|company|organi[sz]ation|requester|requested by|on behalf of|ordered by|customer name|company name)$/i;
@@ -276,6 +334,12 @@ export type BoardQuote = Omit<Quote, "total_usd"> & {
   fields?: Record<string, number | string | boolean | null>;
   /** Labels of required ask answers still missing. */
   missing_fields?: string[];
+  /** Does it meet every must (hard requirements, budget, pay-now within the cap)? Only "compliant" can be recommended. */
+  compliance?: Compliance;
+  /** Until when it can be approved as is; a stale quote is re-confirmed with the business before any approval. */
+  freshness?: { stale: boolean; reason?: "expired" | "aged"; good_until: string; valid_until: string | null; reconfirmation?: "requested" };
+  /** Why Haggle selected this quote or why it can't be selected (ranking/selection.ts). */
+  selection?: QuoteSelection;
 };
 
 /** A justified, not-yet-placed negotiation callback to a phone vendor (needs a human's go-ahead). */
@@ -349,12 +413,18 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
   best_value_quote_id?: string;
   /** Why the recommendation isn't the best-value quote (or why nothing can be approved). */
   recommendation_note?: string;
+  /** No quote meets every must: the closest approvable one (never the recommendation; the human may choose it knowingly). */
+  best_available_quote_id?: string;
+  /** After the human's approval: booking, payment handoff and cancellation, in honest words (see payments/purchase.ts). */
+  purchase?: PurchaseView;
   /** Per business: stage, negotiation state, first vs current price, version, savings. */
   stages?: Record<string, BusinessStage>;
   /** Per business: observed reply performance by channel (all jobs) and any contact preference it stated. */
   contact_learning?: Record<string, ContactLearning>;
   /** Per current quote: extra fees (with inclusion) and commercial terms, as the business stated them. */
   terms?: Record<string, { fees?: { label: string; amount_usd?: number; included: boolean | null; excerpt: string }[]; deposit_terms?: string | null; cancellation?: string | null; exclusions?: string[] }>;
+  /** Per business id: where Haggle stands with it (inbound/contactStatus.ts); `detail` only when it says more than the board status. */
+  vendor_contact?: Record<string, { status: BusinessContactStatus["contact_status"] | ExclusionStatus; detail?: string }>;
 };
 
 const REJECT_TEXT: Record<import("../ranking/rank.ts").RejectReason, string> = {
@@ -482,6 +552,7 @@ export class HaggleEngine {
   /** Inkbox refuses an 11th text to a number that hasn't replied: every SMS goes through this count. */
   private readonly textBudget: TextBudget | null;
   constructor(d: EngineDeps) {
+    if (d.config.externalSenders === "reply_token" && (d.config.replyTokenSecret ?? "").length < 16) throw new Error("externalSenders 'reply_token' needs replyTokenSecret (at least 16 characters)");
     this.textBudget = d.sms ? new TextBudget(d.sms) : null;
     this.d = this.textBudget ? { ...d, sms: this.textBudget.wrap() } : d;
   }
@@ -510,7 +581,18 @@ export class HaggleEngine {
     }
     if (input.businesses.length === 0) throw new EngineError("no_businesses", "No businesses to contact.", "Pass businesses[] (name + email or phone), or call discover first.", "discover");
     validateAsk(input.request);
+    // Every business is told the details: a competitor's price comes only from a stored quote (negotiate), never the request (S5-D F7).
+    const cited = (input.request.details ?? []).find((d) => citesCompetingOffer(`${d.label}: ${d.value}`));
+    if (cited) throw new EngineError("detail_cites_competitor", `The detail "${cited.label}" cites a competing offer; businesses are only ever told real, stored quotes.`, "Remove it; once quotes arrive Haggle's negotiate round cites the best real one.", "deal");
+    // Requirements as the agent wrote them (plain words or coarse kinds): kind, dietary need and minimum count made checkable.
+    input = { ...input, request: { ...input.request, requirements: normalizeRequirements(input.request.requirements ?? []) } };
     const approverPhone = (await this.getSettings(ws)).approver_phone;
+    // Who this workspace may contact: the server's allowlist, plus the vendors the operator authorized
+    // for this workspace (workspace_vendors, each with its recorded consent).
+    const wsVendors = new Set((await this.repo.listWorkspaceVendors(ws)).map((v) => v.contact));
+    // Opted out or hard-bounced anywhere: never contacted again.
+    const contacts = input.businesses.flatMap((b) => [b.email ? normalizeAddress(b.email) : null, b.phone ? b.phone.replace(/[\s().-]/g, "") : null].filter((c): c is string => !!c));
+    const suppressed = new Map((await this.repo.findSuppressions(contacts)).map((x) => [x.contact, x]));
     // What Haggle has learned about reaching each business (stated preference, observed replies).
     const learned = await Promise.all(input.businesses.map(async (b) => {
       const email = b.email ? normalizeAddress(b.email) : null;
@@ -533,7 +615,7 @@ export class HaggleEngine {
       if ((email && input.approver_email && normalizeAddress(input.approver_email) === email) || (phone && approverPhone && phone === approverPhone)) {
         throw new EngineError("reserved_for_approvals", `${b.name} uses the approver's own ${phone === approverPhone ? "phone number" : "email"}.`, "Give the business its own contact; the approver's is reserved for approvals.", "deal");
       }
-      const blocked = [email, phone, card].find((c) => c !== null && !this.allowedRecipient(c));
+      const blocked = [email, phone, card].find((c) => c !== null && !this.allowedRecipient(c) && !wsVendors.has(c.toLowerCase()));
       if (blocked) throw new EngineError("recipient_not_allowed", `${b.name} (${blocked}) isn't on this server's list of businesses it may contact.`, "Use the simulated demo businesses from discover, or ask the operator to add it to HAGGLE_ALLOWED_RECIPIENTS.", "discover");
       for (const key of [email, phone].filter((k): k is string => k !== null)) {
         if (seen.has(key)) throw new EngineError("duplicate_business", `Listed twice: ${key}`, "Remove the duplicate.", "deal");
@@ -549,8 +631,13 @@ export class HaggleEngine {
         ...(phone && this.d.imessage && ((L?.channels.imessage?.replied_jobs ?? 0) > 0 || L?.stated_preference?.channel === "imessage") ? ["imessage" as const] : []),
       ];
       const pick = base.reachable && (!b.channel || L?.stated_preference) ? chooseChannel(available, base.channel, L) : { channel: base.channel, reason: null };
+      const off = [email, phone].map((c) => (c ? suppressed.get(c) : undefined)).find((x) => x);
+      if (off) return { b, email, phone, card, channel: base.channel, reachable: false, reason: off.reason === "opt_out" ? "asked not to be contacted" : "its address bounced" };
       return { b, email, phone, card, ...(pick.reason ? { channel: pick.channel, reachable: true, reason: pick.channel, learnedReason: pick.reason } : base) };
     });
+    if (planned.length && planned.every((p) => !p.reachable && (p.reason === "asked not to be contacted" || p.reason === "its address bounced"))) {
+      throw new EngineError("recipient_suppressed", `${planned.map((p) => `${p.b.name} ${p.reason}`).join("; ")}. Nothing was sent.`, "Haggle never contacts a business that opted out or whose address bounced; choose other businesses.", "deal");
+    }
     if (!planned.some((p) => p.reachable)) {
       throw new EngineError("no_usable_channel", "None of these businesses can be reached: phone and A2A outreach aren't enabled in this deployment.", "Give at least one business an email address.", "deal");
     }
@@ -559,9 +646,9 @@ export class HaggleEngine {
     const replyBy = input.reply_by ? new Date(input.reply_by) : new Date(this.now().getTime() + this.d.config.collectionWindowMs);
     if (Number.isNaN(replyBy.getTime()) || replyBy <= this.now()) throw new EngineError("bad_deadline", "reply_by must be a future ISO time.", "Pass a future reply_by or omit it.", "deal");
 
-    // The per-job payment cap is the operator's per-payment ceiling. The settings spending cap and
-    // the budget are the human's preferences: shown as caveats on the approval, never a refusal.
-    const paymentCapCents = this.d.config.globalPaymentCapCents;
+    // The per-job payment cap: what Haggle may charge at most, the lower of the operator's per-payment
+    // ceiling and the workspace spending cap. The budget stays a preference (a caveat, never a refusal).
+    const paymentCapCents = Math.min(this.d.config.globalPaymentCapCents, (await this.getSettings(ws)).spending_cap_cents);
     let job: JobRow | null = null;
     for (let i = 0; i < 5 && !job; i++) {
       const code = newShortCode();
@@ -624,7 +711,9 @@ export class HaggleEngine {
     const list = this.d.config.recipientAllowlist;
     if (!list) return true;
     const c = contact.toLowerCase();
-    return list.some((e) => { const x = e.trim().toLowerCase(); return x === c || (x.startsWith("@") && c.endsWith(x)); });
+    // "@domain" covers email addresses at that domain only, never a URL that ends in it (an A2A card, S5-D F9).
+    const isEmail = /^[^@\s/:?#]+@[^@\s/:?#]+$/.test(c);
+    return list.some((e) => { const x = e.trim().toLowerCase(); return x === c || (x.startsWith("@") && isEmail && c.endsWith(x)); });
   }
 
   /** Is this address Haggle's own mailbox (shared Inkbox identity, or any per-job inbox)? */
@@ -713,11 +802,29 @@ export class HaggleEngine {
     return [...new Set([b.business_id, ...rows.filter((r) => normalizeBusinessName(r.name) === key).map((r) => r.business_id)])];
   }
 
-  /** What Haggle observed about reaching this business across all its jobs (and its older ids). */
-  async contactLearning(businessId: string, aliases: string[] = []): Promise<ContactLearning> {
+  /**
+   * What Haggle observed about reaching this business across all its jobs (and its older ids).
+   * `workspaceId`: only that workspace's deals (what an agent may see: a reply quoted from another
+   * tenant's deal is never shown to it).
+   */
+  async contactLearning(businessId: string, aliases: string[] = [], workspaceId?: string): Promise<ContactLearning> {
     const ids = [...new Set([businessId, ...aliases])];
     const [messages, quotes] = await Promise.all([Promise.all(ids.map((id) => this.repo.listMessagesForBusiness(id))), Promise.all(ids.map((id) => this.repo.listQuotesForBusiness(id)))]);
-    return learnContact(messages.flat(), quotes.flat());
+    if (workspaceId === undefined) return learnContact(messages.flat(), quotes.flat());
+    const own = await this.jobsInWorkspace([...messages.flat().map((m) => m.job_id), ...quotes.flat().map((q) => q.job_id)], workspaceId);
+    return learnContact(messages.flat().filter((m) => m.job_id !== null && own.has(m.job_id)), quotes.flat().filter((q) => own.has(q.job_id)));
+  }
+
+  /** The ids among these that are jobs of this workspace. */
+  async jobsInWorkspace(jobIds: (string | null)[], workspaceId: string): Promise<Set<string>> {
+    const ids = [...new Set(jobIds.filter((x): x is string => !!x))];
+    const jobs = await Promise.all(ids.map((id) => this.repo.getJob(id)));
+    return new Set(jobs.filter((j): j is JobRow => j !== null && j.workspace_id === workspaceId).map((j) => j.id));
+  }
+
+  /** The vendors the operator authorized for this workspace (deal by name resolves against them). */
+  async workspaceVendors(workspaceId: string) {
+    return this.repo.listWorkspaceVendors(workspaceId);
   }
 
   /** An authorized absolute ceiling (budget_kind "limit"), else null. */
@@ -732,6 +839,7 @@ export class HaggleEngine {
   /** `all`: the job's quotes when the caller already read them (one read per board). */
   private async rankRows(job: JobRow, all?: QuoteRow[]) {
     const quotes = (all ?? (await this.repo.listQuotes(job.id))).filter((q) => q.status === "current");
+    const capCents = await this.spendCapCents(job);
     const { compare, moneyCompare, required } = askInfo(job.request);
     const hardIds = new Set(this.requirements(job).filter((r) => r.hard).map((r) => r.id));
     const rankable = quotes.map((q): RankableQuote => ({
@@ -744,9 +852,12 @@ export class HaggleEngine {
       ...(compare && !moneyCompare ? { sortValue: sortable(compare, q.record.fields?.[compare.key] ?? null), needsTotal: false } : {}),
       ...(compare ? { direction: job.request.compare_by!.direction } : {}),
       ...(required.length ? { missingRequired: required.some((k) => (q.record.fields?.[k] ?? null) === null) } : {}),
+      // What approval would pay now can't be approved over the cap: it ranks with the stated misses.
+      ...(capCents !== null && payNowCents(q) !== null && payNowCents(q)! > capCents ? { overCap: true } : {}),
     }));
-    // Any budget (a target or a "limit") is soft: over it ranks lower with a caveat (decisions 1, 33).
-    return { quotes, rankable, ranking: rankQuotes(rankable, job.budget_cents) };
+    // Any budget (a target or a "limit") is soft: over it ranks lower with a caveat (decisions 1, 33);
+    // over a limit ranks with the stated misses, and only a quote that misses nothing wins by default.
+    return { quotes, rankable, ranking: rankQuotes(rankable, job.budget_cents, this.hardLimitCents(job)), capCents };
   }
 
   /**
@@ -760,10 +871,14 @@ export class HaggleEngine {
   private approvability(job: JobRow, q: QuoteRow, spendingCapCents: number | null = null): { hard: string | null; caveats: string[] } {
     const hard = q.status !== "current" ? "not_current" : !q.record.available ? "unavailable" : !q.sender_trusted ? "unverified_sender"
       : q.record.flags.includes("external_payment_link") ? "external_payment_link" : q.record.flags.includes("prompt_injection") ? "prompt_injection"
+      // Not the order asked for, or not clearly from the business contacted (parsing/termsCheck.ts).
+      : q.record.flags.includes("identity_mismatch") ? "identity_mismatch" : q.record.flags.includes("date_mismatch") ? "date_mismatch" : q.record.flags.includes("delivery_window_mismatch") ? "delivery_window_mismatch"
       // A request ranked on a non-money answer (e.g. earliest date) needs that answer first...
       : nonMoneyCompare(job.request) && (q.record.fields?.[job.request.compare_by!.field] ?? null) === null ? "missing_info"
       // ...and every approval, of any request and confirm-only too, needs a firm, positive, all-in total
       // (decisions 19, 34).
+      // A reading by the keyword fallback (Claude couldn't read the reply) is shown, never approved.
+      : heuristicReading(q.record) ? "unreliable_extraction"
       : q.total_cents === null ? "no_total"
       // A $0 total is never an amount to approve or charge (approvals require > 0).
       : q.total_cents <= 0 ? "zero_total"
@@ -805,6 +920,19 @@ export class HaggleEngine {
     return q && q.job_id === jobId ? this.approvability(job, q, (await this.getSettings(job.workspace_id)).spending_cap_cents).caveats : [];
   }
 
+  /** The lowest cap any payment on this job must fit: the job's, the server's and the workspace's current one. */
+  private async spendCapCents(job: JobRow): Promise<number> {
+    return Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, (await this.getSettings(job.workspace_id)).spending_cap_cents);
+  }
+
+  /** Does this quote meet every must (hard requirements, budget, pay-now within the cap)? Only "compliant" may win on its own. */
+  private complianceOf(job: JobRow, q: QuoteRow, capCents: number | null): Compliance {
+    return assessCompliance({
+      requirements: this.requirements(job), results: q.requirement_results, totalCents: q.total_cents, payNowCents: payNowCents(q),
+      budgetCents: job.budget_cents, budgetKind: job.request.budget_kind === "limit" ? "limit" : "target", capCents,
+    });
+  }
+
   /** Why the board can't offer Approve on this quote (null = approvable; caveats never block). */
   private approvalBlock(job: JobRow, q: QuoteRow, b: JobBusinessRow | undefined, askedFirm: boolean): { code: string; reason: string } | null {
     const hard = this.approvability(job, q).hard;
@@ -831,10 +959,14 @@ export class HaggleEngine {
     const TEXT: Record<string, string> = {
       not_current: "Superseded by a newer quote.", unavailable: `${name} declined.`, unverified_sender: "The sender couldn't be verified.",
       external_payment_link: "It asked for payment through an external link (blocked).", prompt_injection: "It contained instructions aimed at the agent (ignored).",
+      unreliable_extraction: "Haggle couldn't read this reply reliably (the figures are a keyword reading); ask the business to confirm its total.",
+      identity_mismatch: `The reply is written as a different business than ${name}${q.record.terms_mismatch?.signed_as ? ` ("${q.record.terms_mismatch.signed_as}")` : ""}; confirm who is quoting before approving.`,
+      date_mismatch: `${name} quoted for ${q.record.terms_mismatch?.offered_date ?? "another date"}, not the requested date; agree the date with them first.`,
+      delivery_window_mismatch: `${name} can only deliver ${q.record.terms_mismatch?.delivery_window ?? "at another time"}, which misses the requested time; agree the timing with them first.`,
       no_total: "No total yet.", zero_total: "The stated total is $0; nothing to approve.", all_in_unknown: "The all-in total (delivery, tax or fees) isn't confirmed yet.",
       missing_info: `${name} hasn't answered ${job.request.compare_by ? `"${job.request.compare_by.field}"` : "a required question"} yet.`,
     };
-    return { code: hard === "no_total" || hard === "zero_total" || hard === "missing_info" ? hard : "quote_not_eligible", reason: TEXT[hard] ?? hard };
+    return { code: hard === "no_total" || hard === "zero_total" || hard === "missing_info" || hard === "unreliable_extraction" || hard === "identity_mismatch" || hard === "date_mismatch" || hard === "delivery_window_mismatch" ? hard : "quote_not_eligible", reason: TEXT[hard] ?? hard };
   }
 
   private async context(job: JobRow, event?: JobEvent) {
@@ -843,12 +975,12 @@ export class HaggleEngine {
     const manual = event?.type === "negotiation_requested" ? { businessIds: event.businessIds } : undefined;
     const plan = this.counterPlan(job, rankable, businesses, quotes, manual);
     const payment = await this.repo.getPaymentForJob(job.id);
-    const approval = event?.type === "approval_verified" ? await this.repo.getLatestApproval(job.id) : null;
+    const approval = event?.type === "approval_verified" || event?.type === "booking_confirmed" ? await this.repo.getLatestApproval(job.id) : null;
     return {
       // An approximate total counts: it becomes approvable once the business confirms a firm figure.
       now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => { const h = this.approvability(job, q).hard; return h === null || h === "total_not_firm"; }).length, counterable: plan.length > 0,
-      negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent"].includes(payment.status),
-      ...(approval ? { approvalAction: approval.action } : {}),
+      negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent", "charging"].includes(payment.status),
+      ...(approval ? { approvalAction: approval.action } : {}), ...(this.d.config.manualPaymentHandoff ? { bookingFirst: true } : {}),
     };
   }
 
@@ -868,7 +1000,8 @@ export class HaggleEngine {
     return planCounteroffers(
       // A business's negotiation round is how far it has been countered (1 = not yet), never how many
       // replies it sent: a confirm-once revision (a firm total, a confirmed requirement) is still round 1.
-      rankable.map((r) => ({
+      // A keyword-fallback reading is neither cited to other businesses nor countered: its figures aren't reliable.
+      rankable.filter((r) => { const row = rows.get(r.quoteId); return !row || !heuristicReading(row.record); }).map((r) => ({
         ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: Math.max(1, byId.get(r.businessId)?.countered_round ?? 0),
         deliveryFeeCents: rows.get(r.quoteId)?.record.delivery_fee_cents ?? null, depositCents: rows.get(r.quoteId)?.deposit_cents ?? null, approximate: isApproximate(rows.get(r.quoteId)?.record),
       })),
@@ -894,6 +1027,9 @@ export class HaggleEngine {
       // However the charge settled (at approval, the agent's pay, a later retry): tell the human once.
       const rail = pay.simulated ? "simulated, DEMO: no money moved" : pay.rail === "stripe" ? "Stripe test mode" : `x402, ${pay.network}`;
       await this.notifyHuman(updated, `paid:${pay.approval_id}`, `Paid ${usdText(pay.amount_cents)} to ${await this.businessName(job.id, pay.business_id)} (${rail}). The receipt is on the deal board.`);
+    } else if (updated.state === "paid" && job.state !== "paid" && this.d.config.manualPaymentHandoff) {
+      const a = await this.repo.getLatestApproval(job.id);
+      if (a) await this.notifyHuman(updated, `paid:${a.id}`, `recorded that you report paying ${usdText(a.payment_cents)} to ${await this.businessName(job.id, a.business_id)} directly (Haggle can't see the money). They were asked to confirm they received it.`);
     } else if (updated.state === "failed" && job.state !== "failed" && pay) {
       await this.notifyPayFailed(updated, { id: pay.approval_id, business_id: pay.business_id, payment_cents: pay.amount_cents }, pay.reason ?? pay.status);
     } else if (updated.state === "failed" && job.state !== "failed") await this.notifyHuman(updated, "failed", `the deal for ${updated.request.what} ended without a usable quote${updated.failure_reason ? ` (${updated.failure_reason})` : ""}.`);
@@ -933,22 +1069,97 @@ export class HaggleEngine {
   }
 
   /** Send once per idempotency key; record the outbound message. */
-  private async sendRecorded(job: JobRow, b: JobBusinessRow | null, kind: MessageRow["kind"], key: string, msg: { to: string | null; subject: string; bodyText: string; attachments?: OutboundAttachment[]; inThread?: boolean; round?: number; approvalId?: string }) {
+  private async sendRecorded(job: JobRow, b: JobBusinessRow | null, kind: MessageRow["kind"], key: string, raw: { to: string | null; subject: string; bodyText: string; attachments?: OutboundAttachment[]; inThread?: boolean; round?: number; approvalId?: string; threadOn?: string | null }) {
     const prior = await this.repo.findMessageByIdempotencyKey(key);
     if (prior) return prior;
-    if (!msg.to) throw new EngineError("no_email", `${b?.name ?? "This recipient"} has no email address.`, "Reach this business on its own channel.", "get_quotes");
-    const to = msg.to;
-    const thread = msg.inThread && b?.last_inbound_message_id ? { inReplyTo: b.last_inbound_message_id, references: b.references.slice(-10) } : undefined;
-    const out = await this.d.email.send({ from: job.inbox, to, subject: msg.subject, bodyText: msg.bodyText, idempotencyKey: key, ...(thread ? { thread } : {}), ...(msg.attachments ? { attachments: msg.attachments } : {}) });
-    const row = await this.repo.insertMessage({
-      job_id: job.id, business_id: b?.business_id ?? null, approval_id: msg.approvalId ?? null, direction: "out", kind,
-      provider_email_id: out.providerId, idempotency_key: key, rfc_message_id: out.messageId, thread_id: b?.thread_id ?? null,
-      from_address: job.inbox, to_address: to, subject: msg.subject, body_text: msg.bodyText,
-      attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, content_type: a.contentType, size_bytes: a.content.byteLength, tar_path: null })),
-      attachments_download_url: null, sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null,
-      round: msg.round ?? null, simulated: job.mode === "mock",
-    });
+    if (!raw.to) throw new EngineError("no_email", `${b?.name ?? "This recipient"} has no email address.`, "Reach this business on its own channel.", "get_quotes");
+    const to = raw.to;
+    if (b) await this.refuseSuppressed(to);
+    const msg = this.withoutForeignTokens(job, b && normalizeAddress(to) === normalizeAddress(b.email ?? "") ? this.withReplyToken(job, b, raw) : raw, b);
+    await this.claimSend(key, job.id, "email");
+    const thread = msg.inThread && b?.last_inbound_message_id ? { inReplyTo: b.last_inbound_message_id, references: b.references.slice(-10) } : raw.threadOn ? { inReplyTo: raw.threadOn, references: [raw.threadOn] } : undefined;
+    let out;
+    try {
+      out = await this.d.email.send({ from: job.inbox, to, subject: msg.subject, bodyText: msg.bodyText, idempotencyKey: key, ...(thread ? { thread } : {}), ...(msg.attachments ? { attachments: msg.attachments } : {}) });
+    } catch (err) {
+      // Email carries the provider idempotency key, so a later retry under the same key is safe;
+      // unless the provider says it may have acted (an idempotency conflict): never re-sent then.
+      await this.outboxFailed(key, job.id, "email", err instanceof ChannelSendError && err.ambiguous ? "unknown" : "not_sent", err);
+      throw err;
+    }
+    let row: MessageRow | null;
+    try {
+      row = await this.repo.insertMessage({
+        job_id: job.id, business_id: b?.business_id ?? null, approval_id: msg.approvalId ?? null, direction: "out", kind,
+        provider_email_id: out.providerId, idempotency_key: key, rfc_message_id: out.messageId, thread_id: b?.thread_id ?? null,
+        from_address: job.inbox, to_address: to, subject: msg.subject, body_text: msg.bodyText,
+        attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, content_type: a.contentType, size_bytes: a.content.byteLength, tar_path: null })),
+        attachments_download_url: null, sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null,
+        round: msg.round ?? null, simulated: job.mode === "mock",
+      });
+      await this.repo.finishOutbox(key, "sent", out.providerId, this.now().toISOString());
+    } catch (err) {
+      // Sent, but the database couldn't record it (an outage): never a bounce. The claim stays
+      // pending; once stale it is re-sent under the same provider key, which replays the original
+      // send instead of delivering it twice, and recorded then.
+      this.log("send_record_failed", { job_id: job.id, key, error: redactError(err) });
+      throw new ChannelSendError("provider_error", true, OUTBOX_STALE_MS, "sent, but not recorded (database unavailable); re-recorded under the same provider key");
+    }
     return row ?? (await this.repo.findMessageByIdempotencyKey(key));
+  }
+
+  /**
+   * Claim an outbound action in the outbox before calling the provider. A claim another instance
+   * made moments ago means it is sending right now: retry later. A stale claim (a crash between the
+   * claim and the result) is re-claimed for idempotent kinds (same provider key); a call never is.
+   */
+  private async claimSend(key: string, jobId: string | null, kind: "email" | "text" | "call" | "a2a") {
+    // A stale lease holder (its advance outlived the lease and another instance took the job) sends nothing.
+    await this.fence(jobId);
+    const now = this.now();
+    const c = await this.repo.claimOutbox({ key, job_id: jobId, kind }, now.toISOString());
+    if (c.fresh) return;
+    // A call (no provider idempotency key) is re-attempted only after a definite "not placed"; an
+    // obligation never while its outcome is unknown; anything else a bounded number of times
+    // (workflow/deadLetter.ts). What may not be attempted again goes to operator review.
+    const d = decideClaim({ kind, key, row: c.row, nowMs: now.getTime(), staleMs: OUTBOX_STALE_MS, underReview: c.row.status !== "sent" && !!(await this.repo.findOpenReview("outbox", key)) });
+    if (d.action === "send") {
+      if (!d.reclaim) return; // already sent: the same provider key dedupes the resend
+      if (await this.repo.reclaimOutbox(key, ["pending", "not_sent", "unknown"], now.toISOString())) return;
+      throw new ChannelSendError("provider_error", false, 0, "this action can't be attempted again", true);
+    }
+    if (d.action === "defer") throw new ChannelSendError("provider_error", true, d.retryAfterMs, d.reason);
+    if (d.action === "review") await this.deadLetter({ kind: "outbox", subject: key, job_id: jobId, reason: d.reason, attempts: c.row.attempts });
+    throw new ChannelSendError("provider_error", false, 0, kind === "call" ? `${d.reason}; not dialed again` : d.reason, true);
+  }
+
+  /** Opted out or hard-bounced: never contacted again (vendor_suppressions). */
+  private async refuseSuppressed(contact: string) {
+    const [hit] = await this.repo.findSuppressions([contact.toLowerCase()]);
+    if (hit) throw new ChannelSendError(hit.reason === "opt_out" ? "opted_out" : "invalid_address", false, 0, hit.reason === "opt_out" ? "this business asked not to be contacted" : "this address bounced");
+  }
+
+  /** The business's reply token in the subject and the body of every email to it (externalSenders "reply_token"). */
+  private withReplyToken<T extends { subject: string; bodyText: string }>(job: JobRow, b: JobBusinessRow, msg: T): T {
+    if (this.d.config.externalSenders !== "reply_token") return msg;
+    const token = replyToken(this.d.config.replyTokenSecret!, job.id, b.business_id);
+    return {
+      ...msg,
+      subject: msg.subject.includes(token) ? msg.subject : `${msg.subject} (ref ${token})`,
+      bodyText: msg.bodyText.includes(token) ? msg.bodyText : `${msg.bodyText}\n\nReference: ${token} (please keep it when you reply)`,
+    };
+  }
+
+  /**
+   * A reply token is a bearer secret for one conversation (job + business): it may appear only in
+   * mail to that business's own address. Any other token in an outgoing email (a vendor's quoted
+   * text passed on, a forwarded snippet) is masked, so mail never hands one business's token to
+   * another recipient.
+   */
+  private withoutForeignTokens<T extends { subject: string; bodyText: string }>(job: JobRow, msg: T, b: JobBusinessRow | null): T {
+    const own = b && this.d.config.externalSenders === "reply_token" && this.d.config.replyTokenSecret ? replyToken(this.d.config.replyTokenSecret, job.id, b.business_id) : null;
+    const mask = (s: string) => s.replace(/HGR-[A-HJ-NP-Z2-9]{10}/gi, (t) => (own && t.toUpperCase() === own && msg.subject.includes(own) ? t : "HGR-…"));
+    return { ...msg, subject: mask(msg.subject), bodyText: mask(msg.bodyText) };
   }
 
   private async sendRfqs(job: JobRow) {
@@ -964,6 +1175,7 @@ export class HaggleEngine {
         await this.placeRfqCall(job, b);
         continue;
       }
+      if (await this.deferFirstContact(job, b)) continue;
       if (b.channel === "imessage") {
         await this.sendIMessageToBusiness(job, b, "rfq", `imsg-rfq:${job.id}:${b.business_id}`, HaggleEngine.rfqIMessageText(b.name, job, this.customer(job)), 1);
         continue;
@@ -977,8 +1189,89 @@ export class HaggleEngine {
     await this.fire(job.id, { type: "rfqs_sent" });
   }
 
+  /** The timezone contact hours are counted in: the configured one, else the workspace's. */
+  private async contactTimezone(job: JobRow): Promise<string> {
+    return this.d.config.contactWindow?.timezone ?? (await this.repo.getWorkspace(job.workspace_id))?.timezone ?? DEFAULT_CONTACT_TIMEZONE;
+  }
+
+  /**
+   * Outside contact hours (config.contactWindow) a first email or iMessage to a business waits for
+   * the next opening (next_attempt_at; runDueContacts sends it), unless that would leave it too little
+   * time before the reply-by: then it goes now and the reason is recorded. True = deferred.
+   */
+  private async deferFirstContact(job: JobRow, b: JobBusinessRow): Promise<boolean> {
+    const cfg = this.d.config.contactWindow;
+    if (!cfg || (b.channel !== "email" && b.channel !== "imessage")) return false;
+    const tz = await this.contactTimezone(job);
+    const d = decideFirstContact(this.now(), new Date(job.collect_until), cfg, tz);
+    if (d.send) {
+      if (d.reason === "deadline") {
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, contact_window: "sent_outside_window", why: d.note, summary: `RFQ to ${b.name} sent outside contact hours: the reply-by doesn't leave time to wait` });
+        this.log("contact_outside_window", { job_id: job.id, business_id: b.business_id, why: d.note });
+      }
+      return false;
+    }
+    const at = d.until.toISOString();
+    if (b.next_attempt_at !== at) {
+      await this.repo.updateBusiness(job.id, b.business_id, { next_attempt_at: at }, { ifStatus: ["pending"] });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, contact_window: "deferred", at, summary: `RFQ to ${b.name} scheduled for ${localLabel(d.until, tz)} (outside contact hours)` });
+    }
+    return true;
+  }
+
+  /**
+   * Reminders to an email business that hasn't answered the RFQ (config.contactWindow): inside
+   * contact hours, the first no sooner than its business-hours spacing after the last email, at most
+   * `maxFollowUps`, and never after anything came back from it (even a held reply), a bounce, a
+   * failure, an opt-out or the reply-by. Threaded on the RFQ, carrying its reply token.
+   */
+  private async sendDueReminders(job: JobRow) {
+    const cfg = this.d.config.contactWindow;
+    if (!cfg || job.state !== "collecting") return;
+    const tz = await this.contactTimezone(job);
+    const msgs = await this.repo.listMessages(job.id);
+    const events = await this.repo.listEvents(job.id);
+    for (const b of await this.repo.getBusinesses(job.id)) {
+      if (b.channel !== "email" || !b.email || b.status !== "contacted" || b.last_reply_at || !b.contacted_at) continue;
+      const mine = msgs.filter((m) => m.business_id === b.business_id);
+      const outs = mine.filter((m) => m.direction === "out" && m.channel === "email");
+      const rfq = outs.find((m) => m.kind === "rfq");
+      if (!rfq || mine.some((m) => m.direction === "in") || outs.some((m) => m.delivery_status)) continue;
+      const prefix = `reminder:${job.id}:${b.business_id}:`;
+      const sent = outs.filter((m) => m.idempotency_key?.startsWith(prefix)).length;
+      // Spacing on the engine's clock: the RFQ's contacted_at, then each reminder's sent_at.
+      const last = Math.max(Date.parse(b.contacted_at), ...events.filter((e) => e.data.contact_window === "reminder" && e.data.business_id === b.business_id).map((e) => Date.parse(String(e.data.sent_at))).filter(Number.isFinite));
+      const [sup] = await this.repo.findSuppressions([normalizeAddress(b.email)]);
+      const d = decideFollowUp({ now: this.now(), lastSentAt: new Date(last), followUpsSent: sent, suppressed: sup?.reason === "bounce", optedOut: sup?.reason === "opt_out", jobOpen: !TERMINAL.has(job.state), replied: false, deadline: new Date(job.collect_until) }, cfg, tz);
+      if (!d.send) continue;
+      const qty = quantityText(job.request.quantity, job.request.unit);
+      const what = `${job.request.what}${qty ? ` for ${qty}` : ""}${job.request.date ? ` on ${eventWhen(job.request.date, job.request.time, job.request.date_until)}` : ""}`;
+      try {
+        await this.sendRecorded(job, b, "followup", `${prefix}${sent + 1}`, {
+          to: b.email, subject: rfq.subject ?? `[HG-${job.short_code}] Quote request: ${job.request.what}`, threadOn: rfq.rfc_message_id,
+          bodyText: `Hi ${b.name},\n\nJust following up on the request below for ${what}. If you can quote it, please reply to this email by ${localLabel(new Date(job.collect_until), tz)}. If you can't take it on, a quick "no thanks" helps too. If you'd rather not get requests like this, reply STOP and we won't contact you again.\n\n${this.signOff(job)}`,
+        });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, contact_window: "reminder", sent_at: this.now().toISOString(), summary: `Reminder ${sent + 1} of ${cfg.maxFollowUps} sent to ${b.name} (no reply yet)` });
+      } catch (err) {
+        this.log("reminder_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+      }
+    }
+  }
+
   /** First contact on the business's routed channel (also used for retries that come due). */
   private async contactBusiness(job: JobRow, b: JobBusinessRow) {
+    // Authorization is re-checked at the moment of first contact, not only at deal(): a vendor the
+    // operator removed (consent withdrawn) while its RFQ waited for contact hours is never contacted (S5-D F13).
+    if (!b.contacted_at && !b.simulated) {
+      const ws = new Set((await this.repo.listWorkspaceVendors(job.workspace_id)).map((v) => v.contact.toLowerCase()));
+      const blocked = [b.email ? normalizeAddress(b.email) : null, b.phone, b.a2a_card_url].find((c) => !!c && !this.allowedRecipient(c) && !ws.has(c.toLowerCase()));
+      if (blocked) {
+        await this.repo.updateBusiness(job.id, b.business_id, { status: "unavailable", next_attempt_at: null }, { ifStatus: ["pending"] });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${b.name} wasn't contacted: it is no longer authorized for this workspace` });
+        return;
+      }
+    }
+    if (await this.deferFirstContact(job, b)) return;
     if (b.channel === "phone") await this.placeRfqCall(job, b);
     else if (b.channel === "imessage") await this.sendIMessageToBusiness(job, b, "rfq", `imsg-rfq:${job.id}:${b.business_id}`, HaggleEngine.rfqIMessageText(b.name, job, this.customer(job)), 1);
     else if (b.channel === "a2a") await this.sendA2aRfq(job, b);
@@ -1025,11 +1318,27 @@ export class HaggleEngine {
    */
   private async onSendFailure(job: JobRow, b: JobBusinessRow, err: unknown, what: string) {
     const f = err instanceof ChannelSendError ? err : null;
+    // Fenced out: another instance owns the job now; this stale holder writes nothing more for it.
+    if (err instanceof LeaseLostError) return;
     this.log("send_failed", { job_id: job.id, business_id: b.business_id, what, reason: f?.reason ?? "error", error: (err as Error).message });
+    if (f?.ambiguous) {
+      // The business may have it (an outcome the provider can't confirm, or an action under operator
+      // review): contacted, never bounced and never escalated to a call (that would contact it twice).
+      await this.repo.updateBusiness(job.id, b.business_id, { status: "contacted", contacted_at: b.contacted_at ?? this.now().toISOString(), next_attempt_at: null }, { ifStatus: ["pending"] });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${what} to ${b.name}: outcome unknown; not re-sent (an operator reviews it)` });
+      return;
+    }
     if (f?.retryable && b.send_attempts + 1 < MAX_SEND_ATTEMPTS) {
       const at = new Date(this.now().getTime() + Math.max(f.retryAfterMs, 1_000)).toISOString();
       await this.repo.updateBusiness(job.id, b.business_id, { send_attempts: b.send_attempts + 1, next_attempt_at: at });
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${what} to ${b.name} delayed (${f.reason.replace(/_/g, " ")}); retrying` });
+      return;
+    }
+    if (f?.reason === "opted_out") {
+      // Asked not to be contacted (our suppression list or the provider's): declined here, and never
+      // escalated to a call or a text instead (S5-D F10).
+      await this.repo.updateBusiness(job.id, b.business_id, { status: "declined", next_attempt_at: null });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, opt_out: "send_refused_opted_out", summary: `${what} to ${b.name} not sent: it asked not to be contacted; Haggle won't contact it on this deal` });
       return;
     }
     await this.repo.updateBusiness(job.id, b.business_id, { status: "bounced", next_attempt_at: null });
@@ -1075,11 +1384,13 @@ export class HaggleEngine {
     if (await this.repo.findMessageByIdempotencyKey(key)) return;
     const email = this.rfqEmail(job, b);
     try {
-      const t = await this.d.a2a.send({ cardUrl: b.a2a_card_url, text: email.bodyText, data: this.rfqPart(job), messageId: `haggle-rfq-${job.id}-${b.business_id}` });
+      const t = await this.a2aSend(job.id, key, { cardUrl: b.a2a_card_url, text: email.bodyText, data: this.rfqPart(job), messageId: `haggle-rfq-${job.id}-${b.business_id}` });
       await this.repo.updateBusiness(job.id, b.business_id, { status: "contacted", contacted_at: this.now().toISOString(), thread_id: t.contextId, rfq_message_id: t.taskId });
       await this.recordA2aOutbound(job, { ...b, thread_id: t.contextId }, "rfq", key, t.taskId, email.bodyText, 1);
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `RFQ sent to ${b.name} (A2A task)`, channel: "a2a" });
     } catch (err) {
+      // Claimed by another instance right now (or a retryable outage): tried again later, not given up.
+      if (err instanceof ChannelSendError && (err.retryable || err.ambiguous)) return this.onSendFailure(job, b, err, "A2A task");
       await this.repo.updateBusiness(job.id, b.business_id, { status: "bounced" });
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `A2A task to ${b.name} failed: ${(err as Error).name}` });
       this.log("a2a_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -1214,12 +1525,26 @@ export class HaggleEngine {
       if (kind === "rfq") await this.repo.updateBusiness(job.id, b.business_id, { status: "unavailable" });
       return null;
     }
+    // Never text a number that opted out; never send a text another instance is sending right now.
+    if ((await this.repo.findSuppressions([b.phone]))[0]) return null;
+    try {
+      await this.claimSend(key, job.id, "text");
+    } catch (err) {
+      this.log("text_deferred", { job_id: job.id, business_id: b.business_id, kind, error: (err as Error).message });
+      return null;
+    }
     // iMessage when it's on; otherwise SMS from the buyer's own number (same text channel).
     const viaSms = !this.d.imessage;
+    let delivered = false;
     try {
       const body = fitText(text, viaSms ? SMS_LIMIT : 159);
-      const sent = viaSms ? await this.d.sms!.send({ to: b.phone, text: body, idempotencyKey: key }) : await this.d.imessage!.send({ to: b.phone, text: body, idempotencyKey: key });
-      if (viaSms) this.lastSms.set(b.phone, { kind: "business", jobId: job.id });
+      const sent = await (viaSms ? this.d.sms!.send({ to: b.phone, text: body, idempotencyKey: key }) : this.d.imessage!.send({ to: b.phone, text: body, idempotencyKey: key })).catch(async (e: unknown) => {
+        await this.outboxFailed(key, job.id, "text", e instanceof ChannelSendError && e.ambiguous ? "unknown" : "not_sent", e);
+        throw e;
+      });
+      delivered = true;
+      await this.repo.finishOutbox(key, "sent", sent.messageId, this.now().toISOString());
+      if (viaSms) await this.noteTextRoute(job, b.phone, "business", { businessId: b.business_id });
       const row = await this.repo.insertMessage({
         job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind, channel: "imessage", provider_email_id: `${viaSms ? "sms" : "imsg"}:${sent.messageId}`, idempotency_key: key,
         rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: body, attachments: [], attachments_download_url: null,
@@ -1231,6 +1556,18 @@ export class HaggleEngine {
       }
       return row;
     } catch (err) {
+      // Delivered but not recorded (a database outage): never a bounce. The claim stays pending and
+      // is re-sent under the same provider key once stale (the provider replays the original send).
+      if (delivered) {
+        this.log("send_record_failed", { job_id: job.id, key, error: redactError(err) });
+        if (kind !== "rfq") throw err;
+        return null;
+      }
+      if (kind === "rfq" && err instanceof ChannelSendError && err.ambiguous) {
+        await this.repo.updateBusiness(job.id, b.business_id, { status: "contacted", contacted_at: this.now().toISOString() }, { ifStatus: ["pending"] });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Text to ${b.name}: outcome unknown; not re-sent (an operator reviews it)`, channel: "imessage" });
+        return null;
+      }
       if (kind === "rfq") {
         await this.repo.updateBusiness(job.id, b.business_id, { status: "bounced" });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: viaSms ? `Text to ${b.name} failed` : `Couldn't text ${b.name}: ${imessageFailureReason((err as Error).message, job.inbox.split("@")[0]!)}`, channel: "imessage" });
@@ -1241,13 +1578,33 @@ export class HaggleEngine {
     }
   }
 
-  /** The last SMS to each number: a texted reply answers whatever Haggle texted that number last. */
-  private lastSms = new Map<string, { kind: "business" | "human"; jobId: string; questionId?: string; approvalId?: string }>();
+  /**
+   * Haggle's own text line (its number; "default" when the identity's number isn't known). Routes and
+   * held texts are keyed by (line, remote number), so a second line never answers for the first.
+   */
+  private textLine(): string {
+    return this.d.config.identity?.phone?.replace(/[\s().-]/g, "") || "default";
+  }
+
+  /**
+   * Record what Haggle last texted a number for this job (text_routes, durable and workspace-scoped):
+   * a text back from that number answers it, on any instance and after a restart. Best effort.
+   */
+  private async noteTextRoute(job: JobRow, remote: string, purpose: "human" | "business", ids: { businessId?: string; questionId?: string; approvalId?: string }) {
+    await this.repo.recordTextRoute({
+      line: this.textLine(), remote, workspace_id: job.workspace_id, job_id: job.id, purpose, business_id: purpose === "business" ? ids.businessId ?? null : null,
+      question_id: purpose === "human" ? ids.questionId ?? null : null, approval_id: purpose === "human" ? ids.approvalId ?? null : null, last_out_at: this.now().toISOString(),
+    }).catch((err: Error) => this.log("text_route_failed", { job_id: job.id, error: err.message.slice(0, 200) }));
+  }
+
+  /** What Haggle last texted this number within the scope (never another workspace's deal). */
+  private async lastTextRoute(remote: string, scope: TextScope) {
+    return lastRoute(await this.repo.listTextRoutes(this.textLine(), remote), scope);
+  }
+
   private notified = new Set<string>();
   /** `${to}|${text}` already texted: the same words again (a re-read, an unchanged revision) aren't news. */
   private notifiedText = new Set<string>();
-  /** Texts that need the human (questions, approvals, results) refused while their number was paused; re-sent when it texts back. */
-  private heldTexts = new Map<string, (HeldText & { jobId: string })[]>();
   /** `${to}|${jobId}|${kind}`: the pause was already noted on that deal. */
   private pausedNoted = new Set<string>();
 
@@ -1258,11 +1615,13 @@ export class HaggleEngine {
    * scheduled (a `call_scheduled` event) and placed by a later advance (dueScheduledCalls); `now`
    * skips the wait (a confirmation, sent as the job closes, as before).
    */
-  private async callBusiness(job: JobRow, b: JobBusinessRow, c: { key: string; kind: MessageRow["kind"]; reason: string; body: string; round?: number | null; approvalId?: string | null; now?: boolean }): Promise<{ placed: MessageRow | null; scheduledFor?: string }> {
+  private async callBusiness(job: JobRow, b: JobBusinessRow, c: { key: string; kind: MessageRow["kind"]; reason: string; body: string; round?: number | null; approvalId?: string | null; now?: boolean; authorized?: boolean }): Promise<{ placed: MessageRow | null; scheduledFor?: string }> {
     const prior = await this.repo.findMessageByIdempotencyKey(c.key);
     if (prior) return { placed: prior };
     if (!this.d.phone || !b.phone) return { placed: null };
-    const blocked = c.now ? null : await this.callBlockedUntil(job, b.phone, c.kind);
+    // authorized: a human authorized this call just now (a callback): no spacing gap, still call hours
+    // and never onto a call still on the line.
+    const blocked = c.now ? null : await this.callBlockedUntil(job, b.phone, c.kind, { gap: !c.authorized });
     if (blocked) {
       const at = blocked.toISOString();
       if (!(await this.repo.listEvents(job.id)).some((e) => e.type === "call_scheduled" && e.data.key === c.key)) {
@@ -1271,7 +1630,7 @@ export class HaggleEngine {
       }
       return { placed: null, scheduledFor: at };
     }
-    const { callId } = await this.d.phone.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason: c.reason, idempotencyKey: c.key });
+    const { callId } = await this.placeCallOnce(job.id, { jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason: c.reason, idempotencyKey: c.key });
     const row = await this.repo.insertMessage({
       job_id: job.id, business_id: b.business_id, approval_id: c.approvalId ?? null, direction: "out", kind: c.kind, channel: "phone", provider_email_id: callId, idempotency_key: c.key,
       rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: c.body, attachments: [], attachments_download_url: null,
@@ -1337,7 +1696,7 @@ export class HaggleEngine {
     const prior = await this.repo.findMessageByIdempotencyKey(key);
     if (prior) return prior;
     if (!this.d.a2a || !b.a2a_card_url || !b.thread_id) return null;
-    const t = await this.d.a2a.send({ cardUrl: b.a2a_card_url, text, data: { haggle: "message/1", protocol: "haggle.v0", type: kind, job_id: job.id }, messageId: `haggle-${key.replace(/:/g, "-")}`, contextId: b.thread_id });
+    const t = await this.a2aSend(job.id, key, { cardUrl: b.a2a_card_url, text, data: { haggle: "message/1", protocol: "haggle.v0", type: kind, job_id: job.id }, messageId: `haggle-${key.replace(/:/g, "-")}`, contextId: b.thread_id });
     return this.recordA2aOutbound(job, b, kind, key, t.taskId, text, job.round);
   }
 
@@ -1403,7 +1762,9 @@ export class HaggleEngine {
     if (!job || !job.ready || (job.state !== "collecting" && job.state !== "negotiating") || !this.d.sms) return;
     const events = await this.repo.listEvents(jobId);
     if (!events.some((e) => e.type === "ready" && Number(e.data.round) === job.round)) return;
-    if (events.some((e) => e.type === "ready_offered" && Number(e.data.round) === job.round)) return;
+    // Offered once per round; an offer cut short by a lost lease (nothing reached the human) is offered again.
+    const offers = (type: string) => events.filter((e) => e.type === type && Number(e.data.round) === job.round).length;
+    if (offers("ready_offered") > offers("ready_offer_lost")) return;
     if (!(await this.notifyTarget(job))) return;
     // A reply that came in just now (its webhook lost) is read before Haggle recommends anything.
     if (await this.reconcileJob(jobId)) await this.parsePending(job);
@@ -1412,6 +1773,15 @@ export class HaggleEngine {
       const { quotes } = await this.rankRows(job);
       const q = await this.recommendedQuote(job);
       if (!q) {
+        // Approvable quotes that each miss a must: no YES suggestion (a miss never wins by default),
+        // but the human hears that quotes are final and what the best available one misses.
+        const best = await this.bestAvailable(job);
+        if (best && best.q.total_cents !== null) {
+          const n = quotes.filter((x) => x.total_cents !== null).length;
+          await this.repo.appendEvent(jobId, "reply", { business_id: null, kind: "ready_none_compliant", quote_id: best.q.id, summary: `Quotes are final, but none meets every requirement; best available: ${await this.businessName(jobId, best.q.business_id)} (${complianceSummary(best.compliance)}). Nothing was recommended.` });
+          await this.notifyHuman(job, `ready:${job.round}`, `All quotes are in for ${clip(job.request.what, 40)} (${n}). None meets everything you asked; closest: ${clip(await this.businessName(jobId, best.q.business_id), 24)} ${usdText(best.q.total_cents)} (${clip(complianceSummary(best.compliance, 1), 60)}). Choose on the deal board in Claude.`);
+          return;
+        }
         // Nothing the human can approve yet (decision 23): no text; the board explains each option.
         await this.repo.appendEvent(jobId, "reply", { business_id: null, kind: "ready_not_texted", summary: "Quotes are final, but no quote can be approved yet (see each option on the deal board); nothing was texted." });
         return;
@@ -1425,7 +1795,7 @@ export class HaggleEngine {
       if (q.total_cents && !declinedQuote) {
         try {
           const a = await this.openApproval(jobId, q.id, "imessage", undefined, { text: true, email: false }, true);
-          if (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`) || this.isHeld(a.id)) {
+          if (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`) || (await this.isHeld(a.id))) {
             await this.repo.appendEvent(jobId, "reply", {
               business_id: null, kind: "ready_texted", approval_id: a.id,
               summary: `All quotes are in: texted the user Haggle's recommendation, ${name} ${usdText(q.total_cents)} (${a.payment_cents > 0 ? `a reply YES approves ${usdText(a.payment_cents)}; then their texted PAY <code> or your pay charges it` : "a reply YES confirms it, nothing paid"}). If the user picks another quote (board or approve), that replaces the suggestion.`,
@@ -1444,6 +1814,11 @@ export class HaggleEngine {
       if (q.total_cents) await this.notifyHuman(job, `ready:${job.round}`, `${head}. Recommended: ${clip(name, 30)} ${usdText(q.total_cents)}. See every option on the deal board in Claude.`);
     } catch (err) {
       this.log("notify_failed", { job_id: jobId, key: "ready", error: (err as Error).message });
+    } finally {
+      // The lease was lost during the offer: its texts were fenced (never sent). The next advance (this
+      // instance's or the new holder's) offers again; texts that did go out are deduped by their keys,
+      // and a suggestion still pending keeps the job awaiting approval, so nothing is offered twice.
+      if (this.fenced(jobId)) await this.repo.appendEvent(jobId, "ready_offer_lost", { round: job.round }).catch(() => undefined);
     }
   }
 
@@ -1454,15 +1829,32 @@ export class HaggleEngine {
    */
   private async recommendedQuote(job: JobRow, pre?: { all: QuoteRow[]; businesses: JobBusinessRow[] }): Promise<QuoteRow | null> {
     const all = pre?.all ?? (await this.repo.listQuotes(job.id));
-    const { quotes, ranking } = await this.rankRows(job, all);
+    const { quotes, ranking, capCents } = await this.rankRows(job, all);
     const byId = new Map((pre?.businesses ?? (await this.repo.getBusinesses(job.id))).map((b) => [b.business_id, b]));
     const eligible = new Set(ranking.ranked.map((r) => r.quoteId));
     const value = await this.valueRanking(job, quotes.filter((q) => eligible.has(q.id) && q.total_cents !== null), all, byId, ranking.caveats);
     // A request compared on a non-money answer (earliest date) recommends in the ranker's compare_by order.
     const orderIds = nonMoneyCompare(job.request) ? ranking.ranked.map((r) => r.quoteId) : value.ranked.map((r) => r.quoteId);
+    // Never a quote that misses a must (unmet or unconfirmed requirement, over budget, pay-now over the
+    // cap): Haggle doesn't pick one of those for the human; they may still choose it knowingly.
+    // Nor a stale real quote: it is re-confirmed with the business before anyone can approve it.
+    const events = await this.repo.listEvents(job.id);
     for (const id of orderIds) {
       const q = quotes.find((x) => x.id === id);
-      if (q && this.approvalBlock(job, q, byId.get(q.business_id), false) === null) return q;
+      const b = q ? byId.get(q.business_id) : undefined;
+      if (q && this.approvalBlock(job, q, b, false) === null && this.complianceOf(job, q, capCents).status === "compliant" && (b?.simulated || !this.freshnessOf(q, events).stale)) return q;
+    }
+    return null;
+  }
+
+  /** The best approvable quote when none is compliant (shown as "best available", never recommended), with what it misses. */
+  private async bestAvailable(job: JobRow): Promise<{ q: QuoteRow; compliance: Compliance } | null> {
+    const all = await this.repo.listQuotes(job.id);
+    const { quotes, ranking, capCents } = await this.rankRows(job, all);
+    const byId = new Map((await this.repo.getBusinesses(job.id)).map((b) => [b.business_id, b]));
+    for (const r of ranking.ranked) {
+      const q = quotes.find((x) => x.id === r.quoteId);
+      if (q && this.approvalBlock(job, q, byId.get(q.business_id), false) === null) return { q, compliance: this.complianceOf(job, q, capCents) };
     }
     return null;
   }
@@ -1474,8 +1866,10 @@ export class HaggleEngine {
     const deposit = a.payment_cents > 0 && a.payment_cents < a.quote_total_cents;
     // Approve, then pay (decisions 2, 48): YES approves the amount; a texted PAY <code> (or the
     // assistant's pay) charges it. Without a payment rail only the assistant's pay is mentioned.
-    const payByText = a.payment_cents > 0 && this.paymentsEnabled;
-    const act = a.payment_cents <= 0 ? `confirm ${name} (nothing is paid)` : `approve the ${usdText(a.payment_cents)}${deposit ? " deposit" : ""} to ${name}${payByText ? "" : " (your assistant then pays it)"}`;
+    // Manual rail: nothing is charged by text or by the assistant; the business confirms first, then the human pays it directly.
+    const manual = this.d.config.manualPaymentHandoff === true;
+    const payByText = a.payment_cents > 0 && this.paymentsEnabled && !manual;
+    const act = a.payment_cents <= 0 ? `confirm ${name} (nothing is paid)` : manual ? `approve the ${usdText(a.payment_cents)}${deposit ? " deposit" : ""} to ${name} (they confirm before you pay them directly)` : `approve the ${usdText(a.payment_cents)}${deposit ? " deposit" : ""} to ${name}${payByText ? "" : " (your assistant then pays it)"}`;
     const then = payByText ? `, then PAY ${a.code} to charge it` : "";
     // A replacement suggestion (a better quote after "all quotes are in"): says what changed.
     const update = (await this.repo.listEvents(job.id)).find((e) => e.type === "approval_requested" && e.data.approval_id === a.id)?.data.update;
@@ -1485,8 +1879,10 @@ export class HaggleEngine {
     const tail = `See every option in Claude, or reply YES ${a.code} to ${act}${then}. (HG-${job.short_code})`;
     const rec =`Recommended: ${name} ${usdText(a.quote_total_cents)}${deposit ? ` (deposit ${usdText(a.payment_cents)})` : ""}.`;
     // The code is never cut: the request summary gives way first.
+    const facts = HaggleEngine.orderFacts(job.request);
+    const about = facts ? `${job.request.what}, ${facts}` : job.request.what;
     const room = SMS_LIMIT - `Haggle: All quotes are in for  (${n} quotes). ${rec} ${tail}`.length;
-    return `Haggle: All quotes are in for ${clip(job.request.what, Math.max(12, room))} (${n} quote${n === 1 ? "" : "s"}). ${rec} ${tail}`.slice(0, SMS_LIMIT);
+    return `Haggle: All quotes are in for ${clip(about, Math.max(12, room))} (${n} quote${n === 1 ? "" : "s"}). ${rec} ${tail}`.slice(0, SMS_LIMIT);
   }
 
   /** True for Haggle's own "all quotes are in" approval that nobody has claimed: choosing another quote replaces it. */
@@ -1581,15 +1977,21 @@ export class HaggleEngine {
     if (offer?.text) await this.sendApprovalSms(job, a).catch(() => undefined); // already sent: a no-op
   }
 
-  private isHeld(approvalId: string): boolean {
-    for (const list of this.heldTexts.values()) if (list.some((h) => h.approvalId === approvalId)) return true;
-    return false;
+  /** Texts that need the human (questions, approvals, results) refused while their number was paused are held (held_texts) until it texts back. */
+  private async isHeld(approvalId: string): Promise<boolean> {
+    return this.repo.isApprovalHeld(approvalId).catch(() => false);
   }
 
-  /** Who gets update texts for this job: the operator's notify number, else the settings approver. */
+  /**
+   * Who gets update texts (and whose coded replies decide) for this job: the workspace's own
+   * approver. The operator's notify number stands in only for the default workspace (single-tenant
+   * servers); it never receives, or decides, another workspace's approvals.
+   */
   private async notifyTarget(job: JobRow): Promise<string | null> {
     if (!this.d.sms) return null;
-    return this.d.config.notifyPhone?.trim() || (await this.getSettings(job.workspace_id)).approver_phone || null;
+    const approver = (await this.getSettings(job.workspace_id)).approver_phone;
+    if (job.workspace_id !== DEFAULT_WORKSPACE_ID) return approver || null;
+    return this.d.config.notifyPhone?.trim() || approver || null;
   }
 
   /**
@@ -1621,37 +2023,56 @@ export class HaggleEngine {
   private async textHuman(job: JobRow, to: string, t: HeldText & { attempt?: number }): Promise<{ ok: true; messageId: string } | { ok: false; reason: string }> {
     const budget = this.textBudget!;
     const short = t.key.replace(`notify:${job.id}:`, "");
+    if (!(await this.stillLeased(job.id))) return { ok: false, reason: "lease_lost" };
     if (budget.isBlocked(to)) {
-      this.holdText(to, job.id, t);
-      this.log("notify_held", { job_id: job.id, key: short, reason: "unanswered_limit" });
-      await this.noteTextsPaused(job, to);
-      return { ok: false, reason: "unanswered_limit" };
+      const reason = budget.blockReason(to) ?? "unanswered_limit";
+      await this.holdText(to, job, t);
+      this.log("notify_held", { job_id: job.id, key: short, reason });
+      if (reason === "unanswered_limit") await this.noteTextsPaused(job, to);
+      return { ok: false, reason };
+    }
+    // Durable dedupe across restarts and instances (the in-memory sets are per process). Fails
+    // closed: a text whose claim can't be made or re-made (the database is down, another instance
+    // re-claimed it, it is under operator review) is not sent from here.
+    try {
+      const c = await this.repo.claimOutbox({ key: t.key, job_id: job.id, kind: "text" }, this.now().toISOString());
+      if (!c.fresh) {
+        if (c.row.status === "sent") return { ok: true, messageId: c.row.provider_ref ?? "" };
+        const d = decideClaim({ kind: "text", key: t.key, row: c.row, nowMs: this.now().getTime(), staleMs: OUTBOX_STALE_MS, underReview: !!(await this.repo.findOpenReview("outbox", t.key)) });
+        if (d.action === "defer") return { ok: false, reason: "in_flight" };
+        if (d.action === "review") await this.deadLetter({ kind: "outbox", subject: t.key, job_id: job.id, reason: d.reason, attempts: c.row.attempts });
+        if (d.action !== "send" || !(await this.repo.reclaimOutbox(t.key, ["pending", "not_sent", "unknown"], this.now().toISOString()))) return { ok: false, reason: d.action === "send" ? "in_flight" : "not_retried" };
+      }
+    } catch (err) {
+      this.log("notify_outbox_failed", { job_id: job.id, key: short, error: redactError(err) });
+      return { ok: false, reason: "outbox_unavailable" };
     }
     this.notified.add(t.key);
     try {
       // A retry gets a fresh provider key: Inkbox may replay a refused send for the old one.
       const sent = await this.d.sms!.send({ to, text: t.text, idempotencyKey: t.attempt ? `${t.key}:retry:${t.attempt}` : t.key });
+      await this.repo.finishOutbox(t.key, "sent", sent.messageId, this.now().toISOString()).catch(() => undefined);
       this.notifiedText.add(`${to}|${t.text}`);
       // Only a question or an approval expects the human's reply; other updates don't change where a reply goes.
-      if (t.questionId || t.approvalId) this.lastSms.set(to, { kind: "human", jobId: job.id, ...(t.questionId ? { questionId: t.questionId } : {}), ...(t.approvalId ? { approvalId: t.approvalId } : {}) });
+      if (t.questionId || t.approvalId) await this.noteTextRoute(job, to, "human", { ...(t.questionId ? { questionId: t.questionId } : {}), ...(t.approvalId ? { approvalId: t.approvalId } : {}) });
       return { ok: true, messageId: sent.messageId };
     } catch (err) {
       this.notified.delete(t.key);
+      await this.repo.finishOutbox(t.key, "not_sent", null, this.now().toISOString()).catch(() => undefined);
       const blocked = isUnansweredLimitError(err);
       const reason = blocked ? "unanswered_limit" : err instanceof ChannelSendError ? err.reason : "error";
       this.log(blocked ? "notify_blocked" : "notify_failed", { job_id: job.id, key: short, reason, error: (err as Error).message.slice(0, 300) });
       if (blocked) {
-        this.holdText(to, job.id, t);
+        await this.holdText(to, job, t);
         await this.noteTextsPaused(job, to);
       }
       return { ok: false, reason };
     }
   }
 
-  private holdText(to: string, jobId: string, t: HeldText) {
-    const list = (this.heldTexts.get(to) ?? []).filter((h) => h.key !== t.key);
-    list.push({ jobId, key: t.key, text: t.text, ...(t.questionId ? { questionId: t.questionId } : {}), ...(t.approvalId ? { approvalId: t.approvalId } : {}) });
-    this.heldTexts.set(to, list.slice(-3));
+  private async holdText(to: string, job: JobRow, t: HeldText) {
+    await this.repo.holdText({ line: this.textLine(), remote: to, key: t.key, workspace_id: job.workspace_id, job_id: job.id, text: t.text, question_id: t.questionId ?? null, approval_id: t.approvalId ?? null }, 3)
+      .catch((err: Error) => this.log("hold_text_failed", { job_id: job.id, error: err.message.slice(0, 200) }));
   }
 
   /** Once per deal and pause: say on the deal (wait_for_update) why texts stopped and how to resume. */
@@ -1674,13 +2095,14 @@ export class HaggleEngine {
 
   /** Re-send what the human missed while paused (still-open questions and approvals, results). */
   private async flushHeldTexts(from: string) {
-    const held = this.heldTexts.get(from);
-    if (!held?.length) return;
-    this.heldTexts.delete(from);
-    for (const h of held) {
+    // Taken atomically: another instance flushing the same number gets none of them.
+    const held = await this.repo.takeHeldTexts(this.textLine(), from).catch(() => []);
+    for (const row of held) {
+      const h = { jobId: row.job_id, key: row.key, text: row.text, ...(row.question_id ? { questionId: row.question_id } : {}), ...(row.approval_id ? { approvalId: row.approval_id } : {}) };
       try {
         const job = await this.repo.getJob(h.jobId);
-        if (!job) continue;
+        // Re-sent only to the job's own human: if its workspace's approver changed meanwhile, it isn't this number's any more.
+        if (!job || (await this.notifyTarget(job)) !== from) continue;
         if (h.approvalId) {
           const a = await this.repo.getApproval(h.approvalId);
           if (a?.status === "pending") await this.sendApprovalSms(job, a, this.now().getTime());
@@ -1691,7 +2113,8 @@ export class HaggleEngine {
           continue;
         }
         if (h.questionId && (await this.repo.listQuestions(job.id)).find((q) => q.id === h.questionId)?.status !== "pending") continue;
-        await this.textHuman(job, from, { ...h, attempt: this.now().getTime() });
+        const { jobId: _j, ...text } = h;
+        await this.textHuman(job, from, { ...text, attempt: this.now().getTime() });
       } catch (err) {
         this.log("notify_failed", { job_id: h.jobId, key: h.key, reason: "error", error: (err as Error).message });
       }
@@ -1704,10 +2127,19 @@ export class HaggleEngine {
    * notify number or a settings approver) it answers the open business question. Anyone else is
    * ignored. Idempotent per message id.
    */
-  async ingestText(m: { messageId: string; from: string; text: string; inbound?: boolean }): Promise<{ jobId: string | null; outcome: string }> {
+  async ingestText(m: { messageId: string; from: string; text: string; inbound?: boolean; to?: string }): Promise<{ jobId: string | null; outcome: string }> {
     if (m.inbound === false) return { jobId: null, outcome: "outbound" };
     const from = m.from.replace(/[\s().-]/g, "");
+    // A text to another of Haggle's numbers isn't this line's to answer (routes are per line).
+    const to = m.to?.replace(/[\s().-]/g, "");
+    if (to && /^\+\d{8,15}$/.test(to) && this.textLine() !== "default" && to !== this.textLine()) return { jobId: null, outcome: "not_our_line" };
     if (await this.repo.findMessageByProviderId(`sms-in:${m.messageId}`)) return { jobId: null, outcome: "duplicate" };
+    // A bare carrier opt-out keyword (STOP, CANCEL, END...): the carrier may now block texts to this
+    // number, so nothing more is texted to it (held) until it texts again, e.g. START (docs/carrier-keywords.md).
+    if (isCarrierOptOut(m.text)) {
+      this.textBudget?.carrierOptOut(from);
+      return this.routeText(m, from);
+    }
     // Any reply lifts Inkbox's pause on this number; what the human missed is re-sent after routing.
     this.textReplied(from);
     const r = await this.routeText(m, from);
@@ -1721,12 +2153,14 @@ export class HaggleEngine {
    * a bare yes/no counts only when the approval was the last thing Haggle texted that number;
    * otherwise it is left to the normal routing (an answer to a business, a business reply).
    */
-  private async ingestTextApproval(m: { messageId: string; text: string }, from: string, open: JobRow[]): Promise<{ jobId: string | null; outcome: string } | null> {
+  private async ingestTextApproval(m: { messageId: string; text: string }, from: string, open: JobRow[], last: ReturnType<typeof lastRoute>): Promise<{ jobId: string | null; outcome: string } | null> {
     const parsed = m.text.trim().match(TEXT_DECISION);
     if (!parsed) return null;
     const texted: ApprovalRow[] = [];
+    const mine: JobRow[] = []; // open deals this number approves for now
     for (const job of open) {
       if (from !== (await this.notifyTarget(job))) continue;
+      mine.push(job);
       const a = await this.repo.getLatestApproval(job.id);
       if (a && (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`))) texted.push(a);
       // Haggle's earlier texted suggestions that a better quote replaced (reviseSuggestion): their code
@@ -1737,11 +2171,13 @@ export class HaggleEngine {
         if (old && old.code === parsed[2] && !texted.some((x) => x.id === old.id)) texted.push(old);
       }
     }
-    const last = this.lastSms.get(from);
     // The approval texted last may belong to a deal that has since closed (approved on the card and paid).
+    // Only while this number is still that deal's approver: a replaced approver's phone (lost, or the
+    // operator changed it) keeps its old text route but never decides (S5-D F1).
     if (last?.approvalId && !texted.some((a) => a.id === last.approvalId)) {
       const a = await this.repo.getApproval(last.approvalId);
-      if (a) texted.push(a);
+      const aJob = a ? await this.repo.getJob(a.job_id) : null;
+      if (a && aJob && from === (await this.notifyTarget(aJob))) texted.push(a);
     }
     const pending = texted.filter((a) => a.status === "pending");
     const code = parsed[2];
@@ -1749,11 +2185,8 @@ export class HaggleEngine {
       // Already decided elsewhere (the card, email) or unknown: tell the human, never forward the code.
       const decided = texted.find((a) => a.code === code);
       if (decided || pending.length === 0) {
-        // Fallback: an open deal this number approves for, never another workspace's deal (lastSms is in
-        // memory only, so after a restart it is empty).
-        let mine: JobRow | undefined;
-        if (!decided && !last?.jobId) for (const j of open) if (from === (await this.notifyTarget(j))) { mine = j; break; }
-        const job = await this.repo.getJob(decided?.job_id ?? last?.jobId ?? mine?.id ?? "");
+        // Recorded and answered only on a deal this number approves for: never another workspace's (S5-D F2).
+        const job = await this.repo.getJob(decided?.job_id ?? texted.find((a) => a.id === last?.approvalId)?.job_id ?? mine[0]?.id ?? "");
         const stored = job ? await this.repo.insertMessage({
           job_id: job.id, business_id: null, approval_id: decided?.id ?? null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
           rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
@@ -1781,7 +2214,7 @@ export class HaggleEngine {
    * number is ignored and recorded. Before YES it says to approve first; a confirm-only approval has
    * nothing to pay. Idempotent per message id.
    */
-  private async ingestPayText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined): Promise<{ jobId: string | null; outcome: string }> {
+  private async ingestPayText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined, scope: TextScope): Promise<{ jobId: string | null; outcome: string }> {
     const record = (jobId: string | null, approvalId: string | null, trusted: boolean) => this.repo.insertMessage({
       job_id: jobId, business_id: null, approval_id: approvalId, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
       rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
@@ -1790,7 +2223,7 @@ export class HaggleEngine {
     });
     // The deals this number approves for: the open ones and recently closed ones (a second PAY after paid).
     const jobs = new Map<string, JobRow>();
-    for (const j of [...open, ...(await this.repo.listRecentJobs(20))]) if (!jobs.has(j.id)) jobs.set(j.id, j);
+    for (const j of [...open, ...(await this.repo.listRecentJobs(20))]) if (!jobs.has(j.id) && inTextScope(scope, j)) jobs.set(j.id, j);
     const mine: JobRow[] = [];
     for (const j of jobs.values()) if (from === (await this.notifyTarget(j))) mine.push(j);
     if (!mine.length) {
@@ -1803,10 +2236,16 @@ export class HaggleEngine {
       return { jobId: named?.job_id ?? null, outcome: "pay_ignored_not_approver" };
     }
     const latest = (await Promise.all(mine.map((j) => this.repo.getLatestApproval(j.id)))).filter((a): a is ApprovalRow => a !== null);
-    const target = code ? latest.find((a) => a.code === code) ?? null : null;
+    // Two of this human's deals under one code: never pick one (the deal code says which).
+    const coded = code ? latest.filter((a) => a.code === code) : [];
+    const target = coded.length === 1 ? coded[0]! : null;
     const job = (target && mine.find((j) => j.id === target.job_id)) || mine.find((j) => !TERMINAL.has(j.state)) || mine[0]!;
     if (!(await record(job.id, target?.id ?? null, true))) return { jobId: job.id, outcome: "duplicate" };
     const reply = (text: string) => this.notifyHuman(job, `pay-ack:${m.messageId}`, text);
+    if (coded.length > 1) {
+      await reply(`more than one of your deals has code ${code}, so nothing was charged. Reply again with the deal code, e.g. "PAY ${code} HG-${job.short_code}".`);
+      return { jobId: job.id, outcome: "pay_ambiguous_code" };
+    }
     if (!target) {
       await reply(code ? `no approved payment has code ${code}, so nothing was charged. Use the code in Haggle's latest approval text, or pay on the deal board in Claude.` : "to charge an approved payment, reply PAY with its code (the one in Haggle's approval text).");
       return { jobId: job.id, outcome: code ? "pay_no_matching_approval" : "pay_code_required" };
@@ -1816,6 +2255,13 @@ export class HaggleEngine {
     if (target.action === "confirm" || target.payment_cents <= 0) {
       await reply(`that approval only confirms the order with ${name}; there is nothing to pay.`);
       return { jobId: job.id, outcome: "pay_confirm_only" };
+    }
+    if (this.d.config.manualPaymentHandoff) {
+      const bk = await this.repo.getBookingByApproval(target.id);
+      await reply(bk?.status === "awaiting_vendor_confirmation" || !bk
+        ? `Haggle doesn't charge on this server, and ${name} hasn't confirmed the booking yet: don't pay until Haggle texts that it's booked.`
+        : `Haggle doesn't charge on this server: pay ${amount} to ${name} directly, then reply PAID ${target.code}.`);
+      return { jobId: job.id, outcome: "pay_manual_handoff" };
     }
     if (target.status === "pending") {
       await reply(`reply YES ${target.code} first to approve ${amount} to ${name}, then PAY ${target.code} to charge it.`);
@@ -1848,20 +2294,801 @@ export class HaggleEngine {
     }
   }
 
+  /**
+   * "PAID <code>" texted by the workspace approver after paying the business directly (manual
+   * handoff). The exact approval, quote, amount, caps and job state are revalidated first (they may
+   * have changed since the approval); only then is the handoff final and the business told the
+   * customer reports having paid. From any other number it is ignored and recorded.
+   */
+  /**
+   * "BOOKED <code>" from the workspace approver: they accept a booking the business confirmed from a
+   * sender Haggle can't verify (thread continuity only). Only for that exact approval's code, only while
+   * such a claim is pending; then the booking proceeds as a confirmed one (handoff, or confirm-only done).
+   */
+  private async ingestBookedText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined, scope: TextScope): Promise<{ jobId: string | null; outcome: string }> {
+    const mine: JobRow[] = [];
+    for (const j of open) if (inTextScope(scope, j) && from === (await this.notifyTarget(j))) mine.push(j);
+    if (!mine.length) return { jobId: null, outcome: "booked_ignored_not_approver" };
+    const latest = (await Promise.all(mine.map((j) => this.repo.getLatestApproval(j.id)))).filter((a): a is ApprovalRow => a !== null && a.status === "approved");
+    const coded = code ? latest.filter((a) => a.code === code) : [];
+    const job = coded.length === 1 ? mine.find((j) => j.id === coded[0]!.job_id)! : mine.sort((x, y) => y.created_at.localeCompare(x.created_at))[0]!;
+    const stored = await this.repo.insertMessage({
+      job_id: job.id, business_id: null, approval_id: coded.length === 1 ? coded[0]!.id : null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
+      sender_trusted: true, trust_reason: "sms-from-text-approver", matched_via: "booked_code", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+    });
+    if (!stored) return { jobId: job.id, outcome: "duplicate" };
+    const reply = (text: string) => this.notifyHuman(job, `booked-ack:${m.messageId}`, text);
+    if (coded.length !== 1) {
+      await reply(coded.length > 1 ? `more than one of your deals has code ${code}; nothing was accepted. Reply again with the deal code, e.g. "BOOKED ${code} HG-${job.short_code}".` : "that code doesn't match a booking waiting for you; nothing was accepted.");
+      return { jobId: job.id, outcome: coded.length > 1 ? "booked_ambiguous_code" : "booked_no_match" };
+    }
+    const a = coded[0]!;
+    const booking = await this.repo.getBookingByApproval(a.id);
+    if (booking?.status === "not_in_writing") return this.attestBooking(job, a, booking, reply);
+    const claim = (await this.repo.listEvents(job.id)).filter((e) => e.type === "booking" && e.data.approval_id === a.id && e.data.status === "vendor_claims_confirmed").at(-1);
+    if (!booking || booking.status !== "awaiting_vendor_confirmation" || !claim) {
+      await reply("there's no unverified booking confirmation waiting for you on that deal; nothing was changed.");
+      return { jobId: job.id, outcome: "booked_nothing_pending" };
+    }
+    const name = clip(await this.businessName(job.id, a.business_id), 30);
+    if (!(await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { status: "confirmed", confirmed_at: this.now().toISOString() }))) return { jobId: job.id, outcome: "booked_nothing_pending" };
+    const identity = claim.data.sender_identity === "text_only" ? "text_only" : "thread_only";
+    await this.repo.appendEvent(job.id, "booking", { status: "confirmed", approval_id: a.id, by: "human_ack", sender_identity: identity, at: this.now().toISOString() });
+    await this.repo.appendEvent(job.id, "reply", { business_id: a.business_id, summary: `The human accepted ${name}'s booking confirmation (its sender couldn't be verified)` });
+    if (a.action === "confirm") {
+      await this.fire(job.id, { type: "booking_confirmed" });
+      await reply(`accepted: the order with ${name} is confirmed. Nothing was paid through Haggle; arrange payment with them directly.`);
+      return { jobId: job.id, outcome: "order_confirmed" };
+    }
+    const withInstructions = claim.data.payment_instructions === true;
+    const ho = await this.startHandoff(job, a, { ask: !withInstructions });
+    if (!ho) {
+      await reply(`accepted the booking with ${name}, but this approval no longer passes Haggle's payment checks, so Haggle didn't ask how to pay them. Don't pay yet; the operator was flagged.`);
+      return { jobId: job.id, outcome: "booking_confirmed" };
+    }
+    if (withInstructions && booking.reply_text) {
+      await this.repo.updateHandoff(ho.id, ["instructions_requested"], { status: "instructions_received", instructions_text: booking.reply_text, instructions_message_id: booking.reply_message_id });
+      await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: a.business_id, warning: identity === "text_only" ? SMS_PAYMENT_WARNING : CONTINUITY_ONLY_WARNING, sender_identity: identity });
+      await reply(`accepted the booking with ${name}. Their payment instructions are on the deal board; confirm them with ${name} by phone before paying ${usdText(a.payment_cents)} directly, then reply PAID ${a.code}.`);
+    } else {
+      await reply(`accepted the booking with ${name}. Haggle asked how they take payment; don't pay until you have their instructions.`);
+    }
+    return { jobId: job.id, outcome: "booking_confirmed" };
+  }
+
+  /**
+   * BOOKED <code> for a booking Haggle can't confirm in writing (a vendor reached by phone or A2A): the
+   * approver confirmed it with the business directly. Recorded once (migration 118); only then does the
+   * payment handoff start. The approver's own coded text is the only way in (ingestBookedText).
+   */
+  private async attestBooking(job: JobRow, a: ApprovalRow, booking: BookingRow, reply: (text: string) => Promise<void>): Promise<{ jobId: string | null; outcome: string }> {
+    const name = clip(await this.businessName(job.id, a.business_id), 30);
+    if (booking.human_attested_at) {
+      await reply(`already accepted the booking with ${name}; nothing changed.`);
+      return { jobId: job.id, outcome: "booked_already" };
+    }
+    if (!(await this.repo.updateBooking(booking.id, ["not_in_writing"], { human_attested_at: this.now().toISOString() }))) {
+      await reply("there's no booking waiting for you on that deal; nothing was changed.");
+      return { jobId: job.id, outcome: "booked_nothing_pending" };
+    }
+    await this.repo.appendEvent(job.id, "booking", { status: "human_attested", approval_id: a.id, by: "human_ack", sender_identity: "none", at: this.now().toISOString() });
+    await this.repo.appendEvent(job.id, "reply", { business_id: a.business_id, summary: `The human confirmed the booking with ${name} directly (Haggle couldn't get it in writing)` });
+    const ho = await this.startHandoff(job, a, { ask: false });
+    if (!ho) {
+      await reply(`accepted the booking with ${name}, but this approval no longer passes Haggle's payment checks, so don't pay yet; the operator was flagged.`);
+      return { jobId: job.id, outcome: "booking_confirmed" };
+    }
+    await reply(`accepted the booking with ${name}. Ask them how they take payment, pay them ${usdText(a.payment_cents)} directly (Haggle never moves money), then reply PAID ${a.code}.`);
+    return { jobId: job.id, outcome: "booking_confirmed" };
+  }
+
+  private async ingestPaidText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined, scope: TextScope): Promise<{ jobId: string | null; outcome: string }> {
+    const record = (jobId: string | null, approvalId: string | null, trusted: boolean) => this.repo.insertMessage({
+      job_id: jobId, business_id: null, approval_id: approvalId, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
+      sender_trusted: trusted, trust_reason: trusted ? "sms-from-text-approver" : "sms-paid-from-unknown-number", matched_via: "paid_code", parse_status: "none",
+      quarantine_reason: trusted ? null : "paid_not_from_approver", round: null, simulated: false,
+    });
+    const jobs = new Map<string, JobRow>();
+    for (const j of [...open, ...(await this.repo.listRecentJobs(20))]) if (!jobs.has(j.id) && inTextScope(scope, j)) jobs.set(j.id, j);
+    const mine: JobRow[] = [];
+    for (const j of jobs.values()) if (from === (await this.notifyTarget(j))) mine.push(j);
+    if (!mine.length) {
+      if (!(await record(null, null, false))) return { jobId: null, outcome: "duplicate" };
+      this.log("paid_text_ignored", { from: maskHandle(from), reason: "not_the_approver" });
+      return { jobId: null, outcome: "paid_ignored_not_approver" };
+    }
+    const latest = (await Promise.all(mine.map((j) => this.repo.getLatestApproval(j.id)))).filter((a): a is ApprovalRow => a !== null);
+    // Two of this human's deals under one code: never pick one (the deal code says which).
+    const coded = code ? latest.filter((a) => a.code === code) : [];
+    const target = coded.length === 1 ? coded[0]! : null;
+    const job = (target && mine.find((j) => j.id === target.job_id)) || mine.find((j) => !TERMINAL.has(j.state)) || mine[0]!;
+    if (!(await record(job.id, target?.id ?? null, true))) return { jobId: job.id, outcome: "duplicate" };
+    const reply = (text: string) => this.notifyHuman(job, `paid-ack:${m.messageId}`, text);
+    if (coded.length > 1) {
+      await reply(`more than one of your deals has code ${code}, so nothing was recorded. Reply again with the deal code, e.g. "PAID ${code} HG-${job.short_code}".`);
+      return { jobId: job.id, outcome: "paid_ambiguous_code" };
+    }
+    const h = target ? await this.repo.getHandoffByApproval(target.id) : null;
+    const bk = target && !h ? await this.repo.getBookingByApproval(target.id) : null;
+    if (target && (bk?.status === "awaiting_vendor_confirmation" || (bk?.status === "not_in_writing" && !bk.human_attested_at))) {
+      // Paid before the business confirmed: recorded as said, but nothing is marked paid and the business isn't told.
+      await this.repo.appendEvent(job.id, "operator_attention", { reason: "paid_before_booking_confirmed", approval_id: target.id });
+      await reply(`${clip(await this.businessName(job.id, target.business_id), 30)} hasn't confirmed the booking yet, so nothing was recorded as paid. If you already paid, tell them directly; Haggle will text when they confirm.`);
+      return { jobId: job.id, outcome: "paid_before_booking" };
+    }
+    if (!target || !h) {
+      await reply(code ? `no payment handoff has code ${code}; nothing was recorded.` : "to record that you paid, reply PAID with the code from Haggle's approval text.");
+      return { jobId: job.id, outcome: "paid_no_matching" };
+    }
+    if (h.status === "human_confirmed") {
+      await reply("already recorded that you reported paying. Nothing else to do.");
+      return { jobId: job.id, outcome: "handoff_already_confirmed" };
+    }
+    const fresh = (await this.repo.getJob(job.id)) ?? job;
+    const held = (await this.repo.getBookingByApproval(target.id))?.status;
+    const verdict = await this.paymentVerdict(fresh, target, { bookingHeld: held === "confirmed" || held === "not_in_writing" });
+    if (!verdict.ok) {
+      await this.repo.appendEvent(job.id, "payment_refused", { code: verdict.code, approval_id: target.id, rail: "manual" });
+      await reply(`couldn't record that payment: the approval no longer matches (${verdict.code.toLowerCase().replace(/_/g, " ")}). Nothing was sent to the business; see the deal board.`);
+      return { jobId: job.id, outcome: "handoff_refused" };
+    }
+    const done = await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "human_confirmed", confirmed_by: from, confirmed_at: this.now().toISOString() });
+    if (!done) return { jobId: job.id, outcome: "handoff_already_confirmed" };
+    await this.repo.transitionApproval(target.id, "approved", { status: "used" });
+    // The customer's report, not a verified settlement (that needs the business's own "received").
+    await this.repo.appendEvent(job.id, "payment", { status: "human_reported_paid", rail: "manual", reported_by: "human", amount_usd: centsToUsd(h.amount_cents) });
+    await this.fire(job.id, { type: "payment_settled" });
+    return { jobId: job.id, outcome: "handoff_confirmed" };
+  }
+
+  /**
+   * The guard every charge or handoff passes, whenever it starts or resumes: a stored human approval
+   * for this exact quote revision, business and amount, unexpired; amount within the job, approval,
+   * server and current workspace caps; payee = the business that quoted; job still paying.
+   */
+  private async paymentVerdict(job: JobRow, approval: ApprovalRow, opts: { bookingHeld?: boolean } = {}) {
+    const quote = await this.repo.getQuote(approval.quote_id);
+    const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === approval.business_id);
+    // Rechecked at every start and resume (sprint 4 D): a quote read by the keyword fallback, from a
+    // quarantined or unverified message, or a simulated reply on a live job never carries money.
+    const src = quote ? await this.repo.getMessage(quote.message_id) : null;
+    const carriesMoney = !!quote && !!src && !heuristicReading(quote.record) && src.kind !== "quarantine" && src.sender_trusted === true && src.job_id === job.id && !(job.mode === "live" && src.simulated);
+    return checkStripePaymentAllowed({
+      stripeConfigured: true,
+      job: { id: job.id, state: job.state },
+      approval: { id: approval.id, job_id: approval.job_id, quote_id: approval.quote_id, business_id: approval.business_id, quote_total_cents: approval.quote_total_cents, payment_cents: approval.payment_cents, status: approval.status,
+        // Manual handoff: an approval whose booking the business confirmed doesn't lapse while the human
+        // arranges payment (hours or days); everything else is still revalidated.
+        expires_at: opts.bookingHeld ? new Date(this.now().getTime() + 60_000).toISOString() : approval.expires_at },
+      quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
+      payee: b && quote ? { business_id: b.business_id, on_job: true, quoted_from_trusted_sender: quote.sender_trusted && quote.business_id === b.business_id && carriesMoney } : null,
+      existingPayment: null,
+      spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, approval.cap_cents, (await this.getSettings(job.workspace_id)).spending_cap_cents),
+      now: this.now(),
+    });
+  }
+
+  // ───────────────── purchase after approval: re-confirmation, booking, handoff, receipt, cancellation ─────────────────
+  //
+  // Manual rail (HAGGLE_PAYMENTS=manual): approval → the business confirms availability and the
+  // approved terms in writing ("booked") → it is asked how it takes payment → the human pays it
+  // directly and texts PAID <code> ("the customer reports paying") → only the business's own "received"
+  // from a verified sender makes it settled_verified. Each step's state is in bookings /
+  // payment_handoffs / handoff_receipts (migrations 106, 110); the words come from payments/purchase.ts.
+
+  private get reconfirmTimeoutMs() { return this.d.config.reconfirmTimeoutMs ?? 24 * 3_600_000; }
+  private get bookingTimeoutMs() { return this.d.config.bookingTimeoutMs ?? 24 * 3_600_000; }
+  private get handoffTimeoutMs() { return this.d.config.handoffTimeoutMs ?? 48 * 3_600_000; }
+
+  /** Until when a quote can be approved as is (the business's valid-until, the validity window, any re-confirmation). */
+  private freshnessOf(q: QuoteRow, events: JobEventRow[]): NonNullable<BoardQuote["freshness"]> {
+    const reconfirmedAt = events.filter((e) => e.type === "reconfirmed" && e.data.quote_id === q.id).at(-1)?.data.at;
+    const f = quoteFreshness({ created_at: q.created_at, valid_until: q.record.valid_until }, this.now(), this.d.config.quoteValidityMs ?? DEFAULT_QUOTE_VALIDITY_MS, typeof reconfirmedAt === "string" ? reconfirmedAt : null);
+    return { stale: f.stale, ...(f.reason ? { reason: f.reason } : {}), good_until: f.good_until, valid_until: f.valid_until, ...(pendingReconfirm(events, q.id) ? { reconfirmation: "requested" as const } : {}) };
+  }
+
+  /**
+   * A stale quote the agent asked to approve: one message asking the business whether it still stands
+   * (its own channel; email or text). The approval opens only once it confirms the same terms
+   * (purchaseTick); a changed total is a new quote revision that needs its own approval.
+   */
+  private async requestReconfirmation(job: JobRow, b: JobBusinessRow, q: QuoteRow, channel: ApprovalRow["channel"], action: ApprovalAction, offer: ApprovalOffer | undefined, reason: string): Promise<void> {
+    const events = await this.repo.listEvents(job.id);
+    if (pendingReconfirm(events, q.id)) return;
+    const deposit = q.deposit_cents && q.deposit_cents > 0 ? `, with a ${usdText(q.deposit_cents)} deposit` : "";
+    const what = [job.request.what, quantityText(job.request.quantity, job.request.unit), job.request.date ? `on ${eventWhen(job.request.date, job.request.time, job.request.date_until)}` : null].filter(Boolean).join(", ");
+    const key = `reconfirm:${q.id}`;
+    if (b.channel === "email" && b.email) {
+      await this.sendRecorded(job, b, "message", key, {
+        to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
+        bodyText: [`Hi ${b.name},`, "", `Before the customer approves: could you confirm that your quote of ${usdText(q.total_cents!)} total${deposit} for ${what} still stands?`,
+          "Please reply \"confirmed\" if it does, or send the updated total if anything changed. Nothing has been booked or paid yet.", "", this.signOff(job)].join("\n"),
+      });
+    } else if (b.channel === "imessage" && this.canReach(b)) {
+      if (!(await this.sendIMessageToBusiness(job, b, "message", key, `Hi ${b.name}, does your ${usdText(q.total_cents!)} quote for ${clip(job.request.what, 40)} still stand? Reply "confirmed" or send the new total. Ref HG-${job.short_code}`, null))) {
+        throw new EngineError("reconfirm_not_sent", `Couldn't text ${b.name} to re-confirm its quote.`, "Try again later, or approve another quote.", "get_quotes");
+      }
+    } else {
+      throw new EngineError("quote_stale", `${b.name}'s quote is ${reason}, and Haggle can't re-confirm it automatically on its channel (${b.channel}).`, `Ask ${b.name} for a fresh quote (send_message), or approve another quote.`, "get_quotes");
+    }
+    await this.repo.appendEvent(job.id, "reconfirm_requested", {
+      quote_id: q.id, business_id: b.business_id, channel, action, offer_text: offer?.text === true, offer_email: offer?.email === true,
+      total_cents: q.total_cents, deposit_cents: q.deposit_cents, reason, at: this.now().toISOString(),
+    });
+    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "reconfirm_requested", summary: `${b.name}'s ${usdText(q.total_cents!)} quote is ${reason}: asked ${b.name} to confirm it still stands before the human approves it` });
+    await this.repo.touchJob(job.id);
+  }
+
+  /**
+   * Withdraw the current approval when its booking is stuck: the vendor didn't confirm after Haggle's
+   * reminder (or the human didn't accept a booking Haggle can't confirm in writing), or the payment
+   * checks refused the handoff. Only before any payment was reported. The vendor that was asked to
+   * book is told not to hold it (unless the same quote is being approved again, which asks it anew).
+   * Returns true when the job went back to choosing.
+   */
+  private async withdrawStuckBooking(job: JobRow, nextQuoteId: string): Promise<boolean> {
+    const a = await this.repo.getLatestApproval(job.id);
+    if (!a || a.status !== "approved") return false;
+    const [booking, h, events] = await Promise.all([this.repo.getBookingByApproval(a.id), this.repo.getHandoffByApproval(a.id), this.repo.listEvents(job.id)]);
+    if (!booking || (h && !["instructions_requested", "instructions_received"].includes(h.status))) return false;
+    // A booking the business confirmed is dropped only by the approver's CANCEL <code> (decision H3), never by
+    // re-approving another quote. Re-approving the same quote (a refused handoff, once fixed) tells the business nothing.
+    if (isVendorConfirmed(booking) && nextQuoteId !== a.quote_id) return false;
+    const refused = !h && events.some((e) => e.type === "payment_refused" && e.data.approval_id === a.id && e.data.rail === "manual");
+    const stalled = !!booking.stalled_at && (booking.status === "awaiting_vendor_confirmation" || (booking.status === "not_in_writing" && !booking.human_attested_at));
+    if (!refused && !stalled) return false;
+    const why = refused ? "the approval no longer passed Haggle's payment checks" : booking.status === "not_in_writing" ? "the booking was never confirmed with the business" : "the business didn't confirm the booking";
+    if (!(await this.repo.transitionApproval(a.id, "approved", { status: "expired", decided_at: this.now().toISOString() }))) return false;
+    await this.repo.updateBooking(booking.id, [booking.status], { status: "cancelled", cancel_reason: `withdrawn: ${why}` });
+    if (h) await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "cancelled" });
+    await this.repo.appendEvent(job.id, "approval_void", { approval_id: a.id, reason: why, by: "agent_reapproval" });
+    await this.repo.appendEvent(job.id, "booking", { status: "cancelled", approval_id: a.id, why, at: this.now().toISOString() });
+    const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === a.business_id);
+    const asked = booking.status === "awaiting_vendor_confirmation" || booking.status === "confirmed";
+    if (b && asked && nextQuoteId !== a.quote_id) {
+      const note = `The customer has gone with another option, so please don't hold the booking for ${job.request.what}. Nothing was paid. Thank you for your time.`;
+      try {
+        if (b.channel === "email" && b.email) await this.sendRecorded(job, b, "message", `withdraw:${a.id}`, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\n${note}\n\n${this.signOff(job)}` });
+        else if (b.channel === "imessage" && this.canReach(b)) await this.sendIMessageToBusiness(job, b, "message", `withdraw:${a.id}`, `Hi ${b.name}, the customer went with another option; please don't hold the booking. Nothing was paid. Ref HG-${job.short_code}`, null);
+      } catch (err) {
+        this.log("withdraw_note_failed", { job_id: job.id, error: (err as Error).message });
+      }
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Told ${b.name} not to hold the booking (${why}); nothing was paid` });
+    }
+    const r = await this.fire(job.id, { type: "approval_void" });
+    return r.ok;
+  }
+
+  /** A reply to a re-confirmation request that explicitly confirms the same terms (email: handled here, never parsed as a revision). */
+  private async ingestReconfirmReply(job: JobRow, b: JobBusinessRow, msg: InboundMessage, base: PurchaseBase, via: MessageRow["matched_via"], trustReason: string): Promise<{ jobId: string; outcome: string } | null> {
+    const events = await this.repo.listEvents(job.id);
+    const pending = [...events].reverse().find((e) => e.type === "reconfirm_requested" && e.data.business_id === b.business_id && pendingReconfirm(events, String(e.data.quote_id)));
+    if (!pending) return null;
+    const q = await this.repo.getQuote(String(pending.data.quote_id));
+    if (!q || q.status !== "current") return null;
+    const r = readBookingReply(msg.bodyText ?? "", { agreedCents: [q.total_cents, q.deposit_cents].filter((c): c is number => c !== null && c > 0), ...(job.request.quantity !== undefined ? { quantity: job.request.quantity } : {}), ...(job.request.date && !job.request.date_until ? { eventDate: job.request.date } : {}) });
+    // Anything but a clean "yes, same terms" is read as a reply (a new revision, a decline, a question).
+    if (r.intent !== "confirm") return null;
+    const stored = await this.repo.insertMessage({ ...base, job_id: job.id, business_id: b.business_id, kind: "reply", sender_trusted: true, trust_reason: trustReason as never, matched_via: via, parse_status: "none", quarantine_reason: null });
+    if (!stored) return { jobId: job.id, outcome: "duplicate" };
+    await this.repo.updateBusiness(job.id, b.business_id, { last_reply_at: this.now().toISOString(), ...(msg.messageId ? { last_inbound_message_id: msg.messageId, references: [...b.references, msg.messageId].slice(-20) } : {}) });
+    await this.repo.appendEvent(job.id, "reconfirmed", { quote_id: q.id, business_id: b.business_id, message_id: stored.id, at: this.now().toISOString() });
+    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${b.name} confirmed its ${usdText(q.total_cents!)} quote still stands` });
+    await this.repo.touchJob(job.id);
+    return { jobId: job.id, outcome: "quote_reconfirmed" };
+  }
+
+  /** Resolve re-confirmations: confirmed → open the approval the agent asked for; changed / declined / silent → say so. */
+  private async resolveReconfirmations(job: JobRow, events: JobEventRow[]) {
+    const requests = events.filter((e) => e.type === "reconfirm_requested" && pendingReconfirm(events, String(e.data.quote_id)));
+    if (!requests.length) return;
+    const all = await this.repo.listQuotes(job.id);
+    for (const r of requests) {
+      const quoteId = String(r.data.quote_id);
+      const bid = String(r.data.business_id);
+      const name = await this.businessName(job.id, bid);
+      const resolve = (outcome: string, extra: Record<string, unknown> = {}) => this.repo.appendEvent(job.id, "reconfirm_resolved", { quote_id: quoteId, business_id: bid, outcome, ...extra });
+      const open = async (qid: string) => {
+        try {
+          const a = await this.openApproval(job.id, qid, r.data.channel as ApprovalRow["channel"], r.data.action as ApprovalAction, { text: r.data.offer_text === true, email: r.data.offer_email === true });
+          await this.repo.appendEvent(job.id, "reply", { business_id: bid, kind: "reconfirmed_approval", approval_id: a.id, summary: `${name} confirmed its quote still stands: the approval is now with the human` });
+        } catch (err) {
+          const m = err instanceof EngineError ? `${err.code}: ${err.message}` : (err as Error).message;
+          await this.repo.appendEvent(job.id, "reply", { business_id: bid, kind: "reconfirmed_not_opened", summary: `${name} re-confirmed, but the approval couldn't be opened (${clip(m, 160)}); call approve again` });
+        }
+      };
+      if (events.some((e) => e.type === "reconfirmed" && e.data.quote_id === quoteId && e.seq > r.seq)) {
+        await resolve("confirmed");
+        await open(quoteId);
+        continue;
+      }
+      // A newer quote from the business since the request: the same firm terms in its own words confirm; anything else is news.
+      // (event order, not timestamps: rows and events may be stamped by different clocks)
+      const after = new Set(events.filter((e) => e.type === "quote" && e.seq > r.seq && e.data.business_id === bid).map((e) => String(e.data.quote_id)));
+      const newer = all.filter((q) => q.id !== quoteId && after.has(q.id)).sort((x, y) => y.created_at.localeCompare(x.created_at))[0];
+      if (newer && newer.status === "current") {
+        const msg = await this.repo.getMessage(newer.message_id);
+        const same = newer.total_cents === r.data.total_cents && (newer.deposit_cents ?? null) === (r.data.deposit_cents ?? null);
+        const read = readBookingReply(msg?.body_text ?? "", { agreedCents: [newer.total_cents, newer.deposit_cents].filter((c): c is number => c !== null && c > 0) });
+        const said = same && newer.total_cents !== null && (read.intent === "confirm" || findDollarAmounts(vendorOwnWords(msg?.body_text ?? "")).includes(newer.total_cents));
+        if (!newer.record.available) {
+          await resolve("declined", { new_quote_id: newer.id });
+          await this.notifyHuman(job, `reconfirm:${quoteId}`, `${clip(name, 30)} can no longer do it at the quoted terms; nothing was approved or paid. Choose another option on the deal board.`);
+        } else if (same && said) {
+          await resolve("confirmed", { new_quote_id: newer.id });
+          await open(newer.id);
+        } else if (!same && newer.total_cents !== null) {
+          await resolve("changed", { new_quote_id: newer.id, old_total_cents: r.data.total_cents, new_total_cents: newer.total_cents });
+          await this.repo.appendEvent(job.id, "reply", { business_id: bid, kind: "reconfirm_changed", summary: `${name} changed its quote from ${usdText(Number(r.data.total_cents))} to ${usdText(newer.total_cents)}: the new quote needs its own approval` });
+          await this.notifyHuman(job, `reconfirm:${quoteId}`, `${clip(name, 30)} changed its quote from ${usdText(Number(r.data.total_cents))} to ${usdText(newer.total_cents)}. Nothing was approved; the new quote needs your approval if you want it.`);
+        } else if (!events.some((e) => e.type === "reply" && e.data.kind === "reconfirm_unclear" && e.data.quote_id === quoteId)) {
+          await this.repo.appendEvent(job.id, "reply", { business_id: bid, kind: "reconfirm_unclear", quote_id: quoteId, summary: `${name} replied but didn't clearly confirm its quote still stands; still waiting` });
+        }
+        continue;
+      }
+      if (this.now().getTime() - Date.parse(String(r.data.at)) > this.reconfirmTimeoutMs) {
+        await resolve("no_reply");
+        await this.notifyHuman(job, `reconfirm:${quoteId}`, `${clip(name, 30)} hasn't confirmed its quote still stands, so it wasn't sent for approval. Ask them for a fresh quote or choose another option.`);
+      }
+    }
+  }
+
+  /** The current purchase (booking + handoff + receipt) for the job's latest approval, in honest words. */
+  private async purchaseFor(job: JobRow, events?: JobEventRow[]): Promise<PurchaseView | null> {
+    if (!this.d.config.manualPaymentHandoff) return null;
+    const a = await this.repo.getLatestApproval(job.id);
+    if (!a) return null;
+    const [booking, handoff] = await Promise.all([this.repo.getBookingByApproval(a.id), this.repo.getHandoffByApproval(a.id)]);
+    if (!booking) return null;
+    const receipt = handoff ? await this.repo.getHandoffReceipt(handoff.id) : null;
+    const ev = events ?? (await this.repo.listEvents(job.id));
+    return purchaseView({
+      business: await this.businessName(job.id, a.business_id), booking, handoff, receipt, approvalCode: undefined,
+      cancelAfterPayment: ev.some((e) => e.type === "cancel_after_payment" && e.data.approval_id === a.id), jobCancelled: job.state === "cancelled",
+      confirmOnly: a.action === "confirm", order: this.orderText(job), mustHaves: mustHaveLine(job.request.requirements),
+      ...((r) => (r ? { handoffRefused: String(r.data.code) } : {}))(ev.filter((e) => e.type === "payment_refused" && e.data.approval_id === a.id && e.data.rail === "manual").at(-1)),
+    });
+  }
+
+  /** The order as every later message names it: "offsite lunch, 60 people, Saturday, November 14, 2026 at 11:30 AM, 500 Howard St, San Francisco, CA". */
+  private orderText(job: JobRow): string {
+    const r = job.request;
+    return [r.what, quantityText(r.quantity, r.unit), r.date ? eventWhen(r.date, r.time, r.date_until) : null, eventPlace(r.area, r.venue)].filter(Boolean).join(", ");
+  }
+
+  /** The board's payment line under the manual handoff (null when nothing was accepted yet). */
+  private async handoffFor(job: JobRow, events?: JobEventRow[]): Promise<EnginePaymentStatus | null> {
+    const v = await this.purchaseFor(job, events);
+    return v ? purchasePaymentLine(v, job.mode === "mock") : null;
+  }
+
+  /**
+   * After the human approves (manual rail): the booking. A business Haggle reaches by email is asked to
+   * confirm availability and the approved terms in writing (and how it takes payment) before anything
+   * is booked or paid. One Haggle can't get a written answer from (a call, A2A, or a text, whose replies
+   * aren't routed to bookings yet) is "not_in_writing": the human confirms it directly and the handoff
+   * starts at once, as before.
+   */
+  private async startBooking(job: JobRow, a: ApprovalRow): Promise<BookingRow | null> {
+    const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === a.business_id);
+    if (!b) return null;
+    if (a.action !== "confirm" && !(await this.handoffAllowed(job, a, "booking"))) return null;
+    // Email, or a text on the business's pinned number (its replies reach ingestPurchaseReply by the same identity rules).
+    const byText = b.channel === "imessage" && this.canReach(b);
+    const written = (b.channel === "email" && !!b.email) || byText;
+    const confirmOnly = a.action === "confirm";
+    const booking = (await this.repo.insertBooking({
+      id: newId("bk"), job_id: job.id, approval_id: a.id, quote_id: a.quote_id, business_id: a.business_id, total_cents: a.quote_total_cents, payment_cents: a.payment_cents,
+      status: written ? "awaiting_vendor_confirmation" : "not_in_writing", request_message_id: null, reply_text: null, reply_message_id: null, reply_has_link: false,
+      confirmed_at: null, stalled_at: null, cancel_reason: null,
+    })) ?? (await this.repo.getBookingByApproval(a.id));
+    if (!booking) return null;
+    if (!written) {
+      // Nobody has confirmed it yet: the human confirms it with the business directly and accepts it by
+      // text (BOOKED <code>, ingestBookedText); only then does the payment handoff start (migration 118).
+      if (!(await this.repo.listEvents(job.id)).some((e) => e.type === "booking" && e.data.approval_id === a.id)) {
+        await this.repo.appendEvent(job.id, "booking", { status: "not_in_writing", approval_id: a.id, awaiting: "human_attestation", at: this.now().toISOString() });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Haggle can't get ${b.name}'s booking confirmation in writing (${b.channel}): the human confirms it with them directly, then replies BOOKED <code>; nothing is booked or paid yet` });
+      }
+      return booking;
+    }
+    const deposit = a.payment_cents > 0 && a.payment_cents < a.quote_total_cents;
+    const what = this.orderText(job);
+    const musts = mustHaveLine(job.request.requirements);
+    const q = await this.repo.getQuote(a.quote_id);
+    const open = q ? this.unconfirmedMusts(job, q) : [];
+    const text = [
+      `Hi ${b.name},`, "",
+      `The customer has accepted your quote of ${usdText(a.quote_total_cents)} total for ${what}.`, "",
+      "Before anything is booked or paid, please reply to confirm:",
+      "1. You're available and will provide this as quoted.",
+      `2. The total of ${usdText(a.quote_total_cents)} stands${deposit ? `, with a ${usdText(a.payment_cents)} deposit due now` : ""}.`,
+      ...(musts ? [`3. You'll meet every must-have: ${musts}.`] : []),
+      ...(open.length ? [`   Your quote didn't confirm ${open.length === 1 ? "this one" : "these"}, so please confirm ${open.length === 1 ? "it" : "each"} specifically: ${open.join("; ")}.`] : []), "",
+      confirmOnly ? "The customer arranges payment with you directly; Haggle never takes or sends money. Nothing has been paid."
+        : "Once you confirm, please also tell us how you take payment (an invoice or payment instructions). The customer pays you directly; Haggle never takes or sends money. Nothing has been paid yet.", "",
+      this.signOff(job),
+    ].join("\n");
+    try {
+      const m = byText
+        // A text: the order first (the same facts), then the ask; fitText keeps it within the channel's limit.
+        // (the ask first: an iMessage is cut at 159 characters, and the order's facts may be long).
+        ? await this.sendIMessageToBusiness(job, b, "message", `booking:${a.id}`, `HG-${job.short_code}: the customer accepted your ${usdText(a.quote_total_cents)} quote. Reply CONFIRMED if you can do it as quoted${deposit ? ` (${usdText(a.payment_cents)} deposit)` : ""}${confirmOnly ? "" : ", and how you take payment"}. Nothing is paid yet. Order: ${what}${musts ? `; ${musts}` : ""}`, null)
+        : await this.sendRecorded(job, b, "accept", sendKeys.accept(a.id), { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, bodyText: text, inThread: true, approvalId: a.id });
+      if (m) await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { request_message_id: m.id });
+    } catch (err) {
+      this.log("booking_request_failed", { job_id: job.id, error: (err as Error).message });
+    }
+    if (!(await this.repo.listEvents(job.id)).some((e) => e.type === "booking" && e.data.approval_id === a.id)) {
+      await this.repo.appendEvent(job.id, "booking", { status: "awaiting_vendor_confirmation", approval_id: a.id, at: this.now().toISOString() });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} to confirm the booking (availability and the ${usdText(a.quote_total_cents)} terms); nothing is booked or paid yet` });
+    }
+    return booking;
+  }
+
+  /** Hard must-haves the business's quote never confirmed (stated misses are caveats the human accepted; request facts count as quoted). */
+  private unconfirmedMusts(job: JobRow, q: QuoteRow): string[] {
+    const results = new Map(q.requirement_results.map((r) => [r.requirement_id, r]));
+    return this.requirements(job).filter((req) => req.hard && (results.get(req.id)?.met ?? null) === null).map((req) => req.text);
+  }
+
+  /** One follow-up (per approval) asking the vendor about the must-haves its "yes" skipped; the booking stays unconfirmed. */
+  private async askMustHaves(job: JobRow, b: JobBusinessRow, a: ApprovalRow, musts: string[]) {
+    const key = `booking-musts:${a.id}`;
+    const list = musts.join("; ");
+    try {
+      if (b.channel === "email" && b.email) {
+        await this.sendRecorded(job, b, "followup", key, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
+          bodyText: [`Hi ${b.name},`, "", `Thank you. Before the booking is confirmed, please confirm you'll meet ${musts.length === 1 ? "this must-have" : "these must-haves"}: ${list}.`, "Nothing has been booked or paid yet.", "", this.signOff(job)].join("\n") });
+      } else if (b.channel === "imessage" && this.canReach(b)) {
+        await this.sendIMessageToBusiness(job, b, "followup", key, `Thanks! Before it's booked, can you confirm: ${clip(list, 90)}? Nothing is paid yet. Ref HG-${job.short_code}`, null);
+      }
+    } catch (err) {
+      this.log("booking_musts_ask_failed", { job_id: job.id, error: (err as Error).message });
+    }
+  }
+
+  /**
+   * The payment guard, re-run before the vendor is asked to book or to say how it's paid (manual rail):
+   * a cap lowered after the approval, a changed quote or an untrustworthy source stops it (security
+   * review, workstream D). Recorded once per stage for the operator; nothing is sent to the vendor.
+   */
+  private async handoffAllowed(job: JobRow, a: ApprovalRow, stage: "booking" | "handoff"): Promise<boolean> {
+    const v = await this.paymentVerdict(job, a, { bookingHeld: true });
+    if (v.ok) return true;
+    const events = await this.repo.listEvents(job.id);
+    if (!events.some((e) => e.type === "payment_refused" && e.data.approval_id === a.id && e.data.stage === stage)) {
+      await this.repo.appendEvent(job.id, "payment_refused", { code: v.code, approval_id: a.id, rail: "manual", stage });
+      await this.repo.appendEvent(job.id, "operator_attention", { reason: `${stage}_refused`, code: v.code, approval_id: a.id });
+      this.log("operator_attention", { job_id: job.id, reason: `${stage}_refused`, code: v.code });
+    }
+    return false;
+  }
+
+  /**
+   * Manual handoff, once the booking is confirmed: one handoff row per approval and, unless the
+   * business already said how it takes payment, one message asking it how (email or text; a phone or
+   * A2A business is arranged by the human). Nothing here says or implies that payment was sent.
+   */
+  private async startHandoff(job: JobRow, a: ApprovalRow, opts: { ask?: boolean } = {}): Promise<PaymentHandoffRow | null> {
+    const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === a.business_id);
+    if (!b) return null;
+    if (!(await this.handoffAllowed(job, a, "handoff"))) return null;
+    const h = (await this.repo.insertHandoff({ id: newId("ho"), job_id: job.id, approval_id: a.id, business_id: a.business_id, amount_cents: a.payment_cents, status: "instructions_requested", instructions_text: null, instructions_message_id: null, confirmed_by: null, confirmed_at: null }))
+      ?? (await this.repo.getHandoffByApproval(a.id));
+    const deposit = a.payment_cents < a.quote_total_cents;
+    const what = `${usdText(a.payment_cents)}${deposit ? " deposit" : ""}`;
+    if (opts.ask !== false) {
+      const text = [
+        `Hi ${b.name},`, "",
+        `Thank you. The customer will pay the ${what} for your ${usdText(a.quote_total_cents)} quote (${this.orderText(job)}) to you directly.`,
+        "Please reply with how you take payment (an invoice, or payment instructions). The customer pays you themselves; Haggle never takes or sends money.", "",
+        this.signOff(job),
+      ].join("\n");
+      try {
+        if (b.channel === "email" && b.email) await this.sendRecorded(job, b, "message", `handoff:${a.id}`, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, bodyText: text, inThread: true, approvalId: a.id });
+        else if (b.channel === "imessage" && this.canReach(b)) await this.sendIMessageToBusiness(job, b, "message", `handoff:${a.id}`, `Hi ${b.name}, the customer approved your ${usdText(a.quote_total_cents)} quote and will pay the ${what} to you directly. How do you take payment? Ref HG-${job.short_code}`, null);
+      } catch (err) {
+        this.log("handoff_ask_failed", { job_id: job.id, error: (err as Error).message });
+      }
+    }
+    if (!(await this.repo.listEvents(job.id)).some((e) => e.type === "payment" && e.data.status === "handoff_requested" && e.data.approval_id === a.id)) {
+      await this.repo.appendEvent(job.id, "payment", { status: "handoff_requested", rail: "manual", approval_id: a.id, at: this.now().toISOString() });
+    }
+    return h;
+  }
+
+  /**
+   * A trusted reply from a business while it owes Haggle an answer about a purchase: a re-confirmation
+   * of a stale quote, the booking confirmation, its payment instructions, or "received" after the
+   * customer reported paying. Returns null for anything else (the normal reply path reads it).
+   */
+  private async ingestPurchaseReply(b: JobBusinessRow, msg: InboundMessage, base: PurchaseBase, via: MessageRow["matched_via"], trustReason: string): Promise<{ jobId: string; outcome: string } | null> {
+    const job = await this.repo.getJob(b.job_id);
+    if (!job) return null;
+    if (job.state === "collecting" || job.state === "negotiating") return this.ingestReconfirmReply(job, b, msg, base, via, trustReason);
+    if (!this.d.config.manualPaymentHandoff || (job.state !== "paying" && job.state !== "paid")) return null;
+    const a = await this.repo.getLatestApproval(job.id);
+    if (!a || a.business_id !== b.business_id) return null;
+    // A withdrawn or lapsed approval books nothing, whatever the job's state says (a void that lost a race).
+    if (job.state === "paying" && a.status !== "approved") return null;
+    const booking = await this.repo.getBookingByApproval(a.id);
+    if (!booking) return null;
+    const h = await this.repo.getHandoffByApproval(a.id);
+    if (job.state === "paid") return h?.status === "human_confirmed" ? this.ingestReceipt(job, b, a, h, msg, base, via, trustReason) : null;
+    const q = await this.repo.getQuote(a.quote_id);
+    const musts = booking.status === "awaiting_vendor_confirmation" && q ? this.unconfirmedMusts(job, q) : [];
+    const r = readBookingReply(msg.bodyText ?? "", {
+      agreedCents: [a.quote_total_cents, a.payment_cents, q?.deposit_cents ?? null].filter((c): c is number => c !== null && c > 0), ...(job.request.quantity !== undefined ? { quantity: job.request.quantity } : {}),
+      ...(job.request.date && !job.request.date_until ? { eventDate: job.request.date } : {}), ...(musts.length ? { mustConfirm: musts } : {}),
+    });
+    const store = () => this.repo.insertMessage({ ...base, job_id: job.id, business_id: b.business_id, kind: "reply", sender_trusted: true, trust_reason: trustReason as never, matched_via: via, parse_status: "none", quarantine_reason: null });
+    const name = clip(b.name, 30);
+    // Declined, or new terms, before or after confirming: the approval is withdrawn (nothing was paid).
+    if (r.intent === "decline" || r.intent === "change") {
+      const to = booking.status === "awaiting_vendor_confirmation" ? (r.intent === "decline" ? "declined" : "changed") : "cancelled";
+      await this.repo.updateBooking(booking.id, [booking.status], { status: to, reply_text: r.ownText, reply_has_link: r.hasLink, ...(to === "cancelled" ? { cancel_reason: `business ${r.intent === "decline" ? "withdrew" : "changed terms"} after confirming` } : {}) });
+      if (h && ["instructions_requested", "instructions_received"].includes(h.status)) await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "cancelled" });
+      if (await this.repo.transitionApproval(a.id, "approved", { status: "expired", decided_at: this.now().toISOString() })) {
+        await this.repo.appendEvent(job.id, "approval_void", { approval_id: a.id, reason: r.intent === "decline" ? "the business can't take the booking" : "the business replied with different terms" });
+      }
+      await this.repo.appendEvent(job.id, "booking", { status: to, approval_id: a.id, why: r.why, at: this.now().toISOString() });
+      await this.notifyHuman(job, `booking-${r.intent}:${a.id}`, r.intent === "decline"
+        ? `${name} can't take the booking after all. Your approval was withdrawn and nothing was paid; don't pay them. Choose another option on the deal board.`
+        : `${name} replied with different terms, so your approval was withdrawn; nothing was paid. Don't pay them; Haggle shows the new terms on the deal board for a fresh approval.`);
+      await this.fire(job.id, { type: "approval_void" });
+      if (r.intent === "change") return null; // read as a revised quote by the normal reply path
+      const stored = await store();
+      return { jobId: job.id, outcome: stored ? "booking_declined" : "duplicate" };
+    }
+    if (booking.status === "awaiting_vendor_confirmation") {
+      const stored = await store();
+      if (!stored) return { jobId: job.id, outcome: "duplicate" };
+      if (r.intent === "unclear") {
+        await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { reply_text: r.ownText, reply_message_id: stored.id, reply_has_link: r.hasLink });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "booking_unclear", summary: `${b.name} replied but hasn't clearly confirmed the booking (${r.why}); not booked yet` });
+        if (r.unconfirmedMusts?.length) await this.askMustHaves(job, b, a, r.unconfirmedMusts);
+        await this.notifyHuman(job, `booking-unclear:${stored.id}`, `${name} replied about the booking but hasn't clearly confirmed it yet (see the deal board). Don't pay yet.`);
+        await this.repo.touchJob(job.id);
+        return { jobId: job.id, outcome: "booking_unclear" };
+      }
+      if (!bindsTermsAlone(trustReason)) {
+        // Continuity (or a texted number) isn't identity: the booking stays unconfirmed until the human accepts it (BOOKED <code>).
+        const identity = weakIdentity(trustReason);
+        await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { reply_text: r.ownText, reply_message_id: stored.id, reply_has_link: r.hasLink });
+        await this.repo.appendEvent(job.id, "booking", { status: "vendor_claims_confirmed", approval_id: a.id, message_id: stored.id, sender_identity: identity, warning: identity === "text_only" ? TEXT_ONLY_BOOKING_WARNING : THREAD_ONLY_BOOKING_WARNING, payment_instructions: r.paymentInstructions, at: this.now().toISOString() });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "booking_unverified", summary: `${b.name} says the booking is confirmed, but Haggle can't verify the sender; waiting for the human to accept it (BOOKED <code>)` });
+        await this.notifyHuman(job, `booking-ack:${a.id}`, identity === "text_only"
+          ? `${name} says it's confirmed by text, but a text can't prove who sent it. Check with them directly; if it's right, reply BOOKED ${a.code} to accept the booking. Don't pay yet.`
+          : `${name} says it's confirmed, but Haggle can't verify that email came from them. Check with them directly; if it's right, reply BOOKED ${a.code} to accept the booking. Don't pay yet.`);
+        await this.repo.touchJob(job.id);
+        return { jobId: job.id, outcome: "booking_unverified" };
+      }
+      await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { status: "confirmed", confirmed_at: this.now().toISOString(), reply_text: r.ownText, reply_message_id: stored.id, reply_has_link: r.hasLink });
+      await this.repo.appendEvent(job.id, "booking", { status: "confirmed", approval_id: a.id, at: this.now().toISOString() });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${b.name} confirmed the booking (availability and the ${usdText(a.quote_total_cents)} terms)` });
+      if (a.action === "confirm") {
+        // Confirm-only (manual rail): the business's written yes completes the order; nothing is paid through Haggle.
+        await this.fire(job.id, { type: "booking_confirmed" });
+        await this.notifyHuman(job, `booked:${a.id}`, `${name} confirmed the order (${usdText(a.quote_total_cents)} total). Nothing was paid through Haggle; arrange payment with them directly.`);
+        await this.repo.touchJob(job.id);
+        return { jobId: job.id, outcome: "order_confirmed" };
+      }
+      const ho = await this.startHandoff(job, a, { ask: !r.paymentInstructions });
+      if (ho && r.paymentInstructions) {
+        // Thread continuity (an email proven only by the reply token) or a texted number is not proof of who wrote payment details.
+        const sms = TEXT_OR_CALLER_ID_REASONS.has(trustReason);
+        const weak = CONTINUITY_ONLY_REASONS.has(trustReason) || sms;
+        const warning = [r.hasLink ? "contains a link: verify it with the business independently; Haggle never opens it" : null, sms ? SMS_PAYMENT_WARNING : weak ? CONTINUITY_ONLY_WARNING : null].filter(Boolean).join("; ");
+        await this.repo.updateHandoff(ho.id, ["instructions_requested"], { status: "instructions_received", instructions_text: r.ownText, instructions_message_id: stored.id });
+        await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(warning ? { warning } : {}), ...(weak ? { sender_identity: weakIdentity(trustReason) } : {}) });
+        await this.notifyHuman(job, `booked:${a.id}`, `${name} confirmed the booking and sent payment instructions (on the deal board${r.hasLink ? "; it has a link, so check it with them before paying" : ""}${weak ? "; confirm the payment details with them by phone first" : ""}). Pay them ${usdText(a.payment_cents)} directly; then reply PAID ${a.code}.`);
+      } else if (!ho) {
+        // The payment guard refused the handoff (e.g. the cap was lowered after approval): nobody is told to pay.
+        await this.notifyHuman(job, `booked:${a.id}`, `${name} confirmed the booking, but this approval no longer passes Haggle's payment checks, so Haggle didn't ask how to pay them. Don't pay yet; the operator was flagged.`);
+      } else {
+        await this.notifyHuman(job, `booked:${a.id}`, `${name} confirmed the booking. Haggle asked how they take payment; don't pay until you have their instructions.`);
+      }
+      await this.repo.touchJob(job.id);
+      return { jobId: job.id, outcome: "booking_confirmed" };
+    }
+    // Booked: the business's payment instructions (untrusted text). A reply without any is kept as a reply.
+    if (h && ["instructions_requested", "instructions_received"].includes(h.status) && !r.paymentInstructions) {
+      const stored = await store();
+      if (!stored) return { jobId: job.id, outcome: "duplicate" };
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${b.name} replied (no payment instructions in it)` });
+      await this.repo.touchJob(job.id);
+      return { jobId: job.id, outcome: "purchase_reply" };
+    }
+    return this.ingestPaymentInstructions(b, msg, base, via, trustReason);
+  }
+
+  /** After the customer reported paying: the business's explicit "received", from a verified sender, makes it settled_verified. */
+  private async ingestReceipt(job: JobRow, b: JobBusinessRow, a: ApprovalRow, h: PaymentHandoffRow, msg: InboundMessage, base: PurchaseBase, via: MessageRow["matched_via"], trustReason: string): Promise<{ jobId: string; outcome: string } | null> {
+    if (await this.repo.getHandoffReceipt(h.id)) return null;
+    const r = confirmsReceipt(msg.bodyText ?? "");
+    const after = readBookingReply(msg.bodyText ?? "", { agreedCents: [a.quote_total_cents, a.payment_cents] });
+    if (!r.received && after.intent !== "decline") return null;
+    const stored = await this.repo.insertMessage({ ...base, job_id: job.id, business_id: b.business_id, kind: "reply", sender_trusted: true, trust_reason: trustReason as never, matched_via: via, parse_status: "none", quarantine_reason: null });
+    if (!stored) return { jobId: job.id, outcome: "duplicate" };
+    if (!r.received) {
+      // The business backs out after the customer reported paying: no refund is claimed; a human handles it.
+      await this.repo.appendEvent(job.id, "operator_attention", { reason: "business_withdrew_after_reported_payment", approval_id: a.id, business_id: b.business_id });
+      this.log("operator_attention", { job_id: job.id, reason: "business_withdrew_after_reported_payment" });
+      await this.notifyHuman(job, `withdrew:${a.id}`, `${clip(b.name, 30)} says it can't do it after you reported paying. Haggle can't reverse or refund a payment you made directly: contact them about it. The operator was flagged.`);
+      return { jobId: job.id, outcome: "operator_attention" };
+    }
+    if (!bindsTermsAlone(trustReason)) {
+      // A "received" Haggle can't attribute to the business (an email thread, a text) never verifies the money: the human is told instead.
+      const texted = weakIdentity(trustReason) === "text_only";
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "receipt_unverified", sender_identity: weakIdentity(trustReason), summary: `${b.name}'s ${texted ? "text" : "thread"} says the payment was received, but Haggle can't verify the sender; not recorded as verified` });
+      await this.notifyHuman(job, `received-unverified:${a.id}`, texted
+        ? `${clip(b.name, 30)} says by text that your ${usdText(h.amount_cents)} payment arrived, but Haggle can't verify who sent it. Check with them directly if it matters.`
+        : `${clip(b.name, 30)}'s email thread says your ${usdText(h.amount_cents)} payment arrived, but Haggle can't verify who sent it. Check with them directly if it matters.`);
+      await this.repo.touchJob(job.id);
+      return { jobId: job.id, outcome: "receipt_unverified" };
+    }
+    await this.repo.insertHandoffReceipt({ id: newId("rc"), handoff_id: h.id, job_id: job.id, message_id: stored.id, evidence: (r.ownText || "received").slice(0, 500) });
+    await this.repo.appendEvent(job.id, "payment", { status: "settled_verified", rail: "manual", business_id: b.business_id, approval_id: a.id });
+    await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${b.name} confirmed it received the ${usdText(h.amount_cents)} payment` });
+    await this.notifyHuman(job, `received:${a.id}`, `${clip(b.name, 30)} confirmed it received your ${usdText(h.amount_cents)} payment.`);
+    await this.repo.touchJob(job.id);
+    return { jobId: job.id, outcome: "receipt_confirmed" };
+  }
+
+  /**
+   * Per advance: re-confirmations (collecting / negotiating) and, under the manual handoff, a booking
+   * or payment instructions that are overdue. Each timeout happens once: one reminder to the business,
+   * one text to the human, and an operator_attention event (operator-visible; the job is not failed).
+   */
+  private async purchaseTick(jobId: string) {
+    const job = await this.repo.getJob(jobId);
+    if (!job) return;
+    const events = await this.repo.listEvents(jobId);
+    if (job.state === "collecting" || job.state === "negotiating") {
+      await this.resolveReconfirmations(job, events);
+      return;
+    }
+    if (job.state !== "paying" || !this.d.config.manualPaymentHandoff) return;
+    const a = await this.repo.getLatestApproval(jobId);
+    if (!a || a.status !== "approved") return;
+    const booking = await this.repo.getBookingByApproval(a.id);
+    const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === a.business_id);
+    if (!booking || !b) {
+      // Approved before bookings existed, or the booking request never started: start it now.
+      if (!booking && b && !(await this.repo.getHandoffByApproval(a.id))) await this.startBooking(job, a);
+      return;
+    }
+    const at = (type: string, pred: (e: JobEventRow) => boolean) => { const e = events.filter((x) => x.type === type && pred(x)).at(-1); return e && typeof e.data.at === "string" ? Date.parse(e.data.at) : null; };
+    const now = this.now().getTime();
+    const name = clip(b.name, 30);
+    if (booking.status === "awaiting_vendor_confirmation" && !booking.stalled_at) {
+      const since = at("booking", (e) => e.data.approval_id === a.id && e.data.status === "awaiting_vendor_confirmation");
+      if (since !== null && now - since > this.bookingTimeoutMs && (await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { stalled_at: this.now().toISOString() }))) {
+        if (b.channel === "email" && b.email) await this.sendRecorded(job, b, "followup", `booking-nudge:${a.id}`, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\nJust checking: can you confirm the booking for ${job.request.what} at ${usdText(a.quote_total_cents)} total? Nothing has been paid yet.\n\n${this.signOff(job)}` }).catch((err: Error) => this.log("booking_nudge_failed", { job_id: jobId, error: err.message }));
+        await this.repo.appendEvent(jobId, "operator_attention", { reason: "booking_unconfirmed", approval_id: a.id, business_id: b.business_id });
+        this.log("operator_attention", { job_id: jobId, reason: "booking_unconfirmed" });
+        await this.notifyHuman(job, `booking-stalled:${a.id}`, `${name} hasn't confirmed the booking yet; Haggle reminded them. Don't pay; you may want to call them or choose another option.`);
+      }
+      return;
+    }
+    if (booking.status === "not_in_writing" && !booking.human_attested_at) {
+      // Waiting for the human to confirm it with the business directly (BOOKED <code>): one reminder, operator-visible.
+      const since = at("booking", (e) => e.data.approval_id === a.id && e.data.status === "not_in_writing");
+      if (!booking.stalled_at && since !== null && now - since > this.bookingTimeoutMs && (await this.repo.updateBooking(booking.id, ["not_in_writing"], { stalled_at: this.now().toISOString() }))) {
+        await this.repo.appendEvent(jobId, "operator_attention", { reason: "booking_unattested", approval_id: a.id, business_id: b.business_id });
+        this.log("operator_attention", { job_id: jobId, reason: "booking_unattested" });
+        await this.notifyHuman(job, `booking-stalled:${a.id}`, `${name}'s booking still needs you: confirm it with them directly and reply BOOKED ${a.code}, or choose another option. Don't pay before that.`);
+      }
+      return;
+    }
+    const h = await this.repo.getHandoffByApproval(a.id);
+    if (h?.status === "instructions_requested" && !h.stalled_at) {
+      const since = at("payment", (e) => e.data.approval_id === a.id && e.data.status === "handoff_requested");
+      if (since !== null && now - since > this.handoffTimeoutMs && (await this.repo.markHandoffStalled(h.id, this.now().toISOString()))) {
+        if (b.channel === "email" && b.email) await this.sendRecorded(job, b, "followup", `handoff-nudge:${a.id}`, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\nJust checking: how would you like the customer to pay the ${usdText(a.payment_cents)}${a.payment_cents < a.quote_total_cents ? " deposit" : ""}? An invoice or payment instructions is fine. Haggle never takes or sends money.\n\n${this.signOff(job)}` }).catch((err: Error) => this.log("handoff_nudge_failed", { job_id: jobId, error: err.message }));
+        await this.repo.appendEvent(jobId, "operator_attention", { reason: "payment_instructions_overdue", approval_id: a.id, business_id: b.business_id });
+        this.log("operator_attention", { job_id: jobId, reason: "payment_instructions_overdue" });
+        await this.notifyHuman(job, `handoff-stalled:${a.id}`, `${name} hasn't sent payment instructions yet; Haggle reminded them. Ask them directly how to pay; reply PAID ${a.code} only after you've paid.`);
+      }
+    }
+  }
+
+  /**
+   * The approver texted a bare carrier opt-out keyword. Nothing is texted back (the carrier may block it,
+   * and texting after an opt-out isn't allowed); texts are held until they text again. Recorded on each
+   * of their open deals (the agent sees it) and flagged for the operator.
+   */
+  private async approverOptedOut(m: { messageId: string; text: string }, from: string, jobs: JobRow[]): Promise<{ jobId: string | null; outcome: string }> {
+    const home = [...jobs].sort((x, y) => y.created_at.localeCompare(x.created_at))[0]!;
+    const stored = await this.repo.insertMessage({
+      job_id: home.id, business_id: null, approval_id: null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 100), attachments: [], attachments_download_url: null,
+      sender_trusted: true, trust_reason: "sms-from-text-approver", matched_via: null, parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+    });
+    if (!stored) return { jobId: home.id, outcome: "duplicate" };
+    const word = m.text.trim().replace(/[.!\s]+$/, "").toUpperCase();
+    for (const job of jobs) {
+      await this.repo.appendEvent(job.id, "operator_attention", { reason: "approver_carrier_opt_out", keyword: word });
+      await this.repo.appendEvent(job.id, "reply", { business_id: null, kind: "approver_opted_out", summary: `The approver texted ${word}, which carriers treat as "stop texting me": Haggle won't text them until they text again (START, or any reply). Nothing was approved, cancelled or paid by it. Codes like CANCEL 482913 must include the code.` });
+      await this.repo.touchJob(job.id);
+    }
+    this.log("operator_attention", { job_id: home.id, reason: "approver_carrier_opt_out" });
+    return { jobId: home.id, outcome: "approver_opted_out" };
+  }
+
+  /** The business holding this deal's live approval opted out: the human hears Haggle can't text it any more. */
+  private async noteBookedVendorOptedOut(job: JobRow, b: Pick<JobBusinessRow, "business_id" | "name">) {
+    const a = await this.repo.getLatestApproval(job.id);
+    if (!a || a.business_id !== b.business_id || !["approved", "used"].includes(a.status) || job.state !== "paying") return;
+    await this.repo.appendEvent(job.id, "operator_attention", { reason: "booked_vendor_opted_out", approval_id: a.id, business_id: b.business_id });
+    await this.notifyHuman(job, `vendor-opted-out:${a.id}`, `${clip(b.name, 30)} texted an opt-out word, so Haggle can't text them any more. Check the booking with them directly. Don't pay before you have.`);
+  }
+
   private async routeText(m: { messageId: string; from: string; text: string }, from: string): Promise<{ jobId: string | null; outcome: string }> {
-    const open = await this.repo.listOpenJobs();
+    const all = await this.repo.listOpenJobs();
+    // Only the workspace (and, if the text names one, the deal) this number belongs to; between two
+    // workspaces nothing is guessed: the text is held and the human asked for the deal code.
+    const scope = await this.textScope(from, m.text, all);
+    if (scope.kind === "ambiguous") return this.holdAmbiguousText(m, from, scope, "sms-in");
+    const open = all.filter((j) => inTextScope(scope, j));
+    // The human's words without the deal code they added to say which deal (a business's text stays whole).
+    const hm = scope.kind === "workspace" ? { ...m, text: scope.text } : m;
+    const last = await this.lastTextRoute(from, scope);
+    const paid = hm.text.trim().match(PAID_TEXT);
+    if (paid) return this.ingestPaidText(hm, from, open, paid[1], scope);
+    const booked = hm.text.trim().match(BOOKED_TEXT);
+    if (booked) return this.ingestBookedText(hm, from, open, booked[1], scope);
+    // STOP (or any opt-out, including a bare carrier keyword like CANCEL or QUIT) from a number Haggle
+    // texted as a business: never contacted again.
+    const carrierWord = isCarrierOptOut(m.text);
+    if (isOptOut(m.text) || carrierWord) {
+      if (carrierWord) {
+        // The approver's own bare keyword: Haggle stops texting them (ingestText holds every text) and says so on the deal.
+        const theirs: JobRow[] = [];
+        for (const job of open) if (from === (await this.notifyTarget(job))) theirs.push(job);
+        if (theirs.length) return this.approverOptedOut(m, from, theirs);
+      }
+      for (const job of open) {
+        const b = (await this.repo.getBusinesses(job.id)).find((x) => x.phone === from);
+        if (!b || from === (await this.notifyTarget(job))) continue;
+        const stored = await this.repo.insertMessage({
+          job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+          rfc_message_id: null, thread_id: null, from_address: from, to_address: job.inbox, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
+          sender_trusted: true, trust_reason: "sms-reply-to-pinned-number", matched_via: "sms_number", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+        });
+        if (!stored) return { jobId: job.id, outcome: "duplicate" };
+        await this.optOut(job.id, b, from, m.text.slice(0, 200));
+        await this.noteBookedVendorOptedOut(job, b);
+        return { jobId: job.id, outcome: "opted_out" };
+      }
+    }
     // "PAY <code>" is never an answer or a business reply: it charges (approver only) or is ignored.
-    const pay = m.text.trim().match(PAY_TEXT);
-    if (pay) return this.ingestPayText(m, from, open, pay[1]);
+    const pay = hm.text.trim().match(PAY_TEXT);
+    if (pay) return this.ingestPayText(hm, from, open, pay[1], scope);
+    // "CALL <code>": the approver allowing one callback Haggle texted them about (never anyone else's say-so).
+    const call = hm.text.trim().match(CALL_TEXT);
+    if (call) {
+      const r = await this.ingestCallbackText(hm, from, open, call[1]!);
+      if (r) return r;
+    }
+    // "CANCEL <code>": the approver cancelling a booking the business confirmed (never the model's or a business's say-so).
+    const cancelText = hm.text.trim().match(CANCEL_TEXT);
+    if (cancelText) {
+      const r = await this.ingestCancelText(hm, from, open, cancelText[1]!);
+      if (r) return r;
+    }
     {
       // The human even when no deal is open any more (e.g. "YES <code>" after the card approved and paid).
-      let isHuman = (!!this.d.sms && from === this.d.config.notifyPhone?.replace(/[\s().-]/g, "")) || !!this.lastSms.get(from)?.approvalId;
+      let isHuman = (!!this.d.sms && from === this.d.config.notifyPhone?.replace(/[\s().-]/g, "")) || !!last?.approvalId;
       for (const job of open) if (from === (await this.notifyTarget(job))) isHuman = true;
       if (isHuman) {
-        const decided = await this.ingestTextApproval(m, from, open);
+        const decided = await this.ingestTextApproval(hm, from, open, last);
         if (decided) return decided;
         // "RESUME" (lifting Inkbox's pause on texts) is not an answer to a business.
-        if (/^\s*(resume|updates?|start)\s*[.!]*\s*$/i.test(m.text)) return { jobId: this.lastSms.get(from)?.jobId ?? null, outcome: "texts_resumed" };
+        if (/^\s*(resume|updates?|start)\s*[.!]*\s*$/i.test(hm.text)) return { jobId: last?.jobId ?? null, outcome: "texts_resumed" };
       }
     }
     const businesses: TextDealCandidate[] = [];
@@ -1878,9 +3105,13 @@ export class HaggleEngine {
     let human = false;
     for (const job of open) if (from === (await this.notifyTarget(job))) human = true;
     // The same number can be both (a teammate playing a business): the last text to it decides.
-    const last = this.lastSms.get(from);
     if (businesses.length > 0 && (!human || last?.kind !== "human")) {
       const { hit: { job, b }, via } = pickTextDeal(businesses, m.text);
+      // The SMS twin of the iMessage purchase hook (ingestBusinessIMessage): same reader, same certainty rule.
+      if (via === "code" || new Set(businesses.map((x) => x.job.id)).size === 1) {
+        const handled = await this.ingestPurchaseReply(b, textInbound(m, job, "sms-in"), textBase(m, job, "sms-in"), via === "code" ? "sms_number+code" : via === "open_ask" ? "sms_number+open_ask" : "sms_number", "sms-reply-to-pinned-number");
+        if (handled) return handled;
+      }
       const stored = await this.repo.insertMessage({
         job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: b.channel === "imessage" ? "imessage" : "phone", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
         rfc_message_id: null, thread_id: null, from_address: from, to_address: job.inbox, subject: null, body_text: m.text.slice(0, 5000) || null, attachments: [], attachments_download_url: null,
@@ -1895,6 +3126,7 @@ export class HaggleEngine {
       return { jobId: job.id, outcome: "stored" };
     }
     if (!human) return { jobId: null, outcome: "unknown_sender" };
+    m = hm;
     // The human: numbered answers to the question list Haggle texted ("1: drop-off is fine. 2: no
     // dessert"), an answer naming the business ("answer Sunset Kitchen with ..." / "Sunset Kitchen: ..."),
     // else the question Haggle texted them about. Each answer goes to its business on its own channel.
@@ -1980,6 +3212,101 @@ export class HaggleEngine {
   }
 
   /**
+   * The workspace (and, if the text names one, the deal) a text from this number belongs to, from
+   * durable records only: deals whose workspace approver it is (open or recent), and open deals with
+   * a business at that number. See textRouting.ts.
+   */
+  private async textScope(from: string, text: string, open: JobRow[]): Promise<TextScope> {
+    const jobs = new Map<string, JobRow>();
+    for (const j of [...open, ...(await this.repo.listRecentJobs(50))]) if (!jobs.has(j.id)) jobs.set(j.id, j);
+    const openIds = new Set(open.map((j) => j.id));
+    const humanOf = new Map<string, boolean>();
+    const owners = new Map<string, JobRow[]>();
+    const human: JobRow[] = [];
+    for (const j of jobs.values()) {
+      if (!humanOf.has(j.workspace_id)) humanOf.set(j.workspace_id, from === (await this.notifyTarget(j)));
+      const isHuman = humanOf.get(j.workspace_id)!;
+      if (!isHuman && !(openIds.has(j.id) && (await this.repo.getBusinesses(j.id)).some((b) => b.phone === from))) continue;
+      owners.set(j.workspace_id, [...(owners.get(j.workspace_id) ?? []), j]);
+      if (isHuman) human.push(j);
+    }
+    if (owners.size < 2) return decideTextScope(owners, text);
+    // An approval code (YES / NO / PAY / PAID 4821) on exactly one workspace's latest approval for this human decides too.
+    const t = text.trim();
+    const code = t.match(TEXT_DECISION)?.[2] ?? t.match(PAY_TEXT)?.[1] ?? t.match(PAID_TEXT)?.[1];
+    const coded: string[] = [];
+    if (code) for (const j of human) if ((await this.repo.getLatestApproval(j.id))?.code === code) coded.push(j.workspace_id);
+    // A callback code (CALL 482913) only one workspace's pending callback has decides too.
+    const callCode = t.match(CALL_TEXT)?.[1];
+    if (callCode) for (const j of human) if (await this.hasCallbackCode(j.id, callCode)) coded.push(j.workspace_id);
+    const cancelCode = t.match(CANCEL_TEXT)?.[1];
+    if (cancelCode) for (const j of human) if (await this.hasCancelCode(j.id, cancelCode)) coded.push(j.workspace_id);
+    return decideTextScope(owners, text, coded);
+  }
+
+  /**
+   * A text from a number tied to deals in several workspaces that doesn't say which (no deal code,
+   * no approval code only one of them has): never routed by guess. Kept for audit (no job,
+   * quarantined); the human is asked to resend it with the deal code, and each business deal it
+   * might answer notes that a reply is waiting on the code. Nothing of one deal is shown to another.
+   */
+  private async holdAmbiguousText(m: { messageId: string; text: string }, from: string, scope: Extract<TextScope, { kind: "ambiguous" }>, prefix: "sms-in" | "imsg-in"): Promise<{ jobId: string | null; outcome: string }> {
+    const stored = await this.repo.insertMessage({
+      job_id: null, business_id: null, approval_id: null, direction: "in", kind: "quarantine", channel: "imessage", provider_email_id: `${prefix}:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 2000) || null, attachments: [], attachments_download_url: null,
+      sender_trusted: false, trust_reason: "text-number-on-several-workspaces", matched_via: null, parse_status: "none", quarantine_reason: "ambiguous_workspace", round: null, simulated: false,
+    });
+    if (!stored) return { jobId: null, outcome: "duplicate" };
+    this.log("text_held_ambiguous", { from: maskHandle(from), workspaces: scope.workspaces.length });
+    const tied = [...new Map(scope.jobs.map((j) => [j.id, j])).values()].filter((j) => !TERMINAL.has(j.state)).sort((a, b) => b.created_at.localeCompare(a.created_at));
+    let told = false;
+    // Only deal codes this number was already given (it approves that deal, or Haggle contacted it on
+    // it): another workspace's deal code is never revealed to it.
+    const known: JobRow[] = [];
+    for (const j of tied) if (from === (await this.notifyTarget(j)) || (await this.repo.getBusinesses(j.id)).some((x) => x.phone === from && x.contacted_at)) known.push(j);
+    for (const j of tied) {
+      const b = (await this.repo.getBusinesses(j.id)).find((x) => x.phone === from);
+      if (b) await this.repo.appendEvent(j.id, "reply", { business_id: b.business_id, kind: "text_held", summary: `A text from ${b.name} was held unread: its number is on more than one Haggle deal, so Haggle can't tell which one it answers. Ask ${b.name} to include HG-${j.short_code} in the reply (send_message).` });
+      if (!told && prefix === "sms-in" && from === (await this.notifyTarget(j))) {
+        told = true;
+        const codes = known.slice(0, 4).map((x) => `HG-${x.short_code}`).join(", ");
+        await this.notifyHuman(j, `which-deal:${m.messageId}`, `this number has open deals in more than one Haggle account (${codes}), so nothing was done with "${clip(m.text, 40)}". Reply again starting with the deal code, e.g. "HG-${j.short_code}: ${clip(m.text, 30)}".`);
+      }
+    }
+    return { jobId: null, outcome: "ambiguous_workspace" };
+  }
+
+  /**
+   * Operator only (scripts, never an MCP tool): route a text held as ambiguous (holdAmbiguousText) to
+   * one deal its number belongs to: that deal's approver, or a business Haggle contacted at it, and
+   * the deal still open. Never an approval, payment or callback reply (YES / NO / PAY / PAID / CALL):
+   * who decided what for whom is the human's to say, so they resend it with the deal code. Once per text.
+   */
+  async releaseHeldText(heldMessageId: string, jobId: string, operator: string): Promise<{ jobId: string | null; outcome: string }> {
+    if (operator.trim().length < 2) throw new EngineError("operator_required", "Name the operator releasing the text.", "Pass --operator <name>.", "none");
+    const held = await this.repo.getMessage(heldMessageId);
+    if (!held || held.kind !== "quarantine" || held.quarantine_reason !== "ambiguous_workspace" || held.job_id !== null || !held.from_address || !held.provider_email_id) {
+      throw new EngineError("not_held", "No held ambiguous text with that id.", "Use the id of a quarantined message with reason ambiguous_workspace.", "none");
+    }
+    const job = await this.repo.getJob(jobId);
+    if (!job || TERMINAL.has(job.state)) throw new EngineError("job_not_open", "That deal isn't open.", "Release only to an open deal the number belongs to.", "none");
+    const from = held.from_address;
+    const text = held.body_text ?? "";
+    const t = withoutJobCode(text);
+    if (TEXT_DECISION.test(t) || PAY_TEXT.test(t) || PAID_TEXT.test(t) || CALL_TEXT.test(t) || BOOKED_TEXT.test(t.trim()) || CANCEL_TEXT.test(t.trim())) {
+      throw new EngineError("decision_not_releasable", "A held approval, payment, callback or cancellation reply is never attributed by an operator.", "Ask the human to resend it with the deal code (e.g. \"YES 4821 HG-AB12\").", "none");
+    }
+    const tied = from === (await this.notifyTarget(job)) || (await this.repo.getBusinesses(job.id)).some((b) => b.phone === from && b.contacted_at);
+    if (!tied) throw new EngineError("not_tied", "That number isn't this deal's approver or a business Haggle contacted on it.", "Release the text to a deal the number belongs to.", "none");
+    const prefix = held.provider_email_id.startsWith("imsg-in:") ? "imsg-in" : "sms-in";
+    const m = { messageId: `${held.provider_email_id.slice(prefix.length + 1)}:released`, from, text: `HG-${job.short_code} ${text}` };
+    if (await this.repo.findMessageByProviderId(`${prefix}:${m.messageId}`)) return { jobId: job.id, outcome: "duplicate" };
+    await this.repo.appendEvent(job.id, "text_released", { held_message_id: held.id, operator: operator.trim().slice(0, 60) });
+    this.log("text_released", { job_id: job.id, from: maskHandle(from) });
+    return prefix === "imsg-in" ? this.ingestBusinessIMessage(m) : this.routeText(m, from);
+  }
+
+  /**
    * A text from a business on the iMessage channel (not the approver): matched by its pinned
    * number to the most recent open job that texted it, stored and parsed like an email body.
    * Trusted: iMessage sender handles are carrier/Apple-registered and Inkbox delivers them on the
@@ -1994,10 +3321,37 @@ export class HaggleEngine {
       for (const b of mine) hits.push({ job, b, at: Date.parse(b.contacted_at!), msgs });
     }
     if (!hits.length) return { jobId: null, outcome: "unknown_sender" };
+    // Deals in several workspaces with this number: only the deal code it quotes decides, never a guess.
+    const workspaces = [...new Set(hits.map((h) => h.job.workspace_id))].sort();
+    if (workspaces.length > 1) {
+      const code = jobCodeIn(m.text);
+      const named = code ? hits.filter((h) => h.job.short_code.toUpperCase() === code) : [];
+      if (!named.length) return this.holdAmbiguousText(m, m.from, { kind: "ambiguous", workspaces, jobs: hits.map((h) => h.job) }, "imsg-in");
+      hits.splice(0, hits.length, ...named);
+    }
     // Same number on several open jobs (decision 46): the HG-<code> it quotes wins, else the deal
     // waiting on its answer (newest ask), else the most recently contacted job.
     const { hit: { job, b }, via } = pickTextDeal(hits, m.text);
     const byCode = via === "code";
+    // STOP (or another opt-out) by iMessage: the same as by SMS, never contacted again on any channel.
+    if (isOptOut(m.text) || isCarrierOptOut(m.text)) {
+      const stored = await this.repo.insertMessage({
+        job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: "imessage", provider_email_id: `imsg-in:${m.messageId}`, idempotency_key: null,
+        rfc_message_id: null, thread_id: null, from_address: m.from, to_address: job.inbox, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
+        sender_trusted: true, trust_reason: "imessage-from-pinned-number", matched_via: "imessage_number", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+      });
+      if (!stored) return { jobId: job.id, outcome: "duplicate" };
+      await this.optOut(job.id, b, m.from, m.text.slice(0, 200));
+      await this.noteBookedVendorOptedOut(job, b);
+      return { jobId: job.id, outcome: "opted_out" };
+    }
+    // A booking confirmation, re-confirmation, payment instructions or receipt by text: the same purchase
+    // reader as email, on the same identity (this business's pinned number on this deal's text channel),
+    // and only when the deal is certain (one open deal for this number, or the text quotes its HG code).
+    if (byCode || new Set(hits.map((h) => h.job.id)).size === 1) {
+      const handled = await this.ingestPurchaseReply(b, textInbound(m, job, "imsg-in"), textBase(m, job, "imsg-in"), byCode ? "imessage_number+code" : via === "open_ask" ? "imessage_number+open_ask" : "imessage_number", "imessage-from-pinned-number");
+      if (handled) return handled;
+    }
     const stored = await this.repo.insertMessage({
       job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: "imessage", provider_email_id: `imsg-in:${m.messageId}`, idempotency_key: null,
       rfc_message_id: null, thread_id: null, from_address: m.from, to_address: job.inbox, subject: null, body_text: m.text.slice(0, 5000) || null, attachments: [], attachments_download_url: null,
@@ -2065,11 +3419,12 @@ export class HaggleEngine {
     const reqs = job.request.requirements.filter((r) => r.hard).map((r) => r.text);
     const mine = await this.repo.getQuote(proposal.their_quote_id);
     const reason = HaggleEngine.callBrief(b.name, job, reqs, { competingTotalUsd: proposal.basis_total_usd, competingApproximate: proposal.basis_approximate === true, followUpOnQuoteUsd: proposal.their_total_usd, followUpApproximate: isApproximate(mine?.record), customer: this.customer(job) });
-    // Through callBusiness like every other call: call hours, the cooldown and a call already on the
-    // line defer it (scheduled, placed later by dueScheduledCalls) instead of ringing anyway.
+    // Through callBusiness like every other call: call hours and a call already on the line defer it
+    // (scheduled, placed later by dueScheduledCalls) instead of ringing anyway. The human authorized it
+    // just now, so the spacing gap after the business's last call doesn't apply.
     let r: { placed: MessageRow | null; scheduledFor?: string };
     try {
-      r = await this.callBusiness(job, b, { key, kind: "call", reason, body: reason, round: proposal.round });
+      r = await this.callBusiness(job, b, { key, kind: "call", reason, body: reason, round: proposal.round, authorized: true });
     } catch (err) {
       const f = err instanceof ChannelSendError ? err : null;
       throw new EngineError("callback_failed", `The callback to ${b.name} couldn't be placed${f ? ` (${f.reason.replace(/_/g, " ")})` : ""}; nothing was said to them.`,
@@ -2081,6 +3436,218 @@ export class HaggleEngine {
     if (r.placed) await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} back (Voice AI), citing ${proposal.basis_approximate ? `another business's estimate of about $${proposal.basis_total_usd.toLocaleString("en-US")}` : `a real $${proposal.basis_total_usd.toLocaleString("en-US")} quote`}`, channel: "phone" });
     await this.repo.touchJob(job.id);
     return { placed: r.placed !== null, ...(r.scheduledFor ? { scheduledFor: r.scheduledFor } : {}), proposal };
+  }
+
+  /**
+   * Live mode, or approvals out-of-band only: a callback rings a real person, so no board tap, client
+   * form, view-held code or model call places one; only the approver's CALL <code> text or an operator.
+   */
+  get callbacksNeedApproverText(): boolean {
+    return this.d.config.mode === "live" || this.outOfBandApprovalsOnly;
+  }
+
+  /** The callee's consent to a callback (callbackAuth.ts), from durable records. Mock (DEMO) jobs call only the simulated fleet. */
+  async callbackConsentFor(jobId: string, businessId: string): Promise<CallbackConsent> {
+    const job = await this.loadJob(jobId);
+    const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === businessId);
+    if (!b) return { ok: false, reason: "not a business on this deal" };
+    const suppressed = b.phone ? (await this.repo.findSuppressions([b.phone])).length > 0 : false;
+    if (job.mode === "mock" && !this.callbacksNeedApproverText) return suppressed ? { ok: false, reason: "this number is suppressed" } : { ok: true, basis: "simulated_vendor" };
+    return callbackConsent({ business: b, workspaceVendors: await this.repo.listWorkspaceVendors(job.workspace_id), messages: await this.repo.listMessages(jobId), suppressed });
+  }
+
+  private async requireCallbackConsent(jobId: string, businessId: string) {
+    const c = await this.callbackConsentFor(jobId, businessId);
+    if (!c.ok) throw new EngineError("callback_no_consent", `Haggle won't call this business back: ${c.reason}.`, "Negotiate by email or text (send_message), or ask the operator to add the vendor with its recorded consent (workspace-admin add-vendor --consent).", "get_quotes");
+    return c;
+  }
+
+  /** A justified callback proposal, or the same refusals placeCallback gives. */
+  private async callbackProposalOrThrow(jobId: string, businessId: string): Promise<CallbackProposal> {
+    const current = await this.loadJob(jobId);
+    if (!TERMINAL.has(current.state) && !this.hasRoundLeft(current)) {
+      throw new EngineError("no_rounds_left", `This deal has no negotiation round left (round ${current.round} of ${Math.min(current.max_rounds, MAX_ROUND)}); a callback would open another.`, "Choose among the current quotes (get_quotes, then approve).", "get_quotes");
+    }
+    const proposal = (await this.callbackProposals(jobId)).find((p) => p.business_id === businessId);
+    if (!proposal) throw new EngineError("callback_not_justified", "There is no evidence-based reason to call this business back now (no cheaper eligible competing quote, already called back, or rounds used up).", "Call get_quotes to see the current quotes; callbacks are offered there when justified.", "get_quotes");
+    return proposal;
+  }
+
+  /**
+   * Ask the workspace approver, out of band, to allow one callback: a text to their own phone with a
+   * one-time code ("Reply CALL <code>"). The code goes only to that phone (a hash is kept), never to
+   * the model, the board or the response. Nothing is dialed here; ingestCallbackText places the call.
+   */
+  async requestCallbackAuthorization(jobId: string, businessId: string): Promise<{ auth_id: string; texted: boolean; held: boolean; expires_at: string; proposal: CallbackProposal; consent: CallbackConsent }> {
+    const proposal = await this.callbackProposalOrThrow(jobId, businessId);
+    const consent = await this.requireCallbackConsent(jobId, businessId);
+    const job = await this.loadJob(jobId);
+    const to = await this.notifyTarget(job);
+    if (!to) throw new EngineError("NO_HUMAN_CHANNEL", "No way to reach this workspace's approver by text: a callback is placed only after the approver texts CALL <code>.", "Ask the operator to set the workspace approver phone (workspace-admin set-approver) and enable texting. Nothing was called.", "none");
+    // One open authorization per business: a new request replaces an older, unanswered one.
+    for (const old of pendingCallbackAuths(await this.repo.listEvents(jobId), this.now()).filter((a) => a.business_id === businessId)) {
+      await this.repo.appendEvent(jobId, "callback_auth_decided", { auth_id: old.auth_id, business_id: businessId, decision: "superseded" });
+    }
+    const authId = newId("cba");
+    const code = newCallbackCode();
+    const expires = new Date(this.now().getTime() + CALLBACK_AUTH_TTL_MS).toISOString();
+    await this.repo.appendEvent(jobId, "callback_auth_requested", { auth_id: authId, business_id: businessId, code_hash: callbackCodeHash(authId, code), expires_at: expires, round: proposal.round, basis_total_usd: proposal.basis_total_usd, consent: consent.ok ? consent.basis : null });
+    const money = (n: number) => `$${n.toLocaleString("en-US")}`;
+    const text = `Haggle: OK for Haggle's AI assistant to call ${clip(proposal.business, 30)} back once, to ask if they can beat a real ${money(proposal.basis_total_usd)} quote? Nothing is bought. Reply CALL ${code} to allow (expires in 30 min). (HG-${job.short_code})`.slice(0, SMS_LIMIT);
+    const r = await this.textHuman(job, to, { key: `notify:${job.id}:callback-auth:${authId}`, text });
+    await this.repo.appendEvent(jobId, "reply", { business_id: businessId, summary: `Asked the approver by text to allow one callback to ${proposal.business}${r.ok ? "" : ` (text ${r.reason === "unanswered_limit" ? "held until they text Haggle" : "not sent"})`}` });
+    await this.repo.touchJob(jobId);
+    return { auth_id: authId, texted: r.ok, held: !r.ok && r.reason === "unanswered_limit", expires_at: expires, proposal, consent };
+  }
+
+  /**
+   * An operator places a callback (scripts, never an MCP tool): the callee's consent and the proposal
+   * are still required; recorded as the operator's authorization.
+   */
+  async operatorCallback(jobId: string, businessId: string, operator: string): Promise<{ placed: boolean; proposal: CallbackProposal }> {
+    if (operator.trim().length < 2) throw new EngineError("operator_required", "Name the operator authorizing the callback.", "Pass --operator <name>.", "none");
+    await this.callbackProposalOrThrow(jobId, businessId);
+    await this.requireCallbackConsent(jobId, businessId);
+    return this.placeCallback(jobId, businessId, `operator:${operator.trim().slice(0, 60)}`);
+  }
+
+  /**
+   * "CALL <code>" texted to Haggle's line. Only from a job's own text approver (the workspace approver;
+   * the notify number on the default workspace), only for a pending authorization of that job whose
+   * code matches; consent and the proposal are re-checked before the one call. Null when the sender is
+   * no job's approver (left to the normal routing, e.g. a business's reply). Idempotent per message id.
+   */
+  private async ingestCallbackText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string): Promise<{ jobId: string | null; outcome: string } | null> {
+    const mine: JobRow[] = [];
+    for (const job of open) if (from === (await this.notifyTarget(job))) mine.push(job);
+    if (!mine.length) return null;
+    const pending: { job: JobRow; a: ReturnType<typeof pendingCallbackAuths>[number] }[] = [];
+    for (const job of mine) for (const a of pendingCallbackAuths(await this.repo.listEvents(job.id), this.now())) pending.push({ job, a });
+    const hit = pending.find((p) => codeMatches(p.a.auth_id, code, p.a.code_hash));
+    const home = hit?.job ?? pending[0]?.job ?? mine.sort((x, y) => y.created_at.localeCompare(x.created_at))[0]!;
+    const stored = await this.repo.insertMessage({
+      job_id: home.id, business_id: null, approval_id: null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 200), attachments: [], attachments_download_url: null,
+      sender_trusted: true, trust_reason: "sms-from-text-approver", matched_via: "approval_code", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+    });
+    if (!stored) return { jobId: home.id, outcome: "duplicate" };
+    if (!hit) {
+      // A wrong code counts against every callback waiting for this approver (a guess can't be retried forever).
+      for (const p of pending) {
+        await this.repo.appendEvent(p.job.id, "callback_auth_wrong_code", { auth_id: p.a.auth_id });
+        if (p.a.wrong + 1 >= MAX_CALLBACK_CODE_ATTEMPTS) await this.repo.appendEvent(p.job.id, "callback_auth_decided", { auth_id: p.a.auth_id, business_id: p.a.business_id, decision: "locked" });
+      }
+      await this.notifyHuman(home, `callback-ack:${m.messageId}`, `no callback is waiting for code ${code}, so nobody was called.`);
+      return { jobId: home.id, outcome: "callback_no_match" };
+    }
+    const { job, a } = hit;
+    await this.repo.appendEvent(job.id, "callback_auth_decided", { auth_id: a.auth_id, business_id: a.business_id, decision: "authorized", by: `approver-text:${maskHandle(from)}` });
+    try {
+      await this.callbackProposalOrThrow(job.id, a.business_id);
+      await this.requireCallbackConsent(job.id, a.business_id);
+      const { proposal } = await this.placeCallback(job.id, a.business_id, `approver-text:${maskHandle(from)}:${a.auth_id}`);
+      await this.notifyHuman(job, `callback-ack:${m.messageId}`, `calling ${clip(proposal.business, 30)} back now (AI assistant, one call). The deal board shows the result.`);
+      return { jobId: job.id, outcome: "callback_placed" };
+    } catch (err) {
+      if (!(err instanceof EngineError) && !(err instanceof ChannelSendError)) throw err;
+      await this.notifyHuman(job, `callback-ack:${m.messageId}`, `nobody was called: ${clip(err.message, 120)}`);
+      return { jobId: job.id, outcome: "callback_refused" };
+    }
+  }
+
+  /** Is this one of the job's pending callback codes (text scoping between workspaces)? */
+  private async hasCallbackCode(jobId: string, code: string): Promise<boolean> {
+    return pendingCallbackAuths(await this.repo.listEvents(jobId), this.now()).some((a) => codeMatches(a.auth_id, code, a.code_hash));
+  }
+
+  /** Is this one of the job's pending cancellation codes (text scoping between workspaces)? */
+  private async hasCancelCode(jobId: string, code: string): Promise<boolean> {
+    return pendingCallbackAuths(await this.repo.listEvents(jobId), this.now(), "cancel").some((a) => codeMatches(a.auth_id, code, a.code_hash));
+  }
+
+  /** The deal's booking the business confirmed in writing (or the approver attested), still before any reported payment. */
+  private async vendorConfirmedBooking(job: JobRow): Promise<{ a: ApprovalRow; booking: BookingRow } | null> {
+    if (job.state !== "paying" || !this.d.config.manualPaymentHandoff) return null;
+    const a = await this.repo.getLatestApproval(job.id);
+    if (!a || !["approved", "used"].includes(a.status)) return null;
+    const booking = await this.repo.getBookingByApproval(a.id);
+    return booking && isVendorConfirmed(booking) ? { a, booking } : null;
+  }
+
+  /**
+   * Ask the workspace approver, out of band, to cancel a booking the business already confirmed: a text
+   * to their own phone with a one-time code ("Reply CANCEL <code>"). The code goes only to that phone (a
+   * hash is kept), never to the model or the response. Nothing is cancelled or sent to the business here.
+   */
+  private async requestCancelAuthorization(job: JobRow, a: ApprovalRow): Promise<{ ok: true; state: JobState; needs_approver: true; note: string }> {
+    const name = await this.businessName(job.id, a.business_id);
+    const to = await this.notifyTarget(job);
+    if (!to) throw new EngineError("NO_HUMAN_CHANNEL", `${name} already confirmed this booking; only the approver can cancel it (by texting CANCEL <code>), and this workspace has no approver phone.`, "Ask the operator to set the workspace approver phone (workspace-admin set-approver). Nothing was cancelled or sent.", "none");
+    // One open request per deal: a new one replaces an older, unanswered one.
+    for (const old of pendingCallbackAuths(await this.repo.listEvents(job.id), this.now(), "cancel")) {
+      await this.repo.appendEvent(job.id, "cancel_auth_decided", { auth_id: old.auth_id, business_id: old.business_id, decision: "superseded" });
+    }
+    const authId = newId("cna");
+    const code = newCallbackCode();
+    const expires = new Date(this.now().getTime() + CALLBACK_AUTH_TTL_MS).toISOString();
+    await this.repo.appendEvent(job.id, "cancel_auth_requested", { auth_id: authId, business_id: a.business_id, approval_id: a.id, code_hash: callbackCodeHash(authId, code), expires_at: expires });
+    const text = `Haggle: cancel the booking ${clip(name, 30)} confirmed (${usdText(a.quote_total_cents)})? Haggle will tell them not to hold it. Reply CANCEL ${code} to cancel (expires in 30 min). (HG-${job.short_code})`.slice(0, SMS_LIMIT);
+    const r = await this.textHuman(job, to, { key: `notify:${job.id}:cancel-auth:${authId}`, text });
+    await this.repo.appendEvent(job.id, "reply", { business_id: a.business_id, summary: `Asked the approver by text to confirm cancelling the booking with ${name}${r.ok ? "" : " (text not sent yet)"}; nothing was cancelled` });
+    await this.repo.touchJob(job.id);
+    const note = `${name} already confirmed this booking, so only the approver can cancel it: Haggle texted them a code to reply CANCEL <code>${r.ok ? "" : " (the text is held until they next text Haggle)"}. Nothing was cancelled or sent to ${name}.`;
+    return { ok: true as const, state: job.state, needs_approver: true as const, note };
+  }
+
+  /**
+   * "CANCEL <code>" texted to Haggle's line: only from a job's own text approver, only for that job's
+   * pending cancellation whose code matches, and only while it is still the same confirmed booking.
+   * Null when the sender is no job's approver (left to the normal routing). Idempotent per message id.
+   */
+  private async ingestCancelText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string): Promise<{ jobId: string | null; outcome: string } | null> {
+    const mine: JobRow[] = [];
+    for (const job of open) if (from === (await this.notifyTarget(job))) mine.push(job);
+    if (!mine.length) return null;
+    const pending: { job: JobRow; a: ReturnType<typeof pendingCallbackAuths>[number] }[] = [];
+    for (const job of mine) for (const a of pendingCallbackAuths(await this.repo.listEvents(job.id), this.now(), "cancel")) pending.push({ job, a });
+    const hit = pending.find((p) => codeMatches(p.a.auth_id, code, p.a.code_hash));
+    const home = hit?.job ?? pending[0]?.job ?? mine.sort((x, y) => y.created_at.localeCompare(x.created_at))[0]!;
+    const stored = await this.repo.insertMessage({
+      job_id: home.id, business_id: null, approval_id: null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 200), attachments: [], attachments_download_url: null,
+      sender_trusted: true, trust_reason: "sms-from-text-approver", matched_via: "approval_code", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+    });
+    if (!stored) return { jobId: home.id, outcome: "duplicate" };
+    if (!hit) {
+      // A wrong code counts against every cancellation waiting for this approver (a guess can't be retried forever).
+      for (const p of pending) {
+        await this.repo.appendEvent(p.job.id, "cancel_auth_wrong_code", { auth_id: p.a.auth_id });
+        if (p.a.wrong + 1 >= MAX_CALLBACK_CODE_ATTEMPTS) await this.repo.appendEvent(p.job.id, "cancel_auth_decided", { auth_id: p.a.auth_id, business_id: p.a.business_id, decision: "locked" });
+      }
+      await this.notifyHuman(home, `cancel-ack:${m.messageId}`, `no cancellation is waiting for code ${code}, so nothing was cancelled.`);
+      return { jobId: home.id, outcome: "cancel_no_match" };
+    }
+    const { job, a: auth } = hit;
+    const by = `approver-text:${maskHandle(from)}`;
+    await this.repo.appendEvent(job.id, "cancel_auth_decided", { auth_id: auth.auth_id, business_id: auth.business_id, decision: "authorized", by });
+    const asked = (await this.repo.listEvents(job.id)).find((e) => e.type === "cancel_auth_requested" && e.data.auth_id === auth.auth_id);
+    const held = await this.vendorConfirmedBooking(await this.loadJob(job.id));
+    const name = clip(await this.businessName(job.id, auth.business_id), 30);
+    if (held && held.a.id !== asked?.data.approval_id) {
+      await this.notifyHuman(job, `cancel-ack:${m.messageId}`, `the booking changed since Haggle asked, so nothing was cancelled. Ask again if you still want to cancel.`);
+      return { jobId: job.id, outcome: "cancel_refused" };
+    }
+    try {
+      const r = await this.cancelJob(job.id, by);
+      await this.notifyHuman(job, `cancel-ack:${m.messageId}`, r.state === "cancelled"
+        ? `cancelled: Haggle told ${name} not to hold the booking. Nothing was paid through Haggle; don't pay them.`
+        : `nothing was cancelled: ${clip(r.note ?? "the deal can't be cancelled now", 160)}`);
+      return { jobId: job.id, outcome: r.state === "cancelled" ? "cancelled" : "cancel_refused" };
+    } catch (err) {
+      if (!(err instanceof EngineError)) throw err;
+      await this.notifyHuman(job, `cancel-ack:${m.messageId}`, `nothing was cancelled: ${clip(err.message, 120)}`);
+      return { jobId: job.id, outcome: "cancel_refused" };
+    }
   }
 
   /** The deal still has a negotiation round to spend: its current round < max_rounds (never past MAX_ROUND). */
@@ -2165,7 +3732,7 @@ export class HaggleEngine {
    * cooldown after the last one (either direction), and only inside call hours in the workspace's
    * timezone. Returns null when it may be placed now, else when to try again.
    */
-  private async callBlockedUntil(job: JobRow, phone: string, kind?: MessageRow["kind"]): Promise<Date | null> {
+  private async callBlockedUntil(job: JobRow, phone: string, kind?: MessageRow["kind"], opts: { gap?: boolean } = {}): Promise<Date | null> {
     const now = this.now();
     const base = this.d.config.callCooldownMs ?? DEFAULT_CALL_COOLDOWN_MS;
     // A counteroffer call to a business that just quoted on a call waits less (never under the minimum gap).
@@ -2176,8 +3743,9 @@ export class HaggleEngine {
       const ended = new Set(recent.filter((m) => m.direction === "in" && m.provider_email_id?.startsWith("call-ended:")).map((m) => m.provider_email_id!.slice("call-ended:".length)));
       const inProgress = recent.some((m) => isPlacedCall(m) && !ended.has(m.provider_email_id!));
       if (inProgress) return new Date(now.getTime() + cooldown);
+      // gap false: a callback the human just authorized goes now, never onto a call still on the line.
       const last = Math.max(0, ...recent.map((m) => Date.parse(m.created_at)));
-      if (last && now.getTime() - last < cooldown) return new Date(last + cooldown);
+      if (opts.gap !== false && last && now.getTime() - last < cooldown) return new Date(last + cooldown);
     }
     const hours = this.d.config.callHours;
     if (hours) {
@@ -2193,6 +3761,28 @@ export class HaggleEngine {
    * another call to the number or within the cooldown it is deferred (next_attempt_at) and placed
    * by a later advance (dueCalls).
    */
+  /**
+   * Every Voice AI call goes through here: at most one dial per idempotency key, ever. The attempt is
+   * recorded before dialing; a definite "not placed" refusal is recorded after it. An attempt with
+   * neither a recorded call nor a refusal (a crash after dialing, or an ambiguous provider error)
+   * is never dialed again: a second ring to a business is worse than a missed call.
+   */
+  private async placeCallOnce(jobId: string, req: PhoneCallRequest): Promise<{ callId: string }> {
+    await this.refuseSuppressed(req.toNumber);
+    await this.claimSend(req.idempotencyKey, jobId, "call");
+    try {
+      const r = await this.d.phone!.placeCall(req);
+      await this.repo.finishOutbox(req.idempotencyKey, "sent", r.callId, this.now().toISOString());
+      return r;
+    } catch (err) {
+      const f = err instanceof ChannelSendError ? err : new ChannelSendError("provider_error", false, 0, (err as Error).message, true);
+      // "unknown" can never be claimed again (outbox trigger); "not_sent" (a definite refusal) can.
+      // An unknown outcome goes to operator review at once: only a person can find out if it rang.
+      await this.outboxFailed(req.idempotencyKey, jobId, "call", f.ambiguous ? "unknown" : "not_sent", f);
+      throw f;
+    }
+  }
+
   private async placeRfqCall(job: JobRow, b: JobBusinessRow, opts: { escalation?: boolean } = {}) {
     const key = `call:${job.id}:${b.business_id}`;
     if (!this.d.phone || !b.phone) {
@@ -2214,7 +3804,7 @@ export class HaggleEngine {
     // Citing a competing price is a counter round (automatic) or a human-authorized callback (placeCallback).
     const reason = HaggleEngine.callBrief(b.name, job, reqs, { escalation: opts.escalation, customer: this.customer(job) });
     try {
-      const { callId } = await this.d.phone.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason, idempotencyKey: key });
+      const { callId } = await this.placeCallOnce(job.id, { jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason, idempotencyKey: key });
       await this.repo.insertMessage({
         job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind: "call", channel: "phone", provider_email_id: callId, idempotency_key: key,
         rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: reason, attachments: [], attachments_download_url: null,
@@ -2223,7 +3813,15 @@ export class HaggleEngine {
       await this.repo.updateBusiness(job.id, b.business_id, { status: "ringing", next_attempt_at: null, ...(opts.escalation ? { escalated_at: this.now().toISOString() } : { contacted_at: this.now().toISOString() }) });
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} (Voice AI${opts.escalation ? ", email unanswered" : ""})`, channel: "phone" });
     } catch (err) {
+      if (err instanceof LeaseLostError) return; // another instance owns the job now
       const f = err instanceof ChannelSendError ? err : null;
+      if (f?.ambiguous) {
+        // It may be ringing: treat the business as contacted (its call.ended still lands by number), never redial.
+        await this.repo.updateBusiness(job.id, b.business_id, { next_attempt_at: null, ...(opts.escalation ? { escalated_at: this.now().toISOString() } : { status: "contacted" as const, contacted_at: this.now().toISOString() }) });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call to ${b.name}: outcome unknown (the provider failed after dialing may have started); not redialed` });
+        this.log("call_outcome_unknown", { job_id: job.id, business_id: b.business_id, error: f.message });
+        return;
+      }
       if (f?.retryable && b.send_attempts + 1 < MAX_SEND_ATTEMPTS) {
         await this.repo.updateBusiness(job.id, b.business_id, { send_attempts: b.send_attempts + 1, next_attempt_at: new Date(this.now().getTime() + Math.max(f.retryAfterMs, 1_000)).toISOString() });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call to ${b.name} delayed (${f.reason.replace(/_/g, " ")}); retrying` });
@@ -2239,9 +3837,23 @@ export class HaggleEngine {
   private async runDueContacts(job: JobRow) {
     if (!["contacting", "collecting", "negotiating"].includes(job.state)) return;
     const now = this.now().getTime();
+    // A first contact that never happened (the process died part-way through sending the RFQs) is
+    // made once the job has sat still for STUCK_AFTER_MS; idempotency keys keep anything already sent from going twice.
+    const stalled = job.state === "contacting" && now - Date.parse(job.updated_at) >= STUCK_AFTER_MS;
     for (const b of await this.repo.getBusinesses(job.id)) {
-      if (b.status === "pending" && b.next_attempt_at && Date.parse(b.next_attempt_at) <= now) await this.contactBusiness(job, b);
+      if (b.status !== "pending") continue;
+      if (b.next_attempt_at ? Date.parse(b.next_attempt_at) <= now : stalled) await this.contactBusiness(job, b);
     }
+    await this.sendDueReminders(job);
+  }
+
+  /** A job the process died on before it started (`created`, never committed to contacting): start it now. */
+  private async recoverCreated(job: JobRow) {
+    if (job.state !== "created" || this.now().getTime() - Date.parse(job.created_at) < STUCK_AFTER_MS) return;
+    const started = start(this.machine(job));
+    if (!started.ok) return;
+    await this.repo.appendEvent(job.id, "recovered", { from: "created" });
+    await this.commit(job, started.next, started.effects, "recovered");
   }
 
   /**
@@ -2250,8 +3862,10 @@ export class HaggleEngine {
    * transcript is untrusted data, parsed like an email body. Idempotent per call id.
    */
   async ingestCall(call: { callId: string; outcome: "completed" | "no_answer" | "declined" | "failed"; transcript: string; endedAt?: string; simulated?: boolean; direction?: "outbound" | "inbound"; remoteNumber?: string }): Promise<{ jobId: string | null; outcome: string }> {
-    const placed = await this.repo.findMessageByProviderId(call.callId);
+    let placed = await this.repo.findMessageByProviderId(call.callId);
     if (!placed && call.direction === "inbound" && call.remoteNumber) return this.ingestInboundCall({ ...call, remoteNumber: call.remoteNumber });
+    // A crash after dialing, before the call was recorded: rebuilt from its outbox claim (never lost).
+    placed ??= await this.recoverPlacedCall(call);
     // Any call we placed counts: the quote call, and the follow-up, answer, counter or message calls after it.
     if (!placed || !isPlacedCall(placed) || !placed.job_id || !placed.business_id) return { jobId: null, outcome: "unknown_call" };
     const job = await this.repo.getJob(placed.job_id);
@@ -2291,7 +3905,19 @@ export class HaggleEngine {
     const num = call.remoteNumber.replace(/[\s().-]/g, "");
     const hits: { job: JobRow; b: JobBusinessRow }[] = [];
     for (const job of await this.repo.listOpenJobs()) for (const b of await this.repo.getBusinesses(job.id)) if (b.phone === num) hits.push({ job, b });
-    if (hits.length !== 1) return { jobId: null, outcome: hits.length ? "ambiguous_caller" : "unknown_caller" };
+    if (hits.length > 1) {
+      // The number is on several deals (possibly several workspaces): kept for audit with no deal, never
+      // read into one; each deal only learns that a call from that business is held (nothing of what was said).
+      const stored = await this.repo.insertMessage({
+        job_id: null, business_id: null, approval_id: null, direction: "in", kind: "quarantine", channel: "phone", provider_email_id: `call-ended:${call.callId}`, idempotency_key: null,
+        rfc_message_id: null, thread_id: null, from_address: num, to_address: null, subject: null, body_text: call.transcript.trim().slice(0, 20_000) || null, attachments: [], attachments_download_url: null,
+        sender_trusted: false, trust_reason: "caller-number-on-several-deals", matched_via: null, parse_status: "none", quarantine_reason: "ambiguous_caller", round: null, simulated: call.simulated ?? false,
+      });
+      if (!stored) return { jobId: null, outcome: "duplicate" };
+      for (const { job, b } of hits) await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "call_held", summary: `${b.name} called Haggle, but its number is on more than one deal, so the call wasn't read into this one. Ask ${b.name} to reply in writing with HG-${job.short_code}.` });
+      return { jobId: null, outcome: "ambiguous_caller" };
+    }
+    if (hits.length !== 1) return { jobId: null, outcome: "unknown_caller" };
     const { job, b } = hits[0]!;
     const trusted = this.d.config.trustInboundCallerId === true;
     const transcript = call.transcript.trim().slice(0, 20_000);
@@ -2345,6 +3971,11 @@ export class HaggleEngine {
     for (const c of moves) {
       const b = byId.get(c.businessId);
       if (!b) continue;
+      // Asked not to be contacted (even unverified, even if an earlier quote of its was read afterwards): never countered (S5-D F10).
+      if (await this.optedOut(job, b)) {
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `No counter to ${b.name}: it asked not to be contacted` });
+        continue;
+      }
       const counter = { haggle: "counter/1", protocol: "haggle.v0", type: "counter", job_id: job.id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis: c.basis, ...(c.basis === "competing_quote" ? { basis_quote_total_usd: centsToUsd(c.targetTotalCents), ...(c.basisApproximate ? { basis_is_estimate: true } : {}) } : { buyer_target_usd: centsToUsd(c.targetTotalCents) }), respond_by: job.collect_until };
       const why = `${c.basis === "competing_quote" ? (c.basisApproximate ? `match about ${centsToUsd(c.targetTotalCents)} (another business's estimate ${c.basisQuoteId}, not yet firm)` : `match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})`) : `get closer to the buyer's $${centsToUsd(c.targetTotalCents)} target`} · ${c.strategy.reason}`;
       if (b.channel === "imessage") {
@@ -2374,7 +4005,7 @@ export class HaggleEngine {
         if (await this.repo.findMessageByIdempotencyKey(key)) continue;
         try {
           // A new task in the same A2A context (the seller keeps its conversation state per context).
-          const t = await this.d.a2a!.send({ cardUrl: b.a2a_card_url!, text: c.text, data: counter, messageId: `haggle-${key.replace(/:/g, "-")}`, contextId: b.thread_id! });
+          const t = await this.a2aSend(job.id, key, { cardUrl: b.a2a_card_url!, text: c.text, data: counter, messageId: `haggle-${key.replace(/:/g, "-")}`, contextId: b.thread_id! });
           await this.recordA2aOutbound(job, b, "counter", key, t.taskId, c.text, c.round);
           await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
           await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name} over A2A: ${why}`, basis_quote_id: c.basisQuoteId });
@@ -2450,6 +4081,11 @@ export class HaggleEngine {
   private async sendAccept(job: JobRow) {
     const approval = await this.repo.getLatestApproval(job.id);
     if (!approval || approval.status !== "approved") return;
+    if (this.d.config.manualPaymentHandoff) {
+      // The business confirms the booking first; the payment handoff starts only after that.
+      await this.startBooking(job, approval);
+      return;
+    }
     // Stripe rail: nothing is sent to the business and nothing is charged until the agent calls pay().
     if (this.d.stripe) return;
     const quote = await this.repo.getQuote(approval.quote_id);
@@ -2498,7 +4134,13 @@ export class HaggleEngine {
     const paid = pay && pay.approval_id === a.id && pay.status === "settled" ? pay : null;
     const money = (c: number) => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const ref = paid?.stripe_payment_intent_id ?? paid?.settle_tx ?? null;
-    const payLine = paid ? `A payment of ${money(paid.amount_cents)} has been sent${paid.rail === "stripe" ? " (Stripe test mode)" : ""}${ref ? `, reference ${ref}` : ""}.` : "";
+    // Manual handoff: Haggle never knows money arrived; it says only what the human told it.
+    const handoff = this.d.config.manualPaymentHandoff ? await this.repo.getHandoffByApproval(a.id) : null;
+    const reported = handoff?.status === "human_confirmed";
+    // Manual rail, confirm-only: the business already confirmed in writing; this only closes the loop.
+    const confirmedOrder = this.d.config.manualPaymentHandoff && a.action === "confirm" && (await this.repo.getBookingByApproval(a.id))?.status === "confirmed";
+    const payLine = confirmedOrder ? "Thanks for confirming: the order is set. The customer arranges payment with you directly; Haggle never takes or sends money." : reported ? `The customer has told us they have paid the ${money(handoff!.amount_cents)} directly to you. Haggle doesn't handle the money, so please check you received it and reply to confirm once it arrives.`
+      : paid ? `A payment of ${money(paid.amount_cents)} has been sent${paid.rail === "stripe" ? " (Stripe test mode)" : ""}${ref ? `, reference ${ref}` : ""}.` : "";
     // Every approval goes ahead with the order: confirm-only, or approved and then paid (decisions 2, 3).
     const confirm = true;
     const what = [job.request.what, quantityText(job.request.quantity, job.request.unit), job.request.date ? `on ${job.request.date}` : null].filter(Boolean).join(", ");
@@ -2506,21 +4148,22 @@ export class HaggleEngine {
       `Hi ${b.name},`, "",
       ...(confirm ? [`We'd like to go ahead with your quote${a.quote_total_cents ? ` of ${money(a.quote_total_cents)} total` : ""} for ${what}.`] : []),
       ...(payLine ? [payLine] : []),
-      ...(confirm ? ["Please reply to confirm the booking."] : []),
+      // Under the manual handoff the booking was already confirmed; the question now is the money.
+      ...(confirm && !reported && !confirmedOrder ? ["Please reply to confirm the booking."] : []),
       "", this.signOff(job),
     ].join("\n");
     const key = `confirm:${a.id}`;
     try {
       if (b.channel === "a2a" && this.d.a2a && b.a2a_card_url && b.thread_id) {
         if (!(await this.repo.findMessageByIdempotencyKey(key))) {
-          const t = await this.d.a2a.send({ cardUrl: b.a2a_card_url, text, data: { haggle: "confirm/1", protocol: "haggle.v0", type: "confirmation", job_id: job.id, quote_total_usd: centsToUsd(a.quote_total_cents), ...(paid ? { paid_usd: centsToUsd(paid.amount_cents), payment_reference: ref } : {}) }, messageId: `haggle-${key.replace(/:/g, "-")}`, contextId: b.thread_id });
+          const t = await this.a2aSend(job.id, key, { cardUrl: b.a2a_card_url, text, data: { haggle: "confirm/1", protocol: "haggle.v0", type: "confirmation", job_id: job.id, quote_total_usd: centsToUsd(a.quote_total_cents), ...(paid ? { paid_usd: centsToUsd(paid.amount_cents), payment_reference: ref } : {}) }, messageId: `haggle-${key.replace(/:/g, "-")}`, contextId: b.thread_id });
           await this.recordA2aOutbound(job, b, "confirmation", key, t.taskId, text, job.round);
         }
       } else if (b.channel === "email" && b.email) {
         await this.sendRecorded(job, b, "confirmation", key, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, bodyText: text, inThread: true });
       } else if (b.channel === "imessage" && this.canReach(b)) {
         // A text business is confirmed by text (never switched to email).
-        const sms = [confirm ? `Hi ${b.name}, the customer would like to go ahead with your quote${a.quote_total_cents ? ` of ${money(a.quote_total_cents)} total` : ""} for ${what}.` : `Hi ${b.name},`, payLine, confirm ? "Please reply to confirm." : "", `Ref HG-${job.short_code}`].filter(Boolean).join(" ");
+        const sms = [confirm ? `Hi ${b.name}, the customer would like to go ahead with your quote${a.quote_total_cents ? ` of ${money(a.quote_total_cents)} total` : ""} for ${what}.` : `Hi ${b.name},`, payLine, confirm && !confirmedOrder && !reported ? "Please reply to confirm." : "", `Ref HG-${job.short_code}`].filter(Boolean).join(" ");
         if (!(await this.sendIMessageToBusiness(job, b, "confirmation", key, sms, null))) throw new Error("text not sent");
       } else if (b.channel === "phone" && b.phone && this.d.phone) {
         // A phone business is confirmed by a short call, placed now (the job is closing), as before.
@@ -2537,8 +4180,9 @@ export class HaggleEngine {
     if (!approver) return;
     try {
       await this.sendRecorded(job, null, "receipt", `receipt:${a.id}:person`, {
-        to: approver, subject: `[HG-${job.short_code}] Done: ${paid ? "paid" : "confirmed"} ${b.name}`,
-        bodyText: [`Your agent finished this deal.`, "", `- Business: ${b.name}`, `- Quote total: ${money(a.quote_total_cents)}`, ...(paid ? [`- Paid: ${money(paid.amount_cents)}${ref ? ` (reference ${ref})` : ""}`] : []), `- Action: ${a.action === "confirm" ? "confirm (nothing paid)" : "pay"}`].join("\n"),
+        to: approver, subject: `[HG-${job.short_code}] Done: ${paid ? "paid" : reported ? "you reported paying" : "confirmed"} ${b.name}`,
+        bodyText: [`Your agent finished this deal.`, "", `- Business: ${b.name}`, `- Quote total: ${money(a.quote_total_cents)}`, ...(paid ? [`- Paid: ${money(paid.amount_cents)}${ref ? ` (reference ${ref})` : ""}`] : []),
+          ...(reported ? [`- You reported paying ${money(handoff!.amount_cents)} directly (Haggle didn't move or verify the money; the business was asked to confirm receipt)`] : []), `- Action: ${a.action === "confirm" ? "confirm (nothing paid)" : "pay"}`].join("\n"),
         approvalId: a.id,
       });
     } catch (err) {
@@ -2549,18 +4193,42 @@ export class HaggleEngine {
   private async notifyCancelled(job: JobRow) {
     const pending = await this.repo.getLatestApproval(job.id);
     if (pending?.status === "pending") await this.repo.transitionApproval(pending.id, "pending", { status: "expired", decided_at: this.now().toISOString() });
+    // Cancelled after the human approved, before any payment: the accepted business hears exactly that
+    // (no payment was made or reported), and the booking and handoff are closed.
+    // Manual rail: a confirm-only order awaiting the vendor's yes is a booking too (it is told not to hold it).
+    const acceptedRow = pending && pending.status === "approved" && (pending.action !== "confirm" || this.d.config.manualPaymentHandoff === true) ? pending : null;
+    // A charge already started (Stripe `charging`) can't be described as "no payment": flagged instead.
+    const pay = acceptedRow ? await this.repo.getPaymentForJob(job.id) : null;
+    const moving = !!pay && pay.approval_id === acceptedRow?.id && ["charging", "signed", "sent", "settled"].includes(pay.status);
+    if (moving) {
+      await this.repo.appendEvent(job.id, "operator_attention", { reason: "cancelled_while_payment_moving", approval_id: acceptedRow!.id, payment_status: pay!.status });
+      this.log("operator_attention", { job_id: job.id, reason: "cancelled_while_payment_moving" });
+    }
+    const accepted = moving ? null : acceptedRow;
+    if (accepted) {
+      await this.repo.transitionApproval(accepted.id, "approved", { status: "expired", decided_at: this.now().toISOString() });
+      const bk = await this.repo.getBookingByApproval(accepted.id);
+      if (bk) await this.repo.updateBooking(bk.id, ["awaiting_vendor_confirmation", "confirmed", "not_in_writing"], { status: "cancelled", cancel_reason: "cancelled by the customer before paying" });
+      const h = await this.repo.getHandoffByApproval(accepted.id);
+      if (h) await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "cancelled" });
+      await this.repo.appendEvent(job.id, "booking", { status: "cancelled", approval_id: accepted.id, at: this.now().toISOString() });
+    }
     // A short note on the business's own channel to businesses that replied: in the email thread, or
     // by text. Nobody is phoned just to hear a request was cancelled.
     for (const b of await this.repo.getBusinesses(job.id)) {
       if (!["replied", "quoted", "question", "declined"].includes(b.status)) continue;
+      const won = accepted?.business_id === b.business_id;
+      const note = won
+        ? `The customer has cancelled this order before paying, so please don't hold the booking for ${job.request.what}. No payment was made or sent through Haggle. Sorry for the trouble, and thank you.`
+        : "Thank you for your quote. The customer has cancelled this request, so we won't be moving forward. Thanks for your time.";
       try {
         if (b.channel === "email" && b.last_inbound_message_id) {
           await this.sendRecorded(job, b, "cancel", sendKeys.cancel(job.id, b.business_id), {
             to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
-            bodyText: `Hi ${b.name},\n\nThank you for your quote. The customer has cancelled this request, so we won't be moving forward. Thanks for your time.\n\n${this.signOff(job)}`,
+            bodyText: `Hi ${b.name},\n\n${note}\n\n${this.signOff(job)}`,
           });
         } else if (b.channel === "imessage" && b.last_reply_at && this.canReach(b)) {
-          await this.sendIMessageToBusiness(job, b, "cancel", sendKeys.cancel(job.id, b.business_id), `Thanks for your quote. The customer has cancelled this request, so we won't be moving forward. Ref HG-${job.short_code}`, null);
+          await this.sendIMessageToBusiness(job, b, "cancel", sendKeys.cancel(job.id, b.business_id), won ? `The customer cancelled this order before paying; please don't hold the booking. No payment was made. Ref HG-${job.short_code}` : `Thanks for your quote. The customer has cancelled this request, so we won't be moving forward. Ref HG-${job.short_code}`, null);
         }
       } catch (err) {
         this.log("cancel_note_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -2576,6 +4244,9 @@ export class HaggleEngine {
    * simulated verdict in mock mode). Returns the job to advance, if any.
    */
   async ingest(msg: InboundMessage, trustFor: (expected: string) => TrustVerdict, opts: { simulated?: boolean; inlineAttachments?: { filename: string; contentType: string; data: Uint8Array }[] } = {}): Promise<{ jobId: string | null; outcome: string }> {
+    const bounce = parseBounce(msg);
+    // A bounce-looking message from a business's own address in its thread is that business writing, not a DSN.
+    if (bounce && (isDsnSender(msg.from) || !(await this.fromPinnedBusiness(msg)))) return this.ingestBounce(msg, bounce);
     const codes = [...new Set([...msg.to.map((a) => jobInboxCode(a, this.d.config.inboxDomain)), subjectShortCode(msg.subject)].filter((c): c is string => c !== null))];
     const messageIds = [...msg.inReplyTo, ...msg.references];
     const lookup = { shortCodes: codes, threadId: msg.threadId, messageIds };
@@ -2599,10 +4270,11 @@ export class HaggleEngine {
     if (match.kind === "unmatched" || match.kind === "quarantine" || !msg.from) {
       const reason = !msg.from ? "from_unparseable" : match.kind === "quarantine" || match.kind === "unmatched" ? match.reason : "unexpected";
       const jobId = match.kind === "quarantine" ? match.jobId : null;
-      const stored = await this.repo.insertMessage({ ...base, job_id: jobId, business_id: match.kind === "quarantine" ? match.businessId : null, kind: "quarantine", sender_trusted: false, trust_reason: null, matched_via: match.kind === "quarantine" ? match.via : null, parse_status: "none", quarantine_reason: reason });
-      if (!stored) return { jobId, outcome: "duplicate" }; // a webhook redelivery: flagged once
-      if (jobId) await this.repo.appendEvent(jobId, "flag", { business_id: match.kind === "quarantine" ? match.businessId : "", flag: "unverified_sender", summary: "message in a business thread from another address was quarantined" });
-      this.log("inbound_quarantined", { reason, job_id: jobId });
+      const q = await this.repo.insertMessage({ ...base, job_id: jobId, business_id: match.kind === "quarantine" ? match.businessId : null, kind: "quarantine", sender_trusted: false, trust_reason: null, matched_via: match.kind === "quarantine" ? match.via : null, parse_status: "none", quarantine_reason: reason });
+      if (!q) return { jobId, outcome: "duplicate" }; // a webhook replay or the sweep: one flag per message
+      const why = explainQuarantine(reason);
+      if (jobId) await this.repo.appendEvent(jobId, "flag", { business_id: match.kind === "quarantine" ? match.businessId : "", flag: "unverified_sender", summary: `A message in a business thread was quarantined, not read: ${why.explanation} ${why.action}`, ...quarantineEventData(why, q.id) });
+      this.log("inbound_quarantined", { reason, job_id: jobId, explanation: why.explanation });
       return { jobId, outcome: `quarantined:${reason}` };
     }
 
@@ -2642,8 +4314,39 @@ export class HaggleEngine {
 
     // A business on a job.
     const b = bizRows.find((x) => x.job_id === match.jobId && x.business_id === match.businessId)!;
-    const trust = trustFor(b.email!);
+    let trust = trustFor(b.email!);
     if (!trust.trusted && trust.retryable) throw new RetryLater("sender authentication temporarily unavailable");
+    // Mail from outside Inkbox: a From address and a thread are never proof (inbound/senderAuth.ts).
+    const external = !trust.trusted && this.d.config.externalSenders === "reply_token" ? await this.verifyExternal(b, msg, trust) : null;
+    // An opt-out from the business's own address is honoured on this job even before its identity is
+    // proven (never contacting someone who may have asked us to stop is the safe side), but only a
+    // verified one suppresses the address everywhere: an unverified STOP may be a competitor's spoof.
+    if (isOptOut(msg.bodyText) && normalizeAddress(msg.from) === normalizeAddress(b.email!)) {
+      const verified = trust.trusted || external?.ok === true;
+      const stored = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "reply", sender_trusted: verified, trust_reason: trust.trusted ? trust.reason : external?.ok ? external.reason : trust.reason, matched_via: match.via, parse_status: "none", quarantine_reason: null });
+      if (!stored) return { jobId: b.job_id, outcome: "duplicate" };
+      if (verified) await this.optOut(b.job_id, b, b.email!, (msg.bodyText ?? "").slice(0, 200));
+      else await this.optOutThisJob(b.job_id, b, (msg.bodyText ?? "").slice(0, 200));
+      return { jobId: b.job_id, outcome: "opted_out" };
+    }
+    if (external) {
+      const v = external;
+      if (!v.ok) {
+        const q = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "quarantine", sender_trusted: false, trust_reason: trust.reason, matched_via: match.via, parse_status: "none", quarantine_reason: `${v.reason}:${v.detail}` });
+        if (!q) return { jobId: b.job_id, outcome: "duplicate" };
+        const why = explainQuarantine(`${v.reason}:${v.detail}`);
+        await this.repo.appendEvent(b.job_id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `An email claiming to be ${b.name} couldn't be verified (${v.detail.replace(/_/g, " ")}); it was quarantined, not read. ${why.action}`, ...quarantineEventData(why, q.id) });
+        this.log("inbound_quarantined", { reason: v.reason, detail: v.detail, job_id: b.job_id });
+        return { jobId: b.job_id, outcome: `quarantined:${v.reason}` };
+      }
+      trust = { trusted: true, address: normalizeAddress(b.email!), reason: v.reason, evidence: trust.evidence };
+    }
+    // The business answering something Haggle asked about a purchase: a re-confirmation, the booking,
+    // payment instructions or a receipt (workstream D: ingestPurchaseReply).
+    if (trust.trusted) {
+      const handled = await this.ingestPurchaseReply(b, msg, base, match.via, trust.reason);
+      if (handled) return handled;
+    }
     const stored = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "reply", sender_trusted: trust.trusted, trust_reason: trust.reason, matched_via: match.via, parse_status: msg.bodyText || attachments.length ? "pending" : "failed", quarantine_reason: null });
     if (!stored) return { jobId: b.job_id, outcome: "duplicate" };
     await this.repo.updateBusiness(b.job_id, b.business_id, {
@@ -2656,6 +4359,142 @@ export class HaggleEngine {
     await this.repo.appendEvent(b.job_id, "reply", { business_id: b.business_id, summary: `Email from ${b.name}${trust.trusted ? "" : " (sender NOT verified)"}`, ...(trust.trusted ? snippet(messageSnippet(msg.bodyText, { pricedOnly: true })) : {}) });
     await this.repo.touchJob(b.job_id);
     return { jobId: b.job_id, outcome: "stored" };
+  }
+
+  /**
+   * A delivery failure report. It counts for a business only when it quotes one of Haggle's own
+   * outbound Message-IDs to that business (a forged bounce can't name one); a hard (5.x.x) bounce
+   * suppresses the address and marks the business bounced. Never read as a reply.
+   */
+  private async ingestBounce(msg: InboundMessage, bounce: NonNullable<ReturnType<typeof parseBounce>>): Promise<{ jobId: string | null; outcome: string }> {
+    const ids = new Set(bounce.messageIds.map(normalizeMessageId));
+    const cands = ids.size ? await this.repo.findBusinessCandidates({ shortCodes: [], threadId: null, messageIds: bounce.messageIds }) : [];
+    let hit: (typeof cands)[number] | null = null;
+    for (const c of cands) {
+      const ours = (await this.repo.listMessages(c.job_id)).filter((m) => m.direction === "out" && m.business_id === c.business_id && m.channel === "email").map((m) => m.rfc_message_id);
+      if ([c.rfq_message_id, ...ours].some((x) => x && ids.has(normalizeMessageId(x)))) { hit = c; break; }
+    }
+    const stored = await this.repo.insertMessage({
+      job_id: hit?.job_id ?? null, business_id: hit?.business_id ?? null, approval_id: null, direction: "in", kind: "quarantine", provider_email_id: msg.providerEmailId, idempotency_key: null,
+      rfc_message_id: msg.messageId, thread_id: msg.threadId, from_address: msg.from, to_address: msg.to[0] ?? null, subject: msg.subject, body_text: msg.bodyText, attachments: [], attachments_download_url: null,
+      sender_trusted: false, trust_reason: null, matched_via: hit ? "message_id" : null, parse_status: "none", quarantine_reason: hit ? (bounce.hard ? "bounce" : "bounce_soft") : "bounce_unmatched", round: null, simulated: false,
+    });
+    if (!stored) return { jobId: hit?.job_id ?? null, outcome: "duplicate" };
+    if (!hit || !hit.email) return { jobId: null, outcome: "bounce_ignored" };
+    if (!bounce.hard) {
+      await this.repo.appendEvent(hit.job_id, "reply", { business_id: hit.business_id, summary: `Temporary delivery problem to ${hit.name}; the provider retries` });
+      return { jobId: hit.job_id, outcome: "bounce_soft" };
+    }
+    await this.repo.addSuppression({ contact: normalizeAddress(hit.email), reason: "bounce", job_id: hit.job_id, evidence: bounce.text.slice(0, 300) });
+    await this.repo.updateBusiness(hit.job_id, hit.business_id, { status: "bounced", next_attempt_at: null });
+    await this.repo.appendEvent(hit.job_id, "reply", { business_id: hit.business_id, summary: `Email to ${hit.name} bounced (address doesn't exist); it won't be emailed again` });
+    await this.repo.touchJob(hit.job_id);
+    return { jobId: hit.job_id, outcome: "bounced" };
+  }
+
+  /** Inkbox message.bounced / message.failed (or the reconciler's outbound status sweep) for one of our own emails. See inbound/deliveryStatus.ts. */
+  ingestDeliveryStatus(s: DeliveryStatusInput): Promise<{ jobId: string | null; outcome: string }> {
+    return applyDeliveryStatus(this.repo, { ...s, at: s.at ?? this.now() }, (event, data) => this.log(event, data));
+  }
+
+  /**
+   * Where Haggle stands with each business on this deal (inbound/contactStatus.ts): bounced, failed,
+   * opted out, a held (quarantined) reply, replied, awaiting a reply, scheduled. The deal board's
+   * fixed `status` enum can't say all of this; `line` is meant for its `last_event`.
+   */
+  async contactStatuses(jobId: string): Promise<BusinessContactStatus[]> {
+    const [businesses, messages, events] = await Promise.all([this.repo.getBusinesses(jobId), this.repo.listMessages(jobId), this.repo.listEvents(jobId)]);
+    const contacts = businesses.flatMap((b) => [b.email ? normalizeAddress(b.email) : null, b.phone].filter((c): c is string => !!c));
+    const suppressions = contacts.length ? await this.repo.findSuppressions(contacts) : [];
+    return businesses.map((business) => contactStatusOf({ business, messages, suppressions, events }));
+  }
+
+  /** Held inbound email for operator review (inbound/quarantineReview.ts). */
+  quarantined(q: { jobId?: string; limit?: number; includeResolved?: boolean } = {}) {
+    return listQuarantine(this.repo, q);
+  }
+
+  /**
+   * An operator releases a held email after verifying it with the business on an independent channel:
+   * it is read as that business's reply (trust "operator_verified": a quote at most, never approval,
+   * payment, a payee or a booking confirmation). Recorded append-only with the original reason.
+   */
+  async releaseQuarantined(i: { messageId: string; verifiedBy: string; how: string; jobId?: string; businessId?: string }) {
+    const r = await releaseQuarantined(this.repo, { ...i, now: this.now() });
+    if (r.ok) this.log("quarantine_released", { job_id: r.jobId, business_id: r.businessId, message_id: r.messageId, original_reason: r.resolution.original_reason });
+    return r;
+  }
+
+  async rejectQuarantined(i: { messageId: string; by: string; why: string }) {
+    const r = await rejectQuarantined(this.repo, i);
+    if (r.ok) this.log("quarantine_rejected", { job_id: r.jobId, message_id: r.messageId });
+    return r;
+  }
+
+  /** The reply-token check for mail from outside Inkbox (inbound/senderAuth.ts verifyExternalReply). */
+  private async verifyExternal(b: JobBusinessRow, msg: InboundMessage, trust: TrustVerdict) {
+    const ours = (await this.repo.listMessages(b.job_id)).filter((m) => m.direction === "out" && m.business_id === b.business_id).map((m) => m.rfc_message_id);
+    return verifyExternalReply({
+      from: msg.from ?? "", pinned: b.email!, inReplyTo: msg.inReplyTo, references: msg.references, ourMessageIds: [b.rfq_message_id, ...ours],
+      subject: msg.subject, bodyText: msg.bodyText, token: replyToken(this.d.config.replyTokenSecret!, b.job_id, b.business_id), evidence: trust.evidence,
+    });
+  }
+
+  /** Is this message from the pinned address of a business it threads to (by job code, thread or our Message-IDs)? */
+  private async fromPinnedBusiness(msg: InboundMessage): Promise<boolean> {
+    if (!msg.from) return false;
+    const codes = [...new Set([...msg.to.map((a) => jobInboxCode(a, this.d.config.inboxDomain)), subjectShortCode(msg.subject)].filter((c): c is string => c !== null))];
+    const rows = await this.repo.findBusinessCandidates({ shortCodes: codes, threadId: msg.threadId, messageIds: [...msg.inReplyTo, ...msg.references] });
+    return rows.some((r) => r.email && normalizeAddress(r.email) === normalizeAddress(msg.from!));
+  }
+
+  /**
+   * An opt-out Haggle couldn't verify came from the business (no provider authentication, no reply
+   * token): this job stops contacting it, recorded as `opt_out_unverified`; no global suppression.
+   */
+  private async optOutThisJob(jobId: string, b: Pick<JobBusinessRow, "business_id" | "name">, evidence: string) {
+    await this.repo.updateBusiness(jobId, b.business_id, { status: "declined", next_attempt_at: null });
+    await this.repo.appendEvent(jobId, "reply", { business_id: b.business_id, opt_out: "opt_out_unverified", evidence, summary: `${b.name} appears to have asked not to be contacted (sender not verified); Haggle stops contacting them on this deal only` });
+    await this.repo.touchJob(jobId);
+  }
+
+  /** The business asked not to be contacted: suppressed for every workspace and deal, and marked declined here. */
+  private async optOut(jobId: string, b: Pick<JobBusinessRow, "business_id" | "name">, contact: string, evidence: string) {
+    await this.repo.addSuppression({ contact: contact.toLowerCase(), reason: "opt_out", job_id: jobId, evidence });
+    await this.repo.updateBusiness(jobId, b.business_id, { status: "declined", next_attempt_at: null });
+    await this.repo.appendEvent(jobId, "reply", { business_id: b.business_id, summary: `${b.name} asked not to be contacted; Haggle won't contact them again` });
+    await this.repo.touchJob(jobId);
+  }
+
+  /** Manual handoff: a trusted reply from the business Haggle asked for payment instructions. Recorded, never followed or parsed. */
+  private async ingestPaymentInstructions(b: JobBusinessRow, msg: InboundMessage, base: Omit<NewMessage, "job_id" | "business_id" | "kind" | "sender_trusted" | "trust_reason" | "matched_via" | "parse_status" | "quarantine_reason">, via: MessageRow["matched_via"], trustReason: string): Promise<{ jobId: string; outcome: string } | null> {
+    const job = await this.repo.getJob(b.job_id);
+    if (!job || job.state !== "paying") return null;
+    const a = await this.repo.getLatestApproval(job.id);
+    const h = a ? await this.repo.getHandoffByApproval(a.id) : null;
+    if (!a || !h || h.business_id !== b.business_id || !["instructions_requested", "instructions_received"].includes(h.status)) return null;
+    const stored = await this.repo.insertMessage({ ...base, job_id: job.id, business_id: b.business_id, kind: "reply", sender_trusted: true, trust_reason: trustReason as never, matched_via: via, parse_status: "none", quarantine_reason: null });
+    if (!stored) return { jobId: job.id, outcome: "duplicate" };
+    const text = cleanEmailBody(msg.bodyText ?? "").slice(0, 4000);
+    const same = (x: string) => x.toLowerCase().replace(/\s+/g, " ").trim();
+    if (h.status === "instructions_received" && h.instructions_text && same(h.instructions_text) !== same(text)) {
+      // Changed payee details after the human saw the first ones is the classic payment-redirect fraud:
+      // the first instructions stay, the operator reviews, and the human confirms by phone (S5-D F12).
+      await this.repo.appendEvent(job.id, "payment", { status: "instructions_changed", rail: "manual", business_id: b.business_id, message_id: stored.id, warning: "the business's payment instructions changed after the first ones: Haggle kept the first; confirm by phone on a number you already know before paying", ...(provesSenderIdentity({ sender_trusted: true, trust_reason: trustReason }) ? {} : { sender_identity: weakIdentity(trustReason) }) });
+      await this.deadLetter({ kind: "payment", subject: `instructions_changed:${h.id}`, job_id: job.id, reason: "payment instructions changed after the human was told how to pay", attempts: 1 });
+      await this.notifyHuman(job, `instructions-changed:${stored.id}`, `${clip(b.name, 30)} sent different payment instructions from the ones it gave before. Haggle kept the first ones. Don't pay until you confirm the details with them by phone on a number you already know; then reply PAID ${a.code}.`);
+      await this.repo.touchJob(job.id);
+      return { jobId: job.id, outcome: "payment_instructions_changed" };
+    }
+    await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "instructions_received", instructions_text: text, instructions_message_id: stored.id });
+    const link = /https?:\/\/|www\./i.test(text);
+    // Thread continuity (the reply token) isn't sender identity: payment details from such a reply are a BEC risk (inbound/trustStrength.ts).
+    const sms = TEXT_OR_CALLER_ID_REASONS.has(trustReason);
+    const weak = CONTINUITY_ONLY_REASONS.has(trustReason) || sms;
+    const warning = [link ? "contains a link: verify it with the business independently; Haggle never opens it" : null, sms ? SMS_PAYMENT_WARNING : weak ? CONTINUITY_ONLY_WARNING : null].filter(Boolean).join("; ");
+    await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(warning ? { warning } : {}), ...(weak ? { sender_identity: weakIdentity(trustReason) } : {}) });
+    await this.notifyHuman(job, `instructions:${stored.id}`, `${clip(b.name, 30)} sent payment instructions (see the deal board${link ? "; it has a link, so check it with them before paying" : ""}${weak ? `; ${sms ? "a text" : "its email"} can't be fully verified, so confirm the details with them by phone` : ""}). Pay them directly; then reply PAID ${a.code}.`);
+    return { jobId: job.id, outcome: "payment_instructions" };
   }
 
   // ───────────────────────────── advance ─────────────────────────────
@@ -2676,14 +4515,86 @@ export class HaggleEngine {
     // advance carries on with the new state, and one more advance runs right after it.
     const inside = ADVANCE_CTX.getStore();
     if (inside?.has(jobId)) return this.advanceAfter(jobId);
-    const prev = this.advancing.get(jobId) ?? Promise.resolve();
-    const run = prev.catch(() => {}).then(() => ADVANCE_CTX.run(new Set([...(inside ?? []), jobId]), () => this.advanceJobOnce(jobId))).then(() => this.noteAdvanced(jobId));
-    this.advancing.set(jobId, run);
+    // In-process queue per instance; across processes (replicas, a restart overlap) the job lease.
+    const slot = `${this.instanceId}:${jobId}`;
+    const prev = this.advancing.get(slot) ?? Promise.resolve();
+    const run = prev.catch(() => {}).then(() => ADVANCE_CTX.run(new Set([...(inside ?? []), jobId]), () => this.advanceLeased(jobId))).then(() => this.noteAdvanced(jobId));
+    this.advancing.set(slot, run);
     try {
       await run;
     } finally {
-      if (this.advancing.get(jobId) === run) this.advancing.delete(jobId);
+      if (this.advancing.get(slot) === run) this.advancing.delete(slot);
     }
+  }
+
+  private get instanceId(): string {
+    return this.d.config.instanceId ?? PROCESS_INSTANCE;
+  }
+
+  /**
+   * Advance under the job's lease (Postgres job_leases): another instance holding it is advancing
+   * this job right now, so this one skips (its tick comes round again). A crashed holder's lease
+   * expires after leaseTtlMs.
+   */
+  private async advanceLeased(jobId: string) {
+    // One owner token per acquisition: a renewal or release only ever touches this advance's own lease.
+    const owner = `${this.instanceId}#${++this.leaseSeq}`;
+    const ttl = this.d.config.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
+    if (!(await this.repo.acquireJobLease(jobId, owner, this.now().toISOString(), ttl))) {
+      this.log("advance_skipped_leased", { job_id: jobId });
+      return;
+    }
+    // An advance may outlive its lease (slow LLM reads, many replies): renewed every third of the
+    // TTL while it runs. Once a renewal fails another instance may own the job: every later send
+    // is refused (fence) and the advance stops at its next step.
+    const held = { owner, lost: false };
+    this.leases.set(jobId, held);
+    const beat = setInterval(() => {
+      if (held.lost) return;
+      void this.repo.renewJobLease(jobId, owner, this.now().toISOString(), ttl).then((ok) => { if (!ok) this.leaseLost(jobId, held); }, () => undefined);
+    }, Math.max(1, Math.floor(ttl / 3)));
+    beat.unref?.();
+    try {
+      await this.advanceJobOnce(jobId);
+    } finally {
+      clearInterval(beat);
+      if (this.leases.get(jobId) === held) this.leases.delete(jobId);
+      await this.repo.releaseJobLease(jobId, owner).catch((e) => this.log("lease_release_failed", { job_id: jobId, error: (e as Error).message }));
+    }
+  }
+
+  private leaseSeq = 0;
+  /** The lease each running advance in this engine holds, by job. */
+  private readonly leases = new Map<string, { owner: string; lost: boolean }>();
+
+  private leaseLost(jobId: string, held: { lost: boolean }) {
+    if (held.lost) return;
+    held.lost = true;
+    this.log("lease_lost", { job_id: jobId });
+  }
+
+  /** True when this call chain is advancing the job under a lease it has since lost. */
+  private fenced(jobId: string): boolean {
+    return !!ADVANCE_CTX.getStore()?.has(jobId) && this.leases.get(jobId)?.lost === true;
+  }
+
+  /**
+   * Before any send from inside an advance: still the lease holder? Renewed on the spot (a CAS on
+   * the owner token, so it can't steal back a lease another instance took). Sends from outside an
+   * advance (a tool call) aren't leased; the outbox claim alone keeps them single.
+   */
+  private async fence(jobId: string | null) {
+    if (jobId && !(await this.stillLeased(jobId))) throw new LeaseLostError();
+  }
+
+  private async stillLeased(jobId: string): Promise<boolean> {
+    if (!ADVANCE_CTX.getStore()?.has(jobId)) return true;
+    const held = this.leases.get(jobId);
+    if (!held) return true;
+    // A renewal that times out or errors (the database stalled) can't prove the lease: fenced, never sent on a guess.
+    if (!held.lost && (await this.repo.renewJobLease(jobId, held.owner, this.now().toISOString(), this.d.config.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS).catch(() => false))) return true;
+    this.leaseLost(jobId, held);
+    return false;
   }
 
   /** When each job last finished an advance in this process, and its version then (advanceForRead). */
@@ -2717,7 +4628,7 @@ export class HaggleEngine {
   private advanceAfter(jobId: string) {
     if (this.advanceFollowUps.has(jobId)) return;
     this.advanceFollowUps.add(jobId);
-    const current = this.advancing.get(jobId) ?? Promise.resolve();
+    const current = this.advancing.get(`${this.instanceId}:${jobId}`) ?? Promise.resolve();
     ADVANCE_CTX.exit(() => {
       void current.catch(() => {}).then(() => {
         this.advanceFollowUps.delete(jobId);
@@ -2737,18 +4648,331 @@ export class HaggleEngine {
     }
   }
 
+  // ───────────────────────────── reliability (dead letters, recovery) ─────────────────────────────
+
+  /**
+   * Durable operator review (migration 109): one open row per kind + subject, with the redacted last
+   * error, and an `operator_review` event on the job. What lands here is never retried by itself.
+   * Never throws (a failing review write is logged; the caller's refusal stands either way).
+   */
+  private async deadLetter(r: { kind: OperatorReviewRow["kind"]; subject: string; job_id: string | null; reason: string; attempts: number; error?: unknown }): Promise<OperatorReviewRow | null> {
+    try {
+      const { row, created } = await this.repo.openReview({
+        id: newId("rev"), job_id: r.job_id, kind: r.kind, subject: r.subject.slice(0, 300), reason: clip(r.reason, 200), attempts: Math.min(Math.max(r.attempts, 0), 1000),
+        last_error: r.error === undefined || r.error === null ? null : redactError(r.error),
+      }, this.now().toISOString());
+      if (created) {
+        this.log("operator_review", { review_id: row.id, kind: r.kind, job_id: r.job_id, reason: row.reason });
+        if (r.job_id) await this.repo.appendEvent(r.job_id, "operator_review", { review_id: row.id, kind: r.kind, subject: row.subject, reason: row.reason });
+      }
+      return row;
+    } catch (e) {
+      this.log("operator_review_failed", { kind: r.kind, job_id: r.job_id, error: redactError(e) });
+      return null;
+    }
+  }
+
+  /** A provider call failed: record it, and once it may not be attempted again, send it to operator review. Never throws. */
+  private async outboxFailed(key: string, jobId: string | null, kind: "email" | "text" | "call" | "a2a", status: "not_sent" | "unknown", err: unknown) {
+    try {
+      await this.repo.finishOutbox(key, status, null, this.now().toISOString());
+      const row = await this.repo.getOutbox(key);
+      if (!row || row.status === "sent") return;
+      const d = row.status === "unknown" ? { action: "review" as const, reason: kind === "call" ? "call outcome unknown (the provider failed after dialing may have started); never redialed" : `${kind} outcome unknown; not re-sent automatically` }
+        : decideClaim({ kind, key, row, nowMs: this.now().getTime(), staleMs: OUTBOX_STALE_MS, underReview: false });
+      if (d.action === "review") await this.deadLetter({ kind: "outbox", subject: key, job_id: jobId, reason: d.reason, attempts: row.attempts, error: err });
+    } catch (e) {
+      this.log("outbox_record_failed", { job_id: jobId, kind, error: redactError(e) });
+    }
+  }
+
+  /** Every A2A task Haggle sends: claimed in the outbox first (its messageId makes a resend idempotent at the business's agent). */
+  private async a2aSend(jobId: string, key: string, req: Parameters<NonNullable<EngineDeps["a2a"]>["send"]>[0]) {
+    await this.claimSend(key, jobId, "a2a");
+    let t;
+    try {
+      t = await this.d.a2a!.send(req);
+    } catch (err) {
+      // Only a definite refusal is "not sent". A timeout or 5xx may come after the business's agent
+      // took the task, and its messageId dedupe is unverified: unknown, reviewed, never re-sent.
+      const definite = err instanceof ChannelSendError && !err.retryable && !err.ambiguous;
+      await this.outboxFailed(key, jobId, "a2a", definite ? "not_sent" : "unknown", err);
+      throw definite ? err : new ChannelSendError("provider_error", false, 0, `A2A task outcome unknown: ${(err as Error).message}`, true);
+    }
+    await this.repo.finishOutbox(key, "sent", `a2a-task:${t.taskId}`, this.now().toISOString());
+    return t;
+  }
+
+  /**
+   * Hold a Stripe charge instead of resuming it (decideChargeResume): too old for Stripe's
+   * idempotency window, failing over and over, or under review. After an operator release
+   * (job-ops retry --payment) the full payment guard runs again before anything is charged.
+   * True: not charged now.
+   */
+  private async holdCharge(job: JobRow, approval: ApprovalRow, pay: PaymentRow): Promise<boolean> {
+    const events = await this.repo.listEvents(job.id);
+    const release = events.filter((e) => e.type === "operator_release" && e.data.payment_id === pay.id).at(-1);
+    const retries = events.filter((e) => e.type === "payment_retry" && e.data.payment_id === pay.id && (!release || e.seq > release.seq)).length;
+    const underReview = !!(await this.repo.findOpenReview("payment", pay.id));
+    const v = decideChargeResume({ createdAt: pay.created_at, retries, nowMs: this.now().getTime(), underReview, releasedAt: release?.at ?? null });
+    if (v.hold) {
+      if (!underReview) await this.deadLetter({ kind: "payment", subject: pay.id, job_id: job.id, reason: v.reason, attempts: retries, error: pay.reason });
+      return true;
+    }
+    if (v.released) {
+      const g = await this.paymentVerdict(job, approval);
+      if (!g.ok) {
+        await this.repo.transitionPayment(pay.id, ["charging"], { status: "failed", reason: `refused:${g.code}` });
+        await this.repo.appendEvent(job.id, "payment_refused", { code: g.code, approval_id: approval.id, resumed: true, operator_release: true });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * A call.ended whose call has no message row: the process died after dialing and before
+   * recording it. Rebuilt from the outbox claim (its provider_ref, or the one open call claim to
+   * that pinned number), so the transcript is read like any other and the call is never redialed.
+   */
+  private async recoverPlacedCall(call: { callId: string; remoteNumber?: string; direction?: string }): Promise<MessageRow | null> {
+    const num = call.remoteNumber?.replace(/[\s().-]/g, "");
+    let o = await this.repo.findOutboxByProviderRef(call.callId);
+    let job: JobRow | null = null;
+    let b: JobBusinessRow | undefined;
+    const one = <T>(xs: T[]) => (xs.length === 1 ? xs[0] : undefined);
+    if (o?.kind === "call" && o.job_id) {
+      job = await this.repo.getJob(o.job_id);
+      const bs = job ? await this.repo.getBusinesses(job.id) : [];
+      b = bs.find((x) => o!.key.includes(`:${x.business_id}`)) ?? (num ? one(bs.filter((x) => x.phone === num)) : undefined);
+      if (!b && o.key.startsWith("confirm:")) {
+        const a = await this.repo.getApproval(o.key.slice("confirm:".length));
+        b = bs.find((x) => x.business_id === a?.business_id);
+      }
+    } else if (!o && num && call.direction !== "inbound") {
+      const hits: { j: JobRow; r: OutboxRow; b: JobBusinessRow }[] = [];
+      for (const j of await this.repo.listOpenJobs()) {
+        const bs = (await this.repo.getBusinesses(j.id)).filter((x) => x.phone === num);
+        if (bs.length !== 1) continue;
+        for (const r of await this.repo.listOutbox({ jobId: j.id, statuses: ["pending", "unknown"] })) if (r.kind === "call") hits.push({ j, r, b: bs[0]! });
+      }
+      const h = one(hits);
+      if (h) ({ r: o, j: job, b } = h);
+    }
+    if (!o || !job || !b) return null;
+    await this.repo.insertMessage({
+      job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind: "call", channel: "phone", provider_email_id: call.callId, idempotency_key: o.key,
+      rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: "(Call record rebuilt after a crash: the call was placed but not recorded.)", attachments: [], attachments_download_url: null,
+      sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null, round: null, simulated: job.mode === "mock",
+    });
+    await this.repo.finishOutbox(o.key, "sent", call.callId, this.now().toISOString()).catch((e) => this.log("outbox_record_failed", { job_id: job!.id, error: redactError(e) }));
+    await this.repo.appendEvent(job.id, "recovered", { from: "call_record_lost", key: o.key, call_id: call.callId });
+    this.log("call_record_recovered", { job_id: job.id, business_id: b.business_id });
+    return this.repo.findMessageByProviderId(call.callId);
+  }
+
+  /**
+   * Replies to a closed deal (paid, confirmed, cancelled, failed), hours or days late: stored as
+   * they arrived, never read into the deal (no quote, revision, question or payment step), shown on
+   * the board, and the human is texted once for a deal that went ahead (a business answering the
+   * booking confirmation, or backing out, is theirs to read). Not an operator matter by itself.
+   */
+  private async surfaceLateReplies(job: JobRow) {
+    const pending = await this.repo.getPendingMessages(job.id);
+    if (!pending.length) return;
+    const businesses = await this.repo.getBusinesses(job.id);
+    const names: string[] = [];
+    for (const m of pending) {
+      const name = businesses.find((x) => x.business_id === m.business_id)?.name ?? "A business";
+      names.push(name);
+      // Events first: a crash before the status change repeats them, never loses them.
+      await this.repo.appendEvent(job.id, "late_reply", { message_id: m.id, business_id: m.business_id, channel: m.channel, job_state: job.state });
+      await this.repo.appendEvent(job.id, "reply", { business_id: m.business_id, channel: m.channel, kind: "late_reply", summary: `${name} replied after this deal was ${job.state}; kept for the record, not read into the deal`, ...snippet(messageSnippet(m.body_text)) });
+      await this.repo.updateMessage(m.id, { parse_status: "none" });
+    }
+    if (job.state === "paid" || job.state === "confirmed") await this.notifyHuman(job, `late:${pending[0]!.id}`, `${clip(names[0]!, 30)} replied after this deal closed; check the deal board.`);
+    await this.repo.touchJob(job.id);
+  }
+
+  /**
+   * Re-sends an operator asked for (job-ops retry --override-obligation): one `operator_retry`
+   * event, run once. Only through the normal step, which re-checks the approval it rests on; the
+   * outbox was re-armed by the script, so the claim allows exactly one more attempt.
+   */
+  private async runOperatorRetries(job: JobRow) {
+    if (job.state !== "paying" && job.state !== "paid" && job.state !== "confirmed") return;
+    const events = await this.repo.listEvents(job.id);
+    const done = new Set(events.filter((e) => e.type === "operator_retry_done").map((e) => Number(e.data.retry_seq)));
+    for (const e of events.filter((x) => x.type === "operator_retry" && !done.has(x.seq))) {
+      const key = String(e.data.key);
+      const confirm = /^confirm:/.test(key) && (job.state === "paid" || job.state === "confirmed");
+      const accept = /^(?:accept|handoff):/.test(key) && job.state === "paying";
+      await this.repo.appendEvent(job.id, "operator_retry_done", { retry_seq: e.seq, key, ran: confirm || accept });
+      try {
+        if (confirm) await this.sendConfirmation(job);
+        else if (accept) await this.sendAccept(job);
+      } catch (err) {
+        this.log("operator_retry_failed", { job_id: job.id, key, error: redactError(err) });
+      }
+    }
+  }
+
+  /**
+   * Operator gate on every open job's advance (ops/operator.ts): a suspended workspace's deal doesn't
+   * advance at all (true: stop here), even without its hold; otherwise the operator's reviewed
+   * requests (job-ops callback, quarantine release-text) run through the engine's own checks.
+   */
+  private async operatorGate(job: JobRow, open: OperatorReviewRow[]): Promise<boolean> {
+    if (await workspaceSuspension(this.repo, job.workspace_id)) {
+      this.log("advance_suspended", { job_id: job.id });
+      return true;
+    }
+    await runOperatorRequests({
+      repo: this.repo, now: () => this.now(), log: (e, d) => this.log(e, d),
+      callback: (j, b, op) => this.operatorCallback(j, b, op), releaseText: (m, j, op) => this.releaseHeldText(m, j, op),
+      isRefusal: (e): e is EngineError => e instanceof EngineError,
+    }, job, open);
+    return false;
+  }
+
+  /**
+   * An operator's fail-safe close (job-ops fail-safe-close, deadLetter.planFailSafeClose), run by the
+   * lease holder: the job ends `failed` (closed by the operator), a pending or unpaid approval
+   * expires, an unpaid booking or handoff is withdrawn on Haggle's side, and the human is texted
+   * exactly that. No business is contacted. While money may be moving it waits; after the customer
+   * reported paying it is refused (resolved with the reason). True: this advance stops here.
+   */
+  private async runOperatorClose(job: JobRow, req: OperatorReviewRow): Promise<boolean> {
+    const at = this.now().toISOString();
+    const done = (resolution: string) => this.repo.resolveReview(req.id, { resolution, resolved_by: "haggle-server" }, at);
+    const pay = await this.repo.getPaymentForJob(job.id);
+    if (pay && ["charging", "signed", "sent"].includes(pay.status)) {
+      this.log("operator_close_deferred", { job_id: job.id, payment_status: pay.status });
+      return true;
+    }
+    const a = await this.repo.getLatestApproval(job.id);
+    const h = a ? await this.repo.getHandoffByApproval(a.id) : null;
+    if (h?.status === "human_confirmed" || pay?.status === "settled") {
+      await done("refused by the server: money already moved (the customer reported paying, or a charge settled); handle it with the customer");
+      await this.repo.appendEvent(job.id, "operator_attention", { reason: "close_refused_money_moved", review_id: req.id });
+      return true;
+    }
+    const events = await this.repo.listEvents(job.id);
+    const ask = events.filter((e) => e.type === "operator_close_requested").at(-1)?.data ?? {};
+    const reason = clip(typeof ask.reason === "string" ? ask.reason : "closed by the operator", 80);
+    const closed = await this.repo.casJob(job.id, job.version, { state: "failed", failure_reason: "operator_closed", ready: false });
+    if (!closed) return true; // changed meanwhile: the next advance decides again
+    await this.repo.appendEvent(job.id, "state", { from: job.state, to: "failed", cause: "operator_close", reason: "operator_closed" });
+    let booking: "confirmed" | "requested" | null = null;
+    if (a && (a.status === "pending" || a.status === "approved")) {
+      await this.repo.transitionApproval(a.id, a.status, { status: "expired", decided_at: at });
+      const bk = await this.repo.getBookingByApproval(a.id);
+      if (bk && (await this.repo.updateBooking(bk.id, ["awaiting_vendor_confirmation", "confirmed", "not_in_writing"], { status: "cancelled", cancel_reason: "closed by the operator" }))) booking = bk.status === "awaiting_vendor_confirmation" ? "requested" : "confirmed";
+      if (h) await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "cancelled" });
+    }
+    const businesses = await this.repo.getBusinesses(job.id);
+    const winner = a && booking ? clip(businesses.find((b) => b.business_id === a.business_id)?.name ?? "The business", 30) : null;
+    const replied = businesses.filter((b) => ["replied", "quoted", "question"].includes(b.status) && b.business_id !== a?.business_id).map((b) => clip(b.name, 24));
+    const who = booking === "confirmed" ? ` ${winner} had confirmed the booking and wasn't told it's off: contact them directly.`
+      : booking === "requested" ? ` ${winner} was asked to confirm a booking and wasn't told it's off: let them know.`
+      : replied.length ? ` Businesses that replied (${replied.slice(0, 3).join(", ")}${replied.length > 3 ? ", ..." : ""}) weren't told.` : "";
+    const text = `an operator closed this deal (${reason}). Haggle won't contact any business about it again, and nothing was paid through Haggle.${who}`;
+    await this.repo.appendEvent(job.id, "operator_closed", { by: typeof ask.by === "string" ? ask.by : null, reason, booking, businesses_told: false, at });
+    await this.repo.appendEvent(job.id, "reply", { business_id: "", summary: `Closed by the operator (${reason}); no business was contacted` });
+    await this.notifyHuman(closed, "operator-closed", text);
+    await done("closed by the server: job failed (operator_closed), the human texted, no business contacted");
+    const hold = await this.repo.findOpenReview("stuck_job", holdSubject(job.id));
+    if (hold) await this.repo.resolveReview(hold.id, { resolution: "job closed by the operator", resolved_by: "haggle-server" }, at);
+    this.log("operator_closed", { job_id: job.id, booking });
+    return true;
+  }
+
+  private async recoverySnapshot(job: JobRow) {
+    const [businesses, approval, payment, outbox, pending] = await Promise.all([
+      this.repo.getBusinesses(job.id), this.repo.getLatestApproval(job.id), this.repo.getPaymentForJob(job.id), this.repo.listOutbox({ jobId: job.id }), this.repo.getPendingMessages(job.id),
+    ]);
+    const [booking, handoff] = approval && job.state === "paying" ? await Promise.all([this.repo.getBookingByApproval(approval.id), this.repo.getHandoffByApproval(approval.id)]) : [null, null];
+    return { job, businesses, approval, payment, outbox, pendingMessages: pending.length, booking, handoff };
+  }
+
+  /**
+   * Stuck-job recovery (the backup tick; workflow/recovery.ts): every open job and recently closed
+   * one is checked against its deadlines. What an advance can move on is advanced (always safe:
+   * keyed sends, CAS transitions); a call claim left by a crash is recorded as unknown (never
+   * redialed); what still isn't moving goes to operator review, once.
+   */
+  async recoverStuck(opts: { advanceOpen?: boolean; limit?: number } = {}): Promise<{ findings: StuckFinding[]; reviewed: number }> {
+    const now = this.now().getTime();
+    const open = (await this.repo.listOpenJobs()).slice(0, opts.limit ?? 200);
+    const closed = (await this.repo.listRecentJobs(30)).filter((j) => TERMINAL.has(j.state) && now - Date.parse(j.updated_at) < 3 * 86_400_000);
+    const findings: StuckFinding[] = [];
+    let reviewed = 0;
+    for (const job of [...open, ...closed]) {
+      try {
+        // On an operator hold: the operator is already looking; nothing is advanced or re-reviewed.
+        if (!TERMINAL.has(job.state) && (await this.repo.findOpenReview("stuck_job", holdSubject(job.id)))) continue;
+        let f = planRecovery(await this.recoverySnapshot(job), now);
+        if (f.some((x) => x.action === "advance") && (opts.advanceOpen !== false || TERMINAL.has(job.state))) {
+          await this.advanceJob(job.id);
+          f = planRecovery(await this.recoverySnapshot((await this.repo.getJob(job.id)) ?? job), now);
+        }
+        for (const x of f) {
+          if (x.action === "advance") continue;
+          const kind: OperatorReviewRow["kind"] = x.issue === "confirmation_not_sent" ? "confirmation" : x.subject && x.issue !== "charge_stale" ? "outbox" : "stuck_job";
+          const subject = kind === "stuck_job" ? `${job.id}:${x.issue}` : x.subject!;
+          if (x.action === "mark_unknown") await this.repo.finishOutbox(subject, "unknown", null, this.now().toISOString());
+          if (await this.repo.findOpenReview(kind, subject)) continue;
+          if (await this.deadLetter({ kind, subject, job_id: job.id, reason: x.detail, attempts: 0 })) reviewed++;
+        }
+        findings.push(...f);
+      } catch (e) {
+        this.log("recovery_failed", { job_id: job.id, error: redactError(e) });
+      }
+    }
+    return { findings, reviewed };
+  }
+
+  /** The inbound reconciler gave up on an item (its maxAttempts): an operator looks; it is not retried silently. */
+  async reportReconcileGaveUp(item: { key: string; attempts: number; error: unknown; jobId?: string | null }) {
+    await this.deadLetter({ kind: "reconcile", subject: item.key, job_id: item.jobId ?? null, reason: "an inbound item couldn't be ingested; the reconciler gave up on it", attempts: item.attempts, error: item.error });
+  }
+
   private async advanceJobOnce(jobId: string): Promise<void> {
-    const first = await this.repo.getJob(jobId);
-    if (!first || TERMINAL.has(first.state)) return;
-    await this.pollA2a(first);
-    await this.dueCalls(first);
-    await this.dueScheduledCalls(first);
-    await this.parsePending(first);
-    await this.runDueContacts((await this.repo.getJob(jobId)) ?? first);
-    await this.surfaceQuestions((await this.repo.getJob(jobId)) ?? first);
-    await this.processPayment(jobId);
+    let first = await this.repo.getJob(jobId);
+    if (!first) return;
+    if (TERMINAL.has(first.state)) {
+      // Closed: nothing advances, but a reply that arrived since is surfaced (never read into the
+      // deal), and an operator's re-send of a failed confirmation runs.
+      await this.surfaceLateReplies(first);
+      await this.runOperatorRetries(first);
+      return;
+    }
+    // Operator actions (job-ops): a requested fail-safe close runs first; a hold stops everything else.
+    // One read for both (this runs on every advance): the job's open stuck_job reviews.
+    const operator = (await this.repo.listReviews({ status: "open", jobId, limit: 1000 })).filter((r) => r.kind === "stuck_job");
+    const closeReq = operator.find((r) => r.subject === closeSubject(jobId));
+    if (closeReq && (await this.runOperatorClose(first, closeReq))) return;
+    if (operator.some((r) => r.subject === holdSubject(jobId))) {
+      this.log("advance_held", { job_id: jobId });
+      return;
+    }
+    if (await this.operatorGate(first, operator)) return;
+    if (first.state === "created") {
+      await this.recoverCreated(first);
+      first = (await this.repo.getJob(jobId)) ?? first;
+    }
+    // A lost lease (fenced) ends the advance at the next step: another instance has the job.
+    const phases: ((j: JobRow) => Promise<unknown>)[] = [
+      (j) => this.pollA2a(j), (j) => this.dueCalls(j), (j) => this.dueScheduledCalls(j), (j) => this.parsePending(j),
+      (j) => this.runDueContacts(j), (j) => this.surfaceQuestions(j), () => this.processPayment(jobId), () => this.purchaseTick(jobId), (j) => this.runOperatorRetries(j),
+    ];
+    for (const [i, phase] of phases.entries()) {
+      if (this.fenced(jobId)) return;
+      await phase(i < 4 ? first : ((await this.repo.getJob(jobId)) ?? first));
+    }
     let swept = false;
     for (let step = 0; step < 6; step++) {
+      if (this.fenced(jobId)) return;
       const job = await this.repo.getJob(jobId);
       if (!job || TERMINAL.has(job.state)) return;
       const event = await this.dueEvent(job);
@@ -2768,6 +4992,7 @@ export class HaggleEngine {
       if (!r.ok && r.reason === STALE_EVENT) continue;
       if (!r.ok) break;
     }
+    if (this.fenced(jobId)) return;
     await this.offerReady(jobId);
     await this.reviseSuggestion(jobId);
   }
@@ -2812,9 +5037,10 @@ export class HaggleEngine {
       const p = await this.repo.getPaymentForJob(job.id);
       if (p?.status === "settled") return { type: "payment_settled" };
       if (p && (p.status === "rejected" || p.status === "failed")) return { type: "payment_failed_final" };
-      // An approval that lapsed after the human's yes, before any charge started, can't be paid:
-      // back to choosing (approve again), instead of a deal stuck in paying that refuses approve.
-      const a = await this.repo.getLatestApproval(job.id);
+      // Stripe rail: an approval that lapsed after the human's yes, before any charge started, can't be
+      // paid: back to choosing (approve again), instead of a deal stuck in paying that refuses approve.
+      // (The manual-handoff rail keeps an approved deal open on purpose while the booking is confirmed.)
+      const a = this.d.stripe && !this.d.config.manualPaymentHandoff ? await this.repo.getLatestApproval(job.id) : null;
       if (a?.status === "approved" && (!p || p.approval_id !== a.id) && now > Date.parse(a.expires_at)) {
         if (await this.repo.transitionApproval(a.id, "approved", { status: "expired" })) await this.repo.appendEvent(job.id, "approval_expired", { approval_id: a.id });
         return { type: "approval_void" };
@@ -2932,7 +5158,8 @@ export class HaggleEngine {
       // download, no quote, question or payment step can come from it.
       if (msg.sender_trusted !== true) {
         await this.repo.updateMessage(msg.id, { parse_status: "done" });
-        await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `ignored an unauthenticated email claiming to be ${b.name}` });
+        const why = explainQuarantine(msg.trust_reason);
+        await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `ignored an unauthenticated email claiming to be ${b.name}${why.known ? `. ${why.action}` : ""}`, ...(why.known ? quarantineEventData(why, msg.id) : {}) });
         await this.repo.touchJob(job.id);
         continue;
       }
@@ -2988,7 +5215,8 @@ export class HaggleEngine {
         }
         // The extractor only knows email wording ("email body"); figures from a call or a text say so.
         const channelSource = msg.channel === "a2a" ? "a2a task" : msg.channel === "phone" ? "call transcript" : msg.channel === "imessage" ? "iMessage text" : null;
-        if (channelSource) for (const src of extraction.sources) if (msg.channel === "a2a" || !/^pdf\b/i.test(src.source)) src.source = channelSource;
+        // A keyword-fallback reading keeps its "(heuristic)" label (it is what makes the quote non-approvable).
+        if (channelSource) for (const src of extraction.sources) if (msg.channel === "a2a" || !/^pdf\b/i.test(src.source)) src.source = /\(heuristic\)/.test(src.source) ? `${channelSource} (heuristic)` : channelSource;
         phase = "store"; // from here a retry could store twice: errors are final
         await this.storeExtraction(job, b, msg, extraction, channelSource ?? (qj ? "quote.json" : files.some((f) => f.kind === "pdf") ? "pdf" : images.length ? "image" : "email body"), { structured: structuredQuote });
         await this.repo.updateMessage(msg.id, { parse_status: "done" });
@@ -3003,6 +5231,7 @@ export class HaggleEngine {
         }
         await this.repo.updateMessage(msg.id, { parse_status: "failed" });
         await this.repo.appendEvent(job.id, "parse_failed", { message_id: msg.id, business_id: b.business_id, error: parseErrorKind(err), retried: tried.length });
+        await this.deadLetter({ kind: "parse", subject: msg.id, job_id: job.id, reason: `reply from ${clip(b.name, 40)} couldn't be read (${parseErrorKind(err)})`, attempts: tried.length + 1, error: err });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: UNREADABLE_REPLY });
         await this.repo.touchJob(job.id);
       }
@@ -3049,6 +5278,13 @@ export class HaggleEngine {
     if (!opts.structured && fresh.total_cents !== null && isApproximateTotal({ totalCents: fresh.total_cents, excerpts: [(fresh.sources.total?.excerpt ?? "").split(" + ")[0]!], text: msg.body_text ?? "", channel: msg.channel })) {
       fresh = { ...fresh, flags: [...fresh.flags, APPROXIMATE_FLAG] };
     }
+    // The attached PDF's total and the total the email itself states disagree: the human must see it.
+    if (msg.channel === "email" && !fresh.flags.includes("conflicting_numbers") && pdfBodyTotalConflict(x, ownText)) fresh = { ...fresh, flags: [...fresh.flags, "conflicting_numbers"] };
+    // Another date, a delivery window that misses the time, a reply written as another business
+    // (parsing/termsCheck.ts): flagged, and approval waits for the human to sort it out. A call
+    // transcript is checked only through what the reader extracted (it holds the agent's words too).
+    const terms = termsMismatch({ own: msg.channel === "phone" ? null : ownText, x, request: job.request, businessName: b.name });
+    if (terms.flags.length) fresh = { ...fresh, flags: [...new Set([...fresh.flags, ...terms.flags])], terms_mismatch: { notes: terms.notes, ...(terms.offered_date ? { offered_date: terms.offered_date } : {}), ...(terms.delivery_window ? { delivery_window: terms.delivery_window } : {}), ...(terms.signed_as ? { signed_as: terms.signed_as } : {}) } };
     let record = mergeCarryOver(fresh, priorRecord);
     // An answer to "can you confirm X?" ("yes, 45 vegetarian", "$250 extra for delivery") carries no
     // price: it revises the business's current quote with what it now states, keeping that quote's own
@@ -3215,8 +5451,11 @@ export class HaggleEngine {
     // batched follow-up: the missing answers plus the total ask (exact, firm or all-in), once.
     if (missing.length) await this.sendMissingFollowUp(job, { ...b, status }, missing, totalAsk && followupsBefore < 1 ? { totalAsk, firmTotal: firmAsk !== null } : {});
     else if (!needExact && totalAsk && chase && followupsBefore < 1) await this.sendMissingFollowUp(job, { ...b, status }, [], { totalAsk, firmTotal: firmAsk !== null });
-    // Partner's brain learns from every parsed reply; a brain failure never blocks the deal.
-    try {
+    // Partner's brain learns from every parsed reply; a brain failure never blocks the deal. Profiles are
+    // shared across workspaces (until the brain is tenant-scoped), so only trustworthy readings teach
+    // it: never an unverified sender, a keyword-fallback reading, or a simulated reply on a live job.
+    const teaches = msg.sender_trusted === true && !heuristicReading(record) && !(job.mode === "live" && msg.simulated);
+    if (teaches) try {
       const contractQuote = quoteRow ? toContractQuote(quoteRow, b, { budgetCents: job.budget_cents }) : null;
       // A revised quote answers a counter: did that counter cite a real competing quote?
       const counter = quoteRow && quoteRow.round >= 2 ? (await this.repo.listEvents(job.id)).filter((e) => e.type === "counteroffer" && e.data.business_id === b.business_id && Number(e.data.round) === quoteRow!.round).at(-1) : undefined;
@@ -3432,7 +5671,7 @@ export class HaggleEngine {
       if (pay.status !== "awaiting_invoice" && pay.status !== "expired") return; // duplicate or late challenge: stored, not paid
       const updated = await this.repo.transitionPayment(pay.id, ["awaiting_invoice", "expired"], {
         status: "invoice_received", challenge_json: Buffer.from(data).toString("utf8"), challenge_step_id: parsed.parsed.stepId, challenge_message_id: msg.id,
-        challenge_trusted: msg.sender_trusted === true, challenge_thread_matched: threadMatched, pay_to: parsed.parsed.payTo,
+        challenge_trusted: provesSenderIdentity(msg), challenge_thread_matched: threadMatched, pay_to: parsed.parsed.payTo, // a thread-only (reply token) sender never names a payee
       });
       if (updated) await this.repo.appendEvent(job.id, "payment", { status: "invoice_received" });
       return;
@@ -3441,7 +5680,7 @@ export class HaggleEngine {
       // NOT VERIFIED against a live receipt: accept only a trusted, in-thread receipt for our step with a tx hash.
       const p = envelope.payload ?? {};
       const tx = typeof p.settle_tx === "string" ? p.settle_tx : typeof p.transaction === "string" ? p.transaction : null;
-      const ok = msg.sender_trusted === true && threadMatched && pay.status === "sent" && tx !== null && p.status !== "rejected";
+      const ok = provesSenderIdentity(msg) && threadMatched && pay.status === "sent" && tx !== null && p.status !== "rejected";
       if (ok) {
         const done = await this.repo.transitionPayment(pay.id, ["sent"], { status: "settled", settle_tx: tx, simulated: pay.simulated || msg.simulated });
         if (done) await this.repo.appendEvent(job.id, "payment", { status: "settled", settle_tx: tx, simulated: done.simulated });
@@ -3486,7 +5725,7 @@ export class HaggleEngine {
       job: { id: job.id, state: job.state },
       approval: approval ? { id: approval.id, job_id: approval.job_id, quote_id: approval.quote_id, business_id: approval.business_id, quote_total_cents: approval.quote_total_cents, payment_cents: approval.payment_cents, status: approval.status, expires_at: approval.expires_at } : null,
       quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
-      knownPayTo: null, existingPayment: null, spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents), now: this.now(),
+      knownPayTo: null, existingPayment: null, spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, (await this.getSettings(job.workspace_id)).spending_cap_cents), now: this.now(),
       challengeEmail: { business_id: pay.business_id, sender_trusted: pay.challenge_trusted, thread_matched: pay.challenge_thread_matched },
     });
     if (!prepared.ok) {
@@ -3522,31 +5761,24 @@ export class HaggleEngine {
     // A `charging` row is resumed only after a recorded retryable failure, or when it is stale (a
     // crash between insert and result). A fresh one is in flight in another call: don't call Stripe
     // again (its idempotency key would dedupe, but we never rely on that alone).
-    if (pay && pay.approval_id === approval.id && pay.status === "charging" && !pay.reason?.startsWith("retryable:") && Date.now() - Date.parse(pay.updated_at) < 60_000) return {};
-    // Stripe keeps an idempotency key about 24 hours: a charge first tried longer ago than that could
-    // be charged twice if re-POSTed (the first may have succeeded unseen). Stop and leave it to a person.
-    if (pay && pay.approval_id === approval.id && pay.status === "charging" && this.now().getTime() - Date.parse(pay.created_at) > STRIPE_RESUME_LIMIT_MS) {
-      const reason = `charge_unconfirmed: not retried after ${Math.round(STRIPE_RESUME_LIMIT_MS / 3_600_000)}h (Stripe's idempotency window); check Stripe for a PaymentIntent with metadata approval_id=${approval.id} before charging again`;
-      if (await this.repo.transitionPayment(pay.id, ["charging"], { status: "failed", reason })) {
-        await this.repo.appendEvent(jobId, "payment", { status: "failed", rail: "stripe", reason });
-        this.log("payment_resume_expired", { job_id: jobId, payment_id: pay.id, approval_id: approval.id });
+    if (pay && pay.approval_id === approval.id && pay.status === "charging" && !pay.reason?.startsWith("retryable:") && this.now().getTime() - Date.parse(pay.updated_at) < 60_000) return {};
+    // Too old to resume under Stripe's idempotency window, failing over and over, or held for an
+    // operator: not charged (workflow/deadLetter.ts decideChargeResume).
+    if (pay && pay.approval_id === approval.id && pay.status === "charging" && (await this.holdCharge(job, approval, pay))) return {};
+    // Resuming a charge Stripe hasn't seen yet: revalidate everything (the cap, the quote, the
+    // approval may have changed while it sat). One that has a PaymentIntent is reconciled as is.
+    if (pay && pay.approval_id === approval.id && pay.status === "charging" && !pay.stripe_payment_intent_id) {
+      const v = await this.paymentVerdict(job, approval);
+      if (!v.ok) {
+        await this.repo.transitionPayment(pay.id, ["charging"], { status: "failed", reason: `refused:${v.code}` });
+        await this.repo.appendEvent(jobId, "payment_refused", { code: v.code, approval_id: approval.id, resumed: true });
+        return { refused: v.code };
       }
-      return {};
     }
     if (!pay || pay.approval_id !== approval.id) {
       if (!job.pay_intent) return {};
-      const quote = await this.repo.getQuote(approval.quote_id);
-      const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === approval.business_id);
-      const verdict = checkStripePaymentAllowed({
-        stripeConfigured: true,
-        job: { id: job.id, state: job.state },
-        approval: { id: approval.id, job_id: approval.job_id, quote_id: approval.quote_id, business_id: approval.business_id, quote_total_cents: approval.quote_total_cents, payment_cents: approval.payment_cents, status: approval.status, expires_at: approval.expires_at },
-        quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
-        payee: b && quote ? { business_id: b.business_id, on_job: true, quoted_from_trusted_sender: quote.sender_trusted && quote.business_id === b.business_id } : null,
-        existingPayment: null,
-        spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, approval.cap_cents),
-        now: this.now(),
-      });
+      // The workspace cap as it is now: lowering it after an approval still stops the charge.
+      const verdict = await this.paymentVerdict(job, approval);
       if (!verdict.ok) {
         // The pay request is spent: logged once, and no later advance (or later approval) charges
         // without another pay() call.
@@ -3566,6 +5798,7 @@ export class HaggleEngine {
       pay = inserted;
     }
     const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === pay!.business_id);
+    if (!(await this.stillLeased(jobId))) return {}; // another instance has the job; it resumes this charge
     const r = await stripe.charge({
       amountCents: pay.amount_cents, idempotencyKey: pay.idempotency_key!,
       description: `Haggle deposit to ${b?.name ?? "business"} (job HG-${job.short_code})${stripe.simulated ? " [DEMO]" : " [TEST MODE]"}`,
@@ -3580,6 +5813,7 @@ export class HaggleEngine {
     } else if (r.retryable) {
       // Stays `charging` and marked resumable; the next advance retries with the same key.
       await this.repo.transitionPayment(pay.id, ["charging"], { reason: `retryable:${r.reason}`.slice(0, 200), ...(r.paymentIntentId ? { stripe_payment_intent_id: r.paymentIntentId } : {}) });
+      await this.repo.appendEvent(jobId, "payment_retry", { payment_id: pay.id, reason: r.reason.slice(0, 120) }); // counted by holdCharge
       this.log("stripe_charge_retry", { job_id: jobId, reason: r.reason });
     } else {
       await this.repo.transitionPayment(pay.id, ["charging"], { status: "failed", reason: r.reason.slice(0, 200), ...(r.paymentIntentId ? { stripe_payment_intent_id: r.paymentIntentId } : {}) });
@@ -3625,6 +5859,48 @@ export class HaggleEngine {
     return kind === "token" ? this.repo.findWorkspaceByTokenHash(hash) : this.repo.findWorkspaceBySecretHash(hash);
   }
 
+  /** Operator only (scripts/workspace-admin.ts): authorize a vendor contact for one workspace, recording the consent. */
+  async addWorkspaceVendor(v: { workspace_id: string; contact: string; name: string; consent: string; added_by: string; channel?: Channel | null }) {
+    const contact = v.contact.includes("@") ? normalizeAddress(v.contact) : v.contact.replace(/[\s().-]/g, "");
+    if (!EMAIL_RE.test(contact) && !E164_RE.test(contact)) throw new EngineError("bad_contact", "A vendor contact is an email address or an E.164 phone number.", "Fix the contact.", "none");
+    if (v.channel && (v.channel === "email") !== contact.includes("@")) throw new EngineError("bad_channel", `Channel ${v.channel} doesn't fit ${contact}.`, "Email for an address; phone (a call) or imessage (a text) for a number.", "none");
+    if (v.consent.trim().length < 3) throw new EngineError("consent_required", "Record how the vendor agreed to be contacted.", "Pass the consent (who agreed, how, when).", "none");
+    return this.repo.addWorkspaceVendor({ ...v, contact, consent: v.consent.trim() });
+  }
+
+  /** Operator only: withdraw a vendor's authorization for one workspace. */
+  async removeWorkspaceVendor(workspaceId: string, contact: string) {
+    return this.repo.removeWorkspaceVendor(workspaceId, contact.includes("@") ? normalizeAddress(contact) : contact.replace(/[\s().-]/g, ""));
+  }
+
+  /** May this workspace contact the business: every contact on the server allowlist or the workspace's vendors, none suppressed. */
+  async mayContact(b: { email?: string | null; phone?: string | null; a2a_card_url?: string | null }, workspaceId: string): Promise<boolean> {
+    const contacts = [b.email ? normalizeAddress(b.email) : null, b.phone?.replace(/[\s().-]/g, "") ?? null, b.a2a_card_url ?? null].filter((c): c is string => !!c);
+    if (!contacts.length) return false;
+    const ws = new Set((await this.repo.listWorkspaceVendors(workspaceId)).map((v) => v.contact));
+    if ((await this.repo.findSuppressions(contacts)).length) return false;
+    return contacts.every((c) => this.allowedRecipient(c) || ws.has(c.toLowerCase()));
+  }
+
+  /** Operator only (scripts/workspace-admin.ts): revoke a workspace, so its token and connector URL stop working. */
+  async revokeWorkspace(id: string) {
+    const w = await this.repo.setWorkspaceCredentials(id, { revoked: true });
+    if (!w) throw new EngineError("workspace_not_found", `No workspace ${id}.`, "Check the workspace id.", "none");
+    return w;
+  }
+
+  /** A workspace's suspension (scripts/workspace-admin.ts suspend; ops/operator.ts), or null: the MCP endpoint refuses tools while it is set. */
+  async workspaceSuspension(id: string) {
+    return workspaceSuspension(this.repo, id);
+  }
+
+  /** Operator only: new credential hashes for a workspace (clears a revocation). */
+  async rotateWorkspaceCredentials(id: string, tokenHash: string, connectorSecretHash: string) {
+    const w = await this.repo.setWorkspaceCredentials(id, { token_hash: tokenHash, connector_secret_hash: connectorSecretHash, revoked: false });
+    if (!w) throw new EngineError("workspace_not_found", `No workspace ${id}.`, "Check the workspace id.", "none");
+    return w;
+  }
+
   /** Create a workspace (scripts/workspace-create.ts); credentials are stored only as hashes. */
   async createWorkspace(w: { id: string; name: string; tokenHash: string; connectorSecretHash: string; timezone?: string; settings?: Partial<Omit<SettingsRow, "updated_at">> }) {
     const row = await this.repo.insertWorkspace({ id: w.id, name: w.name, token_hash: w.tokenHash, connector_secret_hash: w.connectorSecretHash, timezone: w.timezone ?? "America/Los_Angeles" });
@@ -3645,8 +5921,16 @@ export class HaggleEngine {
         this.log("advance_failed", { job_id: job.id, error: (err as Error).message });
       }
     }
+    // Then what an advance can't fix by itself: stale claims, unsent confirmations, replies to
+    // closed deals, jobs overdue past their deadline (workflow/recovery.ts). At most every 2 minutes.
+    if (this.now().getTime() - this.recoveredAt >= RECOVERY_SWEEP_MS) {
+      this.recoveredAt = this.now().getTime();
+      await this.recoverStuck({ advanceOpen: false }).catch((e) => this.log("recovery_failed", { error: redactError(e) }));
+    }
     return { advanced, failed };
   }
+
+  private recoveredAt = 0;
 
   /**
    * Long-poll. `until` (from haggle-testing wait_for_request): any_change (default) returns on the
@@ -3675,6 +5959,8 @@ export class HaggleEngine {
 
   private async nextHint(job: JobRow): Promise<string> {
     const pending = (await this.repo.listQuestions(job.id)).filter((q) => q.status === "pending");
+    const purchase = job.state === "paying" || job.state === "paid" ? await this.purchaseFor(job) : null;
+    if (purchase) return `${purchase.summary} Next: ${purchase.next}`;
     if (TERMINAL.has(job.state)) return job.state === "paid" ? "Done. get_quotes shows the receipt." : job.state === "confirmed" ? "Done: the business was told to go ahead (nothing was paid)." : `Job ${job.state}${job.failure_reason ? ` (${job.failure_reason})` : ""}.`;
     const latest = job.state === "awaiting_approval" ? await this.repo.getLatestApproval(job.id) : null;
     const suggestion = latest?.status === "pending" && (await this.isAutoApproval(job.id, latest.id)) ? latest : null;
@@ -3728,7 +6014,7 @@ export class HaggleEngine {
       this.repo.getBusinesses(jobId), this.repo.listQuotes(jobId), this.repo.getLatestApproval(jobId), this.repo.getPaymentForJob(jobId), this.repo.listEvents(jobId), this.repo.listQuestions(jobId), this.repo.listMessages(jobId),
     ]);
     const byId = new Map(businesses.map((b) => [b.business_id, b]));
-    const { quotes, ranking } = await this.rankRows(job, all);
+    const { quotes, ranking, capCents } = await this.rankRows(job, all);
     const order = new Map(ranking.ranked.map((r, i) => [r.quoteId, i]));
     const rejectedBy = new Map(ranking.rejected.map((r) => [r.quoteId, r.reason]));
     const sorted = [...quotes].sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9) || (a.total_cents ?? 1e12) - (b.total_cents ?? 1e12));
@@ -3767,6 +6053,7 @@ export class HaggleEngine {
         ...(isApproximate(q.record) ? { total_approximate: true as const } : {}),
         approvable: block === null, ...(block ? { approval_block: block } : {}),
         ...(fields ? { fields, missing_fields: missingFields } : {}),
+        compliance: this.complianceOf(job, q, capCents), freshness: this.freshnessOf(q, events),
       });
       if (reason) unknownOnly.set(q.id, cq.requirement_results);
     }
@@ -3777,7 +6064,7 @@ export class HaggleEngine {
       const bid = typeof e.data.business_id === "string" ? e.data.business_id : null;
       if (!bid) continue;
       const summary = e.type === "quote" ? (e.data.total_usd == null ? "Replied without a total" : `Quoted $${Number(e.data.total_usd).toLocaleString("en-US")} (round ${e.data.round})`)
-        : e.type === "question" ? `Asked: ${String(e.data.text).slice(0, 120)}` : e.type === "flag" ? `Flagged: ${String(e.data.flag).replace(/_/g, " ")}`
+        : e.type === "question" ? `Asked: ${String(e.data.text).slice(0, 120)}` : e.type === "flag" ? (typeof e.data.board_line === "string" ? e.data.board_line : `Flagged: ${String(e.data.flag).replace(/_/g, " ")}`)
         : e.type === "reply" ? String(e.data.summary ?? "") : null;
       if (summary) lastEvent.set(bid, summary);
       if (typeof e.data.transcript_snippet === "string" && e.data.transcript_snippet) transcripts.set(bid, e.data.transcript_snippet);
@@ -3834,14 +6121,48 @@ export class HaggleEngine {
     // Recommend only what the human can actually approve: the best-value quote that passes every hard
     // rule and the per-payment ceiling. A better-value quote that can't be approved stays on the board
     // with its reason; nothing is dropped silently, and the ceiling is never weakened.
+    // Per-business contact status (inbound/contactStatus.ts) from the rows already read; only the ones
+    // the agent must act on or explain are listed (bounced, failed, opted out, held reply, deferred).
+    const contactRows = businesses.flatMap((b) => [b.email ? normalizeAddress(b.email) : null, b.phone].filter((c): c is string => !!c));
+    const contactSuppressions = contactRows.length ? await this.repo.findSuppressions(contactRows) : [];
+    const vendorContact = Object.fromEntries(businesses.map((business) => contactStatusOf({ business, messages, suppressions: contactSuppressions, events }))
+      .filter((c) => NOTABLE_CONTACT.has(c.contact_status))
+      .map((c) => [c.business_id, { status: c.contact_status as BusinessContactStatus["contact_status"] | ExclusionStatus, detail: c.line, ...(c.next_contact_at ? { next_contact_at: c.next_contact_at } : {}) }]));
+    // Every other contacted vendor that isn't compared says why, in plain words (ranking/exclusion.ts).
+    const pricedNow = new Set(quotes.filter((q) => q.total_cents !== null && q.record.available).map((q) => q.business_id));
+    const quotesFinal = job.ready || !["created", "contacting", "collecting", "negotiating"].includes(job.state);
+    for (const b of businesses) {
+      if (vendorContact[b.business_id]) continue;
+      const x = exclusionOf({
+        name: b.name, channel: b.channel, compared: pricedNow.has(b.business_id), declined: b.status === "declined" || quotes.some((q) => q.business_id === b.business_id && !q.record.available),
+        unreachable: b.status === "unavailable" ? this.route(b).reason ?? "no usable channel" : null, question: questions.find((q) => q.business_id === b.business_id)?.text ?? null,
+        unreadable: unreadable.has(b.business_id), quotesFinal, replied: !!b.last_reply_at,
+      });
+      if (x) vendorContact[b.business_id] = { status: x.status, detail: x.detail };
+    }
+    const notCompared = exclusionLine(businesses.filter((b) => vendorContact[b.business_id] && !pricedNow.has(b.business_id)).map((b) => ({ name: b.name, status: vendorContact[b.business_id]!.status })));
     const boardById = new Map(out.map((q) => [q.quote_id, q]));
     // A request compared on a non-money answer (earliest date) recommends in the ranker's compare_by order.
     const recommendOrder = nonMoneyCompare(job.request) ? ranking.ranked.map((r) => r.quoteId) : value.ranked.map((r) => r.quoteId);
-    const recommended = recommendOrder.map((id) => boardById.get(id)).find((q) => q?.approvable) ?? null;
+    // ...and that misses no must: a quote with an unmet or unconfirmed requirement, over the budget or
+    // with a pay-now amount over the cap never wins by default (best_available names the closest one).
+    // ...and never a stale real quote (it is re-confirmed with the business before any approval).
+    const fresh = (q: BoardQuote) => !q.freshness?.stale || byId.get(q.business_id)?.simulated === true;
+    const recommended = recommendOrder.map((id) => boardById.get(id)).find((q) => q?.approvable && q.compliance?.status === "compliant" && fresh(q)) ?? null;
+    const bestAvailable = recommended ? null : recommendOrder.map((id) => boardById.get(id)).find((q) => q?.approvable) ?? null;
     const bestValue = nonMoneyCompare(job.request) ? recommended : value.recommendedQuoteId ? boardById.get(value.recommendedQuoteId) ?? null : null;
-    const recommendation_note = bestValue && bestValue !== recommended
-      ? `Best value is ${bestValue.business} but it can't be approved yet: ${bestValue.approval_block?.reason ?? "not approvable"}${recommended ? ` Recommended instead: ${recommended.business}, the best quote that can be approved.` : " No quote can be approved yet."}`
+    const recommendation_note = bestAvailable
+      ? `No quote meets every requirement, so Haggle recommends none. Closest: ${bestAvailable.business} (${complianceSummary(bestAvailable.compliance!)}). The human may still approve any option knowingly; the caveats go with the approval.`
+      : bestValue && bestValue !== recommended
+      ? `Best value is ${bestValue.business} but it can't be approved yet: ${bestValue.approval_block?.reason ?? (bestValue.compliance?.status !== "compliant" ? complianceSummary(bestValue.compliance!) : "not approvable")}${recommended ? ` Recommended instead: ${recommended.business}, the best quote that can be approved and meets every requirement.` : " No quote can be approved yet."}`
       : undefined;
+    // Why each quote was selected or can't be (ranking/selection.ts): one line per quote for the agent and the board.
+    for (const q of out) {
+      q.selection = selectionOf({
+        current: q.status === "current", rejected: q.verdict === "rejected" ? (q.excluded_reason ?? "unsafe or declined") : null, approvalBlock: q.approval_block ?? null, compliance: q.compliance ?? null,
+        freshness: byId.get(q.business_id)?.simulated ? null : q.freshness ?? null, recommended: recommended?.quote_id === q.quote_id, recommendedBusiness: recommended?.business ?? null,
+      });
+    }
     const pendingQuestions = questions.length > 0;
     const finalNext = job.ready && !TERMINAL.has(job.state) && (job.state === "collecting" || job.state === "negotiating") && !pendingQuestions;
     // The slower parts (cross-job contact learning, callback evidence, the next hint) run together.
@@ -3849,11 +6170,14 @@ export class HaggleEngine {
       Promise.all(businesses.map(async (b) => [b.business_id, await this.contactLearning(b.business_id, await this.businessAliases(b)).catch(() => ({ channels: {} }))] as const)),
       this.callbackProposals(jobId),
       finalNext ? Promise.resolve("") : this.nextHint(job),
-      payment ? this.withReceipt(jobId, paymentStatus(payment), events) : Promise.resolve(null),
+      payment ? this.withReceipt(jobId, paymentStatus(payment), events) : this.handoffFor(job, events),
     ]);
+    const purchase = payment ? null : await this.purchaseFor(job, events);
     const next = finalNext
       ? recommended
         ? `Quotes are final. Call approve(job_id, quote_id='${recommended.quote_id}') for ${recommended.business}, the recommended quote the human can approve${recommendation_note ? ` (${bestValue!.business} is better value but blocked: ${bestValue!.approval_block?.code})` : ""}.`
+        : bestAvailable
+        ? `Quotes are final, but none meets every requirement, so Haggle recommends none: ${out.filter((q) => q.approvable && q.status === "current").map((q) => `${q.business} ${q.total_usd === null ? "" : `$${q.total_usd}`} (${complianceSummary(q.compliance!)})`).join("; ").slice(0, 600)}. Tell the user and ask which, if any, to approve knowingly (approve(job_id, quote_id) shows the human these caveats); don't pick one for them.`
         : `Quotes are final, but none can be approved yet: ${out.filter((q) => q.approval_block && q.status === "current").map((q) => `${q.business}: ${q.approval_block!.reason}`).join(" ").slice(0, 600) || "no priced quote"}. Tell the user; they may ask a business for a firm total or a smaller deposit.`
       : hint;
     return {
@@ -3862,6 +6186,7 @@ export class HaggleEngine {
       quotes: out,
       ...(recommended ? { recommended_quote_id: recommended.quote_id } : {}),
       ...(bestValue && bestValue !== recommended ? { best_value_quote_id: bestValue.quote_id } : {}),
+      ...(bestAvailable ? { best_available_quote_id: bestAvailable.quote_id } : {}),
       ...(recommendation_note ? { recommendation_note } : {}),
       ...(value.ranked.length ? { value } : {}),
       stages,
@@ -3881,12 +6206,14 @@ export class HaggleEngine {
       negotiation,
       business_names: Object.fromEntries(businesses.map((b) => [b.business_id, b.name])),
       businesses: board,
+      ...(Object.keys(vendorContact).length ? { vendor_contact: vendorContact } : {}),
       approval: approval ? { ...approvalRecord(approval, job), ...(approval.status === "pending" && isAutoIn(events, approval.id) ? { replaceable: true } : {}) } : null,
       payment: paymentOut ?? (job.state === "awaiting_approval" ? this.noPayment() : null),
+      ...(purchase ? { purchase } : {}),
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
       payment_ceiling_usd: centsToUsd(Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents)),
       payments_enabled: this.d.stripe !== undefined || !this.d.payer.disabledReason,
-      next,
+      next: notCompared && job.ready && ["collecting", "negotiating", "awaiting_approval"].includes(job.state) ? `${next} ${notCompared}` : next,
     };
   }
 
@@ -3981,6 +6308,7 @@ export class HaggleEngine {
     const text = answer.trim().slice(0, 2000);
     if (!text) throw new EngineError("empty_answer", "Answer is empty.", "Pass the answer text.", "answer_business");
     const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id)!;
+    await this.refuseIfOptedOut(job, b);
     // The answer goes on the channel the business was first contacted on (and asked on).
     if (!this.canReach(b)) throw new EngineError("no_contact_method", `${b.name} can't be reached by ${b.channel} here any more.`, "Send the answer with send_message and an explicit channel the business has (see get_quotes).", "send_message");
     const textSuffix = ` Could you send your full total and deposit? Ref HG-${job.short_code}`;
@@ -4029,6 +6357,21 @@ export class HaggleEngine {
   }
 
   /**
+   * A business that asked not to be contacted (a STOP on this deal, verified or not, or an opt-out
+   * suppression of any of its contacts) gets no agent-written message on any channel: an email STOP
+   * suppresses only the address, never permission to call or text instead (S5-D F10).
+   */
+  private async optedOut(job: JobRow, b: JobBusinessRow): Promise<boolean> {
+    if ((await this.repo.listEvents(job.id)).some((e) => e.data.business_id === b.business_id && e.data.opt_out !== undefined)) return true;
+    const contacts = [b.email ? normalizeAddress(b.email) : null, b.phone, b.a2a_card_url?.toLowerCase() ?? null].filter((c): c is string => !!c);
+    return contacts.length ? (await this.repo.findSuppressions(contacts)).some((s) => s.reason === "opt_out") : false;
+  }
+
+  private async refuseIfOptedOut(job: JobRow, b: JobBusinessRow) {
+    if (await this.optedOut(job, b)) throw new EngineError("business_opted_out", `${b.name} asked not to be contacted; Haggle won't message it on any channel.`, "Choose among the other businesses (get_quotes).", "get_quotes");
+  }
+
+  /**
    * The message guard for agent-written text (answer_business, send_message): amounts must come from
    * this request or a stored quote, other businesses are never named, no commitment phrases, and
    * the channel's length limit. Throws an EngineError with the guard's code.
@@ -4039,7 +6382,7 @@ export class HaggleEngine {
       for (const c of [q.total_cents, q.deposit_cents, q.record.price_per_head_cents, q.record.subtotal_cents, q.record.delivery_fee_cents, q.record.tax_cents]) if (c !== null) verified.add(c);
       for (const v of Object.values(q.record.fields ?? {})) if (typeof v === "number") verified.add(v);
     }
-    for (const d of job.request.details ?? []) for (const c of findDollarAmounts(d.value)) verified.add(c);
+    for (const d of job.request.details ?? []) if (!citesCompetingOffer(`${d.label}: ${d.value}`)) for (const c of findDollarAmounts(d.value)) verified.add(c);
     const others = (await this.repo.getBusinesses(job.id)).filter((x) => x.business_id !== b.business_id).map((x) => x.name);
     const g = checkMessage({ text, limit, verifiedCents: verified, otherBusinessNames: others });
     if (g.ok) return;
@@ -4064,10 +6407,20 @@ export class HaggleEngine {
     const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === businessId);
     if (!b) throw new EngineError("business_not_found", "No such business on this deal.", "Use a business_id from get_quotes.", "get_quotes");
     if (!opts.text === !opts.askMissing) throw new EngineError("bad_message", "Pass exactly one of text or ask_missing.", "Send free text, or ask_missing=true to ask for what the quote lacks.", "send_message");
+    await this.refuseIfOptedOut(job, b);
     // Default: the channel it was first contacted on. Another channel only when the agent asks for it.
     const channel: Channel = opts.channel ?? b.channel;
     const reachable = channel === "email" ? !!b.email : channel === "phone" ? !!(b.phone && this.d.phone) : channel === "imessage" ? !!(b.phone && (this.d.imessage || this.d.sms)) : !!(this.d.a2a && b.a2a_card_url && b.thread_id);
     if (!reachable) throw new EngineError("no_contact_method", `${b.name} can't be reached by ${channel} here.`, opts.channel ? "Pick a channel the business has (see get_quotes), or omit channel." : "Its own channel isn't available here; pass channel explicitly with one the business has (see get_quotes).", "get_quotes");
+    if (channel === "phone" && this.callbacksNeedApproverText) {
+      // A Voice AI call the agent asks for rings a real person: on a live server it is never a switch from
+      // another channel, never a price discussion (that is a callback: call_back, the approver's CALL
+      // code and recorded consent), and at most one per business per deal (S5-D F11).
+      if (b.channel !== "phone") throw new EngineError("call_needs_approver", `${b.name} was contacted by ${b.channel}; switching it to a Voice AI call needs the approver.`, "Message it on its own channel, or use call_back (the approver authorizes calls by text).", "call_back");
+      if (opts.text && amountsIn(opts.text).length) throw new EngineError("call_cites_price", "A call that discusses prices is a callback the approver authorizes.", "Use call_back when get_quotes offers one, or negotiate.", "call_back");
+      const called = (await this.repo.listMessages(jobId)).some((m) => m.direction === "out" && m.kind === "call" && m.business_id === b.business_id && !!m.idempotency_key?.startsWith("msg:"));
+      if (called) throw new EngineError("call_limit", `Haggle already called ${b.name} once for you on this deal.`, "Wait for its answer (wait_for_update), or use call_back for an approver-authorized call.", "wait_for_update");
+    }
     const ref = `Ref HG-${job.short_code}`;
     const textLimit = (this.d.imessage ? 159 : SMS_LIMIT) - ref.length - 1;
     let text: string;
@@ -4090,12 +6443,12 @@ export class HaggleEngine {
       if (!m) throw new EngineError("send_refused", `The text to ${b.name} wasn't sent.`, "Try again shortly, or pass another channel the business has.", "send_message");
       messageId = m.id;
     } else if (channel === "a2a") {
-      const t = await this.d.a2a!.send({ cardUrl: b.a2a_card_url!, text, data: { haggle: "message/1", protocol: "haggle.v0", type: "message", job_id: job.id }, messageId: `haggle-${key.replace(/:/g, "-")}`, contextId: b.thread_id! });
+      const t = await this.a2aSend(job.id, key, { cardUrl: b.a2a_card_url!, text, data: { haggle: "message/1", protocol: "haggle.v0", type: "message", job_id: job.id }, messageId: `haggle-${key.replace(/:/g, "-")}`, contextId: b.thread_id! });
       messageId = (await this.recordA2aOutbound(job, b, "message", key, t.taskId, text, job.round))?.id;
     } else {
       const blocked = await this.callBlockedUntil(job, b.phone!);
       if (blocked) return { ok: true, mode: job.mode, business_id: b.business_id, channel, sent: false, scheduled_for: blocked.toISOString(), next: `Calls to ${b.name} are paused until ${blocked.toISOString()} (call hours or a recent call). Try again then, or email if it has an address.` };
-      const { callId } = await this.d.phone!.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone!, reason: this.taskBrief(job, b, opts.askMissing ? "followup" : "message", text), idempotencyKey: key });
+      const { callId } = await this.placeCallOnce(job.id, { jobId: job.id, businessId: b.business_id, toNumber: b.phone!, reason: this.taskBrief(job, b, opts.askMissing ? "followup" : "message", text), idempotencyKey: key });
       messageId = (await this.repo.insertMessage({
         job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind: "call", channel: "phone", provider_email_id: callId, idempotency_key: key,
         rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: text, attachments: [], attachments_download_url: null,
@@ -4186,7 +6539,9 @@ export class HaggleEngine {
   syncVoiceContext() {
     if (!this.d.voice) return;
     void (async () => {
-      const jobs = (await this.repo.listOpenJobs()).slice(-20).reverse();
+      // One shared voice line: only the voice workspace's requests, never another tenant's.
+      const voiceWs = this.d.config.voiceWorkspaceId ?? DEFAULT_WORKSPACE_ID;
+      const jobs = (await this.repo.listOpenJobs()).filter((j) => j.workspace_id === voiceWs).slice(-20).reverse();
       const voiceJobs = await Promise.all(jobs.map(async (j) => ({ shortCode: j.short_code, request: j.request, businesses: (await this.repo.getBusinesses(j.id)).map((b) => ({ name: b.name, phone: b.phone })) })));
       await this.d.voice!.setInstructions(buildVoiceInstructions(customerOf({}, this.d.config.customerName), voiceJobs));
     })().catch((err) => this.log("voice_sync_failed", { error: (err as Error).message }));
@@ -4226,6 +6581,12 @@ export class HaggleEngine {
         job = await this.loadJob(jobId);
       }
     }
+    if (!auto && job.state === "paying" && this.d.config.manualPaymentHandoff) {
+      // A booking the vendor never confirmed (after Haggle's reminder) or a handoff the payment checks
+      // refused is a dead end otherwise: the agent may ask the human to approve another quote (or the
+      // same one again). The old approval is withdrawn first; nothing was paid on it.
+      if (await this.withdrawStuckBooking(job, quoteId)) job = await this.loadJob(jobId);
+    }
     if (job.state !== "collecting" && job.state !== "negotiating") {
       const latest = await this.repo.getLatestApproval(jobId);
       if (job.state === "awaiting_approval" && latest?.status === "pending" && latest.quote_id === quoteId && (!action || latest.action === normalizeAction(action))) return latest;
@@ -4240,6 +6601,12 @@ export class HaggleEngine {
     }
     const q = await this.repo.getQuote(quoteId);
     if (!q || q.job_id !== jobId) throw new EngineError("quote_not_found", "No such quote on this job.", "Use a quote_id from get_quotes.", "get_quotes");
+    // A live deal approves only a real business's reply (never a simulated one, never a quote with no source message).
+    const src = await this.repo.getMessage(q.message_id);
+    if (job.mode === "live" && (!src || src.simulated)) throw new EngineError("quote_not_eligible", "That quote can't be approved: simulated_reply.", "Only a real business's reply can be approved on a live deal.", "get_quotes");
+    // A business that asked not to be contacted after quoting gets no booking request (S5 review H9).
+    const quoted = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id);
+    if (quoted) await this.refuseIfOptedOut(job, quoted);
     // Only safety, no firm positive amount, or an unconfirmed all-in total refuses, for confirm-only
     // approvals too (decision 19); everything else is a caveat on the approval.
     const { hard: reason } = this.approvability(job, q);
@@ -4264,12 +6631,41 @@ export class HaggleEngine {
     if (pays && !payNow) throw new EngineError("no_deposit", "This quote has no amount to pay now.", "Ask the business for its price first, or approve with action 'confirm' (no payment).", "get_quotes");
     // Defense in depth: never approve paying more than the quote's own total.
     if (pays && q.total_cents !== null && payNow! > q.total_cents) throw new EngineError("deposit_over_total", `The $${centsToUsd(payNow!).toFixed(2)} deposit is more than the $${centsToUsd(q.total_cents).toFixed(2)} total; one of the figures is wrong.`, "Ask the business to confirm its total and deposit (answer_business or send_message), then approve the corrected quote.", "get_quotes");
+    if (!pays && this.d.config.manualPaymentHandoff) {
+      // Manual rail: a confirm-only order is "confirmed" only by the business's own written yes, which
+      // Haggle can read from email or a text, never from a call or an A2A task.
+      const cb = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id);
+      if (!cb || !((cb.channel === "email" && cb.email) || (cb.channel === "imessage" && this.canReach(cb)))) {
+        throw new EngineError("confirm_needs_written_reply", `${cb?.name ?? "This business"} is reached by ${cb?.channel === "phone" ? "a Voice AI call" : cb?.channel ?? "a channel"} Haggle can't get a written confirmation from, so a confirm-only approval could never be confirmed.`,
+          "Approve with action 'pay' instead (the human confirms the booking with the business directly before paying it), or choose a business Haggle reaches by email or text.", "get_quotes");
+      }
+    }
     const payment = pays ? payNow! : 0;
-    // The operator's per-payment ceiling is the one hard money limit (CLAUDE.md §7: amount ≤ approved ≤ cap).
-    const cap = this.d.config.globalPaymentCapCents;
-    if (payment > cap) throw new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this server's $${centsToUsd(cap).toFixed(2)} per-payment safety ceiling.`, "Ask the business for a smaller deposit, or ask the operator to raise HAGGLE_GLOBAL_PAYMENT_CAP_CENTS.", "get_quotes");
-    // Every human channel can be offered at once (form/card + text + email); the first human decision wins.
+    // A stale quote (past the business's valid-until date, or older than the validity window) is never
+    // approved as is: the business is asked to re-confirm it, and the approval opens once it confirms
+    // the same terms. Simulated demo vendors carry fixed sample dates and are never real offers.
+    const qb = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id);
+    if (qb && !qb.simulated) {
+      const fresh = this.freshnessOf(q, await this.repo.listEvents(jobId));
+      if (fresh.stale) {
+        const why = fresh.reason === "expired" ? `past its valid-until date (${q.record.valid_until?.slice(0, 10)})` : "older than Haggle's quote validity window";
+        if (auto) throw new EngineError("quote_stale", `${qb.name}'s quote is ${why}.`, "Approve it explicitly (Haggle re-confirms it with the business first), or choose another quote.", "get_quotes");
+        await this.requestReconfirmation(job, qb, q, channel, act, offer, why);
+        throw new EngineError("quote_reconfirming", `${qb.name}'s ${usdText(q.total_cents!)} quote is ${why}, so it can't be approved as is. Haggle asked ${qb.name} to confirm it still stands; nothing was sent to the human yet.`,
+          "Wait (wait_for_update). If the business confirms the same total and terms, Haggle sends the approval to the human automatically; a changed total arrives as a new quote that needs its own approval. Don't approve again meanwhile.", "wait_for_update");
+      }
+    }
+    // Hard money limits (CLAUDE.md §7: amount ≤ approved ≤ cap): the operator's per-payment ceiling and
+    // the workspace spending cap, whichever is lower.
     const settings = await this.getSettings(job.workspace_id);
+    const ceiling = this.d.config.globalPaymentCapCents;
+    const cap = Math.min(ceiling, settings.spending_cap_cents);
+    if (payment > cap) {
+      throw cap < ceiling
+        ? new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this workspace's $${centsToUsd(cap).toFixed(2)} spending cap.`, "Ask the business for a smaller deposit, or ask the operator to raise the workspace spending cap.", "get_quotes")
+        : new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this server's $${centsToUsd(cap).toFixed(2)} per-payment safety ceiling.`, "Ask the business for a smaller deposit, or ask the operator to raise HAGGLE_GLOBAL_PAYMENT_CAP_CENTS.", "get_quotes");
+    }
+    // Every human channel can be offered at once (form/card + text + email); the first human decision wins.
     const approverEmail = job.approver_email ?? (settings.approver_email ? normalizeAddress(settings.approver_email) : null);
     const iMessageApprover = Boolean(this.d.imessage && settings.approver_phone);
     const textTo = await this.notifyTarget(job);
@@ -4321,7 +6717,7 @@ export class HaggleEngine {
 
   private async sendApprovalEmail(job: JobRow, a: ApprovalRow) {
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === a.business_id)!;
-    const ask = HaggleEngine.approvalAsk(b.name, job.request.what, a.quote_total_cents, a.payment_cents);
+    const ask = HaggleEngine.approvalAsk(b.name, job.request.what, a.quote_total_cents, a.payment_cents, HaggleEngine.orderFacts(job.request));
     const text = [
       "Your agent picked a quote and needs your OK before anything is confirmed or paid.", "",
       `- Business: ${b.name}`, `- For: ${job.request.what}`, `- Quote total: ${usdText(a.quote_total_cents)}`,
@@ -4336,17 +6732,25 @@ export class HaggleEngine {
   }
 
   /** "Approve $250 deposit to Mission Eats for dinner catering (total $1,760)" (no trailing "?"). */
-  static approvalAsk(business: string, what: string, quoteTotalCents: number, paymentCents: number): string {
+  static approvalAsk(business: string, what: string, quoteTotalCents: number, paymentCents: number, facts?: string | null): string {
     const name = business.replace(/https?:\/\/\S+|www\.\S+/gi, "").replace(/\s+/g, " ").trim().slice(0, 40) || "the business";
-    const w = what.replace(/\s+/g, " ").trim().slice(0, 60);
+    // The order's headcount and date ride along (facts, ≤ 40 chars), so the human approves what they asked for.
+    const w = `${what.replace(/\s+/g, " ").trim().slice(0, 60)}${facts ? ` (${facts.slice(0, 40)})` : ""}`;
     if (paymentCents <= 0) return `Confirm the order with ${name} for ${w} (total ${usdText(quoteTotalCents)}, nothing paid now)`;
     if (paymentCents < quoteTotalCents) return `Approve ${usdText(paymentCents)} deposit to ${name} for ${w} (total ${usdText(quoteTotalCents)})`;
     return `Approve paying ${usdText(paymentCents)} to ${name} for ${w} (the full total)`;
   }
 
   /** The approval text: "Haggle: Approve $250 deposit to … (total $1,760)? Reply YES 1234 or NO 1234. (HG-…)". */
-  static approvalSmsText(business: string, what: string, quoteTotalCents: number, paymentCents: number, code: string, shortCode: string): string {
-    return `Haggle: ${HaggleEngine.approvalAsk(business, what, quoteTotalCents, paymentCents)}? Reply YES ${code} or NO ${code}. (HG-${shortCode})`.slice(0, SMS_LIMIT);
+  static approvalSmsText(business: string, what: string, quoteTotalCents: number, paymentCents: number, code: string, shortCode: string, facts?: string | null): string {
+    return `Haggle: ${HaggleEngine.approvalAsk(business, what, quoteTotalCents, paymentCents, facts)}? Reply YES ${code} or NO ${code}. (HG-${shortCode})`.slice(0, SMS_LIMIT);
+  }
+
+  /** "60 people, Sat Nov 14" (headcount and day, for the human's approval texts), or null. */
+  static orderFacts(r: { quantity?: number; unit?: string; date?: string }): string | null {
+    const day = r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date) ? new Date(`${r.date}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) : null;
+    const parts = [quantityText(r.quantity, r.unit), day].filter(Boolean);
+    return parts.length ? parts.join(", ") : null;
   }
 
   /**
@@ -4361,7 +6765,7 @@ export class HaggleEngine {
     if (await this.repo.findMessageByIdempotencyKey(key)) return { ok: true };
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === a.business_id)!;
     // Haggle's own "all quotes are in" suggestion has its own wording (it also says quotes are final).
-    const text = (await this.isAutoApproval(job.id, a.id)) ? await this.readyApprovalText(job, a) : HaggleEngine.approvalSmsText(b.name, job.request.what, a.quote_total_cents, a.payment_cents, a.code, job.short_code);
+    const text = (await this.isAutoApproval(job.id, a.id)) ? await this.readyApprovalText(job, a) : HaggleEngine.approvalSmsText(b.name, job.request.what, a.quote_total_cents, a.payment_cents, a.code, job.short_code, HaggleEngine.orderFacts(job.request));
     const sent = await this.textHuman(job, to, { key, text, approvalId: a.id, ...(attempt ? { attempt } : {}) });
     if (!sent.ok) return sent;
     await this.repo.insertMessage({
@@ -4384,7 +6788,9 @@ export class HaggleEngine {
   async approvalReach(jobId: string): Promise<{ text: boolean; email: boolean }> {
     const job = await this.loadJob(jobId);
     const settings = await this.getSettings(job.workspace_id);
-    return { text: Boolean(await this.notifyTarget(job)), email: Boolean(job.approver_email ?? settings.approver_email) };
+    // Under the out-of-band policy an emailed code from an unauthenticated mailbox approves only when the operator enabled it.
+    const emailCounts = !this.outOfBandApprovalsOnly || this.d.config.emailApprovalByCode === true;
+    return { text: Boolean(await this.notifyTarget(job)), email: emailCounts && Boolean(job.approver_email ?? settings.approver_email) };
   }
 
   /**
@@ -4406,7 +6812,15 @@ export class HaggleEngine {
     const key = `imsg:${sendKeys.approvalRequest(a.id)}`;
     if (await this.repo.findMessageByIdempotencyKey(key)) return;
     const text = HaggleEngine.approvalIMessageText(b.name, a.quote_total_cents, a.payment_cents, a.code);
-    const sent = await this.d.imessage.send({ to, text, idempotencyKey: key });
+    await this.claimSend(key, job.id, "text");
+    let sent;
+    try {
+      sent = await this.d.imessage.send({ to, text, idempotencyKey: key });
+    } catch (err) {
+      await this.outboxFailed(key, job.id, "text", "not_sent", err);
+      throw err;
+    }
+    await this.repo.finishOutbox(key, "sent", sent.messageId, this.now().toISOString());
     await this.repo.insertMessage({
       job_id: job.id, business_id: null, approval_id: a.id, direction: "out", kind: "approval_request", channel: "imessage", provider_email_id: `imsg:${sent.messageId}`, idempotency_key: key,
       rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: to, subject: null, body_text: text, attachments: [], attachments_download_url: null,
@@ -4454,16 +6868,22 @@ export class HaggleEngine {
     if (!parsed) return { jobId: null, outcome: "not_a_decision" };
     const yes = /^(yes|y|approve|approved)$/i.test(parsed[1]!);
     const code = parsed[2];
+    // Two pending approvals under one code (another deal or another workspace): never pick one.
+    if (code && new Set(pending.filter((a) => a.code === code).map((a) => a.id)).size > 1) return { jobId: null, outcome: "ambiguous_code" };
     const target = code ? pending.find((a) => a.code === code) : !yes && pending.length === 1 ? pending[0] : undefined;
-    if (!target && code && yes && pending.length === 1) {
-      // A wrong code against the approver's only pending approval counts toward the lockout.
-      const only = pending[0]!;
-      const w = await this.repo.recordWrongApprovalCode(only.id, this.d.config.maxApprovalAttempts ?? DEFAULT_MAX_APPROVAL_ATTEMPTS);
-      if (w?.locked) {
-        await this.repo.appendEvent(only.job_id, "approval_locked", { approval_id: only.id, attempts: w.attempts });
-        await this.advanceJob(only.job_id);
+    if (!target && code && yes && pending.length >= 1) {
+      // A wrong code counts toward the lockout of every approval pending for this approver, so several
+      // pending approvals never allow unlimited guesses (S5-D F5; the CALL path does the same).
+      let locked = false;
+      for (const a of pending) {
+        const w = await this.repo.recordWrongApprovalCode(a.id, this.d.config.maxApprovalAttempts ?? DEFAULT_MAX_APPROVAL_ATTEMPTS);
+        if (w?.locked) {
+          locked = true;
+          await this.repo.appendEvent(a.job_id, "approval_locked", { approval_id: a.id, attempts: w.attempts });
+          await this.advanceJob(a.job_id);
+        }
       }
-      return { jobId: only.job_id, outcome: w?.locked ? "approval_locked" : "wrong_code" };
+      return { jobId: pending.length === 1 ? pending[0]!.job_id : null, outcome: locked ? "approval_locked" : "wrong_code" };
     }
     if (!target) return { jobId: null, outcome: code ? "no_matching_approval" : yes ? "code_required" : "ambiguous" };
     const stored = await this.repo.insertMessage({
@@ -4499,6 +6919,7 @@ export class HaggleEngine {
     const a = await this.repo.getApproval(approvalId);
     if (!a) return false;
     if (channel === "simulated" && this.d.config.mode !== "mock") throw new EngineError("simulation_disabled", "Simulated approval is only available in mock mode.", "Approve through the form or by email.", "approve");
+    if (decision === "approve" && this.outOfBandApprovalsOnly && IN_BAND_CHANNELS.has(channel)) throw needsHumanChannel();
     if (this.now().getTime() > Date.parse(a.expires_at)) {
       await this.repo.transitionApproval(a.id, "pending", { status: "expired", decided_at: this.now().toISOString() });
       await this.advanceJob(a.job_id);
@@ -4526,11 +6947,22 @@ export class HaggleEngine {
     if (!job) return;
     const name = clip(await this.businessName(job.id, a.business_id), 30);
     const deposit = a.payment_cents < a.quote_total_cents;
-    const text = a.action === "confirm" || a.payment_cents <= 0
+    const text = (a.action === "confirm" || a.payment_cents <= 0) && this.d.config.manualPaymentHandoff
+      ? `approved: Haggle asked ${name} to confirm the order (${usdText(a.quote_total_cents)} total). Nothing is paid through Haggle; you'll get a text when they confirm.`
+      : a.action === "confirm" || a.payment_cents <= 0
       ? `confirmed: ${name} was told to go ahead with ${usdText(a.quote_total_cents)}. Nothing was paid.`
+      : this.d.config.manualPaymentHandoff ? await this.approvedHandoffText(job, a, name, deposit)
       : payByText && this.paymentsEnabled ? `approved: ${name} ${usdText(a.payment_cents)} ${deposit ? "deposit" : "total"}. Reply PAY ${a.code} to charge it now.`
       : `approved: ${usdText(a.payment_cents)}${deposit ? " deposit" : ""} to ${name}. Nothing is charged until your assistant completes the payment; you'll get a text when it's paid.`;
     await this.notifyHuman(job, `approved:${a.id}`, text);
+  }
+
+  /** The approval text under the manual handoff: never "pay now" before the business confirmed the booking. */
+  private async approvedHandoffText(job: JobRow, a: ApprovalRow, name: string, deposit: boolean): Promise<string> {
+    const amount = `${usdText(a.payment_cents)} ${deposit ? "deposit" : "total"}`;
+    const bk = await this.repo.getBookingByApproval(a.id);
+    if (bk?.status === "not_in_writing") return `approved: ${amount} to ${name}. Haggle can't get their confirmation in writing: confirm the booking with them directly (date, ${usdText(a.quote_total_cents)} total, must-haves), then reply BOOKED ${a.code}. Don't pay before that.`;
+    return `approved: ${amount} to ${name}. Haggle asked ${name} to confirm the booking; don't pay yet. You'll get a text when they confirm, with how to pay (Haggle never moves money).`;
   }
 
   private async businessName(jobId: string, businessId: string) {
@@ -4563,6 +6995,7 @@ export class HaggleEngine {
     const replaced = (await this.repo.listEvents(job.id)).find((e) => e.type === "approval_superseded" && e.data.approval_id === a.id);
     if (replaced) return `that suggestion was replaced at ${at} (${String(replaced.data.reason).slice(0, 60)}). Nothing was paid; see the deal board.`;
     if (a.status !== "approved" && a.status !== "used") return `that approval was already ${a.status}${where}${a.decided_at ? ` at ${at}` : ""}. Nothing was paid.`;
+    if ((a.action === "confirm" || a.payment_cents <= 0) && job.state === "paying") return `already approved${where} at ${at}; Haggle is waiting for the business to confirm the order. Nothing to pay through Haggle.`;
     if (a.action === "confirm" || a.payment_cents <= 0) return `that order was already confirmed${where} at ${at}; the business was told to go ahead. Nothing to pay.`;
     const amount = usdText(a.payment_cents);
     const name = await this.businessName(job.id, a.business_id);
@@ -4588,10 +7021,27 @@ export class HaggleEngine {
     if (!approval || approval.quote_id !== quoteId) throw new EngineError("no_approval", "There's no human approval for that quote.", "Call approve(job_id, quote_id) first; the human must confirm.", "approve");
     if (approval.status === "pending") return { ...this.noPayment(), reason: "the human hasn't approved yet" };
     if (approval.status === "declined" || approval.status === "expired" || approval.status === "locked") throw new EngineError("approval_" + approval.status, `The approval was ${approval.status}.`, "Request a new approval.", "approve");
-    if (approval.action === "confirm") throw new EngineError("confirm_only", "The human approved confirming this order, not a payment: nothing to pay.", "Done: the business was told to go ahead. Call approve with action 'pay' for a payment.", "get_quotes");
+    if (approval.action === "confirm") {
+      throw job.state === "paying"
+        ? new EngineError("confirm_only", "The human approved confirming this order, not a payment: nothing to pay through Haggle.", "Haggle is waiting for the business to confirm the order in writing; call wait_for_update. The customer arranges payment with the business directly.", "wait_for_update")
+        : new EngineError("confirm_only", "The human approved confirming this order, not a payment: nothing to pay.", "Done: the business was told to go ahead. Call approve with action 'pay' for a payment.", "get_quotes");
+    }
     if (job.state !== "paying" && job.state !== "paid") throw new EngineError("not_payable", `Job is ${job.state}.`, "Wait for approval.", "wait_for_update");
     // Defense in depth: an approximate total is never charged (requestApproval already refuses it).
     if (isApproximate((await this.repo.getQuote(quoteId))?.record) && job.state !== "paid") throw new EngineError("total_not_firm", "That quote's total is only approximate; nothing is charged on an estimate.", "Wait for the business to confirm a firm total, then approve the revised quote.", "get_quotes");
+    if (this.d.config.manualPaymentHandoff) {
+      // Nothing is charged: the business confirms the booking, the human pays it directly and texts
+      // PAID <code> (ingestPaidText). pay only reports where that stands.
+      if (!(await this.repo.getBookingByApproval(approval.id)) && job.state === "paying") await this.startBooking(job, approval);
+      const line = await this.handoffFor((await this.repo.getJob(jobId)) ?? job);
+      if (line?.status === "handoff_refused") throw new EngineError("handoff_refused", line.reason ?? "The approval no longer passes the payment checks.", "Tell the user not to pay. The operator was flagged; a fresh approval (approve) may be needed, e.g. if the spending cap was lowered.", "get_quotes");
+      if (!line) {
+        const refused = (await this.repo.listEvents(jobId)).filter((e) => e.type === "payment_refused" && e.data.approval_id === approval.id && e.data.rail === "manual").at(-1);
+        if (refused) throw new EngineError("handoff_refused", `The approval no longer passes the payment checks (${String(refused.data.code)}), so Haggle didn't ask the business to book or how to be paid. Nothing was paid.`, "Tell the user not to pay. The operator was flagged; a fresh approval (approve) may be needed, e.g. if the spending cap was lowered.", "get_quotes");
+        throw new EngineError("handoff_unavailable", "The booking and payment handoff couldn't be started.", "Call get_quotes, then pay again.", "get_quotes");
+      }
+      return line;
+    }
     if (!this.d.stripe && this.d.payer.disabledReason) throw new EngineError("payments_disabled", this.d.payer.disabledReason, "Nothing was charged. The operator must enable Stripe test mode (HAGGLE_ENABLE_PAYMENTS=true with STRIPE_* set); the approval stays valid until it expires.", "get_quotes");
     if (!job.pay_intent) await this.repo.touchJob(jobId, { pay_intent: true });
     if (this.d.stripe) {
@@ -4626,7 +7076,15 @@ export class HaggleEngine {
 
   /** True when a payment rail can actually charge (Stripe configured, or a signing x402 payer). */
   get paymentsEnabled(): boolean {
-    return this.d.stripe !== undefined || !this.d.payer.disabledReason;
+    return this.d.config.manualPaymentHandoff === true || this.d.stripe !== undefined || !this.d.payer.disabledReason;
+  }
+
+  /**
+   * Only out-of-band human answers approve (EngineConfig.outOfBandApprovalsOnly; on in live mode): a
+   * tool call (the client's form, the card's button) can't prove a human made it, so it never approves.
+   */
+  get outOfBandApprovalsOnly(): boolean {
+    return this.d.config.outOfBandApprovalsOnly ?? this.d.config.mode === "live";
   }
 
   get brainIsStub(): boolean {
@@ -4732,6 +7190,21 @@ export class HaggleEngine {
   }
 
   /** Business names on a deal (wait_for_update names whose quote is whose without building the board). */
+  /**
+   * Where a deal stands after quotes, for list_deals (resume in a new conversation without a board
+   * read): the purchase stage in honest words, the vendor's payment instructions as untrusted text, and
+   * the next step. Null before an approval exists. No advance (a list must stay a few reads per deal);
+   * purchase rows change when replies and texts arrive, not on advance.
+   */
+  async dealSummary(jobId: string): Promise<{ stage: string; summary: string; next: string; instructions?: PurchaseView["instructions"] } | null> {
+    const job = await this.loadJob(jobId);
+    if (!["awaiting_approval", "paying", "paid", "confirmed"].includes(job.state)) return null;
+    const v = await this.purchaseFor(job);
+    if (v) return { stage: v.stage, summary: v.summary, next: v.next, ...(v.instructions ? { instructions: { ...v.instructions, text: clip(v.instructions.text, 300) } } : {}) };
+    const hint = await this.nextHint(job);
+    return { stage: job.state, summary: job.state === "awaiting_approval" ? "Waiting for the human's approval." : `Deal ${job.state}.`, next: hint };
+  }
+
   async businessNames(jobId: string): Promise<Map<string, string>> {
     return new Map((await this.repo.getBusinesses(jobId)).map((b) => [b.business_id, b.name]));
   }
@@ -4749,9 +7222,17 @@ export class HaggleEngine {
   }
 
   /** Settings change only through this call (settings tools / native settings UI), never from business mail. */
-  async updateSettings(patch: Partial<Omit<SettingsRow, "updated_at">>, workspaceId: string = DEFAULT_WORKSPACE_ID): Promise<SettingsRow> {
+  async updateSettings(patch: Partial<Omit<SettingsRow, "updated_at">>, workspaceId: string = DEFAULT_WORKSPACE_ID, by: "operator" | "agent" = "operator"): Promise<SettingsRow> {
     const cur = await this.getSettings(workspaceId);
     const next = { ...cur, ...patch };
+    if (by === "agent") {
+      // Who approves and how much may be spent are the operator's (workspace-create / workspace-admin),
+      // never a tool call's: a model that could set them could approve its own purchases.
+      const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? null) === (b ?? null);
+      if (patch.approver_phone !== undefined && !same(patch.approver_phone, cur.approver_phone)) throw approverChangeRefused();
+      if (patch.approver_email !== undefined && !same(patch.approver_email ? normalizeAddress(patch.approver_email) : null, cur.approver_email)) throw approverChangeRefused();
+      if (next.spending_cap_cents > cur.spending_cap_cents) throw new EngineError("cap_increase_requires_operator", "The spending cap can only be raised by the operator.", "Ask the operator to raise it (scripts/workspace-admin.ts); lowering it is allowed here.", "settings");
+    }
     const ceiling = this.d.config.spendingCapCeilingCents ?? 500_000;
     if (!Number.isInteger(next.spending_cap_cents) || next.spending_cap_cents <= 0) throw new EngineError("bad_cap", "The spending cap must be a positive amount.", "Pass a positive spending cap.", "settings");
     if (next.spending_cap_cents > ceiling) throw new EngineError("cap_above_ceiling", `The spending cap can't exceed $${centsToUsd(ceiling).toFixed(2)} on this server.`, "Pick a lower cap; the operator sets the ceiling.", "settings");
@@ -4770,6 +7251,8 @@ export class HaggleEngine {
     const a = await this.repo.getApproval(approvalId);
     // The approval card works for card approvals and as the fallback for iMessage approvals.
     if (!a || (a.channel !== "view" && a.channel !== "imessage")) throw new EngineError("approval_not_found", "No approval waiting on the approval view.", "Call approve(job_id, quote_id) to start one.", "approve");
+    // A code the card sends back proves nothing in live mode: any client can make this call.
+    if (this.outOfBandApprovalsOnly) throw needsHumanChannel();
     if (a.status !== "pending") return { status: a.status, approval: a };
     const okCode = code.length === a.code.length && timingSafeEqual(Buffer.from(code), Buffer.from(a.code));
     if (!okCode) {
@@ -4788,9 +7271,46 @@ export class HaggleEngine {
     return { status: after.status, approval: after };
   }
 
-  async cancel(jobId: string) {
+  /**
+   * Cancel a deal (the cancel_deal tool). A booking the business already confirmed is cancelled only on
+   * the approver's CANCEL <code> (decision H3): here it is only asked for (`needs_approver`).
+   */
+  async cancel(jobId: string): Promise<{ ok: true; state: JobState; flagged?: true; needs_approver?: true; note?: string }> {
+    return this.cancelJob(jobId, null);
+  }
+
+  /** `authorizedBy`: the approver's coded text (ingestCancelText); null for a tool call. */
+  private async cancelJob(jobId: string, authorizedBy: string | null): Promise<{ ok: true; state: JobState; flagged?: true; needs_approver?: true; note?: string }> {
     const job = await this.loadJob(jobId);
     if (job.state === "cancelled") return { ok: true as const, state: job.state };
+    // After the customer reported paying the business directly: Haggle can't reverse a payment it never
+    // made. Nothing is claimed or promised to anyone; the human and the operator handle it.
+    if (job.state === "paid" && this.d.config.manualPaymentHandoff) {
+      const a = await this.repo.getLatestApproval(jobId);
+      const h = a ? await this.repo.getHandoffByApproval(a.id) : null;
+      if (a && h?.status === "human_confirmed") {
+        const name = await this.businessName(jobId, a.business_id);
+        const note = `The customer reported paying ${name} ${usdText(h.amount_cents)} directly, so Haggle can't cancel or refund it: contact ${name} about cancelling and any refund under their terms. The operator was flagged; nothing was sent to ${name}.`;
+        if (!(await this.repo.listEvents(jobId)).some((e) => e.type === "cancel_after_payment" && e.data.approval_id === a.id)) {
+          await this.repo.appendEvent(jobId, "cancel_after_payment", { approval_id: a.id, at: this.now().toISOString() });
+          await this.repo.appendEvent(jobId, "operator_attention", { reason: "cancel_after_reported_payment", approval_id: a.id, business_id: a.business_id });
+          this.log("operator_attention", { job_id: jobId, reason: "cancel_after_reported_payment" });
+          await this.notifyHuman(job, `cancel-after-paid:${a.id}`, `you asked to cancel after reporting a direct payment to ${clip(name, 30)}. Haggle can't refund it: contact them directly. The operator was flagged.`);
+          await this.repo.touchJob(jobId);
+        }
+        return { ok: true as const, state: job.state, flagged: true as const, note };
+      }
+    }
+    if (!authorizedBy && this.callbacksNeedApproverText) {
+      const held = await this.vendorConfirmedBooking(job);
+      if (held) return this.requestCancelAuthorization(job, held.a);
+    }
+    if (authorizedBy) await this.repo.appendEvent(jobId, "cancel_authorized", { by: authorizedBy, at: this.now().toISOString() });
+    if (job.state === "confirmed") {
+      const a = await this.repo.getLatestApproval(jobId);
+      const name = a ? await this.businessName(jobId, a.business_id) : "the business";
+      throw new EngineError("cannot_cancel", `This order was already confirmed with ${name} in writing; Haggle can't undo that.`, `Tell the user to contact ${name} directly to cancel under its terms. Nothing was paid through Haggle and nothing was sent now.`, "none");
+    }
     const r = await this.fire(jobId, { type: "cancelled" });
     if (!r.ok) throw new EngineError("cannot_cancel", r.reason ?? "conflict", job.state === "paid" ? "Settled payments can't be reversed." : "Wait for the payment to resolve.", "wait_for_update");
     return { ok: true as const, state: "cancelled" as JobState };
@@ -4799,6 +7319,14 @@ export class HaggleEngine {
 
 export class RetryLater extends Error {
   override name = "RetryLater";
+}
+
+/** A send refused because this instance lost the job's lease (fence): another instance owns the job; nothing is recorded from here. */
+export class LeaseLostError extends ChannelSendError {
+  override name = "LeaseLostError";
+  constructor() {
+    super("provider_error", true, OUTBOX_STALE_MS, "this instance lost the job's lease (another instance is advancing it); not sent from here");
+  }
 }
 
 /**
@@ -4831,9 +7359,15 @@ export class WorkspaceEngine {
   get a2aEnabled() { return this.engine.a2aEnabled; }
   get phoneEnabled() { return this.engine.phoneEnabled; }
   get paymentsEnabled() { return this.engine.paymentsEnabled; }
+  get outOfBandApprovalsOnly() { return this.engine.outOfBandApprovalsOnly; }
   get brainIsStub() { return this.engine.brainIsStub; }
 
-  deal(input: DealInput) { return this.engine.deal({ ...input, workspace_id: this.workspaceId }); }
+  /** The approver comes from the workspace settings (the operator's), never from the agent's input. */
+  async deal(input: DealInput) {
+    const { approver_email: _ignored, ...rest } = input;
+    const approver = (await this.engine.getSettings(this.workspaceId)).approver_email;
+    return this.engine.deal({ ...rest, ...(approver ? { approver_email: approver } : {}), workspace_id: this.workspaceId });
+  }
   async loadJob(jobId: string) { return this.own(jobId); }
   async waitForUpdate(jobId: string, cursor: number, timeoutMs: number, signal?: AbortSignal, until?: WaitUntil) { await this.own(jobId); return this.engine.waitForUpdate(jobId, cursor, timeoutMs, signal, until); }
   async getQuotes(jobId: string) { await this.own(jobId); return this.engine.getQuotes(jobId); }
@@ -4845,17 +7379,31 @@ export class WorkspaceEngine {
   async requestApproval(jobId: string, quoteId: string, channel: ApprovalRow["channel"], action?: ApprovalAction, offer?: ApprovalOffer) { await this.own(jobId); return this.engine.requestApproval(jobId, quoteId, channel, action, offer); }
   async approvalReach(jobId: string) { await this.own(jobId); return this.engine.approvalReach(jobId); }
   async approvalOffers(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalOffers(approvalId); }
-  async decideApproval(approvalId: string, decision: "approve" | "decline", channel: ApprovalRow["channel"], approver: string | null) { await this.ownApproval(approvalId); return this.engine.decideApproval(approvalId, decision, channel, approver); }
-  async approveWithViewCode(approvalId: string, code: string) { await this.ownApproval(approvalId); return this.engine.approveWithViewCode(approvalId, code); }
+  /** Tool paths can only claim the in-band channels (a coded text or email is decided by ingest, never by a tool). */
+  // A live job is never approved by a client form, a card's view-held code or a simulated human, whatever
+  // the engine's approval config says: those are client-side signals, not proof a human decided.
+  async decideApproval(approvalId: string, decision: "approve" | "decline", channel: "elicitation" | "view" | "simulated", approver: string | null) {
+    const a = await this.ownApproval(approvalId);
+    // (A simulated decision outside mock mode is refused by the engine itself: simulation_disabled.)
+    if (decision === "approve" && (await this.engine.loadJob(a.job_id)).mode === "live" && (channel !== "simulated" || this.engine.mode === "mock")) throw needsHumanChannel();
+    return this.engine.decideApproval(approvalId, decision, channel, approver);
+  }
+  async approveWithViewCode(approvalId: string, code: string) {
+    const a = await this.ownApproval(approvalId);
+    if ((await this.engine.loadJob(a.job_id)).mode === "live") throw needsHumanChannel();
+    return this.engine.approveWithViewCode(approvalId, code);
+  }
   async approvalIMessageSent(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalIMessageSent(approvalId); }
   async pay(jobId: string, quoteId: string) { await this.own(jobId); return this.engine.pay(jobId, quoteId); }
   async cancel(jobId: string) { await this.own(jobId); return this.engine.cancel(jobId); }
   async quoteForCheck(jobId: string, quoteId: string) { await this.own(jobId); return this.engine.quoteForCheck(jobId, quoteId); }
   async approvalCaveats(jobId: string, quoteId: string) { await this.own(jobId); return this.engine.approvalCaveats(jobId, quoteId); }
   canContact(b: Parameters<HaggleEngine["canContact"]>[0]) { return this.engine.canContact(b); }
+  /** canContact plus this workspace's operator-authorized vendors and the suppression list. */
+  mayContact(b: Parameters<HaggleEngine["canContact"]>[0]) { return this.engine.mayContact(b, this.workspaceId); }
   latestJob() { return this.engine.latestJob(this.workspaceId); }
   getSettings() { return this.engine.getSettings(this.workspaceId); }
-  updateSettings(patch: Parameters<HaggleEngine["updateSettings"]>[0]) { return this.engine.updateSettings(patch, this.workspaceId); }
+  updateSettings(patch: Parameters<HaggleEngine["updateSettings"]>[0]) { return this.engine.updateSettings(patch, this.workspaceId, "agent"); }
   knownBusinesses(query: string, limit?: number) { return this.engine.knownBusinesses(query, limit, this.workspaceId); }
   businessProfile(ref: string) { return this.engine.businessProfile(ref, this.workspaceId); }
   identity() { return this.engine.identity(this.workspaceId); }
@@ -4865,12 +7413,35 @@ export class WorkspaceEngine {
   // Main's tools, workspace-scoped (decision 7).
   recentDeals(limit?: number) { return this.engine.recentDeals(limit, this.workspaceId); }
   async callbackProposals(jobId: string) { await this.own(jobId); return this.engine.callbackProposals(jobId); }
-  async placeCallback(jobId: string, businessId: string, authorizedBy: string) { await this.own(jobId); return this.engine.placeCallback(jobId, businessId, authorizedBy); }
+  /**
+   * DEMO only (mock, in-band approvals): a callback the client's form or the board authorized. In live
+   * mode a tool path never places a call (callbacksNeedApproverText): requestCallbackAuthorization texts the approver.
+   */
+  async placeCallback(jobId: string, businessId: string, authorizedBy: string) {
+    await this.own(jobId);
+    if (this.engine.callbacksNeedApproverText) throw new EngineError("callback_needs_approver_text", "On this server a callback is placed only after the workspace approver texts CALL <code> to Haggle (or an operator places it); a tool, form or board tap can't authorize it.", "Call call_back: Haggle texts the approver to ask.", "call_back");
+    const consent = await this.engine.callbackConsentFor(jobId, businessId);
+    if (!consent.ok) throw new EngineError("callback_no_consent", `Haggle won't call this business back: ${consent.reason}.`, "Negotiate by email or text (send_message) instead.", "get_quotes");
+    return this.engine.placeCallback(jobId, businessId, authorizedBy);
+  }
+  get callbacksNeedApproverText() { return this.engine.callbacksNeedApproverText; }
+  /** Text the workspace approver for one callback (they reply CALL <code>); the code never comes back here. */
+  async requestCallbackAuthorization(jobId: string, businessId: string) {
+    await this.own(jobId);
+    const r = await this.engine.requestCallbackAuthorization(jobId, businessId);
+    return { texted: r.texted, held: r.held, expires_at: r.expires_at, proposal: r.proposal };
+  }
   async businessAliases(b: Parameters<HaggleEngine["businessAliases"]>[0]) { return this.engine.businessAliases(b); }
-  async contactLearning(businessId: string, aliases?: string[]) { return this.engine.contactLearning(businessId, aliases); }
+  /** Learning from this workspace's own deals only. */
+  async contactLearning(businessId: string, aliases?: string[]) { return this.engine.contactLearning(businessId, aliases, this.workspaceId); }
+  /** Which of these job ids are this workspace's (e.g. to show only its own history from a shared profile). */
+  ownJobIds(jobIds: (string | null)[]) { return this.engine.jobsInWorkspace(jobIds, this.workspaceId); }
+  /** The operator-authorized vendors of this workspace (read-only: an agent can't add or change them). */
+  workspaceVendors() { return this.engine.workspaceVendors(this.workspaceId); }
   async revokeApproval(jobId: string, approvalId: string, reason: string) { await this.own(jobId); return this.engine.revokeApproval(jobId, approvalId, reason); }
   async approvalById(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalById(approvalId); }
   async advanceJob(jobId: string) { await this.own(jobId); return this.engine.advanceJob(jobId); }
+  async dealSummary(jobId: string) { await this.own(jobId); return this.engine.dealSummary(jobId); }
 }
 
 const STRIPE_REFUSALS: Record<StripeGuardCode, [string, string, string]> = {
@@ -4921,7 +7492,12 @@ function isApproximate(r: QuoteRecord | undefined | null): boolean {
  * or being over the budget.
  */
 function softTier(reasons: readonly string[]): number {
-  return (reasons.includes("requirement_unmet") ? 4 : 0) + (reasons.includes("requirement_unknown") ? 2 : 0) + (reasons.includes("missing_info") ? 1 : 0) + (reasons.includes("over_budget") ? 1 : 0);
+  return softTierOf(reasons);
+}
+
+/** What approval would pay now: the stated deposit, else the full total (null when there is no total). */
+function payNowCents(q: Pick<QuoteRow, "deposit_cents" | "total_cents">): number | null {
+  return q.deposit_cents !== null && q.deposit_cents > 0 ? q.deposit_cents : q.total_cents;
 }
 
 /** "confirm" stays confirm-only; "pay" and the legacy "confirm_and_pay" approve a payment (pay charges it). */
@@ -4953,9 +7529,11 @@ function approvalRecord(a: ApprovalRow, job: JobRow): EngineApprovalRecord {
  * rail + network "stripe-test", status "charging", the PaymentIntent and a test-dashboard receipt.
  */
 export type EnginePaymentStatus = Omit<PaymentStatus, "status" | "network"> & {
-  status: PaymentStatus["status"] | "charging";
-  rail: PaymentRow["rail"];
-  network: PaymentRow["network"];
+  /** + the manual purchase stages (payments/purchase.ts): never "settled" for money Haggle didn't see move. */
+  status: PaymentStatus["status"] | "charging" | PurchaseStage;
+  /** "manual": a handoff (the human pays the business directly; nothing moves through Haggle). */
+  rail: PaymentRow["rail"] | "manual";
+  network: PaymentRow["network"] | "manual";
   payment_intent_id?: string;
   receipt_url?: string;
 };
@@ -5038,6 +7616,25 @@ export function pickTextDeal<T extends TextDealCandidate>(hits: T[], text: strin
   }
   if (best) return { hit: best.hit, via: "open_ask" };
   return { hit: [...hits].sort((x, y) => y.at - x.at)[0]!, via: "latest" };
+}
+
+/** The stored-message fields of an inbound email before its job, business and trust are decided (ingest's `base`). */
+type PurchaseBase = Omit<NewMessage, "job_id" | "business_id" | "kind" | "sender_trusted" | "trust_reason" | "matched_via" | "parse_status" | "quarantine_reason">;
+
+/** A business's text as the purchase reader takes it (an InboundMessage with the text as its body; no thread, no attachments). */
+function textInbound(m: { messageId: string; from: string; text: string }, job: JobRow, prefix: "imsg-in" | "sms-in"): InboundMessage {
+  return { providerEventId: `${prefix}:${m.messageId}`, eventType: prefix === "imsg-in" ? "imessage.received" : "sms.received", providerEmailId: `${prefix}:${m.messageId}`, threadId: null, messageId: null, inReplyTo: [], references: [], from: m.from, to: [job.inbox], subject: null, bodyText: m.text, attachments: [], attachmentsDownloadUrl: null };
+}
+
+/** The stored-message fields of that text (the same shape the text paths store a reply with). */
+function textBase(m: { messageId: string; from: string; text: string }, job: JobRow, prefix: "imsg-in" | "sms-in"): PurchaseBase {
+  return { approval_id: null, direction: "in", channel: "imessage", provider_email_id: `${prefix}:${m.messageId}`, idempotency_key: null, rfc_message_id: null, thread_id: null, from_address: m.from, to_address: job.inbox, subject: null, body_text: m.text.slice(0, 5000) || null, attachments: [], attachments_download_url: null, round: null, simulated: false };
+}
+
+/** A re-confirmation asked for this quote and not resolved yet. */
+function pendingReconfirm(events: JobEventRow[], quoteId: string): boolean {
+  const asked = events.filter((e) => e.type === "reconfirm_requested" && e.data.quote_id === quoteId).at(-1);
+  return !!asked && !events.some((e) => e.type === "reconfirm_resolved" && e.data.quote_id === quoteId && e.seq > asked.seq);
 }
 
 /** Haggle's own "all quotes are in" suggestion, unclaimed (see isAutoApproval), from the deal's events. */

@@ -30,7 +30,8 @@ export function findDollarAmounts(text: string): number[] {
   const toCents = (s: string, k = false) => Math.round(Number(s.replace(/,/g, "")) * (k ? 1000 : 1) * 100);
   const num = String.raw`(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)`;
   for (const m of text.matchAll(new RegExp(String.raw`\$\s?${num}(\s*k\b)?`, "gi"))) out.push(toCents(m[1]!, m[2] !== undefined));
-  for (const m of text.matchAll(new RegExp(String.raw`${num}\s*(?:us\s*)?(?:dollars?|usd)\b`, "gi"))) out.push(toCents(m[1]!));
+  // Not the tail of a larger number ("1.150,00 USD" is not 00 dollars).
+  for (const m of text.matchAll(new RegExp(String.raw`(?<![\d.,])${num}\s*(?:us\s*)?(?:dollars?|usd)\b`, "gi"))) out.push(toCents(m[1]!));
   return out;
 }
 

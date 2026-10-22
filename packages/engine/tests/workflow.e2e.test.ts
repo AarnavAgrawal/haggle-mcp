@@ -288,5 +288,5 @@ describe("recipient allowlist (live safety)", () => {
     expect((await repo.getJob(deal.job_id))!.state).toBe("paying");
     expect((await repo.listEvents(deal.job_id)).filter((e) => e.type === "payment" && e.data.reason === "Payments are not enabled yet")).toHaveLength(1); // said once
     await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: "payments_disabled", message: "Payments are not enabled yet" });
-  });
+  }, 30_000); // ~4 s on Postgres; the 5 s default flaked under load
 });

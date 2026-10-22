@@ -35,7 +35,7 @@ function env(opts: { answers?: Record<string, string>; basis?: string; config?: 
   const texts: { to: string; text: string; idempotencyKey: string }[] = [];
   const calls: { toNumber: string; reason: string }[] = [];
   const asked: QuestionAnswerInput[] = [];
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const extractor = {
     ...textExtractor,
     // The fake answerer: answers only the questions the test lists (as Claude would from the facts).

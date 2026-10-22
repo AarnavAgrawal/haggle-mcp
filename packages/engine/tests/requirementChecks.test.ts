@@ -67,7 +67,8 @@ describe("per-requirement judgement on the real misses (fixtures/live-misses)", 
     expect(x.requirement_checks).toBeUndefined();
     expect(x.confidence).toBeLessThan(0.6);
     const results = evaluateRequirements(validateQuote(x, req.quantity, [], { needs: ["vegetarian"] }), reqs, req.quantity);
-    expect(Object.fromEntries(results.map((r) => [r.requirement_id, r.met]))).toEqual({ veg20: true, delivery: true, date: true });
+    // "+ $50 delivery fee" says delivery is offered, not that it arrives "by 5:00 PM": a follow-up (sprint 2026-10-22).
+    expect(Object.fromEntries(results.map((r) => [r.requirement_id, r.met]))).toEqual({ veg20: true, delivery: null, date: true });
     expect(results.find((r) => r.requirement_id === "veg20")!.basis).toBe("arithmetic");
     expect(results.find((r) => r.requirement_id === "date")!.basis).toBe("request_fact");
   });

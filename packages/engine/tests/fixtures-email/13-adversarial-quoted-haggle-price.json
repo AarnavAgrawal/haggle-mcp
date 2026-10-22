@@ -1,0 +1,41 @@
+{
+  "name": "adversarial-quoted-haggle-price",
+  "client": "Gmail web",
+  "notes": "The vendor's own words carry no price; the only figure is in Haggle's quoted counteroffer, which must never be read as the vendor's quote.",
+  "event": {
+    "agent_identities": []
+  },
+  "detail": {
+    "id": "in_fx_13",
+    "threadId": "thr_ext_13",
+    "messageId": "<CAfx13+abcDEF123@mail.gmail.com>",
+    "fromAddress": "{{VENDOR}}",
+    "fromDisplayName": "Maria at Valley Catering",
+    "toAddresses": [
+      "{{BUYER}}"
+    ],
+    "ccAddresses": null,
+    "subject": "Re: {{RFQ_SUBJECT}}",
+    "snippet": null,
+    "bodyText": "Please see below.\n\nOn Thu, Oct 22, 2026 at 9:00 AM AI assistant <{{BUYER}}> wrote:\n> Hi Valley Catering,\n> \n> Thanks for your quote. We've received another quote of $900 total for the same order. Could you match or beat it?\n> \n> Reference: {{TOKEN}} (please keep it when you reply)\n",
+    "bodyHtml": null,
+    "inReplyTo": "{{RFQ_MESSAGE_ID}}",
+    "references": [
+      "{{RFQ_MESSAGE_ID}}"
+    ],
+    "attachmentMetadata": null,
+    "direction": "inbound",
+    "status": "received",
+    "isRead": false,
+    "hasAttachments": false,
+    "sesMessageId": null,
+    "createdAt": "2026-10-21T17:20:00.000Z"
+  },
+  "expect": {
+    "outcome": "stored",
+    "stored_as": "reply",
+    "sender_trusted": true,
+    "trust_reason": "external-reply-token",
+    "quote_total_usd": null
+  }
+}

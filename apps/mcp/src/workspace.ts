@@ -20,12 +20,30 @@ export function bearerToken(authorization: string | undefined | null): string | 
 }
 
 /**
- * Auth mode (HAGGLE_AUTH): "required" = every MCP request needs a workspace credential (hosted,
- * multi-user servers); anything else = open, and a request without credentials uses the default
- * workspace (single-tenant, mock mode, local dev). A credential that doesn't match is always refused.
+ * Auth mode. Live mode always requires a workspace credential: real outreach and payments are
+ * never reachable without one, whatever HAGGLE_AUTH says (fail closed). In mock mode (DEMO),
+ * HAGGLE_AUTH=required turns it on; otherwise a request without credentials uses the default
+ * workspace. A credential that doesn't match, or a revoked workspace's, is always refused.
  */
 export function authRequired(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.HAGGLE_AUTH === "required";
+  return env.HAGGLE_MODE === "live" || env.HAGGLE_AUTH === "required";
+}
+
+/**
+ * Approval policy. Live mode: only out-of-band human answers approve (a coded text from the
+ * workspace approver's phone; email too when the operator enables it). Mock mode keeps the card,
+ * the client's form and the simulated human (DEMO) unless HAGGLE_APPROVALS=out_of_band.
+ */
+export function outOfBandApprovals(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.HAGGLE_MODE === "live" || env.HAGGLE_APPROVALS === "out_of_band";
+}
+
+/**
+ * Approval by an emailed APPROVE <code> from a mailbox Inkbox can't authenticate (Gmail and the
+ * like) rests on a spoofable From address: off unless the operator sets HAGGLE_EMAIL_APPROVAL_BY_CODE=true.
+ */
+export function emailApprovalByCode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.HAGGLE_EMAIL_APPROVAL_BY_CODE === "true";
 }
 
 export type WorkspaceResolution = { ok: true; workspaceId: string; authenticated: boolean } | { ok: false; reason: "missing_credentials" | "unknown_credentials" };

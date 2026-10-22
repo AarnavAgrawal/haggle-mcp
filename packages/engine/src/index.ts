@@ -16,6 +16,8 @@ export * from "./parsing/parseReply.ts";
 export * from "./parsing/heuristic.ts";
 export * from "./parsing/answerQuestion.ts";
 export * from "./inbound/emailBody.ts";
+export * from "./inbound/htmlText.ts";
+export * from "./inbound/senderAuth.ts";
 export * from "./negotiation/messageGuard.ts";
 export * from "./approvals/verifyApproval.ts";
 export * from "./negotiation/counteroffer.ts";
@@ -50,3 +52,36 @@ export * from "./live/inkbox.ts";
 export * from "./live/reconcile.ts";
 export * from "./live/transient.ts";
 export * from "./payments/stripe.ts";
+export * from "./workflow/deadLetter.ts";
+export * from "./workflow/recovery.ts";
+export * from "./live/log.ts";
+export * from "./live/alerts.ts";
+export * from "./live/aiUsage.ts";
+export * from "./ops/stalled.ts";
+export * from "./ops/migrations.ts";
+// Workstream D: purchase after approval, compliance, freshness, request normalization.
+export * from "./payments/purchase.ts";
+export * from "./ranking/compliance.ts";
+export * from "./ranking/validity.ts";
+export * from "./approvals/bookingReply.ts";
+export * from "./workflow/requestNormalize.ts";
+export * from "./ops/traction.ts";
+// Sprint 4 workstream A: contact hours, per-business contact status, operator review of held mail, continuity vs identity.
+export * from "./workflow/contactWindow.ts";
+export * from "./inbound/contactStatus.ts";
+export * from "./inbound/quarantineReview.ts";
+export * from "./inbound/trustStrength.ts";
+// Sprint 4 B: why each quote was selected or rejected.
+export * from "./ranking/selection.ts";
+export * from "./store/poolGate.ts";
+// Workstream F (sprint 4): reconciler catch-up, the operator report.
+export * from "./live/reconcileWindow.ts";
+export * from "./ops/report.ts";
+// Sprint 5 B: operator actions (audit, suspension, approver verification, reviewed requests) and the vendor roster.
+export * from "./ops/operator.ts";
+export * from "./ops/roster.ts";
+// Sprint 5 E: usage metrics from database rows (simulated vs real), approximate AI cost.
+export * from "./ops/costs.ts";
+export * from "./ops/metrics.ts";
+// Email trial (apps/mcp/scripts/email-trial.ts): plain-English quarantine reasons in its report.
+export { explainQuarantine, type QuarantineExplanation } from "./inbound/quarantineReasons.ts";

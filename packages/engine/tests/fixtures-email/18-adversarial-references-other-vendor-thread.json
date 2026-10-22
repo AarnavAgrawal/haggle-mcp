@@ -1,0 +1,41 @@
+{
+  "name": "adversarial-references-other-vendor-thread",
+  "client": "Unknown client",
+  "notes": "The vendor's address replying into the OTHER vendor's RFQ thread.",
+  "event": {
+    "agent_identities": []
+  },
+  "detail": {
+    "id": "in_fx_18",
+    "threadId": "thr_ext_18",
+    "messageId": "<CAfx18+abcDEF123@mail.gmail.com>",
+    "fromAddress": "{{VENDOR}}",
+    "fromDisplayName": "Maria at Valley Catering",
+    "toAddresses": [
+      "{{BUYER}}"
+    ],
+    "ccAddresses": null,
+    "subject": "Re: Quote request (ref {{TOKEN}})",
+    "snippet": null,
+    "bodyText": "$1,150 total.",
+    "bodyHtml": null,
+    "inReplyTo": "{{OTHER_RFQ_MESSAGE_ID}}",
+    "references": [
+      "{{OTHER_RFQ_MESSAGE_ID}}"
+    ],
+    "attachmentMetadata": null,
+    "direction": "inbound",
+    "status": "received",
+    "isRead": false,
+    "hasAttachments": false,
+    "sesMessageId": null,
+    "createdAt": "2026-10-21T17:20:00.000Z"
+  },
+  "expect": {
+    "outcome": "quarantined:sender_mismatch",
+    "stored_as": "quarantine",
+    "sender_trusted": false,
+    "quarantine_reason": "sender_mismatch",
+    "quote_total_usd": null
+  }
+}

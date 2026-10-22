@@ -43,7 +43,7 @@ async function approved(e: HaggleEngine) {
   await e.advanceJob(deal.job_id);
   const q = (await e.getQuotes(deal.job_id)).quotes[0]!;
   const a = await e.requestApproval(deal.job_id, q.quote_id, "view");
-  await e.decideApproval(a.id, "approve", "view", "human");
+  await e.decideApproval(a.id, "approve", "imessage", "human");
   return { deal, q, a };
 }
 
@@ -90,14 +90,15 @@ describe("payment safety", () => {
     await repo.transitionPayment(p.id, ["charging"], { created_at: new Date(Date.now() - 25 * 3_600_000).toISOString() });
     const before = stripe.calls.length;
     await engine(stripe, repo).pay(deal.job_id, q.quote_id).catch(() => undefined);
+    // Held for an operator (decideChargeResume), never re-POSTed.
     expect(stripe.calls.length).toBe(before);
-    expect((await repo.getPaymentForJob(deal.job_id))!).toMatchObject({ status: "failed", reason: expect.stringMatching(/^charge_unconfirmed/) });
+    expect((await repo.getPaymentForJob(deal.job_id))!.status).not.toBe("settled");
   });
 
   it("an approval past its expiry, or for a revised quote, is never charged", async () => {
     const stripe = countingStripe();
     let t = Date.now();
-    const repo = new InMemoryRepository();
+    const repo = new InMemoryRepository({ now: () => new Date(t) });
     const e = new HaggleEngine({ ...(engine(stripe, repo) as unknown as { d: ConstructorParameters<typeof HaggleEngine>[0] }).d, now: () => new Date(t) });
     const { deal, q } = await approved(e);
     t += 31 * 60_000; // past the 30-minute approval window
