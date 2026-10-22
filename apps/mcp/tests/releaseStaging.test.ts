@@ -155,6 +155,16 @@ describe("staging-release: execute", () => {
     expect(cli(calls)).toEqual([]); // no --deploy: printed only
   });
 
+  it("a new, empty staging database (--backfill-through none): every engine file in order, then one backfill", async () => {
+    const all = ["100_engine_core.sql", "101_engine_channels.sql", "111_engine_ops.sql", "117_engine_ops.sql", "200_brain_profiles.sql"];
+    const { d, calls } = deps({ link: LINK, status: [{ ledger: "absent", pending: all, drift: [], unverified: [], unexpected: [], file_problems: [] }, { ledger: "present", pending: ["200_brain_profiles.sql"], drift: [], unverified: [], unexpected: [], file_problems: [] }] });
+    const r = await runStaging(opts("--execute", "--backup-ref", "new project, nothing to back up", "--backfill-through", "none"), d);
+    expect(r.ok, formatStaging(r)).toBe(true);
+    const seq = calls.filter((c) => c.cmd === "psql" || c.args.some((a) => a.endsWith("migrations.ts"))).map((c) => (c.cmd === "psql" ? `psql ${c.args.at(-1)!.split("/").pop()}` : c.args.slice(1).join(" ")));
+    expect(seq).toEqual(["status --json", "psql 100_engine_core.sql", "psql 101_engine_channels.sql", "psql 111_engine_ops.sql", "psql 117_engine_ops.sql", "backfill --through 117_engine_ops.sql --confirm", "status --json", "verify"]);
+    expect(r.steps.find((s) => s.id === "migrations")!.detail).toMatch(/brain files not applied here: 200_brain_profiles\.sql/);
+  });
+
   it("a ledger with no backfill point is never guessed", async () => {
     const { d, calls } = deps({ link: LINK, status: [{ ledger: "absent", pending: [], drift: [], unverified: [], unexpected: [], file_problems: [] }] });
     const r = await runStaging(opts("--execute", "--backup-ref", "pitr"), d);

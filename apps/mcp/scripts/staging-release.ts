@@ -13,7 +13,8 @@
 //     --backup-dump <file>     pg_dump -Fc of the staging database to <file> (outside the repo) first
 //     --backup-ref <text>      or: your own backup / PITR reference (you assert it exists)
 //     --backfill-through <f>   only when the database has no ledger: the last migration you KNOW is
-//                              applied (the live-database audit says 102_engine_stripe.sql)
+//                              applied (the live-database audit says 102_engine_stripe.sql), or none for a
+//                              new, empty database (every engine file is applied in order)
 //     --base-url https://<staging server>   smoke target; also checks webhook subscriptions (read-only)
 //     --server-id <id>         the Manufact staging server id; must match .mcp-use/cloud/link.json
 //     --rollback-ref <id>      the deployment id currently live on staging (mcp-use servers get <id>)
@@ -69,7 +70,7 @@ export function parseStagingArgs(argv: string[]): StagingOptions {
   }
   if (o.deploy && !o.execute) throw new Error("--deploy runs only with --execute (without --execute nothing is run)");
   if (o.backupDump && o.backupRef) throw new Error("give --backup-dump or --backup-ref, not both");
-  if (o.backfillThrough && !MIGRATION.test(o.backfillThrough)) throw new Error("--backfill-through needs a migration file name, e.g. 102_engine_stripe.sql");
+  if (o.backfillThrough && o.backfillThrough !== "none" && !MIGRATION.test(o.backfillThrough)) throw new Error("--backfill-through needs a migration file name, e.g. 102_engine_stripe.sql, or none for a new, empty database");
   if (o.baseUrl && !/^https:\/\/[a-z0-9.-]+(?::\d+)?\/?$/i.test(o.baseUrl)) throw new Error("--base-url must be https://<host> (no path)");
   if (o.baseUrl) o.baseUrl = o.baseUrl.replace(/\/+$/, "");
   if (o.serverId && !/^[A-Za-z0-9_-]{3,80}$/.test(o.serverId)) throw new Error("--server-id must be a Manufact server id");
@@ -130,7 +131,8 @@ export function planSteps(o: StagingOptions, sha: string, buildTime: string): St
     { id: "migrations", title: "Apply this checkout's pending engine migrations, each in one transaction, and record them in the ledger", who: "script", runs: o.execute, commands: [
       ledger("status --json"),
       `psql -v ON_ERROR_STOP=1 -1 -f supabase/migrations/111_engine_ops.sql   # only if the ledger is absent`,
-      ...(o.backfillThrough ? [ledger(`backfill --through ${o.backfillThrough} --confirm`), ledger("record 111_engine_ops.sql --confirm")] : ["(ledger absent: pass --backfill-through <last applied file>; the script never guesses)"]),
+      ...(o.backfillThrough === "none" ? ["(new database: every engine file in order with psql -1 -f, then migrations.ts backfill --through <last engine file> --confirm)"]
+        : o.backfillThrough ? [ledger(`backfill --through ${o.backfillThrough} --confirm`), ledger("record 111_engine_ops.sql --confirm")] : ["(ledger absent: pass --backfill-through <last applied file> or none; the script never guesses)"]),
       `for each pending 1NN_engine_*.sql: psql -v ON_ERROR_STOP=1 -1 -f supabase/migrations/<file> && ${ledger("record <file> --confirm")}`,
       ledger("verify"),
     ], note: "2xx brain migrations are Aarnav's: listed, never applied here" },
@@ -223,8 +225,22 @@ export async function runStaging(o: StagingOptions, d: StagingDeps): Promise<Sta
   if (s.file_problems.length) return fail("migrations", `migration files: ${s.file_problems.join("; ")}`);
   const psql = (file: string) => d.run("psql", ["-X", "-v", "ON_ERROR_STOP=1", "-1", "-f", join(checkout, "supabase", "migrations", file)], { env: { ...base, ...pgEnv(env.SUPABASE_DB_URL!) }, cwd: checkout });
   const applied: string[] = [];
-  if (s.ledger === "absent") {
-    if (!o.backfillThrough) return fail("migrations", "the database has no ledger: pass --backfill-through <the last migration you know is applied> (the live-database audit: 102_engine_stripe.sql)");
+  if (s.ledger === "absent" && o.backfillThrough === "none") {
+    // A new, empty staging database: every engine file in order (the ledger appears with 111), then
+    // record them all at once.
+    const all = s.pending.filter(isEngineMigration);
+    for (const f of all) {
+      const r = psql(f);
+      if (r.status !== 0) return fail("migrations", `applying ${f} failed (rolled back): ${r.stderr.trim().split("\n").slice(-2).join(" | ")}`);
+      applied.push(f);
+    }
+    const last = all.at(-1);
+    const x = last ? node("migrations.ts", ["backfill", "--through", last, "--confirm"]) : { status: 0, stdout: "" };
+    if (x.status !== 0) return fail("migrations", `migrations.ts backfill failed: ${x.stdout.trim().split("\n").slice(-1)[0] ?? ""}`);
+    s = statusOf();
+    if (!s) return fail("migrations", "migrations.ts status failed after the first apply");
+  } else if (s.ledger === "absent") {
+    if (!o.backfillThrough) return fail("migrations", "the database has no ledger: pass --backfill-through <the last migration you know is applied> (the live-database audit: 102_engine_stripe.sql), or none for a new, empty database");
     const r = psql("111_engine_ops.sql");
     if (r.status !== 0) return fail("migrations", `applying 111_engine_ops.sql failed: ${r.stderr.trim().split("\n").slice(-2).join(" | ")}`);
     for (const args of [["backfill", "--through", o.backfillThrough, "--confirm"], ["record", "111_engine_ops.sql", "--confirm"]]) {
