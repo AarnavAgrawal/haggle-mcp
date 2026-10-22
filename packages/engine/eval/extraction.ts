@@ -2,10 +2,15 @@
 // reply takes (ingest -> cleanEmailBody -> quote.json / extractor -> validateQuote -> requirement
 // checks -> flags -> board), one single-vendor deal per case, and the stored result is scored against
 // the case's labels. The default extractor is the deterministic keyword fallback (heuristic.ts), the
-// only reader that runs without a network. The Claude extractor runs ONLY with HAGGLE_EVAL_LIVE=1
-// and ANTHROPIC_API_KEY set (it calls the Anthropic API); it is never run by tests.
-import { heuristicExtractor } from "../src/live/adapters.ts";
+// only reader that runs without a network; "oracle" is the labels themselves (validates the scoring,
+// measures nothing about a reader). The Claude extractor runs ONLY with HAGGLE_EVAL_LIVE=1,
+// ANTHROPIC_API_KEY and a HAGGLE_EVAL_MAX_USD cap (liveBudget.ts); it calls the Anthropic API and is
+// never run by tests. Every summary carries the extractor that produced it.
+import { claudeExtractor, heuristicExtractor } from "../src/live/adapters.ts";
 import { counterofferText } from "../src/negotiation/counteroffer.ts";
+import { scoreFields, summarizeFields, type FieldScore, type FieldSummary } from "./fields.ts";
+import { EvalBudget, liveAnthropicClient, liveEvalConfig } from "./liveBudget.ts";
+import { oracleExtraction } from "./orchestration.ts";
 import type { ExtractorPort } from "../src/workflow/ports.ts";
 import { layoutReply } from "./clients.ts";
 import { CORPUS_REQUEST } from "./corpus.ts";
@@ -13,7 +18,14 @@ import { BUYER_INBOX, makeEnv, trusted } from "./harness.ts";
 import { buildPdf } from "./pdf.ts";
 import type { CorpusCase, Outcome } from "./types.ts";
 
-export type ExtractorKind = "deterministic" | "claude";
+export type ExtractorKind = "deterministic" | "oracle" | "claude";
+
+/** What each extractor is, printed next to every metric it produced. */
+export const EXTRACTOR_LABEL: Record<ExtractorKind, string> = {
+  deterministic: "deterministic keyword fallback (no network; production uses it only when Claude can't read a reply)",
+  oracle: "label oracle (a perfect reader built from the labels: checks the scoring, measures no reader)",
+  claude: "Claude via the live Anthropic API (opt-in, cost-capped)",
+};
 
 export interface Observed {
   outcome: Outcome;
@@ -29,6 +41,13 @@ export interface Observed {
   questions: string[];
   total_source: string | null;
   fetches: number;
+  tax: "included" | "added_on_top" | "not_mentioned" | null;
+  fees: { label: string; amount_usd: number | null; included: boolean | null }[];
+  date_ok: boolean | null;
+  requirements: Record<string, boolean | null>;
+  /** What the board shows for this reply's quote (null: no priced quote on the board). */
+  shown_total_usd: number | null;
+  shown_deposit_usd: number | null;
 }
 
 export interface CaseScore {
@@ -51,17 +70,23 @@ export interface CaseScore {
   leaked: boolean;
   /** An unsafe reply (payment request / injection) that could still be approved. */
   unsafe_approvable: boolean;
+  /** Per-field verdicts and money errors (fields.ts). */
+  field: FieldScore;
 }
 
 /** Caveat flags that tell a reader the stored total isn't a firm all-in figure. */
 const CAVEATS = ["tax_excluded", "fees_unclear", "approximate_total", "conflicting_numbers", "delivery_unclear"];
 const close = (a: number, b: number) => Math.abs(a - b) < 0.011;
 
-/** The Claude extractor, built only when the operator opted in (it calls the Anthropic API). */
-export async function liveExtractor(): Promise<ExtractorPort | null> {
-  if (process.env.HAGGLE_EVAL_LIVE !== "1" || !process.env.ANTHROPIC_API_KEY) return null;
-  const { claudeExtractor } = await import("../src/live/adapters.ts");
-  return claudeExtractor({ apiKey: process.env.ANTHROPIC_API_KEY, model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", ...(process.env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: process.env.ANTHROPIC_WORKSPACE_ID } : {}) });
+/**
+ * The Claude extractor, built only when the operator opted in AND set a dollar cap (it calls the
+ * Anthropic API). Returns why not otherwise; never throws for a missing opt-in.
+ */
+export function liveExtractor(env: Record<string, string | undefined> = process.env): { ok: true; extractor: ExtractorPort; budget: EvalBudget; model: string } | { ok: false; reason: string } {
+  const cfg = liveEvalConfig(env);
+  if (!cfg.ok) return cfg;
+  const budget = new EvalBudget(cfg.maxUsd, cfg.model);
+  return { ok: true, budget, model: cfg.model, extractor: claudeExtractor({ apiKey: cfg.apiKey, model: cfg.model, client: liveAnthropicClient(cfg, budget) }) };
 }
 
 /** Files the reply carries: built PDFs, fixture files, quote.json scoped to this job. */
@@ -107,6 +132,12 @@ export async function observeCase(c: CorpusCase, extractor: ExtractorPort = heur
       : flags.includes("external_payment_link") ? "unsafe_payment" : flags.includes("prompt_injection") ? "unsafe_injection"
       : priced ? "quote" : questions.length ? "question" : "no_new_price";
     const veg = r ? Object.entries(r.dietary_coverage).find(([k]) => /veg/i.test(k))?.[1] : undefined;
+    const tax = !r ? null : r.tax?.status ?? (r.tax_included === true ? "included" : r.tax_included === false ? "added_on_top" : "not_mentioned");
+    const fees = !r ? [] : [
+      ...(r.delivery_fee_cents !== null ? [{ label: "delivery", amount_usd: r.delivery_fee_cents / 100, included: null }] : []),
+      ...(r.other_fees ?? []).map((f) => ({ label: f.label, amount_usd: f.amount_cents === null ? null : f.amount_cents / 100, included: f.included_in_total })),
+    ];
+    const requirements = Object.fromEntries((q?.requirement_results ?? []).map((x) => [x.requirement_id, x.met ?? null]));
     const vegResult = q?.requirement_results.find((x) => x.requirement_id === "req_veg");
     const delResult = q?.requirement_results.find((x) => x.requirement_id === "req_delivery");
     const compliant = !q ? null : q.requirement_results.some((x) => x.met === false) ? false : vegResult?.met === true && delResult?.met === true ? true : null;
@@ -116,6 +147,8 @@ export async function observeCase(c: CorpusCase, extractor: ExtractorPort = heur
       delivery: !r ? null : r.delivery_included === true || r.delivery_fee_cents !== null ? true : r.delivery_included === false ? false : null,
       veg_count: veg?.count_offered ?? null, compliant, flags, approvable: bq?.approvable ?? false, approval_block: bq?.approval_block?.code ?? null,
       questions, total_source: r?.sources.total?.source ?? null, fetches: env.fetches.length,
+      tax, fees, date_ok: status === "declined" || (r && !r.available) ? false : null, requirements,
+      shown_total_usd: bq?.total_usd ?? null, shown_deposit_usd: bq?.deposit_usd ?? null,
     };
   } finally {
     env.restore();
@@ -145,11 +178,18 @@ export function scoreCase(c: CorpusCase, o: Observed): CaseScore {
   return {
     id: c.id, origin: c.origin, client: c.client, tags: c.tags, observed: o, outcome_ok: o.outcome === l.outcome || (unsafe && (o.outcome === "unsafe_payment" || o.outcome === "unsafe_injection")),
     total, deposit, delivery, veg, fee_missed, compliance, leaked, unsafe_approvable: unsafe && o.approvable,
+    field: scoreFields(c, o),
   };
 }
 
 export interface ExtractionSummary {
   extractor: ExtractorKind;
+  /** Printed with every metric: what produced these numbers. */
+  extractor_label: string;
+  /** Per-field accuracy and money errors (shown / approvable), separately. */
+  fields: FieldSummary;
+  /** Live runs only: the model, the cap and what the run spent (by the conservative price table). */
+  live?: { model: string; cap_usd: number; spent_usd: number; calls: number; refused: number };
   cases: number;
   outcome_accuracy: { ok: number; of: number };
   total: Record<CaseScore["total"], number>;
@@ -169,14 +209,25 @@ export interface ExtractionSummary {
 
 const tally = (xs: string[], into: Record<string, number> = {}) => { for (const x of xs) into[x] = (into[x] ?? 0) + 1; return into; };
 
-export async function runExtractionEval(corpus: CorpusCase[], kind: ExtractorKind = "deterministic"): Promise<ExtractionSummary> {
-  const extractor = kind === "claude" ? await liveExtractor() : heuristicExtractor;
-  if (!extractor) throw new Error("The Claude extractor needs HAGGLE_EVAL_LIVE=1 and ANTHROPIC_API_KEY; it was not run.");
+export async function runExtractionEval(corpus: CorpusCase[], kind: ExtractorKind = "deterministic", env: Record<string, string | undefined> = process.env): Promise<ExtractionSummary> {
+  let extractor: ExtractorPort = heuristicExtractor;
+  let live: { budget: EvalBudget; model: string } | null = null;
+  if (kind === "claude") {
+    const l = liveExtractor(env);
+    if (!l.ok) throw new Error(`The Claude extractor was not run: ${l.reason}.`);
+    extractor = l.extractor;
+    live = l;
+  }
   const scores: CaseScore[] = [];
-  for (const c of corpus) scores.push(scoreCase(c, await observeCase(c, extractor)));
+  for (const c of corpus) {
+    const ex: ExtractorPort = kind === "oracle" ? { extract: async () => oracleExtraction(c.labels) } : extractor;
+    scores.push(scoreCase(c, await observeCase(c, ex)));
+  }
   const unsafe = scores.filter((s) => { const o = corpus.find((c) => c.id === s.id)!.labels.outcome; return o === "unsafe_payment" || o === "unsafe_injection"; });
   return {
-    extractor: kind, cases: scores.length,
+    extractor: kind, extractor_label: EXTRACTOR_LABEL[kind], fields: summarizeFields(scores.map((s) => s.field)),
+    ...(live ? { live: { model: live.model, cap_usd: live.budget.maxUsd, spent_usd: Math.round(live.budget.spentUsd * 10_000) / 10_000, calls: live.budget.calls, refused: live.budget.refused } } : {}),
+    cases: scores.length,
     outcome_accuracy: { ok: scores.filter((s) => s.outcome_ok).length, of: scores.length },
     total: tally(scores.map((s) => s.total), { correct: 0, missing: 0, wrong_flagged: 0, wrong_unflagged: 0, "n/a": 0 }) as Record<CaseScore["total"], number>,
     deposit: tally(scores.map((s) => s.deposit)), delivery: tally(scores.map((s) => s.delivery)), veg: tally(scores.map((s) => s.veg)),

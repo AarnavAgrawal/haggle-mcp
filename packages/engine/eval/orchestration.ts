@@ -37,11 +37,11 @@ export const CORPUS_DEALS: DealSpec[] = [
 ];
 
 /** What the business says after Haggle answers its question (c27) and to follow-ups. */
-const ANSWER_REPLY: Record<string, { own: string; labels: Partial<Labels> }> = {
+export const ANSWER_REPLY: Record<string, { own: string; labels: Partial<Labels> }> = {
   "c27-question": { own: "Thanks! Then Total: $1,130 delivered, tax included, plates and cutlery included. 12 vegetarian.", labels: { outcome: "quote", total_usd: 1130, delivery: true, tax: "included", veg_count: 12, compliant: true, question: false } },
 };
 const COUNTER_REPLY = "Sorry, that's already our best price. We can't go any lower.";
-const REPLY_DELAYS_MIN = [4, 9, 15, 21, 26];
+export const REPLY_DELAYS_MIN = [4, 9, 15, 21, 26];
 
 export type Arm = "corpus:deterministic" | "corpus:oracle" | "fleet:mock";
 
@@ -101,7 +101,7 @@ const NO_REPLY_LABELS: Labels = { outcome: "no_new_price", available: true, tota
 interface Pending { at: number; c: CorpusCase; inReplyTo: string; quoted: string; subject: string; own: string; labels: Labels; files: boolean; kind: string }
 
 /** The cheapest safe, compliant, firm quote by the labels (what a careful human would pick on price). */
-function expectedWinner(cases: CorpusCase[]): string | null {
+export function expectedWinner(cases: CorpusCase[]): string | null {
   const firm = cases.map((c) => ({ c, l: ANSWER_REPLY[c.id] ? { ...c.labels, ...ANSWER_REPLY[c.id]!.labels } as Labels : c.labels }))
     .filter(({ l }) => l.outcome === "quote" && l.compliant === true && l.total_usd !== null)
     .sort((a, b) => a.l.total_usd! - b.l.total_usd!);
