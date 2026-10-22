@@ -10,10 +10,11 @@ import { sendEmail, type SenderClient } from "../outbound/primitiveSender.ts";
 import { answerFromRequest } from "../parsing/answerQuestion.ts";
 import { heuristicExtract } from "../parsing/heuristic.ts";
 import { isTransientParseError } from "../parsing/parseErrors.ts";
-import { createAnthropicClient, parseReply } from "../parsing/parseReply.ts";
+import { createAnthropicClient, parseReply, type ParserClient } from "../parsing/parseReply.ts";
 import type { PayerClient } from "../payments/x402Challenge.ts";
 import type { MessageRow } from "../store/types.ts";
 import type { AttachmentPort, EmailPort, ExtractorPort, PayerPort } from "../workflow/ports.ts";
+import { AiBudgetExceeded, meteredClient, type AiUsageMeter } from "./aiUsage.ts";
 
 type PrimitiveClient = ReturnType<typeof primitive.client>;
 
@@ -27,8 +28,10 @@ export function primitiveEmail(apiKey: string): EmailPort & { client: PrimitiveC
   return { client, send: (msg) => sendEmail(client as unknown as SenderClient, msg, lookup) };
 }
 
-export function claudeExtractor(opts: { apiKey: string; workspaceId?: string; model: string }): ExtractorPort {
-  const client = createAnthropicClient({ apiKey: opts.apiKey, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) });
+/** `meter`: every Claude call is admitted against the AI usage limits and its tokens counted (aiUsage.ts). */
+export function claudeExtractor(opts: { apiKey: string; workspaceId?: string; model: string; meter?: AiUsageMeter; client?: ParserClient }): ExtractorPort {
+  const raw: ParserClient = opts.client ?? createAnthropicClient({ apiKey: opts.apiKey, ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}) });
+  const client = opts.meter ? meteredClient(raw, opts.meter) : raw;
   return {
     extract: ({ request, bodyText, pdfs, images }) => parseReply(client, opts.model, { request, bodyText, pdfs, ...(images ? { images } : {}) }),
     answerQuestion: (input) => answerFromRequest(client, opts.model, input),
@@ -52,7 +55,8 @@ export function withHeuristicFallback(primary: ExtractorPort, log?: (event: stri
       try {
         return await primary.extract(input);
       } catch (err) {
-        if (isTransientParseError(err)) throw err;
+        // Over an AI usage limit: the read fails and the reply waits for a human; never a keyword quote.
+        if (isTransientParseError(err) || err instanceof AiBudgetExceeded) throw err;
         log?.("extractor_fallback", { error: (err as Error).message.slice(0, 200) });
         return heuristicExtract({ request: input.request, bodyText: input.bodyText });
       }

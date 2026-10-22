@@ -14,6 +14,7 @@
 // the consent it rests on. Opted-out or bounced contacts are never contacted, whatever this says.
 //
 // Needs SUPABASE_DB_URL (the engine database, migrations through 105 applied).
+import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
 import { PostgresRepository } from "@haggle/engine";
 import { hashSecret, newSecret } from "../src/workspace.ts";
 

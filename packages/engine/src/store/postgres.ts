@@ -394,4 +394,15 @@ export class PostgresRepository implements Repository {
     if (!r[0]) throw new Error(`unknown workspace ${workspaceId}`);
     return settingsRow(row<SettingsRow>(r[0]))!;
   }
+
+  // ops (migration 111): read-only, for /ready and the migrations script
+  async listAppliedMigrations() {
+    try {
+      const r = await this.sql<{ name: string; checksum: string | null; applied_at: Date }[]>`select name, checksum, applied_at from engine_migrations order by name`;
+      return r.map((x) => ({ name: x.name, checksum: x.checksum, applied_at: new Date(x.applied_at).toISOString() }));
+    } catch (e) {
+      if ((e as { code?: string }).code === "42P01") return null; // 111 not applied yet
+      throw e;
+    }
+  }
 }

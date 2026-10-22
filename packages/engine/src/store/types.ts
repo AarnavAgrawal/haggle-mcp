@@ -413,4 +413,8 @@ export interface Repository {
   listRecentJobs(limit: number, workspaceId?: string): Promise<JobRow[]>;
   getSettings(workspaceId?: string): Promise<SettingsRow | null>;
   saveSettings(s: Omit<SettingsRow, "updated_at">, workspaceId?: string): Promise<SettingsRow>;
+
+  // ops (migration 111; optional: in-memory and test repositories have no ledger)
+  /** The migration ledger rows; null when engine_migrations doesn't exist yet. Read-only. */
+  listAppliedMigrations?(): Promise<{ name: string; checksum: string | null; applied_at: string }[] | null>;
 }

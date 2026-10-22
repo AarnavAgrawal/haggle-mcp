@@ -10,6 +10,7 @@
 //
 // Needs SUPABASE_DB_URL (the engine database, migrations 100-103 applied). Then set HAGGLE_AUTH=required
 // on the server so requests without a workspace credential are refused.
+import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
 import { PostgresRepository } from "@haggle/engine";
 import { hashSecret, newSecret } from "../src/workspace.ts";
 
