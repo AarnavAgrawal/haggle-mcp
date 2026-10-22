@@ -700,7 +700,9 @@ export class HaggleEngine {
     const list = this.d.config.recipientAllowlist;
     if (!list) return true;
     const c = contact.toLowerCase();
-    return list.some((e) => { const x = e.trim().toLowerCase(); return x === c || (x.startsWith("@") && c.endsWith(x)); });
+    // "@domain" covers email addresses at that domain only, never a URL that ends in it (an A2A card, S5-D F9).
+    const isEmail = /^[^@\s/:?#]+@[^@\s/:?#]+$/.test(c);
+    return list.some((e) => { const x = e.trim().toLowerCase(); return x === c || (x.startsWith("@") && isEmail && c.endsWith(x)); });
   }
 
   /** Is this address Haggle's own mailbox (shared Inkbox identity, or any per-job inbox)? */
@@ -3078,7 +3080,7 @@ export class HaggleEngine {
     const from = held.from_address;
     const text = held.body_text ?? "";
     const t = withoutJobCode(text);
-    if (TEXT_DECISION.test(t) || PAY_TEXT.test(t) || PAID_TEXT.test(t) || CALL_TEXT.test(t)) {
+    if (TEXT_DECISION.test(t) || PAY_TEXT.test(t) || PAID_TEXT.test(t) || CALL_TEXT.test(t) || BOOKED_TEXT.test(t.trim())) {
       throw new EngineError("decision_not_releasable", "A held approval, payment or callback reply is never attributed by an operator.", "Ask the human to resend it with the deal code (e.g. \"YES 4821 HG-AB12\").", "none");
     }
     const tied = from === (await this.notifyTarget(job)) || (await this.repo.getBusinesses(job.id)).some((b) => b.phone === from && b.contacted_at);

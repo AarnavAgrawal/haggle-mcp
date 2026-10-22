@@ -158,3 +158,26 @@ describe("S5-D F7: request details can't carry an invented competing offer", () 
     expect(env.emails).toHaveLength(0);
   });
 });
+
+describe("S5-D F8: a held BOOKED text is never attributed by an operator", () => {
+  it("BOOKED <code> from an approver of two workspaces is held and can't be released to a deal", async () => {
+    const env = await setup();
+    await env.engine.updateSettings({ approver_phone: ALPHA_PHONE }, "ws_beta"); // the operator: one human approves for both
+    const a = await quotedIn(env, "ws_alpha", 1);
+    await quotedIn(env, "ws_beta", 2);
+    expect((await env.engine.ingestText({ messageId: "bk1", from: ALPHA_PHONE, text: "BOOKED 4821", inbound: true })).outcome).toBe("ambiguous_workspace");
+    const held = (await env.repo.findMessageByProviderId("sms-in:bk1"))!;
+    await expect(env.engine.releaseHeldText(held.id, a.jobId, "ops-alice")).rejects.toMatchObject({ code: "decision_not_releasable" });
+  });
+});
+
+describe("S5-D F9: an @domain allowlist entry authorizes email addresses only", () => {
+  it("an Agent Card URL that merely ends in @vendor.com is not authorized", async () => {
+    const env = await setup({ recipientAllowlist: ["@vendor.com"] });
+    expect(env.engine.canContact({ email: "sales@vendor.com" })).toBe(true);
+    expect(env.engine.canContact({ a2a_card_url: "https://attacker.example/@vendor.com" })).toBe(false);
+    expect(env.engine.canContact({ a2a_card_url: "https://attacker.example/c.json?x=@vendor.com" })).toBe(false);
+    expect(env.engine.canContact({ email: "x@attacker.example" })).toBe(false);
+    expect(await env.engine.mayContact({ a2a_card_url: "https://attacker.example/@vendor.com" }, "ws_alpha")).toBe(false);
+  });
+});
