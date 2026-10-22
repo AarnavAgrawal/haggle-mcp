@@ -65,3 +65,5 @@ export * from "./ranking/compliance.ts";
 export * from "./ranking/validity.ts";
 export * from "./approvals/bookingReply.ts";
 export * from "./workflow/requestNormalize.ts";
+// Sprint 4 B: why each quote was selected or rejected.
+export * from "./ranking/selection.ts";

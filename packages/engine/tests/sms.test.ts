@@ -147,7 +147,7 @@ describe("SMS updates to the human", () => {
     for (let i = 0; i < 3; i++) { clock.advance(31 * 60_000); await engine.advanceJob(deal.job_id); } // later advances (and the expiry) text nothing more
     const job = (await repo.getJob(deal.job_id))!;
     const ready = texts.filter((x) => x.to === HUMAN && /All quotes are in/.test(x.text));
-    expect(ready.map((x) => x.text)).toEqual([`Haggle: All quotes are in for lunch catering (1 quote). Recommended: Harbor Table $1,150 (deposit $345). See every option in Claude, or reply YES ${a.code} to approve the $345 deposit to Harbor Table (your assistant then pays it). (HG-${job.short_code})`]);
+    expect(ready.map((x) => x.text)).toEqual([`Haggle: All quotes are in for lunch catering, 40 people, Thu, Oct 22 (1 quote). Recommended: Harbor Table $1,150 (deposit $345). See every option in Claude, or reply YES ${a.code} to approve the $345 deposit to Harbor Table (your assistant then pays it). (HG-${job.short_code})`]);
     expect(ready[0]!.text.length).toBeLessThanOrEqual(320);
   });
 
@@ -310,7 +310,7 @@ describe("text budget (Inkbox pauses a number after 10 texts with no reply)", ()
     await engine.ingestText({ messageId: "in_back", from: HUMAN, text: "hello?", inbound: true });
     const a = (await repo.getLatestApproval(deal.job_id))!;
     expect(a.status).toBe("pending");
-    expect(ink.sent.filter((x) => x.to === HUMAN).map((x) => x.text)).toEqual(expect.arrayContaining([expect.stringMatching(new RegExp(`All quotes are in for lunch catering .*Recommended: Harbor Table \\$1,150.*reply YES ${a.code}`))]));
+    expect(ink.sent.filter((x) => x.to === HUMAN).map((x) => x.text)).toEqual(expect.arrayContaining([expect.stringMatching(new RegExp(`All quotes are in for lunch catering, 40 people, Thu, Oct 22 .*Recommended: Harbor Table \\$1,150.*reply YES ${a.code}`))]));
   });
 
   it("a held 'all quotes are in' approval that expired before the human texted back: they still hear quotes are final (no code)", async () => {
@@ -326,7 +326,7 @@ describe("text budget (Inkbox pauses a number after 10 texts with no reply)", ()
     ink.replied(HUMAN);
     await engine.ingestText({ messageId: "in_late", from: HUMAN, text: "hi", inbound: true });
     const late = ink.sent.filter((x) => x.to === HUMAN).map((x) => x.text);
-    expect(late).toEqual([expect.stringMatching(/^Haggle: All quotes are in for lunch catering \(1 quote\)\. Recommended: Harbor Table \$1,150 \(deposit \$345\)\. See every option and choose on the deal board in Claude\./)]);
+    expect(late).toEqual([expect.stringMatching(/^Haggle: All quotes are in for lunch catering, 40 people, Thu, Oct 22 \(1 quote\)\. Recommended: Harbor Table \$1,150 \(deposit \$345\)\. See every option and choose on the deal board in Claude\./)]);
     expect(late[0]).not.toContain(a.code);
   });
 
@@ -373,7 +373,7 @@ describe("approval by text (SMS)", () => {
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     const ask = texts.at(-1)!;
     expect(ask.to).toBe(HUMAN);
-    expect(ask.text).toMatch(new RegExp(`^Haggle: Approve \\$345 deposit to Harbor Table for lunch catering \\(total \\$1,150\\)\\? Reply YES ${a.code} or NO ${a.code}\\.`));
+    expect(ask.text).toMatch(new RegExp(`^Haggle: Approve \\$345 deposit to Harbor Table for lunch catering \\(40 people, Thu, Oct 22\\) \\(total \\$1,150\\)\\? Reply YES ${a.code} or NO ${a.code}\\.`));
     expect(await engine.approvalOffers(a.id)).toMatchObject({ text: true, email: false });
     expect(await engine.ingestText({ messageId: "sms_yes", from: HUMAN, text: `yes ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "approved" });
     expect(await repo.getApproval(a.id)).toMatchObject({ status: "approved", approver: HUMAN });
@@ -626,7 +626,7 @@ describe("all quotes are in: the texted recommendation, approvable by reply, nev
     expect(textsWhileNegotiating).toBe(0); // nothing while counteroffers are out
     const a = (await repo.getLatestApproval(jobId))!;
     expect(a).toMatchObject({ status: "pending", quote_id: by("Sunset Kitchen").quote_id, payment_cents: 20_000 });
-    expect(ready().map((x) => x.text)).toEqual([expect.stringMatching(new RegExp(`^Haggle: All quotes are in for lunch catering \\(2 quotes\\)\\. Recommended: Sunset Kitchen \\$1,100 \\(deposit \\$200\\)\\. See every option in Claude, or reply YES ${a.code} to approve the \\$200 deposit to Sunset Kitchen \\(your assistant then pays it\\)\\.`))]);
+    expect(ready().map((x) => x.text)).toEqual([expect.stringMatching(new RegExp(`^Haggle: All quotes are in for lunch catering, 40 people, Thu, Oct 22 \\(2 quotes\\)\\. Recommended: Sunset Kitchen \\$1,100 \\(deposit \\$200\\)\\. See every option in Claude, or reply YES ${a.code} to approve the \\$200 deposit to Sunset Kitchen \\(your assistant then pays it\\)\\.`))]);
     expect(board.approval).toMatchObject({ approval_id: a.id, status: "pending", replaceable: true });
     expect(board.next).toMatch(/Haggle texted the user its recommendation .*approve\(job_id, quote_id\): it replaces the texted suggestion/);
     expect(board.negotiation).toEqual([expect.objectContaining({ business: "Sunset Kitchen", target_total_usd: 1150, outcome_total_usd: 1100, from_total_usd: 1250, channel: "email" })]);
@@ -652,7 +652,7 @@ describe("all quotes are in: the texted recommendation, approvable by reply, nev
     const a = (await repo.getLatestApproval(jobId))!;
     const short = (await repo.getJob(jobId))!.short_code;
     const [text] = ready().map((x) => x.text);
-    expect(text).toBe(`Haggle: All quotes are in for lunch catering (2 quotes). Recommended: Sunset Kitchen $1,100 (deposit $200). See every option in Claude, or reply YES ${a.code} to approve the $200 deposit to Sunset Kitchen, then PAY ${a.code} to charge it. (HG-${short})`);
+    expect(text).toBe(`Haggle: All quotes are in for lunch catering, 40 people, Thu, Oct 22 (2 quotes). Recommended: Sunset Kitchen $1,100 (deposit $200). See every option in Claude, or reply YES ${a.code} to approve the $200 deposit to Sunset Kitchen, then PAY ${a.code} to charge it. (HG-${short})`);
     expect(text!.length).toBeLessThanOrEqual(320);
     expect((await engine.ingestText({ messageId: "yes_r", from: HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
     expect(texts.at(-1)!.text).toBe(`Haggle: approved: Sunset Kitchen $200 deposit. Reply PAY ${a.code} to charge it now. (HG-${short})`);

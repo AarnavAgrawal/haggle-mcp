@@ -508,8 +508,10 @@ export class InMemoryRepository implements Repository {
   async insertBooking(b: Omit<BookingRow, "created_at" | "updated_at">) {
     if (this.bookings.some((x) => x.approval_id === b.approval_id)) return null;
     const a = this.approvals.find((x) => x.id === b.approval_id);
-    if (!a || a.job_id !== b.job_id || a.quote_id !== b.quote_id || a.business_id !== b.business_id || a.quote_total_cents !== b.total_cents || a.payment_cents !== b.payment_cents || a.action === "confirm" || !["approved", "used"].includes(a.status)) {
-      throw new Error("booking must match a human-approved paying approval");
+    // 113: a confirm-only approval books too (the business must confirm it in writing), paying nothing.
+    if (!a || a.job_id !== b.job_id || a.quote_id !== b.quote_id || a.business_id !== b.business_id || a.quote_total_cents !== b.total_cents || a.payment_cents !== b.payment_cents || !["approved", "used"].includes(a.status)
+      || (a.action === "confirm" ? b.payment_cents !== 0 : b.payment_cents <= 0) || b.total_cents <= 0) {
+      throw new Error("booking must match a human-approved approval");
     }
     if (!["awaiting_vendor_confirmation", "not_in_writing"].includes(b.status)) throw new Error("a booking starts awaiting the business (or not in writing)");
     const row = { ...b, created_at: now(), updated_at: now() };

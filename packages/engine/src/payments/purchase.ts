@@ -7,7 +7,7 @@
 import type { BookingRow, HandoffReceiptRow, PaymentHandoffRow } from "../store/types.ts";
 
 export type PurchaseStage =
-  | "awaiting_vendor_confirmation" | "booking_declined" | "booking_changed"
+  | "awaiting_vendor_confirmation" | "order_confirmed" | "booking_declined" | "booking_changed"
   | "instructions_requested" | "instructions_received" | "human_reported_paid" | "settled_verified"
   | "cancelled" | "cancel_requested_after_payment";
 
@@ -37,6 +37,11 @@ export interface PurchaseView {
   stalled?: true;
   /** Something the operator must look at (a stalled handoff, a cancellation after the customer paid). */
   operator_attention?: string;
+  /** The order as approved (what, headcount, when, where) and its must-haves: the same facts the RFQ named. */
+  order?: string;
+  must_haves?: string;
+  /** Confirm-only approval: nothing is paid through Haggle at any stage. */
+  confirm_only?: true;
   /** One honest line: what happened, what didn't. */
   summary: string;
   next: string;
@@ -51,6 +56,10 @@ export interface PurchaseFacts {
   /** A cancellation the human asked for after reporting payment (job_events cancel_after_payment). */
   cancelAfterPayment?: boolean;
   jobCancelled?: boolean;
+  /** The approval confirms the order only (action "confirm"): no handoff, no payment. */
+  confirmOnly?: boolean;
+  order?: string;
+  mustHaves?: string | null;
 }
 
 const usd = (c: number) => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: c % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
@@ -63,7 +72,10 @@ export function purchaseView(f: PurchaseFacts): PurchaseView | null {
   const b = f.booking;
   if (!b) return null;
   const h = f.handoff;
-  const base = { rail: "manual" as const, amount_usd: b.payment_cents / 100, total_usd: b.total_cents / 100, money_verified: false, booked: b.status === "confirmed", ...(b.status === "not_in_writing" ? { booked_by_human: true as const } : {}) };
+  const base = {
+    rail: "manual" as const, amount_usd: b.payment_cents / 100, total_usd: b.total_cents / 100, money_verified: false, booked: b.status === "confirmed", ...(b.status === "not_in_writing" ? { booked_by_human: true as const } : {}),
+    ...(f.order ? { order: f.order } : {}), ...(f.mustHaves ? { must_haves: f.mustHaves } : {}), ...(f.confirmOnly ? { confirm_only: true as const } : {}),
+  };
   const reply = vendorText(b.reply_text);
   const instructions = vendorText(h?.instructions_text);
   const what = `${usd(b.payment_cents)}${b.payment_cents < b.total_cents ? " deposit" : ""}`;
@@ -98,7 +110,16 @@ export function purchaseView(f: PurchaseFacts): PurchaseView | null {
   if (b.status === "awaiting_vendor_confirmation") {
     return { ...base, stage: "awaiting_vendor_confirmation", ...(reply ? { vendor_reply: reply } : {}), ...(b.stalled_at ? { stalled: true as const, operator_attention: "no booking confirmation from the business" } : {}),
       summary: `Approved by the human. Waiting for ${f.business} to confirm availability and the ${usd(b.total_cents)} terms${reply ? " (it replied, but hasn't clearly confirmed yet)" : ""}. Not booked yet, and nothing should be paid yet.`,
-      next: `Wait for ${f.business}'s confirmation (wait_for_update). Tell the human not to pay until Haggle texts that it is booked.` };
+      next: b.stalled_at
+        ? `${f.business} hasn't confirmed after Haggle's reminder. Tell the human: don't pay; call ${f.business} directly, or choose another quote (cancel_deal, then a new deal, or get_quotes and approve another option).`
+        : `Wait for ${f.business}'s confirmation (wait_for_update). Tell the human not to pay until Haggle texts that it is booked.` };
+  }
+  if (f.confirmOnly) {
+    // Confirm-only: the business's written yes is the end of it; nothing is paid through Haggle.
+    const how = b.status === "confirmed" ? `${f.business} confirmed the order in writing` : `${f.business} can't confirm in writing on its channel; the human confirmed the order with them directly`;
+    return { ...base, stage: "order_confirmed", ...(reply ? { vendor_reply: reply } : {}),
+      summary: `${how} (${usd(b.total_cents)} total). Nothing is paid through Haggle; the customer arranges payment with ${f.business} directly under its terms.`,
+      next: "Done. get_quotes shows the confirmed order." };
   }
   // Booked (by the business in writing, or confirmed by the human directly): the handoff.
   const booked = b.status === "confirmed" ? `${f.business} confirmed the booking.` : `Haggle can't get a written confirmation from ${f.business} on its channel: the human confirms the booking with them directly.`;
@@ -109,7 +130,9 @@ export function purchaseView(f: PurchaseFacts): PurchaseView | null {
   }
   return { ...base, stage: "instructions_requested", ...(reply ? { vendor_reply: reply } : {}), ...(h?.stalled_at ? { stalled: true as const, operator_attention: "no payment instructions from the business" } : {}),
     summary: `${booked} Waiting for its payment instructions; the human pays ${what} directly. Haggle moves no money.`,
-    next: `Wait for ${f.business}'s payment instructions (wait_for_update); then the human pays directly and replies PAID${code}.` };
+    next: h?.stalled_at
+      ? `${f.business} hasn't sent payment instructions after Haggle's reminder. The human can ask ${f.business} directly how to pay, pay them, then reply PAID${code}; Haggle never moves money.`
+      : `Wait for ${f.business}'s payment instructions (wait_for_update); then the human pays directly and replies PAID${code}.` };
 }
 
 /** The board's payment line for a purchase stage (rail "manual"; never "settled" unless the business confirmed receipt). */
