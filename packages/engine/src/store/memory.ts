@@ -33,14 +33,16 @@ import {
   type AiUsageRow,
 } from "./types.ts";
 
-const now = () => new Date().toISOString();
 const clone = <T>(v: T): T => structuredClone(v);
 const norm = (id: string) => id.trim().replace(/^<|>$/g, "").toLowerCase();
 
 export class InMemoryRepository implements Repository {
   /** `now`: the clock rows are stamped with (tests pass their fake clock so stored times and the engine's agree). */
   private readonly opts: { now?: () => Date };
-  constructor(opts: { now?: () => Date } = {}) { this.opts = opts; }
+  constructor(opts: { now?: () => Date } = {}) {
+    this.opts = opts;
+    this.workspaces = new Map([[DEFAULT_WORKSPACE_ID, { id: DEFAULT_WORKSPACE_ID, name: "Default workspace", token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles", created_at: this.stamp() }]]);
+  }
   private stamp() { return (this.opts.now?.() ?? new Date()).toISOString(); }
   private jobs = new Map<string, JobRow>();
   private businesses: JobBusinessRow[] = [];
@@ -52,7 +54,7 @@ export class InMemoryRepository implements Repository {
   private events: JobEventRow[] = [];
   private inboundEvents = new Set<string>();
   private settings = new Map<string, SettingsRow>();
-  private workspaces = new Map<string, WorkspaceRow>([[DEFAULT_WORKSPACE_ID, { id: DEFAULT_WORKSPACE_ID, name: "Default workspace", token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles", created_at: now() }]]);
+  private workspaces: Map<string, WorkspaceRow>;
 
   async insertWorkspace(w: Omit<WorkspaceRow, "created_at">) {
     if (this.workspaces.has(w.id)) throw new Error("duplicate workspace id");

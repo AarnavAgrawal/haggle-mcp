@@ -23,7 +23,7 @@ function setup(o: { failEmail?: (key: string, to: string) => Error | null; strip
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const emails: { to: string; idempotencyKey: string; bodyText: string }[] = [];
   const texts: { to: string; text: string }[] = [];
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"), ...(o.stripe ? { stripe: o.stripe } : {}),
     email: {

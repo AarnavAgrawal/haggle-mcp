@@ -47,7 +47,7 @@ function setup(config: Partial<EngineConfig> = {}, opts: Opts = {}) {
   const texts: { to: string; text: string; idempotencyKey: string }[] = [];
   const imsgs: { to: string; text: string; idempotencyKey: string }[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
-  const repo = (opts.repo ?? new InMemoryRepository()) as InMemoryRepository;
+  const repo = (opts.repo ?? new InMemoryRepository({ now: clock.now })) as InMemoryRepository;
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: opts.extractor ?? textExtractor, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     ...(opts.stripe ? { stripe: opts.stripe } : {}), ...(opts.phone ? { phone: opts.phone } : {}), ...(opts.a2a ? { a2a: opts.a2a } : {}),
@@ -128,8 +128,8 @@ const reviews = (repo: Repository, jobId?: string) => repo.listReviews({ status:
 
 describe("job leases: renewal and fencing", () => {
   it("an advance that outlives its lease is fenced: once another instance holds the job, the stale holder sends nothing", async () => {
-    const repo = new InMemoryRepository();
     const clock = newClock();
+    const repo = new InMemoryRepository({ now: clock.now });
     let entered!: () => void;
     const inRead = new Promise<void>((r) => { entered = r; });
     let resume!: () => void;
@@ -178,8 +178,8 @@ describe("job leases: renewal and fencing", () => {
   });
 
   it("a crashed holder's lease expires and another instance re-acquires and advances the job", async () => {
-    const repo = new InMemoryRepository();
     const clock = newClock();
+    const repo = new InMemoryRepository({ now: clock.now });
     const b = setup({ instanceId: "b" }, { repo, clock });
     const { jobId, bs } = await dealWith(b);
     expect(await repo.acquireJobLease(jobId, "crashed#1", clock.now().toISOString(), 5 * 60_000)).toBe(true);

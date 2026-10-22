@@ -62,10 +62,11 @@ const extractor: ExtractorPort = {
 let offset = 0;
 const emails: { to: string; subject: string; bodyText: string }[] = [];
 const texts: { to: string; text: string }[] = [];
-const repo = new InMemoryRepository();
+const now = () => new Date(Date.now() + offset);
+const repo = new InMemoryRepository({ now });
 const brain = makeBrain([], { HAGGLE_BRAIN_STORE: "memory" });
 const engine = new HaggleEngine({
-  repo, now: () => new Date(Date.now() + offset), extractor, brain, payer: disabledPayer("payments are manual on this server"), attachments: { load: async () => [] },
+  repo, now, extractor, brain, payer: disabledPayer("payments are manual on this server"), attachments: { load: async () => [] },
   email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<out_${emails.length}@ses.haggle.test>` }; } },
   sms: { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } },
   config: {

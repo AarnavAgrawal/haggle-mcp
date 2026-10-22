@@ -96,6 +96,13 @@ jobs:
       - name: Unit and end-to-end tests (mock mode, no network)
         run: npx vitest run
 
+      # The same engine and MCP suites with the wall clock moved before the fixtures' dates and a year
+      # after them: no test may depend on today's date (fake engine clocks vs. real-time stamps, literal dates).
+      - name: Tests don't depend on the real date (skewed clock)
+        env:
+          HAGGLE_TEST_CLOCK_SKEWS: 2026-01-15T12:00:00Z 2027-10-22T12:00:00Z
+        run: scripts/test-clock-skew.sh
+
       # The built server in a clean mock-mode environment: /health, /ready, MCP, one simulated deal.
       - name: Mock-mode smoke against the built server
         run: scripts/smoke-local.sh

@@ -28,7 +28,7 @@ function engine(shared?: { repo: InMemoryRepository; t: number }) {
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const sent: { to: string; subject: string; bodyText: string }[] = [];
   const texts: { to: string; text: string }[] = [];
-  const repo = shared?.repo ?? new InMemoryRepository();
+  const repo = shared?.repo ?? new InMemoryRepository({ now: clock.now });
   const e = new HaggleEngine({
     repo, now: clock.now, extractor: extractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { sent.push(m); return { providerId: `em_${sent.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${sent.length}@haggle.test>` }; } },

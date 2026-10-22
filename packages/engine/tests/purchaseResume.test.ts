@@ -27,7 +27,7 @@ function ids() {
 }
 
 /** One deal, restarted (a new engine instance on the same store) after every stage. */
-async function resumeAtEveryStage(repo: Repository) {
+async function resumeAtEveryStage(repo: Repository | ((now: () => Date) => Repository)) {
   const id = ids();
   const env = purchaseEnv({ repo, approver: id.approver, instanceId: "first" });
   let engine = env.engine;
@@ -103,14 +103,13 @@ async function resumeAtEveryStage(repo: Repository) {
 
 describe("a deal resumes cleanly after every stage (in-memory store)", () => {
   it("restart after each stage: found by list_deals, read by get_quotes, nothing sent twice", async () => {
-    await resumeAtEveryStage(new InMemoryRepository());
+    await resumeAtEveryStage((now) => new InMemoryRepository({ now }));
   });
 
   it("a lease lost while texting 'all quotes are in' (ready_offered): the next advance offers again, once", async () => {
-    const repo = new InMemoryRepository();
-    const ctl = leaseControl(repo);
     const id = ids();
-    const env = purchaseEnv({ repo, approver: id.approver });
+    const env = purchaseEnv({ repo: (now) => new InMemoryRepository({ now }), approver: id.approver });
+    const ctl = leaseControl(env.repo);
     const deal = await env.engine.deal({ request: REQUEST as never, budget_usd: 2500, businesses: [{ name: "Harbor Table", email: id.harbor }, { name: "Golden Grill", email: id.grill }] });
     env.clock.advance(5 * 60_000);
     await env.mail(deal.job_id, id.harbor, "$2,180 total incl tax, 14 vegetarian, delivered by 11:00, $500 deposit.");

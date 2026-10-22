@@ -14,7 +14,7 @@ const overloaded = () => Object.assign(new Error("Overloaded"), { status: 529 })
 async function quoteThrough(extractor: ExtractorPort) {
   let t = Date.now();
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send() { return { providerId: `em_${Math.random()}`, status: "sent", idempotentReplay: false, messageId: `<em_${Math.random()}@haggle.test>` }; } },

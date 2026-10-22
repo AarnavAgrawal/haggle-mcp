@@ -48,7 +48,7 @@ function demoEngine(opts: { sms?: boolean; notifyPhone?: string | null; smsPort?
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const sms: SmsPort = opts.smsPort ?? { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}_${RUN}` }; } };
   // Postgres for the database variant (same port surface; typed as the memory store for the helpers).
-  const repo = (opts.repo ?? new InMemoryRepository()) as InMemoryRepository;
+  const repo = (opts.repo ?? new InMemoryRepository({ now: clock.now })) as InMemoryRepository;
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },

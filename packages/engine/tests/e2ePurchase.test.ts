@@ -78,7 +78,7 @@ function setup() {
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const emails: { to: string; subject: string; bodyText: string; idempotencyKey: string }[] = [];
   const texts: { to: string; text: string }[] = [];
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor, brain: new StubBrain(), payer: disabledPayer("off"),
     // The fake attachment port: Sunset's PDF, by filename; nothing else has attachments.

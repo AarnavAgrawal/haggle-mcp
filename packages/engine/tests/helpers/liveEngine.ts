@@ -37,7 +37,7 @@ export function liveEngine(o: { config?: Partial<EngineConfig>; repo?: Repositor
   const clock = { now: () => new Date(t), set: (d: Date) => { t = d.getTime(); }, advance: (ms: number) => { t += ms; } };
   const emails: SentEmail[] = [];
   const texts: { to: string; text: string }[] = [];
-  const repo = o.repo ?? new InMemoryRepository();
+  const repo = o.repo ?? new InMemoryRepository({ now: clock.now });
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: o.extractor ?? textExtractor, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { emails.push(m as SentEmail); return { providerId: `em_${m.idempotencyKey}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}_${m.idempotencyKey.replace(/\W/g, "")}@email.amazonses.com>` }; } },

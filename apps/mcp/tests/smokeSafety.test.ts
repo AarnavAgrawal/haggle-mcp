@@ -112,7 +112,9 @@ describe("smoke never contacts a vendor or a payment provider (live server, trap
   });
 
   it("control: the traps do catch contact (a real deal call through the same server touches them)", async () => {
-    const res = await viaServer("https://staging.haggle.test/mcp", { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: "deal", arguments: { request: { what: "lunch catering", quantity: 20, date: "2026-11-20", area: "San Francisco, CA" }, businesses: [{ name: "Trap Cafe", email: "orders@trapcafe.example" }], budget_usd: 800 } } }) });
+    // An event date a month out on the clock the server uses (the wall clock): a past date is refused before any send.
+    const date = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const res = await viaServer("https://staging.haggle.test/mcp", { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18", authorization: `Bearer ${TOKEN}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: "deal", arguments: { request: { what: "lunch catering", quantity: 20, date, area: "San Francisco, CA" }, businesses: [{ name: "Trap Cafe", email: "orders@trapcafe.example" }], budget_usd: 800 } } }) });
     await res.text();
     expect(touched).toContain("email.send");
   });

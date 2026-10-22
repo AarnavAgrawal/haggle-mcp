@@ -36,7 +36,7 @@ function demoEngine(config: Record<string, unknown> = {}) {
   const texts: { to: string; text: string; idempotencyKey: string }[] = [];
   const calls: { toNumber: string; reason: string; idempotencyKey: string }[] = [];
   const sms: SmsPort = { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } };
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },

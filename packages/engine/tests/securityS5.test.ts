@@ -34,9 +34,9 @@ async function setup(config: Partial<EngineConfig> = {}, ports: { emailError?: (
   const texts: { to: string; text: string }[] = [];
   const emails: { to: string; subject: string; bodyText: string }[] = [];
   const calls: { toNumber: string }[] = [];
-  const repo = new InMemoryRepository();
   let t = Date.parse("2026-10-20T19:00:00Z"); // a Tuesday, noon Pacific (call hours)
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
+  const repo = new InMemoryRepository({ now: clock.now });
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"), stripe: simulatedStripe(),
     email: { async send(m) { const e = ports.emailError?.(m.to); if (e) throw e; emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },

@@ -42,7 +42,7 @@ export async function makeEnv(opts: { extractor: ExtractorPort; config?: Partial
   let t = EVAL_START;
   const start = t;
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; }, elapsed: () => t - start };
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const emails: SentEmail[] = [];
   const texts: EvalEnv["texts"] = [];
   const calls: EvalEnv["calls"] = [];

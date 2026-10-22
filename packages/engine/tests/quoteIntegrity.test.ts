@@ -34,7 +34,7 @@ function engine(opts: { stripe?: boolean } = {}) {
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const texts: { to: string; text: string }[] = [];
   const sent: { to: string; bodyText: string }[] = [];
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const stripe = simulatedStripe();
   const e = new HaggleEngine({
     repo, now: clock.now, extractor: extractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("Payments are off"),
