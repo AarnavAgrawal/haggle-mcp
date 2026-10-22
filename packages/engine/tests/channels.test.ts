@@ -249,7 +249,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     const sent: { to: string; subject: string; bodyText: string }[] = [];
     const texts: { to: string; text: string }[] = [];
     const calls: { toNumber: string; reason: string }[] = [];
-    const repo = new InMemoryRepository();
+    const repo = new InMemoryRepository({ now: clock.now });
     const engine = new HaggleEngine({
       repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
       email: { async send(m) { sent.push(m); return { providerId: `em_${sent.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${sent.length}@haggle.test>` }; } },

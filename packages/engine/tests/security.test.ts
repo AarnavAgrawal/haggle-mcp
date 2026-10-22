@@ -39,7 +39,7 @@ function setup(config: Partial<EngineConfig> = {}, opts: { repo?: Repository; st
   const emails: { to: string; subject: string; bodyText: string }[] = [];
   const texts: { to: string; text: string; idempotencyKey: string }[] = [];
   const calls: { toNumber: string; reason: string; idempotencyKey?: string }[] = [];
-  const repo = (opts.repo ?? new InMemoryRepository()) as InMemoryRepository;
+  const repo = (opts.repo ?? new InMemoryRepository({ now: clock.now })) as InMemoryRepository;
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     ...(opts.stripe ? { stripe: opts.stripe } : {}),

@@ -43,7 +43,8 @@ const noEvidence = { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf:
 
 export interface PurchaseEnvOptions {
   config?: Partial<EngineConfig>;
-  repo?: Repository;
+  /** A store (Postgres: rows stamped by the database), or a factory given the kit's clock so an in-memory store stamps rows on the same clock as the engine. */
+  repo?: Repository | ((now: () => Date) => Repository);
   start?: number;
   phone?: boolean;
   imessage?: boolean;
@@ -60,7 +61,7 @@ export function purchaseEnv(o: PurchaseEnvOptions = {}) {
   const emails: Sent[] = [];
   const texts: { to: string; text: string; idempotencyKey: string; via: "sms" | "imessage" }[] = [];
   const calls: { toNumber: string; reason: string }[] = [];
-  const repo = o.repo ?? new InMemoryRepository();
+  const repo = typeof o.repo === "function" ? o.repo(clock.now) : (o.repo ?? new InMemoryRepository({ now: clock.now }));
   const approver = o.approver ?? "+14155550101";
   const ports = {
     email: { async send(m: Sent) { emails.push(m); return { providerId: `em_${emails.length}_${m.idempotencyKey}`, status: "sent" as const, idempotentReplay: false, messageId: `<out_${emails.length}_${Math.random().toString(36).slice(2, 8)}@ses.haggle.test>` }; } },

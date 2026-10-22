@@ -123,7 +123,7 @@ export type Kit = ReturnType<typeof kit>;
 export function kit(config: Partial<EngineConfig> = {}, o: { repo?: Repository; clock?: Clock; providers?: FakeProviders; channels?: ChannelName[]; extractor?: ExtractorPort; instanceId?: string } = {}) {
   const clock = o.clock ?? newClock();
   const p = o.providers ?? new FakeProviders(clock);
-  const repo = (o.repo ?? new InMemoryRepository()) as InMemoryRepository;
+  const repo = (o.repo ?? new InMemoryRepository({ now: clock.now })) as InMemoryRepository;
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const on = new Set(o.channels ?? ["email", "text", "call", "a2a"]);
   const engine = new HaggleEngine({

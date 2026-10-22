@@ -104,7 +104,7 @@ function setup(config: Partial<EngineConfig> = {}) {
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const emails: { to: string; subject: string; bodyText: string; idempotencyKey: string }[] = [];
   const texts: { to: string; text: string }[] = [];
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },

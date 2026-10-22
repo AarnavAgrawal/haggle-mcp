@@ -14,11 +14,11 @@ const SUNSET = "sunset-kitchen-sf@inkboxmail.test";
 const H = 3_600_000;
 const { budget_usd: _b, ...request } = GOLDEN_REQUEST;
 
-function setup(o: { catchUp?: Partial<CatchUpParams> | false; maxItems?: number; repo?: InMemoryRepository } = {}) {
+function setup(o: { catchUp?: Partial<CatchUpParams> | false; maxItems?: number; repo?: (now: () => Date) => InMemoryRepository } = {}) {
   let t = Date.parse("2026-10-20T09:00:00Z");
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const api = new TimedInkbox(clock);
-  const repo = o.repo ?? new InMemoryRepository();
+  const repo = o.repo ? o.repo(clock.now) : new InMemoryRepository({ now: clock.now });
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const log = (event: string, data: Record<string, unknown>) => { logs.push({ event, data }); };
   const engine = new HaggleEngine({
@@ -106,9 +106,7 @@ describe("catch-up after a 2-day outage", () => {
   });
 
   it("no reconcile_cursors table (117 not applied): the plain window, as before, logged once", async () => {
-    const repo = new InMemoryRepository();
-    repo.getReconcileCursor = async () => { throw Object.assign(new Error('relation "reconcile_cursors" does not exist'), { code: "42P01" }); };
-    const env = setup({ repo });
+    const env = setup({ repo: (now) => { const r = new InMemoryRepository({ now }); r.getReconcileCursor = async () => { throw Object.assign(new Error('relation "reconcile_cursors" does not exist'), { code: "42P01" }); }; return r; } });
     const { sunset } = await outage(env);
     const unavailable = () => env.logs.filter((l) => l.event === "reconcile_cursor_unavailable").length;
     const before = unavailable();

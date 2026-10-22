@@ -15,8 +15,8 @@ const CARD = "https://agent.example/.well-known/agent-card.json";
 
 /** Two engine instances (a, b) on one database and one set of providers; a holds the lease first. */
 async function pair(business: Record<string, string>) {
-  const repo = new InMemoryRepository();
   const clock = newClock();
+  const repo = new InMemoryRepository({ now: clock.now });
   const providers = new FakeProviders(clock);
   const a = kit({ instanceId: "a" }, { repo, clock, providers, instanceId: "a" });
   const b = kit({ instanceId: "b" }, { repo, clock, providers, instanceId: "b" });
@@ -119,8 +119,8 @@ describe("lease renewal timeouts, hung providers and replicas", () => {
     // The RFQ failed before the provider accepted it; its retry comes due inside an advance.
     const key = `rfq:${t.job.id}:${t.biz.business_id}`;
     const fresh = await (async () => {
-      const repo = new InMemoryRepository();
       const clock = newClock();
+      const repo = new InMemoryRepository({ now: clock.now });
       const providers = new FakeProviders(clock);
       providers.fail("email", "5xx_before");
       const a = kit({ instanceId: "a" }, { repo, clock, providers, instanceId: "a" });
@@ -144,8 +144,8 @@ describe("lease renewal timeouts, hung providers and replicas", () => {
   });
 
   it("a provider that hangs past the lease: the new holder re-sends under the same key; the provider delivers it once", async () => {
-    const repo = new InMemoryRepository();
     const clock = newClock();
+    const repo = new InMemoryRepository({ now: clock.now });
     const providers = new FakeProviders(clock);
     providers.fail("email", "5xx_before", "hang");
     const a = kit({ instanceId: "a" }, { repo, clock, providers, instanceId: "a" });
@@ -164,8 +164,8 @@ describe("lease renewal timeouts, hung providers and replicas", () => {
   });
 
   it("two replicas advancing the same job at once: one holds the lease, every due send goes out once", async () => {
-    const repo = new InMemoryRepository();
     const clock = newClock();
+    const repo = new InMemoryRepository({ now: clock.now });
     const providers = new FakeProviders(clock);
     providers.fail("email", "5xx_before", "5xx_before");
     providers.fail("call", "refuse");
