@@ -9,6 +9,7 @@
 // Seller content is untrusted data throughout.
 import { CallMode, CallOrigin, Inkbox, InkboxAPIError, InkboxConnectionError, verifyWebhook as sdkVerifyWebhook, type A2AClient, type A2AResolvedTarget, type A2AWireMessage, type A2AWireTask, type MailWebhookPayload } from "@inkbox/sdk";
 import { attachmentKind, imageContentType, MAX_IMAGE_BYTES, MAX_JSON_BYTES, MAX_PDF_BYTES, type ExtractedFile } from "../inbound/attachments.ts";
+import { htmlToText } from "../inbound/htmlText.ts";
 import { normalizeMessageId } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { replySubject, type OutboundEmail, type SendOutcome } from "../outbound/primitiveSender.ts";
@@ -24,7 +25,7 @@ export interface InkboxMailApi {
 }
 
 /** A message as `inkbox.messages.list` yields it, newest first (the fields Haggle uses). */
-export type InkboxListedMessage = { id?: string; messageId: string; direction: string; createdAt?: Date | string; fromAddress?: string; toAddresses?: string[] };
+export type InkboxListedMessage = { id?: string; messageId: string; direction: string; createdAt?: Date | string; fromAddress?: string; toAddresses?: string[]; status?: string; subject?: string | null; isRead?: boolean };
 
 export interface InkboxMessageDetail {
   id: string;
@@ -34,9 +35,16 @@ export interface InkboxMessageDetail {
   toAddresses: string[];
   subject: string | null;
   bodyText: string | null;
+  /** HTML part; used only when there is no plain-text part (inbound/htmlText.ts). */
+  bodyHtml?: string | null;
   inReplyTo: string | null;
   references: string[] | null;
   attachmentMetadata: Record<string, unknown>[] | null;
+  /** inbound: received; outbound: queued | sent | delivered | bounced | failed. */
+  status?: string;
+  direction?: string;
+  sesMessageId?: string | null;
+  createdAt?: Date | string;
 }
 
 export function inkboxMailApi(inkbox: Inkbox): InkboxMailApi {
@@ -153,7 +161,8 @@ export function inkboxToInbound(payload: { id: string; event_type: string }, det
     from: detail.fromAddress ? lower(detail.fromAddress) : null,
     to: detail.toAddresses.map(lower),
     subject: detail.subject,
-    bodyText: detail.bodyText,
+    // HTML-only mail (no text part): its text, with <blockquote> history as "> " lines.
+    bodyText: detail.bodyText?.trim() ? detail.bodyText : detail.bodyHtml?.trim() ? htmlToText(detail.bodyHtml) || detail.bodyText : detail.bodyText,
     attachments,
     attachmentsDownloadUrl: null,
   };
