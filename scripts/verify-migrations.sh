@@ -1,39 +1,20 @@
 #!/usr/bin/env bash
-# Applies supabase/migrations to a throwaway Postgres container and runs SQL assertions.
-# Requires Docker. Usage: scripts/verify-migrations.sh
+# Applies supabase/migrations to a throwaway Postgres and runs the SQL assertions (supabase/tests/*.sql).
+# Then re-applies the migration ledger (111, idempotent) and checks the ledger script's view of it.
+# Docker by default; with HAGGLE_PG_ADMIN_URL (CI service container) a throwaway database on that server.
+# Usage: scripts/verify-migrations.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-NAME="haggle-migrate-check-$$"
-IMAGE="${PG_IMAGE:-postgres:17-alpine}"
+# shellcheck source=pg-common.sh
+. "$ROOT/scripts/pg-common.sh"
+pg_start migrate-check
 
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+pg_apply_migrations "$ROOT"
 
-docker run -d --name "$NAME" -e POSTGRES_PASSWORD=postgres "$IMAGE" >/dev/null
-for _ in $(seq 1 60); do
-  docker exec "$NAME" pg_isready -U postgres -q 2>/dev/null && break
-  sleep 0.5
-done
-# pg_isready can pass before the init scripts finish; wait for a real query.
-for _ in $(seq 1 60); do
-  docker exec "$NAME" psql -U postgres -tAc 'select 1' >/dev/null 2>&1 && break
-  sleep 0.5
-done
+for t in "$ROOT"/supabase/tests/*.sql; do echo "running $(basename "$t")"; pg_sql < "$t"; done
 
-psql() { docker exec -i "$NAME" psql -U postgres -v ON_ERROR_STOP=1 -q "$@"; }
-
-# Supabase's built-in roles, so the migrations' grants/revokes apply as in production.
-psql <<'SQL'
-create role anon nologin;
-create role authenticated nologin;
-create role service_role nologin bypassrls;
-SQL
-
-for f in "$ROOT"/supabase/migrations/*.sql; do
-  echo "applying $(basename "$f")"
-  psql < "$f"
-done
-
-for t in "$ROOT"/supabase/tests/*.sql; do echo "running $(basename "$t")"; psql < "$t"; done
+# The ledger migration must be safe to re-run (operators may apply it twice).
+pg_sql < "$ROOT/supabase/migrations/111_engine_ops.sql"
+echo "re-applied 111_engine_ops.sql (idempotent)"
 echo "migrations OK"

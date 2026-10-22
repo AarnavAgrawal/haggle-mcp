@@ -7,8 +7,9 @@
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
   businessIdForContact, MAX_ROUNDS, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
-  withHeuristicFallback,
+  withHeuristicFallback, AiUsageMeter, aiLimitsFromEnv, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS,
 } from "@haggle/engine";
+import { haggleEnv } from "./config.ts";
 import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
 import { liveTimings } from "./timings.ts";
@@ -16,6 +17,11 @@ import { emailApprovalByCode } from "./workspace.ts";
 import { buildRoster, DEMO_VENDORS, parseVendorConfig, rosterRecipients, type ChannelStatus, type VendorContact } from "./vendors.ts";
 
 registerLiveFactory(async (env): Promise<Runtime> => {
+  // One redacting JSON logger for everything this file and the engine log (emails, phones, keys masked).
+  const deployEnv = haggleEnv(env);
+  const logger = createLogger({ fields: { service: "haggle-mcp", env: deployEnv }, level: (["debug", "info", "warn", "error"] as const).find((l) => l === env.HAGGLE_LOG_LEVEL) ?? "info" });
+  // Operator alerts (HAGGLE_ALERT_WEBHOOK_URL, Slack-compatible): stalled jobs, AI limits, background failures.
+  const alerts = createAlerter({ url: env.HAGGLE_ALERT_WEBHOOK_URL?.trim(), logger, source: `haggle ${deployEnv}` });
   // Haggle's own waits; HAGGLE_DEMO_SPEED=true shortens them for a short demo video (decision 49).
   const timings = liveTimings(env);
   const TICK_MS = timings.tickMs;
@@ -41,18 +47,18 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // only ever goes to the settings approver.
   const phonePort = env.HAGGLE_ENABLE_CALLS === "true" ? phone() : null;
   const callsEnabled = phonePort !== null;
-  if (env.HAGGLE_ENABLE_CALLS === "true" && !phonePort) console.error(JSON.stringify({ level: "warn", event: "calls_unavailable", reason: "the buyer identity has no phone number and iMessage is off" }));
+  if (env.HAGGLE_ENABLE_CALLS === "true" && !phonePort) logger.warn("calls_unavailable", { reason: "the buyer identity has no phone number and iMessage is off" });
   const a2aPort = env.HAGGLE_ENABLE_A2A === "true" ? a2a() : null;
   const imessagePort = env.HAGGLE_ENABLE_IMESSAGE === "true" ? imessage() : null;
   // SMS from the buyer's own number: update texts to HAGGLE_NOTIFY_PHONE (else the settings approver)
   // and one follow-up text to an allowlisted phone business whose call left the total unclear.
   const smsPort = env.HAGGLE_ENABLE_SMS === "true" ? sms() : null;
-  if (env.HAGGLE_ENABLE_SMS === "true" && !smsPort) console.error(JSON.stringify({ level: "warn", event: "sms_unavailable", reason: "the buyer identity has no SMS-ready phone number" }));
+  if (env.HAGGLE_ENABLE_SMS === "true" && !smsPort) logger.warn("sms_unavailable", { reason: "the buyer identity has no SMS-ready phone number" });
   const notifyPhone = env.HAGGLE_NOTIFY_PHONE?.replace(/[\s().-]/g, "");
   // Never contact arbitrary businesses: only the simulated fleet and explicitly allowed recipients.
   // Live outreach is always allowlisted: the operator's list plus each workspace's authorized vendors
   // (workspace-admin add-vendor). HAGGLE_ALLOW_ANY_RECIPIENT is ignored here (a warning is logged).
-  if (env.HAGGLE_ALLOW_ANY_RECIPIENT === "true") console.warn(JSON.stringify({ level: "warn", event: "allow_any_recipient_ignored", reason: "live outreach needs per-workspace vendor authorization" }));
+  if (env.HAGGLE_ALLOW_ANY_RECIPIENT === "true") logger.warn("allow_any_recipient_ignored", { reason: "live outreach needs per-workspace vendor authorization" });
   const allowAny = false;
   // The demo vendor roster: configuring a vendor's contact is the operator authorizing it as a recipient.
   const vendorConfig = parseVendorConfig(env.HAGGLE_DEMO_VENDORS);
@@ -72,10 +78,17 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     return name && (c.email || c.phone) ? [{ business_id: businessIdForContact({ email: c.email ?? null, phone: c.phone ?? null, a2a_card_url: c.a2a_card_url ?? null }, name), name, ...(c.email ? { email: c.email } : {}), ...(c.phone ? { phone: c.phone } : {}), simulated: true }] : [];
   });
   const brain = makeBrain([...fleet.map((b) => ({ business_id: b.business_id, name: b.name, email: b.email, simulated: b.simulated })), ...vendorIdentities], env, { observed: true });
-  const log = (event: string, data: Record<string, unknown>) => console.log(JSON.stringify({ level: "info", event, ...data }));
-  // Claude reads replies (ANTHROPIC_API_KEY is required in live mode, decision 30); if a Claude call
-  // fails, the keyword fallback reads the reply at low confidence, so a reply is never silently dropped.
-  const extractor = withHeuristicFallback(claudeExtractor({ apiKey: env.ANTHROPIC_API_KEY!, model: env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }), log);
+  const log = logger.engine;
+  // AI usage controls (HAGGLE_AI_MAX_CALLS_PER_JOB, HAGGLE_AI_DAILY_TOKEN_BUDGET): every Claude call is
+  // metered; over a limit it is refused and the reply waits for a human (never a keyword quote).
+  const ai = new AiUsageMeter({
+    limits: aiLimitsFromEnv(env), logger,
+    workspaceOf: async (jobId) => (await repo.getJob(jobId))?.workspace_id ?? null,
+    onLimit: ({ limit, scope }) => void alerts.alert({ key: `ai_limit:${limit}:${limit === "daily_tokens" ? "day" : scope.jobId ?? "?"}`, severity: "warn", summary: limit === "daily_tokens" ? "AI daily token budget reached: new replies are held for human review until the UTC day rolls over" : `AI call limit reached for job ${scope.jobId}: its new replies are held for human review`, details: { limit, job_id: scope.jobId ?? null } }),
+  });
+  // Claude reads replies (ANTHROPIC_API_KEY is required in live mode, decision 30); if Claude refuses
+  // or returns nothing, the keyword fallback reads the reply at low confidence (never approvable).
+  const extractor = meteredExtractor(withHeuristicFallback(claudeExtractor({ apiKey: env.ANTHROPIC_API_KEY!, model: env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", meter: ai, ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }), log), ai);
   // Call hours (local, in each workspace's timezone); escalation timing is HAGGLE_ESCALATE_EMAIL_TO_CALL_S.
   const hours = (env.HAGGLE_CALL_HOURS ?? "9-20").match(/^(\d{1,2})-(\d{1,2})$/);
   const callHours = hours && Number(hours[1]) < Number(hours[2]) && Number(hours[2]) <= 24 ? { start: Number(hours[1]), end: Number(hours[2]) } : { start: 9, end: 20 };
@@ -100,9 +113,9 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     payer: disabledPayer("Payments are not enabled on this server (HAGGLE_ENABLE_PAYMENTS is off); nothing was charged."),
     ...(stripe ? { stripe } : {}),
     // Claude chooses among the planner's truthful counter moves; validated, and the rules decide on any failure.
-    strategist: claudeStrategist(createAnthropicClient({ apiKey: env.ANTHROPIC_API_KEY!, ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }), env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5"),
+    strategist: claudeStrategist(meteredClient(createAnthropicClient({ apiKey: env.ANTHROPIC_API_KEY!, ...(env.ANTHROPIC_WORKSPACE_ID ? { workspaceId: env.ANTHROPIC_WORKSPACE_ID } : {}) }), ai, "strategist"), env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5"),
     // Public reviews for real businesses (Google Places), only when a key is configured; never for demo vendors.
-    reputation: placesReputation({ ...(env.GOOGLE_PLACES_API_KEY ? { apiKey: env.GOOGLE_PLACES_API_KEY } : {}), log: (event, data) => console.log(JSON.stringify({ level: "info", event, ...data })) }),
+    reputation: placesReputation({ ...(env.GOOGLE_PLACES_API_KEY ? { apiKey: env.GOOGLE_PLACES_API_KEY } : {}), log }),
     config: {
       mode: "live", inboxDomain: buyerMailbox.split("@")[1]!, sharedInbox: buyerMailbox, ...timings.engine,
       approvalTtlMs: 30 * 60_000, globalPaymentCapCents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, maxRounds: MAX_ROUNDS,
@@ -141,24 +154,38 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     : null;
   const sweepEvery = Math.max(1, Math.round(timings.reconcileEveryMs / TICK_MS));
   let ticks = 0;
-  const sweep = () => (reconciler ? reconciler.sweepAll().then(() => undefined, (e) => console.error(JSON.stringify({ level: "error", event: "reconcile_failed", error: (e as Error).message }))) : Promise.resolve());
+  // A background failure is logged every time and alerted (deduplicated: at most once per 30 min per kind).
+  const backgroundFailed = (event: string, e: unknown) => {
+    logger.error(event, { error: e });
+    void alerts.alert({ key: event, severity: "warn", summary: `${event.replace(/_/g, " ")} on the live server`, details: { error: (e as Error)?.message?.slice(0, 200) ?? String(e) } });
+  };
+  const sweep = () => (reconciler ? reconciler.sweepAll().then(() => undefined, (e) => backgroundFailed("reconcile_failed", e)) : Promise.resolve());
   // Backup tick: deadlines advance even when no agent is calling. One per process: a dev hot reload
   // re-runs this with a new engine, and the old engine's tick (old code) must stop, or two engines
   // advance the same jobs (live 2026-10-18: both parsed one reply).
   // The previous runtime's database pool is closed too: each reload's new pool would otherwise
   // keep its connections and exhaust Supabase's session pool (EMAXCONNSESSION, pool_size 15).
-  const g = globalThis as { __haggleTick?: ReturnType<typeof setInterval>; __haggleRepo?: PostgresRepository };
+  const g = globalThis as { __haggleTick?: ReturnType<typeof setInterval>; __haggleRepo?: PostgresRepository; __haggleStall?: ReturnType<typeof setInterval> };
   if (g.__haggleTick) clearInterval(g.__haggleTick);
+  if (g.__haggleStall) clearInterval(g.__haggleStall);
   const previousRepo = g.__haggleRepo;
   g.__haggleRepo = repo;
   if (previousRepo && previousRepo !== repo) void previousRepo.close().catch(() => {});
   g.__haggleTick = setInterval(() => {
     // Every sweepEvery-th tick, recover lost inbound first so this tick's advance reads it.
-    void (ticks++ % sweepEvery === 0 ? sweep() : Promise.resolve()).then(() => repo.listOpenJobs()).then((jobs) => Promise.all(jobs.map((j) => engine.advanceJob(j.id)))).catch((e) => console.error(JSON.stringify({ level: "error", event: "tick_failed", error: (e as Error).message })));
+    // Each advance runs in its job's AI scope, so the strategist and question answers count toward it.
+    void (ticks++ % sweepEvery === 0 ? sweep() : Promise.resolve()).then(() => repo.listOpenJobs()).then((jobs) => Promise.all(jobs.map((j) => ai.run({ jobId: j.id, workspaceId: j.workspace_id }, () => engine.advanceJob(j.id))))).catch((e) => backgroundFailed("tick_failed", e));
   }, TICK_MS).unref();
+  // Stalled jobs: a read-only check every HAGGLE_STALL_CHECK_EVERY_S (default 300; 0 = off), logged and alerted.
+  const stallEveryS = Number(env.HAGGLE_STALL_CHECK_EVERY_S ?? "300");
+  const stalled = new StalledJobMonitor({ repo, thresholds: DEFAULT_STALL_THRESHOLDS, log: (event, data) => logger.warn(event, data), alert: (a) => alerts.alert(a) });
+  if (Number.isFinite(stallEveryS) && stallEveryS > 0) {
+    g.__haggleStall = setInterval(() => void stalled.check().catch((e) => backgroundFailed("stall_check_failed", e)), stallEveryS * 1000).unref();
+    setTimeout(() => void stalled.check().catch((e) => backgroundFailed("stall_check_failed", e)), 30_000).unref();
+  }
   // Anything that arrived while this server was down or restarting.
   setTimeout(() => void sweep(), 5_000).unref();
-  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: env.HAGGLE_PAYMENTS === "manual" ? "manual-handoff" : stripe ? "stripe-test" : "disabled", external_senders: env.HAGGLE_EXTERNAL_SENDERS === "reply_token" ? "reply_token" : "off", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false }));
+  logger.info("live_ready", { buyer: buyerMailbox, ai_limits: ai.snapshot().limits, alerts: alerts.enabled, stall_check_s: stallEveryS > 0 ? stallEveryS : false, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: env.HAGGLE_PAYMENTS === "manual" ? "manual-handoff" : stripe ? "stripe-test" : "disabled", external_senders: env.HAGGLE_EXTERNAL_SENDERS === "reply_token" ? "reply_token" : "off", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false });
   // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
   let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };
   const channels = async (): Promise<ChannelStatus> => {
@@ -168,6 +195,10 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     return { email: true, imessage: imessagePort !== null, sms: smsPort !== null, phone: phonePort !== null, a2a: a2aPort !== null, connectCommand, connected: connected.set, callsViaSharedLine: callOrigin === "shared_imessage_number" };
   };
   const roster = async () => buildRoster(contacts, await channels());
-  if (vendorConfig.errors.length) console.error(JSON.stringify({ level: "warn", event: "demo_vendors_config", errors: vendorConfig.errors }));
-  return { mode: "live", engine, brain, missing: [], roster, channels, configErrors: vendorConfig.errors, ...(env.GOOGLE_PLACES_API_KEY ? { placesKey: env.GOOGLE_PLACES_API_KEY } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript }, ...(reconciler ? { reconciler } : {}) };
+  if (vendorConfig.errors.length) logger.warn("demo_vendors_config", { errors: vendorConfig.errors });
+  const ops = {
+    env: deployEnv, repo, database: "postgres" as const, ai, alerts, stalled,
+    providers: { inkbox: true, anthropic: true, payments: env.HAGGLE_PAYMENTS === "manual" ? "manual" as const : stripe ? "stripe_test" as const : "disabled" as const, alerts: alerts.enabled },
+  };
+  return { mode: "live", engine, brain, missing: [], roster, channels, configErrors: vendorConfig.errors, ops, ...(env.GOOGLE_PLACES_API_KEY ? { placesKey: env.GOOGLE_PLACES_API_KEY } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript }, ...(reconciler ? { reconciler } : {}) };
 });

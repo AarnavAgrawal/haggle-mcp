@@ -21,6 +21,7 @@
 //     the engine re-decides those, or send them again through their tool.
 //
 // Needs SUPABASE_DB_URL (the engine database, migrations through 109 applied).
+import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
 import { planChargeRelease, planOutboxRetry, planRecovery, PostgresRepository, redactError, TERMINAL, type Repository, type RetryPlan, type RetryStep, type StuckFinding } from "@haggle/engine";
 
 export type OpsCommand =

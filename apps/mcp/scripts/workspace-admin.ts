@@ -18,6 +18,7 @@
 // escape hatch for a wrong one (it applies to every workspace) and records who removed it and why.
 //
 // Needs SUPABASE_DB_URL (the engine database, migrations through 108 applied).
+import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
 import { PostgresRepository, type SettingsRow, type SuppressionRow, type WorkspaceRow, type WorkspaceVendorRow } from "@haggle/engine";
 import { hashSecret, newSecret } from "../src/workspace.ts";
 

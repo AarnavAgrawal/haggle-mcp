@@ -16,6 +16,7 @@
 //
 // Needs SUPABASE_DB_URL (the engine database, migrations through 108 applied). Live servers always
 // refuse requests without a workspace credential. Vendors: scripts/workspace-admin.ts add-vendor.
+import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
 import { PostgresRepository } from "@haggle/engine";
 import { hashSecret, newSecret } from "../src/workspace.ts";
 import { sharedApproverProblem } from "./workspace-admin.ts";

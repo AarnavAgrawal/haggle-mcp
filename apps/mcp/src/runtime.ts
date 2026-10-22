@@ -1,8 +1,10 @@
 // Builds the engine for the configured mode. Mock mode (default) needs no credentials and is
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
 import { readFileSync } from "node:fs";
-import { createMockEngine, fleetBusinesses, PostgresRepository, type BrainAdapter, type HaggleEngine, type InboundReconciler, type InkboxMailApi, type InkboxTrustPolicy, type Persona, type QuoteExtraction } from "@haggle/engine";
+import { createMockEngine, fleetBusinesses, log, PostgresRepository, type BrainAdapter, type HaggleEngine, type InboundReconciler, type InkboxMailApi, type InkboxTrustPolicy, type Persona, type QuoteExtraction } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
+import { assertConfig, haggleEnv, LIVE_REQUIRED } from "./config.ts";
+import type { RuntimeOps } from "./health.ts";
 import { fixtureFetchers, type PlacesFetch, type WebFetch } from "./fixtures.ts";
 import { mockDemoConfig } from "./timings.ts";
 import { buildRoster, type ChannelStatus, type RosterEntry } from "./vendors.ts";
@@ -31,11 +33,15 @@ export type Runtime = {
   channels: () => Promise<ChannelStatus>;
   /** Operator configuration problems worth showing (bad HAGGLE_DEMO_VENDORS entries). */
   configErrors?: string[];
+  /** Readiness, AI usage, alerts and stalled-job reporting (src/health.ts). */
+  ops?: RuntimeOps;
 };
 
 // ANTHROPIC_API_KEY is required in live mode (decision 30): Claude reads replies and chooses counter
 // moves. The keyword fallback still reads a reply if a Claude call fails, flagged low confidence.
-export const LIVE_REQUIRED = ["INKBOX_API_KEY", "INKBOX_WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "SUPABASE_DB_URL"] as const;
+// The full set of checks (HAGGLE_ENV, mock-only flags, production-database guard) is config.ts.
+export { LIVE_REQUIRED };
+let warned = false;
 
 let runtime: Promise<Runtime> | null = null;
 let liveFactory: ((env: NodeJS.ProcessEnv) => Promise<Runtime>) | null = null;
@@ -53,6 +59,18 @@ export function missingLiveConfig(env = process.env): string[] {
 
 export async function getRuntime(env = process.env): Promise<Runtime> {
   if (runtime) return runtime;
+  // Fail closed before building anything: the error names each variable, never its value.
+  const cfg = (() => {
+    try {
+      return assertConfig(env);
+    } catch (e) {
+      if (!warned) log.error("config_invalid", { env: haggleEnv(env), problems: (e as { errors?: string[] }).errors ?? [] });
+      warned = true;
+      throw e;
+    }
+  })();
+  if (!warned && cfg.warnings.length) log.warn("config_warnings", { env: cfg.env, warnings: cfg.warnings });
+  warned = true;
   if (env.HAGGLE_MODE === "live") {
     const missing = missingLiveConfig(env);
     if (missing.length || !liveFactory) throw new Error(`live mode is not configured: missing ${missing.join(", ") || "live factory"}`);
@@ -90,8 +108,12 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   }));
   brain.useAliases((b) => m.engine.businessAliases(b));
   const channels = async (): Promise<ChannelStatus> => ({ email: true, imessage: false, sms: false, phone: true, a2a: m.engine.a2aEnabled, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false });
+  const ops: RuntimeOps = {
+    env: cfg.env, repo: m.repo, database: env.HAGGLE_MOCK_DATABASE_URL ? "postgres" : "memory",
+    providers: { inkbox: false, anthropic: false, payments: "disabled", alerts: false },
+  };
   runtime = mockWorkspaces(m.engine, env.HAGGLE_MOCK_WORKSPACES).then(() => ({
-    mode: "mock" as const, engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster, channels,
+    mode: "mock" as const, engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster, channels, ops,
     ...(fx ? { placesKey: "fixture", placesFetch: fx.places, webFetch: { fetch: fx.web, resolve: fx.resolve } } : {}),
   }));
   return runtime;
@@ -128,4 +150,5 @@ function loadPersonas(path: string): Persona[] {
 /** Tests only. */
 export function resetRuntime() {
   runtime = null;
+  warned = false;
 }

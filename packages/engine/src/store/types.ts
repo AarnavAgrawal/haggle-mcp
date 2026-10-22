@@ -512,4 +512,7 @@ export interface Repository {
   listReviews(q: { status?: OperatorReviewRow["status"]; jobId?: string; limit?: number }): Promise<OperatorReviewRow[]>;
   /** CAS open -> resolved; null if it isn't open. */
   resolveReview(id: string, r: { resolution: string; resolved_by: string }, now: string): Promise<OperatorReviewRow | null>;
+  // ops (migration 111; optional: in-memory and test repositories have no ledger)
+  /** The migration ledger rows; null when engine_migrations doesn't exist yet. Read-only. */
+  listAppliedMigrations?(): Promise<{ name: string; checksum: string | null; applied_at: string }[] | null>;
 }
