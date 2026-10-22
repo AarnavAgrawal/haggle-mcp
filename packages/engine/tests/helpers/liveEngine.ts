@@ -3,6 +3,8 @@
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type EngineConfig, type ExtractorPort, type Repository } from "../../src/index.ts";
 import { replyToken } from "../../src/inbound/senderAuth.ts";
 import type { InboundMessage, TrustVerdict } from "../../src/inbound/primitive.ts";
+// Provider message ids are unique per process: suites share one Postgres database in parallel.
+const RUN = Math.random().toString(36).slice(2, 10);
 
 export const APPROVER = "+14155550101";
 export const TOKEN_SECRET = "test-reply-token-secret-0123456789";
@@ -39,7 +41,7 @@ export function liveEngine(o: { config?: Partial<EngineConfig>; repo?: Repositor
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: o.extractor ?? textExtractor, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { emails.push(m as SentEmail); return { providerId: `em_${m.idempotencyKey}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}_${m.idempotencyKey.replace(/\W/g, "")}@email.amazonses.com>` }; } },
-    sms: { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } },
+    sms: { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}_${RUN}` }; } },
     config: {
       mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: BUYER, collectionWindowMs: 30 * 60_000, negotiationWindowMs: 10 * 60_000, approvalTtlMs: 30 * 60_000,
       globalPaymentCapCents: 500_000, maxRounds: 1, notifyPhone: APPROVER, externalSenders: "reply_token", replyTokenSecret: TOKEN_SECRET, ...o.config,

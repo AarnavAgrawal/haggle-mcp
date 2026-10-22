@@ -10,6 +10,8 @@ import { pickTextDeal } from "../src/workflow/engine.ts";
 import { PostgresRepository } from "../src/store/postgres.ts";
 import type { Repository } from "../src/store/types.ts";
 import { simulatedStripe, type StripePort } from "../src/payments/stripe.ts";
+// Provider message ids are unique per process: suites share one Postgres database in parallel.
+const RUN = Math.random().toString(36).slice(2, 10);
 
 const HUMAN = "+14155550199";
 
@@ -44,7 +46,7 @@ function demoEngine(opts: { sms?: boolean; notifyPhone?: string | null; smsPort?
   const texts: { to: string; text: string; idempotencyKey: string }[] = [];
   const calls: { toNumber: string }[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
-  const sms: SmsPort = opts.smsPort ?? { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } };
+  const sms: SmsPort = opts.smsPort ?? { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}_${RUN}` }; } };
   // Postgres for the database variant (same port surface; typed as the memory store for the helpers).
   const repo = (opts.repo ?? new InMemoryRepository()) as InMemoryRepository;
   const engine = new HaggleEngine({
