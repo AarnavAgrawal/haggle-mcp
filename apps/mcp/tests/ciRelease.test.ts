@@ -37,6 +37,10 @@ describe("CI runs every release gate", () => {
     expect(CI).toMatch(/permissions:\s*\n\s*contents: read/);
   });
 
+  it("the Postgres step runs every PG-gated apps/mcp test by glob (a new *.pg.test.ts needs no edit)", () => {
+    expect(readFileSync(join(ROOT, "scripts", "test-postgres.sh"), "utf8")).toMatch(/vitest" run apps\/mcp\/tests\/\*\.pg\.test\.ts$/m);
+  });
+
   it("the build runs before the tests and the smoke (the e2e suites start the built server)", () => {
     const at = (re: RegExp) => runs.findIndex((r) => re.test(r));
     expect(at(/^npm run build$/)).toBeLessThan(at(/^npx vitest run$/));
