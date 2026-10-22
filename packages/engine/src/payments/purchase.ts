@@ -7,7 +7,7 @@
 import type { BookingRow, HandoffReceiptRow, PaymentHandoffRow } from "../store/types.ts";
 
 export type PurchaseStage =
-  | "awaiting_vendor_confirmation" | "order_confirmed" | "booking_declined" | "booking_changed"
+  | "awaiting_vendor_confirmation" | "order_confirmed" | "handoff_refused" | "booking_declined" | "booking_changed"
   | "instructions_requested" | "instructions_received" | "human_reported_paid" | "settled_verified"
   | "cancelled" | "cancel_requested_after_payment";
 
@@ -58,6 +58,8 @@ export interface PurchaseFacts {
   jobCancelled?: boolean;
   /** The approval confirms the order only (action "confirm"): no handoff, no payment. */
   confirmOnly?: boolean;
+  /** The payment guard refused the handoff after approval (its code, e.g. a lowered cap): nobody is told to pay. */
+  handoffRefused?: string;
   order?: string;
   mustHaves?: string | null;
 }
@@ -120,6 +122,11 @@ export function purchaseView(f: PurchaseFacts): PurchaseView | null {
     return { ...base, stage: "order_confirmed", ...(reply ? { vendor_reply: reply } : {}),
       summary: `${how} (${usd(b.total_cents)} total). Nothing is paid through Haggle; the customer arranges payment with ${f.business} directly under its terms.`,
       next: "Done. get_quotes shows the confirmed order." };
+  }
+  if (f.handoffRefused && !h) {
+    return { ...base, stage: "handoff_refused", operator_attention: `payment handoff refused: ${f.handoffRefused}`, ...(reply ? { vendor_reply: reply } : {}),
+      summary: `${b.status === "confirmed" ? `${f.business} confirmed the booking, but` : "This"} approval no longer passes Haggle's payment checks (${f.handoffRefused}), so Haggle didn't ask how to pay. Nothing was paid.`,
+      next: "Tell the human not to pay. The operator was flagged; a fresh approval may be needed (e.g. the spending cap was lowered after approving)." };
   }
   // Booked (by the business in writing, or confirmed by the human directly): the handoff.
   const booked = b.status === "confirmed" ? `${f.business} confirmed the booking.` : `Haggle can't get a written confirmation from ${f.business} on its channel: the human confirms the booking with them directly.`;

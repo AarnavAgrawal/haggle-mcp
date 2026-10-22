@@ -193,6 +193,17 @@ const TEXT_DECISION = /^(yes|y|approve|approved|no|n|decline|declined)\b[\s,.:!-
 const PAY_TEXT = /^pay\b[\s,.:!-]*(\d{4})?[\s.!]*$/i;
 /** "PAID 4821": the human paid the business directly (manual handoff). */
 const PAID_TEXT = /^paid\b[\s,.:!-]*(\d{4})?[\s.!]*$/i;
+/** "BOOKED 4821": the approver accepts a booking the business confirmed from a sender Haggle can't verify. */
+const BOOKED_TEXT = /^booked\b[\s,.:!-]*(\d{4})?[\s.!]*$/i;
+/**
+ * Trust that proves only continuity with Haggle's thread (the reply token; an operator release), never
+ * who wrote it: enough to read a quote, not to bind the booking or to verify a settlement on its own.
+ * (Workstream A's bindingTermsTrustFor in inbound/trustStrength.ts is the shared form; reconciled at integration.)
+ */
+function bindsTermsAlone(trustReason: string): boolean {
+  return !CONTINUITY_ONLY_REASONS.has(trustReason) && trustReason !== "operator_verified";
+}
+const THREAD_ONLY_BOOKING_WARNING = "the business's confirmation came from its email thread, but Haggle can't verify the sender (anyone with access to that thread could send it): the human accepts the booking after checking with the business";
 
 /** Detail labels that name who the order is for (the person or company the AI assistant acts for). */
 const CUSTOMER_LABEL_RE = /^(customer|client|company|organi[sz]ation|requester|requested by|on behalf of|ordered by|customer name|company name)$/i;
@@ -2103,6 +2114,61 @@ export class HaggleEngine {
    * have changed since the approval); only then is the handoff final and the business told the
    * customer reports having paid. From any other number it is ignored and recorded.
    */
+  /**
+   * "BOOKED <code>" from the workspace approver: they accept a booking the business confirmed from a
+   * sender Haggle can't verify (thread continuity only). Only for that exact approval's code, only while
+   * such a claim is pending; then the booking proceeds as a confirmed one (handoff, or confirm-only done).
+   */
+  private async ingestBookedText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined, scope: TextScope): Promise<{ jobId: string | null; outcome: string }> {
+    const mine: JobRow[] = [];
+    for (const j of open) if (inTextScope(scope, j) && from === (await this.notifyTarget(j))) mine.push(j);
+    if (!mine.length) return { jobId: null, outcome: "booked_ignored_not_approver" };
+    const latest = (await Promise.all(mine.map((j) => this.repo.getLatestApproval(j.id)))).filter((a): a is ApprovalRow => a !== null && a.status === "approved");
+    const coded = code ? latest.filter((a) => a.code === code) : [];
+    const job = coded.length === 1 ? mine.find((j) => j.id === coded[0]!.job_id)! : mine.sort((x, y) => y.created_at.localeCompare(x.created_at))[0]!;
+    const stored = await this.repo.insertMessage({
+      job_id: job.id, business_id: null, approval_id: coded.length === 1 ? coded[0]!.id : null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
+      sender_trusted: true, trust_reason: "sms-from-text-approver", matched_via: "booked_code", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+    });
+    if (!stored) return { jobId: job.id, outcome: "duplicate" };
+    const reply = (text: string) => this.notifyHuman(job, `booked-ack:${m.messageId}`, text);
+    if (coded.length !== 1) {
+      await reply(coded.length > 1 ? `more than one of your deals has code ${code}; nothing was accepted. Reply again with the deal code, e.g. "BOOKED ${code} HG-${job.short_code}".` : "that code doesn't match a booking waiting for you; nothing was accepted.");
+      return { jobId: job.id, outcome: coded.length > 1 ? "booked_ambiguous_code" : "booked_no_match" };
+    }
+    const a = coded[0]!;
+    const booking = await this.repo.getBookingByApproval(a.id);
+    const claim = (await this.repo.listEvents(job.id)).filter((e) => e.type === "booking" && e.data.approval_id === a.id && e.data.status === "vendor_claims_confirmed").at(-1);
+    if (!booking || booking.status !== "awaiting_vendor_confirmation" || !claim) {
+      await reply("there's no unverified booking confirmation waiting for you on that deal; nothing was changed.");
+      return { jobId: job.id, outcome: "booked_nothing_pending" };
+    }
+    const name = clip(await this.businessName(job.id, a.business_id), 30);
+    if (!(await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { status: "confirmed", confirmed_at: this.now().toISOString() }))) return { jobId: job.id, outcome: "booked_nothing_pending" };
+    await this.repo.appendEvent(job.id, "booking", { status: "confirmed", approval_id: a.id, by: "human_ack", sender_identity: "thread_only", at: this.now().toISOString() });
+    await this.repo.appendEvent(job.id, "reply", { business_id: a.business_id, summary: `The human accepted ${name}'s booking confirmation (its sender couldn't be verified)` });
+    if (a.action === "confirm") {
+      await this.fire(job.id, { type: "booking_confirmed" });
+      await reply(`accepted: the order with ${name} is confirmed. Nothing was paid through Haggle; arrange payment with them directly.`);
+      return { jobId: job.id, outcome: "order_confirmed" };
+    }
+    const withInstructions = claim.data.payment_instructions === true;
+    const ho = await this.startHandoff(job, a, { ask: !withInstructions });
+    if (!ho) {
+      await reply(`accepted the booking with ${name}, but this approval no longer passes Haggle's payment checks, so Haggle didn't ask how to pay them. Don't pay yet; the operator was flagged.`);
+      return { jobId: job.id, outcome: "booking_confirmed" };
+    }
+    if (withInstructions && booking.reply_text) {
+      await this.repo.updateHandoff(ho.id, ["instructions_requested"], { status: "instructions_received", instructions_text: booking.reply_text, instructions_message_id: booking.reply_message_id });
+      await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: a.business_id, warning: CONTINUITY_ONLY_WARNING, sender_identity: "thread_only" });
+      await reply(`accepted the booking with ${name}. Their payment instructions are on the deal board; confirm them with ${name} by phone before paying ${usdText(a.payment_cents)} directly, then reply PAID ${a.code}.`);
+    } else {
+      await reply(`accepted the booking with ${name}. Haggle asked how they take payment; don't pay until you have their instructions.`);
+    }
+    return { jobId: job.id, outcome: "booking_confirmed" };
+  }
+
   private async ingestPaidText(m: { messageId: string; text: string }, from: string, open: JobRow[], code: string | undefined, scope: TextScope): Promise<{ jobId: string | null; outcome: string }> {
     const record = (jobId: string | null, approvalId: string | null, trusted: boolean) => this.repo.insertMessage({
       job_id: jobId, business_id: null, approval_id: approvalId, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
@@ -2324,6 +2390,7 @@ export class HaggleEngine {
       business: await this.businessName(job.id, a.business_id), booking, handoff, receipt, approvalCode: undefined,
       cancelAfterPayment: ev.some((e) => e.type === "cancel_after_payment" && e.data.approval_id === a.id), jobCancelled: job.state === "cancelled",
       confirmOnly: a.action === "confirm", order: this.orderText(job), mustHaves: mustHaveLine(job.request.requirements),
+      ...((r) => (r ? { handoffRefused: String(r.data.code) } : {}))(ev.filter((e) => e.type === "payment_refused" && e.data.approval_id === a.id && e.data.rail === "manual").at(-1)),
     });
   }
 
@@ -2349,6 +2416,7 @@ export class HaggleEngine {
   private async startBooking(job: JobRow, a: ApprovalRow): Promise<BookingRow | null> {
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === a.business_id);
     if (!b) return null;
+    if (a.action !== "confirm" && !(await this.handoffAllowed(job, a, "booking"))) return null;
     // Email, or a text on the business's pinned number (its replies reach ingestPurchaseReply by the same identity rules).
     const byText = b.channel === "imessage" && this.canReach(b);
     const written = (b.channel === "email" && !!b.email) || byText;
@@ -2396,6 +2464,23 @@ export class HaggleEngine {
   }
 
   /**
+   * The payment guard, re-run before the vendor is asked to book or to say how it's paid (manual rail):
+   * a cap lowered after the approval, a changed quote or an untrustworthy source stops it (security
+   * review, workstream D). Recorded once per stage for the operator; nothing is sent to the vendor.
+   */
+  private async handoffAllowed(job: JobRow, a: ApprovalRow, stage: "booking" | "handoff"): Promise<boolean> {
+    const v = await this.paymentVerdict(job, a, { bookingHeld: true });
+    if (v.ok) return true;
+    const events = await this.repo.listEvents(job.id);
+    if (!events.some((e) => e.type === "payment_refused" && e.data.approval_id === a.id && e.data.stage === stage)) {
+      await this.repo.appendEvent(job.id, "payment_refused", { code: v.code, approval_id: a.id, rail: "manual", stage });
+      await this.repo.appendEvent(job.id, "operator_attention", { reason: `${stage}_refused`, code: v.code, approval_id: a.id });
+      this.log("operator_attention", { job_id: job.id, reason: `${stage}_refused`, code: v.code });
+    }
+    return false;
+  }
+
+  /**
    * Manual handoff, once the booking is confirmed: one handoff row per approval and, unless the
    * business already said how it takes payment, one message asking it how (email or text; a phone or
    * A2A business is arranged by the human). Nothing here says or implies that payment was sent.
@@ -2403,6 +2488,7 @@ export class HaggleEngine {
   private async startHandoff(job: JobRow, a: ApprovalRow, opts: { ask?: boolean } = {}): Promise<PaymentHandoffRow | null> {
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === a.business_id);
     if (!b) return null;
+    if (!(await this.handoffAllowed(job, a, "handoff"))) return null;
     const h = (await this.repo.insertHandoff({ id: newId("ho"), job_id: job.id, approval_id: a.id, business_id: a.business_id, amount_cents: a.payment_cents, status: "instructions_requested", instructions_text: null, instructions_message_id: null, confirmed_by: null, confirmed_at: null }))
       ?? (await this.repo.getHandoffByApproval(a.id));
     const deposit = a.payment_cents < a.quote_total_cents;
@@ -2474,6 +2560,15 @@ export class HaggleEngine {
         await this.repo.touchJob(job.id);
         return { jobId: job.id, outcome: "booking_unclear" };
       }
+      if (!bindsTermsAlone(trustReason)) {
+        // Continuity isn't identity: the booking stays unconfirmed until the human accepts it (BOOKED <code>).
+        await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { reply_text: r.ownText, reply_message_id: stored.id, reply_has_link: r.hasLink });
+        await this.repo.appendEvent(job.id, "booking", { status: "vendor_claims_confirmed", approval_id: a.id, message_id: stored.id, sender_identity: "thread_only", warning: THREAD_ONLY_BOOKING_WARNING, payment_instructions: r.paymentInstructions, at: this.now().toISOString() });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "booking_unverified", summary: `${b.name} says the booking is confirmed, but Haggle can't verify the sender; waiting for the human to accept it (BOOKED <code>)` });
+        await this.notifyHuman(job, `booking-ack:${a.id}`, `${name} says it's confirmed, but Haggle can't verify that email came from them. Check with them directly; if it's right, reply BOOKED ${a.code} to accept the booking. Don't pay yet.`);
+        await this.repo.touchJob(job.id);
+        return { jobId: job.id, outcome: "booking_unverified" };
+      }
       await this.repo.updateBooking(booking.id, ["awaiting_vendor_confirmation"], { status: "confirmed", confirmed_at: this.now().toISOString(), reply_text: r.ownText, reply_message_id: stored.id, reply_has_link: r.hasLink });
       await this.repo.appendEvent(job.id, "booking", { status: "confirmed", approval_id: a.id, at: this.now().toISOString() });
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${b.name} confirmed the booking (availability and the ${usdText(a.quote_total_cents)} terms)` });
@@ -2493,6 +2588,9 @@ export class HaggleEngine {
         await this.repo.updateHandoff(ho.id, ["instructions_requested"], { status: "instructions_received", instructions_text: r.ownText, instructions_message_id: stored.id });
         await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(warning ? { warning } : {}), ...(weak ? { sender_identity: "thread_only" } : {}) });
         await this.notifyHuman(job, `booked:${a.id}`, `${name} confirmed the booking and sent payment instructions (on the deal board${r.hasLink ? "; it has a link, so check it with them before paying" : ""}${weak ? "; confirm the payment details with them by phone first" : ""}). Pay them ${usdText(a.payment_cents)} directly; then reply PAID ${a.code}.`);
+      } else if (!ho) {
+        // The payment guard refused the handoff (e.g. the cap was lowered after approval): nobody is told to pay.
+        await this.notifyHuman(job, `booked:${a.id}`, `${name} confirmed the booking, but this approval no longer passes Haggle's payment checks, so Haggle didn't ask how to pay them. Don't pay yet; the operator was flagged.`);
       } else {
         await this.notifyHuman(job, `booked:${a.id}`, `${name} confirmed the booking. Haggle asked how they take payment; don't pay until you have their instructions.`);
       }
@@ -2524,6 +2622,13 @@ export class HaggleEngine {
       this.log("operator_attention", { job_id: job.id, reason: "business_withdrew_after_reported_payment" });
       await this.notifyHuman(job, `withdrew:${a.id}`, `${clip(b.name, 30)} says it can't do it after you reported paying. Haggle can't reverse or refund a payment you made directly: contact them about it. The operator was flagged.`);
       return { jobId: job.id, outcome: "operator_attention" };
+    }
+    if (!bindsTermsAlone(trustReason)) {
+      // A "received" Haggle can't attribute to the business never verifies the money: the human is told instead.
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "receipt_unverified", sender_identity: "thread_only", summary: `${b.name}'s thread says the payment was received, but Haggle can't verify the sender; not recorded as verified` });
+      await this.notifyHuman(job, `received-unverified:${a.id}`, `${clip(b.name, 30)}'s email thread says your ${usdText(h.amount_cents)} payment arrived, but Haggle can't verify who sent it. Check with them directly if it matters.`);
+      await this.repo.touchJob(job.id);
+      return { jobId: job.id, outcome: "receipt_unverified" };
     }
     await this.repo.insertHandoffReceipt({ id: newId("rc"), handoff_id: h.id, job_id: job.id, message_id: stored.id, evidence: (r.ownText || "received").slice(0, 500) });
     await this.repo.appendEvent(job.id, "payment", { status: "settled_verified", rail: "manual", business_id: b.business_id, approval_id: a.id });
@@ -2593,6 +2698,8 @@ export class HaggleEngine {
     const last = await this.lastTextRoute(from, scope);
     const paid = hm.text.trim().match(PAID_TEXT);
     if (paid) return this.ingestPaidText(hm, from, open, paid[1], scope);
+    const booked = hm.text.trim().match(BOOKED_TEXT);
+    if (booked) return this.ingestBookedText(hm, from, open, booked[1], scope);
     // STOP (or any opt-out) from a number Haggle texted as a business: never contacted again.
     if (isOptOut(m.text)) {
       for (const job of open) {
@@ -5625,6 +5732,9 @@ export class HaggleEngine {
     }
     const q = await this.repo.getQuote(quoteId);
     if (!q || q.job_id !== jobId) throw new EngineError("quote_not_found", "No such quote on this job.", "Use a quote_id from get_quotes.", "get_quotes");
+    // A live deal approves only a real business's reply (never a simulated one, never a quote with no source message).
+    const src = await this.repo.getMessage(q.message_id);
+    if (job.mode === "live" && (!src || src.simulated)) throw new EngineError("quote_not_eligible", "That quote can't be approved: simulated_reply.", "Only a real business's reply can be approved on a live deal.", "get_quotes");
     // Only safety, no firm positive amount, or an unconfirmed all-in total refuses, for confirm-only
     // approvals too (decision 19); everything else is a caveat on the approval.
     const { hard: reason } = this.approvability(job, q);
@@ -6044,7 +6154,12 @@ export class HaggleEngine {
       // PAID <code> (ingestPaidText). pay only reports where that stands.
       if (!(await this.repo.getBookingByApproval(approval.id)) && job.state === "paying") await this.startBooking(job, approval);
       const line = await this.handoffFor((await this.repo.getJob(jobId)) ?? job);
-      if (!line) throw new EngineError("handoff_unavailable", "The booking and payment handoff couldn't be started.", "Call get_quotes, then pay again.", "get_quotes");
+      if (line?.status === "handoff_refused") throw new EngineError("handoff_refused", line.reason ?? "The approval no longer passes the payment checks.", "Tell the user not to pay. The operator was flagged; a fresh approval (approve) may be needed, e.g. if the spending cap was lowered.", "get_quotes");
+      if (!line) {
+        const refused = (await this.repo.listEvents(jobId)).filter((e) => e.type === "payment_refused" && e.data.approval_id === approval.id && e.data.rail === "manual").at(-1);
+        if (refused) throw new EngineError("handoff_refused", `The approval no longer passes the payment checks (${String(refused.data.code)}), so Haggle didn't ask the business to book or how to be paid. Nothing was paid.`, "Tell the user not to pay. The operator was flagged; a fresh approval (approve) may be needed, e.g. if the spending cap was lowered.", "get_quotes");
+        throw new EngineError("handoff_unavailable", "The booking and payment handoff couldn't be started.", "Call get_quotes, then pay again.", "get_quotes");
+      }
       return line;
     }
     if (!this.d.stripe && this.d.payer.disabledReason) throw new EngineError("payments_disabled", this.d.payer.disabledReason, "Nothing was charged. The operator must enable Stripe test mode (HAGGLE_ENABLE_PAYMENTS=true with STRIPE_* set); the approval stays valid until it expires.", "get_quotes");

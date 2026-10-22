@@ -242,7 +242,11 @@ describe("SIMULATED pilot acceptance: onboarded workspace → catering request �
     expect((await engine.ingestText({ messageId: "early_paid", from: APPROVER, text: `PAID ${code}`, inbound: true })).outcome).toBe("paid_before_booking");
 
     offset += 90 * 60_000;
-    expect((await vendorEmail(HARBOR, `Confirmed! We're all set for ${MONTH_DAY}, 60 guests, 14 vegetarian, delivered to 500 Howard St by 11:00.\nFor the $500 deposit, Zelle payments@harbortable.example.\n\nMaria`)).outcome).toBe("booking_confirmed");
+    expect((await vendorEmail(HARBOR, `Confirmed! We're all set for ${MONTH_DAY}, 60 guests, 14 vegetarian, delivered to 500 Howard St by 11:00.\nFor the $500 deposit, Zelle payments@harbortable.example.\n\nMaria`)).outcome).toBe("booking_unverified");
+    // Harbor's email is proven only by Haggle's reply token (outside mail): its "confirmed" doesn't bind the
+    // booking by itself. The human checks with Harbor and accepts it by text.
+    expect(texts.filter((x) => x.to === APPROVER).at(-1)!.text).toMatch(/can't verify that email came from them.*reply BOOKED/);
+    expect((await humanText(`BOOKED ${code}`)).outcome).toBe("booking_confirmed");
 
     // ── Agent, session B: a new conversation resumes the deal from the same workspace credentials. ──
     const b = await connect(plan.token, "pilot-agent-session-b");
@@ -258,7 +262,7 @@ describe("SIMULATED pilot acceptance: onboarded workspace → catering request �
     expect(pay.isError).toBeFalsy();
     expect(pay.content[0]!.text).toMatch(/Manual payment handoff \(Haggle moves no money; nothing was charged\)/);
     // The vendor's details came by email proven only by thread continuity: the human checks them by phone.
-    expect(texts.filter((x) => x.to === APPROVER).at(-1)!.text).toMatch(/confirm the payment details with them by phone/);
+    expect(texts.filter((x) => x.to === APPROVER).some((x) => /confirm them with Harbor Table by phone before paying/.test(x.text))).toBe(true);
 
     // ── The human pays Harbor directly and texts PAID. ──
     humanSteps.push("pays Harbor Table $500 directly (outside Haggle)");
@@ -277,8 +281,8 @@ describe("SIMULATED pilot acceptance: onboarded workspace → catering request �
     // ── Measured: agent tool calls and human interventions (upper bounds). ──
     console.log(`[SIMULATED acceptance] agent tool calls: ${toolCalls}; human interventions: ${humanSteps.length} (${humanSteps.join("; ")}); sessions: ${a.session ? "2 distinct" : "stateless"}`);
     expect(toolCalls).toBeLessThanOrEqual(12);
-    expect(humanSteps.filter((s) => !s.startsWith("pays"))).toHaveLength(3); // answer the question, YES, PAID
-    expect(humanSteps.length).toBeLessThanOrEqual(4);
+    expect(humanSteps.filter((s) => !s.startsWith("pays"))).toHaveLength(4); // answer the question, YES, BOOKED (unverifiable sender), PAID
+    expect(humanSteps.length).toBeLessThanOrEqual(5);
     if (a.session && b.session) expect(a.session).not.toBe(b.session);
   });
 });

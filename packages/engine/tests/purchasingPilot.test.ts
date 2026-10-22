@@ -115,6 +115,42 @@ describe.each(["imessage", "sms"] as const)("a text vendor confirms its booking 
   });
 });
 
+describe("security review (workstream D): untrustworthy quotes and invalidated approvals never reach the payment handoff", () => {
+  it("a simulated reply on a live deal can't be approved", async () => {
+    const env = setup();
+    const deal = await env.engine.deal({ request: REQUEST, budget_usd: 2500, businesses: [{ name: "Harbor Table", email: "events@harbor.example" }] });
+    const ours = (await env.repo.listMessages(deal.job_id)).find((m) => m.direction === "out")!;
+    await env.engine.ingest({ providerEventId: "es", eventType: "message.received", providerEmailId: "in_sim", threadId: "ts", messageId: "<sim@x>", inReplyTo: [ours.rfc_message_id!], references: [ours.rfc_message_id!], from: "events@harbor.example", to: ["haggle@inkboxmail.test"], subject: `Re: ${ours.subject}`, bodyText: "$2,180 total, 14 vegetarian, delivered by 11:00, $500 deposit.", attachments: [], attachmentsDownloadUrl: null },
+      (address) => ({ trusted: true, address, reason: "inkbox-same-org", evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } }) as never, { simulated: true });
+    await env.engine.advanceJob(deal.job_id);
+    const q = (await env.engine.getQuotes(deal.job_id)).quotes[0]!;
+    await expect(env.engine.requestApproval(deal.job_id, q.quote_id, "imessage")).rejects.toMatchObject({ code: "quote_not_eligible" });
+  });
+
+  it("a cap lowered after approval: the vendor's booking yes doesn't lead to asking how to pay; the human is told not to pay", async () => {
+    const env = setup();
+    const { engine, repo, clock, emails, texts } = env;
+    const deal = await engine.deal({ request: REQUEST, budget_usd: 2500, businesses: [{ name: "Harbor Table", email: "events@harbor.example" }] });
+    const jobId = deal.job_id;
+    clock.advance(5 * 60_000);
+    await emailReply(env, jobId, "events@harbor.example", "$2,180 total, 14 vegetarian, delivered by 11:00, $500 deposit.");
+    clock.advance(31 * 60_000);
+    await engine.advanceJob(jobId);
+    const q = (await engine.getQuotes(jobId)).quotes[0]!;
+    await engine.requestApproval(jobId, q.quote_id, "imessage");
+    await engine.ingestText({ messageId: "yes", from: APPROVER, text: `YES ${approverCode(env)}`, inbound: true });
+    await engine.updateSettings({ spending_cap_cents: 30_000 }); // $300, below the approved $500 deposit
+    const asked = emails.length;
+    expect((await emailReply(env, jobId, "events@harbor.example", "Confirmed, all set.")).outcome).toBe("booking_confirmed");
+    const events = await repo.listEvents(jobId);
+    expect(events.some((e) => e.type === "payment" && e.data.status === "handoff_requested")).toBe(false);
+    expect(events.some((e) => e.type === "operator_attention" && e.data.reason === "handoff_refused")).toBe(true);
+    expect(emails.slice(asked).some((e) => /how you take payment|how .* pay/i.test(e.bodyText))).toBe(false);
+    expect(texts.filter((x) => x.to === APPROVER).at(-1)!.text).toMatch(/no longer passes Haggle's payment checks.*Don't pay yet/);
+    await expect(engine.pay(jobId, q.quote_id)).rejects.toMatchObject({ code: "handoff_refused" });
+  });
+});
+
 describe("re-confirmation of a stale quote by text", () => {
   it("a text vendor's expired quote is re-confirmed by text; its texted 'confirmed' sends the approval to the human", async () => {
     const env = setup();

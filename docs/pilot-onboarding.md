@@ -148,11 +148,16 @@ as a setup blocker when a deal starts, and nothing is sent to it.
 
 ## 6. What the customer's human does
 
-There are three things, all on their own phone or in their own chat:
+There are three things, plus one when needed, all on their own phone or in their own chat:
 
 1. **Answer a vendor's question** if the agent asks: in chat, or by replying to Haggle's text.
 2. **Approve** by replying `YES <code>` to Haggle's text (or `NO <code>`). The agent never sees the code.
-3. **Pay the vendor directly**, only after Haggle texts that the vendor confirmed the booking and
+3. **Accept the booking** with `BOOKED <code>`, only when Haggle asks. It asks when the vendor's
+   "confirmed" came from an email Haggle can't attribute to the vendor: outside mail proven only by
+   Haggle's reply reference, which is usual for Gmail and Outlook vendors today. Check with the vendor
+   first. For the same reason, a "payment received" from such a sender is passed on to the human,
+   never recorded as verified.
+4. **Pay the vendor directly**, only after Haggle texts that the vendor confirmed the booking and
    sent payment instructions. Then reply `PAID <code>`. Haggle records that the customer *reports*
    paying. The money counts as received only when the vendor confirms it.
 
