@@ -8,26 +8,38 @@
 //   node --env-file=.env scripts/job-ops.ts retry --key "confirm:apr_..." --override-obligation --by "<your name>"
 //   node --env-file=.env scripts/job-ops.ts retry --payment pay_... --override-financial --by "<your name>"
 //   node --env-file=.env scripts/job-ops.ts resolve --id rev_... --note "<what you checked or did>" --by "<your name>"
+//   node --env-file=.env scripts/job-ops.ts review-job --job job_... --note "<why>" --by "<your name>"
+//   node --env-file=.env scripts/job-ops.ts resume --job job_... --note "<what you fixed>" --by "<your name>"
+//   node --env-file=.env scripts/job-ops.ts fail-safe-close --job job_... --reason "<short, the human reads it>" --by "<your name>" --confirm
 //
 // The script never calls Inkbox or Stripe. A retry only re-arms the action in the database; the
 // running server's next advance performs it through every normal check (suppressions, vendor
 // authorization, the approval it rests on, the full payment guard). What a retry refuses:
 //   * a Voice AI call that may have rung (pending or unknown): never redialed, override or not;
+//   * a business suppressed (opt-out, bounce) or no longer authorized for the workspace since;
+//   * anything first attempted longer ago than Inkbox keeps idempotency keys (7 days);
 //   * an acceptance, booking confirmation or "the customer paid" notice: only with
 //     --override-obligation, after checking the business never received it;
 //   * a held Stripe charge: only with --override-financial, after checking the Stripe dashboard has
 //     no PaymentIntent for the approval (metadata approval_id). The payment guard runs again first;
 //   * x402 payment steps (legacy rail), follow-ups, answers, counteroffers and texts to the human:
 //     the engine re-decides those, or send them again through their tool.
+// Job-level actions: review-job holds a job (the server's background advance skips it until resume);
+// fail-safe-close asks the server to close it (failed, the human texted exactly what happened, no
+// business contacted); refused while money may be moving. Steps: docs/operator-recovery.md.
 //
 // Needs SUPABASE_DB_URL (the engine database, migrations through 109 applied).
 import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
-import { planChargeRelease, planOutboxRetry, planRecovery, PostgresRepository, redactError, TERMINAL, type Repository, type RetryPlan, type RetryStep, type StuckFinding } from "@haggle/engine";
+import { randomBytes } from "node:crypto";
+import { closeSubject, DEFAULT_WORKSPACE_ID, holdSubject, planChargeRelease, planFailSafeClose, planJobHold, planOutboxRetry, planRecovery, planResume, PostgresRepository, redactError, TERMINAL, type ContactCheck, type Repository, type RetryPlan, type RetryStep, type StuckFinding } from "@haggle/engine";
 
 export type OpsCommand =
   | { kind: "list-stuck"; limit: number }
   | { kind: "list-review"; all: boolean; jobId?: string }
   | { kind: "inspect"; jobId: string }
+  | { kind: "review-job"; jobId: string; note: string; by: string }
+  | { kind: "resume"; jobId: string; note: string; by: string }
+  | { kind: "fail-safe-close"; jobId: string; reason: string; by: string }
   | { kind: "retry-key"; key: string; override: boolean; by: string }
   | { kind: "retry-payment"; paymentId: string; override: boolean; by: string }
   | { kind: "resolve"; id: string; note: string; by: string };
@@ -83,11 +95,57 @@ export function planOps(argv: string[]): OpsCommand {
     if (note.length < 3) throw new Error("--note is required: what you checked or did");
     return { kind, id, note: note.slice(0, 400), by: by(argv) };
   }
-  throw new Error("command must be one of: list-stuck, list-review, inspect, retry, resolve");
+  if (kind === "review-job" || kind === "resume") {
+    const job = arg(argv, "job") ?? "";
+    if (!ID.test(job)) throw new Error("--job must be a job id like job_...");
+    const note = (arg(argv, "note") ?? "").trim();
+    if (note.length < 3) throw new Error(`--note is required: ${kind === "resume" ? "what you checked or fixed" : "why the job is held"}`);
+    return { kind, jobId: job, note: note.slice(0, 400), by: by(argv) };
+  }
+  if (kind === "fail-safe-close") {
+    const job = arg(argv, "job") ?? "";
+    if (!ID.test(job)) throw new Error("--job must be a job id like job_...");
+    const reason = (arg(argv, "reason") ?? "").trim();
+    if (reason.length < 3 || reason.length > 80) throw new Error("--reason is required (3-80 characters): the human reads it in the text Haggle sends");
+    if (!flag(argv, "confirm")) throw new Error("fail-safe-close ends the deal for good: add --confirm once you've read docs/operator-recovery.md §fail-safe close");
+    return { kind, jobId: job, reason, by: by(argv) };
+  }
+  throw new Error("command must be one of: list-stuck, list-review, inspect, retry, resolve, review-job, resume, fail-safe-close");
+}
+
+/** Job-level actions (hold, resume, fail-safe close), planned from what the database holds. */
+export async function planJobAction(repo: Repository, cmd: Extract<OpsCommand, { kind: "review-job" | "resume" | "fail-safe-close" }>): Promise<RetryPlan> {
+  const job = await repo.getJob(cmd.jobId);
+  if (cmd.kind === "fail-safe-close") return planFailSafeClose({ job, payment: job ? await repo.getPaymentForJob(job.id) : null, closeRequested: !!(await repo.findOpenReview("stuck_job", closeSubject(cmd.jobId))), reason: cmd.reason, by: cmd.by });
+  const hold = await repo.findOpenReview("stuck_job", holdSubject(cmd.jobId));
+  return cmd.kind === "review-job" ? planJobHold({ job, hold, note: cmd.note, by: cmd.by }) : planResume({ job, hold, note: cmd.note, by: cmd.by });
+}
+
+/**
+ * The contact an outbox key reaches, checked the way a first send is: suppressed since (opt-out,
+ * bounce), and still authorized for the job's workspace (its vendor list, or the operator's
+ * HAGGLE_ALLOWED_RECIPIENTS; the default workspace's global roster isn't checked here).
+ */
+export async function contactCheck(repo: Repository, job: { id: string; workspace_id: string }, key: string, env: Record<string, string | undefined> = process.env): Promise<ContactCheck> {
+  const businesses = await repo.getBusinesses(job.id);
+  let biz = businesses.find((b) => key.endsWith(`:${b.business_id}`));
+  const apr = key.match(/(?:^|:)(ap_[A-Za-z0-9]+)$/)?.[1];
+  if (!biz && apr) {
+    const a = await repo.getApproval(apr);
+    biz = businesses.find((b) => b.business_id === a?.business_id);
+  }
+  if (!biz) return { suppressed: null, authorized: null };
+  const contacts = [biz.email, biz.phone, biz.a2a_card_url].filter((c): c is string => !!c).map((c) => c.toLowerCase());
+  const [hit] = await repo.findSuppressions(contacts);
+  if (job.workspace_id === DEFAULT_WORKSPACE_ID) return { suppressed: hit?.reason ?? null, authorized: null };
+  const vendors = new Set((await repo.listWorkspaceVendors(job.workspace_id)).map((v) => v.contact.toLowerCase()));
+  const allow = (env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const ok = (c: string) => vendors.has(c) || allow.some((x) => x === c || (x.startsWith("@") && c.endsWith(x)));
+  return { suppressed: hit?.reason ?? null, authorized: contacts.length > 0 && contacts.every(ok) };
 }
 
 /** Build the plan for a retry from what the database holds (pure given the rows). */
-export async function planRetry(repo: Repository, cmd: Extract<OpsCommand, { kind: "retry-key" | "retry-payment" }>): Promise<RetryPlan> {
+export async function planRetry(repo: Repository, cmd: Extract<OpsCommand, { kind: "retry-key" | "retry-payment" }>, nowMs = Date.now()): Promise<RetryPlan> {
   if (cmd.kind === "retry-payment") {
     const job = await findPaymentJob(repo, cmd.paymentId);
     const payment = job ? await repo.getPaymentForJob(job) : null;
@@ -97,7 +155,8 @@ export async function planRetry(repo: Repository, cmd: Extract<OpsCommand, { kin
   const row = await repo.getOutbox(cmd.key);
   const job = row?.job_id ? await repo.getJob(row.job_id) : null;
   const biz = job ? (await repo.getBusinesses(job.id)).find((b) => cmd.key.endsWith(`:${b.business_id}`)) : undefined;
-  return planOutboxRetry({ key: cmd.key, row, review: await repo.findOpenReview("outbox", cmd.key), job, businessStatus: biz?.status ?? null, override: cmd.override, by: cmd.by });
+  const contact = job ? await contactCheck(repo, job, cmd.key) : undefined;
+  return planOutboxRetry({ key: cmd.key, row, review: await repo.findOpenReview("outbox", cmd.key), job, businessStatus: biz?.status ?? null, override: cmd.override, by: cmd.by, nowMs, ...(contact ? { contact } : {}) });
 }
 
 /** The payment's job (payments are read per job): the review row names it. */
@@ -116,6 +175,9 @@ export async function applySteps(repo: Repository, steps: RetryStep[], now: stri
     } else if (s.op === "requeue_business") {
       await repo.updateBusiness(s.jobId, s.businessId, { status: "pending", next_attempt_at: now, send_attempts: 0 }, { ifStatus: ["pending", "bounced", "unavailable"] });
       await repo.touchJob(s.jobId);
+    } else if (s.op === "open_review") {
+      const { created } = await repo.openReview({ id: `rev_${randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "x")}`, ...s.review, attempts: 0, last_error: null }, now);
+      if (!created) throw new Error(`an open review for [${s.review.subject}] already exists; nothing changed after it`);
     } else {
       await repo.appendEvent(s.jobId, s.type, s.data);
       await repo.touchJob(s.jobId);
@@ -135,7 +197,8 @@ export async function listStuck(repo: Repository, nowMs: number, limit: number):
   const out: StuckFinding[] = [];
   for (const job of [...open, ...closed]) {
     const [businesses, approval, payment, outbox, pending] = await Promise.all([repo.getBusinesses(job.id), repo.getLatestApproval(job.id), repo.getPaymentForJob(job.id), repo.listOutbox({ jobId: job.id }), repo.getPendingMessages(job.id)]);
-    out.push(...planRecovery({ job, businesses, approval, payment, outbox, pendingMessages: pending.length }, nowMs));
+    const [booking, handoff] = approval ? await Promise.all([repo.getBookingByApproval(approval.id), repo.getHandoffByApproval(approval.id)]) : [null, null];
+    out.push(...planRecovery({ job, businesses, approval, payment, outbox, pendingMessages: pending.length, booking, handoff }, nowMs));
   }
   return out;
 }
@@ -180,8 +243,13 @@ async function main(argv = process.argv.slice(2)) {
       if (!r) throw new Error(`review ${cmd.id} isn't open`);
       if (r.job_id) await repo.appendEvent(r.job_id, "operator_resolved", { review_id: r.id, kind: r.kind, by: cmd.by });
       console.log(`Resolved ${r.id} (${r.kind} [${r.subject}]): ${cmd.note}. Nothing was re-sent.`);
+    } else if (cmd.kind === "review-job" || cmd.kind === "resume" || cmd.kind === "fail-safe-close") {
+      const plan = await planJobAction(repo, cmd);
+      if (!plan.ok) throw new Error(`refused: ${plan.reason}`);
+      await applySteps(repo, plan.steps, now.toISOString());
+      console.log(`Done (${plan.steps.map((s) => s.op).join(", ")}): ${plan.note}.`);
     } else {
-      const plan = await planRetry(repo, cmd);
+      const plan = await planRetry(repo, cmd, now.getTime());
       if (!plan.ok) throw new Error(`refused: ${plan.reason}`);
       await applySteps(repo, plan.steps, now.toISOString());
       console.log(`Done (${plan.steps.map((s) => s.op).join(", ")}): ${plan.note}.`);
