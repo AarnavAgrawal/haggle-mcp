@@ -64,3 +64,17 @@ Pitfalls:
 | A quote for another date / from another business is approvable without a caveat | `packages/engine/tests/evalFields.test.ts` (`it.fails`, open: needs an extraction field) |
 | A total that excludes tax or a gratuity shown as firm (fallback reader) | `packages/engine/tests/evalFields.test.ts` (`it.fails`, open; never approvable) |
 | The fallback reader's wrong amounts becoming approvable | `packages/engine/tests/evalFields.test.ts` (passes: every f2 case is unapprovable from a keyword reading) |
+
+## Simulated evaluation vs real-world evidence (sprint 5)
+
+**There is no real-world usability evidence yet.** No first-time pilot user has run a deal. Everything above comes from tests and simulated runs.
+
+| | Simulated (what exists) | Real (what the pilot must produce) |
+| --- | --- | --- |
+| Agent tool calls per deal | 32.2 mean, 46 max for a scripted reference agent that polls `wait_for_update` every 25 s (`scripts/pilot-benchmark.ts --n 10 --seed 1`). The acceptance test's tuned flow uses ≤ 12. | A real agent's calls, from client logs (not recorded by Haggle) |
+| Human steps per deal | 1.1 mean (answer a vendor question, approve) in mock mode. The live acceptance flow has 4: answer, YES, BOOKED, PAID. | `scripts/metrics.ts`: manual interventions per job (answers, BOOKED attestations, operator actions) |
+| Output the agent reads | about 22.6K structuredContent chars per deal (~5.7K tokens), down 12% this sprint | Same constructors in live mode; not measured on real traffic |
+| Time to first quote / approval / booking | Simulated clock only (the DEMO fleet replies within seconds) | `scripts/metrics.ts` timings (median, p90) once pilot jobs exist |
+| Vendor response rate | 100%: the fleet always replies | `scripts/metrics.ts`, by channel |
+
+`scripts/metrics.ts` never counts mock jobs, test-marked workspaces or jobs, or live jobs whose vendors were all simulated. Rows from simulated vendors inside a real job are dropped too. Definitions and the rule are in `docs/pilot-metrics.md`. Before the first pilot, the operator should mark internal and demo workspaces as test (`scripts/traction.ts mark-test`).

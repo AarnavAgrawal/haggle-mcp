@@ -8,7 +8,7 @@ import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
 import { historyOnly } from "./src/brain.ts";
-import { ApprovalOut, BusinessProfile, Conversation, dealStartedBoard, DealBoardPlus, emptyBoard, Estimates, Identity, requestDetails, toApproval, toDealBoardPlus } from "./src/views.ts";
+import { ApprovalOut, BusinessProfile, Conversation, dealStartedBoard, DealBoardPlus, emptyBoard, Estimates, Identity, requestDetails, toApproval, toDealBoardPlus, waitOutput } from "./src/views.ts";
 import { blockerLines, businessRef, findVendors, rosterBusinessId, workspaceVendorList, type ChannelStatus, type RosterEntry } from "./src/vendors.ts";
 import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, historyEvidence, learningFor, listingEvidence, requestCategory, resolveSelection, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered, type Selected } from "./src/businesses.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
@@ -509,9 +509,6 @@ export const deal = server.tool(
     }, { message: "Haggle couldn't start this deal (server error). No deal was created and nothing was sent.", fix: "Retry deal once with the same request. If it fails again, tell the user Haggle hit a server error; don't open or describe any other deal in its place.", next: "deal" }),
 );
 
-/** wait_for_update returns at most this many updates (the newest); updates_omitted counts the rest. */
-const WAIT_UPDATES_MAX = 12;
-
 export const waitForUpdate = server.tool(
   {
     name: "wait_for_update",
@@ -535,12 +532,9 @@ export const waitForUpdate = server.tool(
       const w = await engine.waitForUpdate(job_id, Number(cursor), timeout_s * 1000, ctx.signal, until);
       // Name whose quote is whose (a bare quote id let the model attribute prices to the wrong business).
       const names = w.updates.some((x) => x.type === "quote") ? await engine.businessNames(job_id) : new Map<string, string>();
-      const lines = w.updates.slice(-12).map((u) =>
-        u.type === "quote" ? `quote ${u.quote_id} from ${names.get(u.business_id) ?? "a business"}: ${usd(u.total_usd)} (round ${u.round})` : u.type === "question" ? `question ${u.question_id}: "${u.text.slice(0, 120)}"` : u.type === "state" ? `state ${u.from} -> ${u.to}` : u.type === "flag" ? `flag ${u.flag}` : u.type === "reply" ? u.summary : `payment ${u.status}`);
-      const head = w.timed_out ? `No ${until === "any_change" ? "change" : `"${until}"`} in ${timeout_s}s (${w.state}).` : `${w.updates.length} update(s), state ${w.state}:`;
-      // Compact: the newest updates only (the cursor still covers everything; get_quotes has the full state).
-      const omitted = Math.max(0, w.updates.length - WAIT_UPDATES_MAX);
-      return ok(omitted ? { ...w, updates: w.updates.slice(-WAIT_UPDATES_MAX), updates_omitted: omitted } : w, [head, ...lines, `cursor=${w.cursor} · next: ${w.next}`].join("\n"));
+      // Compact: the newest updates only (the cursor still covers everything; get_quotes has the full state); src/views.ts waitOutput.
+      const out = waitOutput(w, Number(cursor), { until, timeoutS: timeout_s, names });
+      return ok(out.structured, out.text);
     }),
 );
 

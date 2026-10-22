@@ -6,7 +6,7 @@ import { DealBoard } from "@haggle/core";
 import type { DealBoardData } from "@haggle/engine";
 import { createMockEngine } from "../../../packages/engine/src/mock.ts";
 import { fleetBusinesses, GOLDEN_REQUEST } from "../../../packages/engine/src/sim/fleet.ts";
-import { BOARD_CHAR_BUDGET, compactBoard, DealBoardPlus, toDealBoardPlus } from "../src/views.ts";
+import { BOARD_CHAR_BUDGET, compactBoard, DealBoardPlus, toDealBoardPlus, waitOutput } from "../src/views.ts";
 
 async function goldenBoard(readLaterMs = 0): Promise<DealBoardData> {
   let t = Date.parse("2026-10-20T16:00:00Z");
@@ -65,7 +65,8 @@ describe("get_quotes size budget (simulated golden fleet)", { timeout: 60_000 },
     }
     // Approvability and its reason (server verdict the view obeys), and every non-compliance.
     expect(c.quote_status).toEqual(f.quote_status);
-    for (const [id, x] of Object.entries(f.compliance ?? {})) if (x.status !== "compliant" || x.assumed.length || x.issues.length) expect(c.compliance?.[id], id).toEqual(x);
+    // (an empty `assumed` list is left out of the compact board: absent = nothing assumed)
+    for (const [id, x] of Object.entries(f.compliance ?? {})) if (x.status !== "compliant" || x.assumed?.length || x.issues.length) expect(c.compliance?.[id], id).toEqual(x.assumed?.length ? x : { status: x.status, issues: x.issues });
     expect(Object.values(c.compliance ?? {}).some((x) => x.status === "noncompliant")).toBe(true);
     // The recommendation's factors (the board's "why"), every other quote's why-not and score.
     const rec = c.value!.ranked.find((r) => r.quoteId === c.recommended_quote_id)!;
@@ -116,5 +117,47 @@ describe("get_quotes size budget (simulated golden fleet)", { timeout: 60_000 },
     expect(out.vendor_contact).toEqual({ [q.business_id]: { status: "bounced", detail: "email bounced" } });
     expect(out.selection?.[q.quote_id]).toEqual({ status: "not_selectable", reason: "doesn't meet: 12 vegetarian" });
     expect(toDealBoardPlus(b, "mock")).not.toHaveProperty("vendor_contact");
+  });
+
+  // Sprint 5 (E): measured on the pilot benchmark (scripts/pilot-benchmark.ts, seed 1): a busy
+  // workspace's six-vendor board carried restated reasons and derivable history fields.
+  it("restated selection reasons, derivable contact statistics and empty assumption lists are left out of the compact board", () => {
+    const base = { job: { id: "job_x", request: "lunch", state: "negotiating", requirements: [] }, empty: false, businesses: [], quotes: [], open_questions: [], next: "n", mode: "mock",
+      rejected: [{ business_id: "biz_q", quote_id: "q_inj", reason: "external_payment_link", detail: "asked for payment through an external link (blocked)" }] } as unknown as DealBoardPlus;
+    const block = { code: "over_cap", reason: "Needs $860 up front (no deposit stated, so the full total), above the $500 per-payment ceiling: ask Golden Grill for a smaller deposit, or ask the operator to raise the ceiling." };
+    const out = compactBoard({
+      ...base,
+      quote_status: { q_cap: { approvable: false, block }, q_ok: { approvable: true }, q_inj: { approvable: false, block: { code: "quote_not_eligible", reason: "It asked for payment through an external link (blocked)." } } },
+      selection: {
+        q_cap: { status: "not_selectable", reason: "can't be approved yet: Needs $860 up front (no deposit stated, so the full tota…" },
+        q_inj: { status: "not_selectable", reason: "can't win: asked for payment through an external link (blocked)" },
+        q_stale: { status: "not_selectable", reason: "stale: past its valid-until date (2026-10-21)" },
+        q_rec: { status: "recommended", reason: "recommended: meets every requirement and the budget, fresh, best value of the quotes that can be approved" },
+      },
+      contact_learning: { biz_a: { channels: { email: { contacted_jobs: 6, replied_jobs: 5, quotes: 12, response_rate: 0.83, confidence: 0.67, median_reply_minutes: 4 } } } },
+      compliance: { q_cap: { status: "noncompliant", issues: [{ code: "over_budget", text: "$310 over the $550 budget" }], assumed: [] }, q_u: { status: "unconfirmed", issues: [], assumed: ["delivery assumed included"] } },
+    });
+    // The two not_selectable reasons restate quote_status.block / rejected[].detail word for word: gone. Others stay.
+    expect(Object.keys(out.selection ?? {}).sort()).toEqual(["q_rec", "q_stale"]);
+    // Past replies keep what the view shows (n replied of n contacted, reply time); the rate is replied/contacted.
+    expect(out.contact_learning).toEqual({ biz_a: { channels: { email: { contacted_jobs: 6, replied_jobs: 5, median_reply_minutes: 4 } } } });
+    expect(out.compliance).toEqual({ q_cap: { status: "noncompliant", issues: [{ code: "over_budget", text: "$310 over the $550 budget" }] }, q_u: { status: "unconfirmed", issues: [], assumed: ["delivery assumed included"] } });
+    expect(DealBoardPlus.safeParse(out).success).toBe(true);
+  });
+
+  it("wait_for_update: a poll that saw nothing new says so in one short hint; anything new keeps the engine's hint", () => {
+    const w = { ok: true as const, mode: "mock" as const, job_id: "job_x", state: "collecting", cursor: "27", updates: [], timed_out: true, next: "Still collecting: waiting for Bay Catering; quotes close as soon as every business has answered, at 16:10 UTC at the latest. Call wait_for_update again (cursor from this response)." };
+    const quiet = waitOutput(w, 27, { until: "any_change", timeoutS: 25 });
+    expect(quiet.structured).toEqual({ ...w, next: "Nothing new since cursor 27; the previous hint stands. Wait again with this cursor." });
+    expect(JSON.stringify(quiet.structured).length).toBeLessThan(JSON.stringify(w).length - 80);
+    expect(quiet.text).toBe(`No change in 25s (collecting).\ncursor=27 · next: ${quiet.structured.next}`);
+    // First poll of a session (cursor 0), or any update: the engine's full hint.
+    expect(waitOutput({ ...w, cursor: "0" }, 0, { until: "any_change", timeoutS: 25 }).structured.next).toBe(w.next);
+    const moved = waitOutput({ ...w, cursor: "28", timed_out: false, updates: [{ type: "state", from: "collecting", to: "negotiating" }] as never }, 27, { until: "any_change", timeoutS: 25 });
+    expect(moved.structured.next).toBe(w.next);
+    // At most the 12 newest updates; updates_omitted counts the rest.
+    const many = waitOutput({ ...w, timed_out: false, cursor: "60", updates: Array.from({ length: 15 }, (_, i) => ({ type: "reply", business_id: "b", summary: `u${i}` })) as never }, 27, { until: "any_change", timeoutS: 25 });
+    expect(many.structured.updates).toHaveLength(12);
+    expect(many.structured).toMatchObject({ updates_omitted: 3 });
   });
 });

@@ -80,3 +80,6 @@ export * from "./ops/report.ts";
 // Sprint 5 B: operator actions (audit, suspension, approver verification, reviewed requests) and the vendor roster.
 export * from "./ops/operator.ts";
 export * from "./ops/roster.ts";
+// Sprint 5 E: usage metrics from database rows (simulated vs real), approximate AI cost.
+export * from "./ops/costs.ts";
+export * from "./ops/metrics.ts";

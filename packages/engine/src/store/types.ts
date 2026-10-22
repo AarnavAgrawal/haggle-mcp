@@ -583,6 +583,11 @@ export interface Repository {
   appendOperatorAction?(a: Omit<OperatorActionRow, "at">): Promise<OperatorActionRow>;
   /** Newest first. */
   listOperatorActions?(q: { workspaceId?: string; jobId?: string; actions?: OperatorAction[]; limit?: number }): Promise<OperatorActionRow[]>;
+  // per-call AI usage (migration 122), appended; optional so a repository without the table still runs
+  /** Append one Claude call's reported usage (never fails the call: callers catch). */
+  recordAiUsage?(u: Omit<AiUsageRow, "id" | "at"> & { at?: string }): Promise<void>;
+  /** Usage rows, oldest first; only these jobs' when given. */
+  listAiUsage?(q: { jobIds?: string[]; since?: string; until?: string }): Promise<AiUsageRow[]>;
 }
 
 /** What an operator did, from the scripts (migration 119). */
@@ -602,6 +607,20 @@ export interface OperatorActionRow {
   operator: string;
   reason: string;
   detail: Record<string, unknown>;
+  at: string;
+}
+
+/** One Claude call's usage as the API reported it (migration 122). Missing counts are 0, never guessed. */
+export interface AiUsageRow {
+  id: number;
+  job_id: string | null;
+  workspace_id: string | null;
+  purpose: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
   at: string;
 }
 

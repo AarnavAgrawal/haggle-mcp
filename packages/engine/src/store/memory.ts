@@ -29,6 +29,7 @@ import {
   type QuarantineResolutionRow,
   type OperatorActionRow,
   type OperatorAction,
+  type AiUsageRow,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -603,5 +604,13 @@ export class InMemoryRepository implements Repository {
   async listOperatorActions(q: { workspaceId?: string; jobId?: string; actions?: OperatorAction[]; limit?: number }) {
     return this.operatorActions.filter((r) => (q.workspaceId === undefined || r.workspace_id === q.workspaceId) && (q.jobId === undefined || r.job_id === q.jobId) && (!q.actions || q.actions.includes(r.action)))
       .reverse().slice(0, q.limit ?? 200).map(clone);
+  }
+  // per-call AI usage (migration 122): append-only
+  private aiUsage: AiUsageRow[] = [];
+  async recordAiUsage(u: Omit<AiUsageRow, "id" | "at"> & { at?: string }) {
+    this.aiUsage.push({ ...u, id: this.aiUsage.length + 1, at: u.at ?? now() });
+  }
+  async listAiUsage(q: { jobIds?: string[]; since?: string; until?: string }) {
+    return this.aiUsage.filter((r) => (!q.jobIds || (r.job_id !== null && q.jobIds.includes(r.job_id))) && (!q.since || r.at >= q.since) && (!q.until || r.at < q.until)).map(clone);
   }
 }

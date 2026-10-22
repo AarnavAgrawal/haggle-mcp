@@ -53,6 +53,22 @@ export interface AiMeterOptions {
   onLimit?: (info: { limit: AiBudgetExceeded["limit"]; scope: AiScope }) => void;
   /** Resolves a job's workspace for the per-workspace tally (cached). */
   workspaceOf?: (jobId: string) => Promise<string | null>;
+  /**
+   * Persists each call's reported usage (migration 122, `aiUsageSink(repo)`), so per-job usage and cost
+   * survive a restart. Best effort: a failed write is logged and never fails the Claude call.
+   */
+  sink?: (r: AiUsageRecord) => Promise<void>;
+}
+
+/** One Claude call's usage as persisted (ai_usage_events). */
+export interface AiUsageRecord {
+  job_id: string | null; workspace_id: string | null; purpose: string; model: string;
+  input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number;
+}
+
+/** The meter's sink over a repository with migration 122 (a repository without it records nothing). */
+export function aiUsageSink(repo: { recordAiUsage?: (u: AiUsageRecord) => Promise<void> }): (r: AiUsageRecord) => Promise<void> {
+  return async (r) => { await repo.recordAiUsage?.(r); };
 }
 
 export class AiUsageMeter {
@@ -63,6 +79,7 @@ export class AiUsageMeter {
   private readonly byWorkspace = new Map<string, Tally>();
   private readonly workspaceCache = new Map<string, string>();
   private readonly opts: AiMeterOptions;
+  private readonly pending = new Set<Promise<void>>();
 
   constructor(opts: AiMeterOptions = {}) {
     this.opts = opts;
@@ -117,8 +134,8 @@ export class AiUsageMeter {
     void this.tallyWorkspace(scope, (t) => { t.calls++; });
   }
 
-  /** Records a response's token usage (missing usage counts as zero, never guessed). */
-  record(scope: AiScope, usage: { input_tokens?: number | null; output_tokens?: number | null; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null } | null | undefined): void {
+  /** Records a response's token usage (missing usage counts as zero, never guessed); persisted through `sink` when the model is known. */
+  record(scope: AiScope, usage: { input_tokens?: number | null; output_tokens?: number | null; cache_creation_input_tokens?: number | null; cache_read_input_tokens?: number | null } | null | undefined, model?: string): void {
     this.roll();
     const tin = (usage?.input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0) + (usage?.cache_read_input_tokens ?? 0);
     const tout = usage?.output_tokens ?? 0;
@@ -132,6 +149,27 @@ export class AiUsageMeter {
     }
     void this.tallyWorkspace(scope, (t) => { t.tokensIn += tin; t.tokensOut += tout; });
     this.opts.logger?.info("ai_call", { purpose: scope.purpose ?? null, job_id: scope.jobId ?? null, workspace_id: scope.workspaceId ?? null, tokens_in: tin, tokens_out: tout, day_tokens: this.total.tokensIn + this.total.tokensOut });
+    if (this.opts.sink && model) {
+      const n = (v: number | null | undefined) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+      const p = this.persist(scope, { model, input_tokens: n(usage?.input_tokens), output_tokens: n(usage?.output_tokens), cache_creation_input_tokens: n(usage?.cache_creation_input_tokens), cache_read_input_tokens: n(usage?.cache_read_input_tokens) });
+      this.pending.add(p);
+      void p.finally(() => this.pending.delete(p));
+    }
+  }
+
+  private async persist(scope: AiScope, u: Omit<AiUsageRecord, "job_id" | "workspace_id" | "purpose">): Promise<void> {
+    try {
+      let ws = scope.workspaceId ?? (scope.jobId ? this.workspaceCache.get(scope.jobId) : undefined);
+      if (!ws && scope.jobId && this.opts.workspaceOf) ws = (await this.opts.workspaceOf(scope.jobId).catch(() => null)) ?? undefined;
+      await this.opts.sink!({ job_id: scope.jobId ?? null, workspace_id: ws ?? null, purpose: (scope.purpose ?? "unknown").slice(0, 40), ...u, model: u.model.slice(0, 80) });
+    } catch (e) {
+      this.opts.logger?.warn("ai_usage_persist_failed", { job_id: scope.jobId ?? null, error: (e as Error).message.slice(0, 200) });
+    }
+  }
+
+  /** Waits for usage rows still being written (tests, shutdown). */
+  async flush(): Promise<void> {
+    await Promise.all([...this.pending]);
   }
 
   private async tallyWorkspace(scope: AiScope, f: (t: Tally) => void) {
@@ -185,7 +223,8 @@ export function meteredClient<C extends ParseClient>(client: C, meter: AiUsageMe
         const scope = { ...meter.current(), ...(purpose && !meter.current().purpose ? { purpose } : {}) };
         meter.admit(scope);
         const res = await parse(...args);
-        meter.record(scope, (res as { usage?: Parameters<AiUsageMeter["record"]>[1] } | null)?.usage);
+        const model = (res as { model?: unknown } | null)?.model ?? (args[0] as { model?: unknown } | undefined)?.model;
+        meter.record(scope, (res as { usage?: Parameters<AiUsageMeter["record"]>[1] } | null)?.usage, typeof model === "string" ? model : undefined);
         return res;
       };
     },

@@ -6,7 +6,7 @@ import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import { gatedSql, PoolGate, type PoolStats } from "./poolGate.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction, type AiUsageRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -588,5 +588,19 @@ export class PostgresRepository implements Repository {
         ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
         ${q.actions ? s`and action = any(${q.actions})` : s``}
       order by seq desc limit ${q.limit ?? 200}`);
+  }
+  // per-call AI usage (migration 122)
+  async recordAiUsage(u: Omit<AiUsageRow, "id" | "at"> & { at?: string }) {
+    await this.sql`insert into ai_usage_events ${this.sql(this.vals(u as never))}`;
+  }
+  async listAiUsage(q: { jobIds?: string[]; since?: string; until?: string }) {
+    const s = this.sql;
+    if (q.jobIds && !q.jobIds.length) return [];
+    return rows<AiUsageRow>(await s`
+      select * from ai_usage_events where true
+        ${q.jobIds ? s`and job_id = any(${q.jobIds})` : s``}
+        ${q.since ? s`and at >= ${q.since}` : s``}
+        ${q.until ? s`and at < ${q.until}` : s``}
+      order by at, id`).map((r) => ({ ...r, id: Number(r.id) }));
   }
 }
