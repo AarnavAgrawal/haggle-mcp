@@ -122,6 +122,8 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
     instructions: z.object({ text: z.string(), untrusted: z.literal(true), has_link: z.boolean() }).optional(),
     reported_paid_at: z.string().optional(), verified_at: z.string().optional(), stalled: z.literal(true).optional(), operator_attention: z.string().optional(),
     summary: z.string(), next: z.string(),
+    /** The order and must-haves restated at every stage (S4-B), and a confirm-only (no payment) approval. */
+    order: z.string().optional(), must_haves: z.string().optional(), confirm_only: z.literal(true).optional(),
   }).optional(),
   /** Quote ids that counteroffers cited as estimates ("about $1,200"), not firm quotes. */
   negotiation_estimates: z.array(z.string()).optional(),
@@ -167,7 +169,7 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
    * Integration slot (sprint 4, workstream B: purchasing): per quote_id, why the quote was selected or
    * not, in one line. Copied from the engine read model's `selection` when present.
    */
-  selection: z.record(z.string(), z.looseObject({ outcome: z.string(), reason: z.string() })).optional(),
+  selection: z.record(z.string(), z.looseObject({ status: z.enum(["recommended", "selectable", "not_selectable"]), reason: z.string() })).optional(),
   /** True when this is the compact board (the default); get_quotes(detail: true) returns every ranking factor and contact statistic. */
   compact: z.boolean().optional(),
 });
@@ -236,7 +238,9 @@ export function compactBoard(b: DealBoardPlus): DealBoardPlus {
   }
   // Stale quotes: valid_until is already on the quote row.
   if (b.freshness) out.freshness = Object.fromEntries(Object.entries(b.freshness).map(([id, f]) => [id, { stale: f.stale, good_until: f.good_until, ...(f.valid_until !== null && f.valid_until === b.quotes.find((q) => q.quote_id === id)?.valid_until ? {} : { valid_until: f.valid_until }), ...(f.reconfirmation ? { reconfirmation: f.reconfirmation } : {}) }]));
-  for (const k of ["freshness", "terms"] as const) if (out[k] && !Object.keys(out[k]!).length) delete out[k];
+  // Selection reasons: a selectable (not recommended) quote's reason is already in value.explanation.others.
+  if (b.selection) out.selection = Object.fromEntries(Object.entries(b.selection).filter(([, s]) => s.status !== "selectable").map(([id, s]) => [id, { ...s, reason: clip(s.reason, 80) }]));
+  for (const k of ["freshness", "terms", "selection"] as const) if (out[k] && !Object.keys(out[k]!).length) delete out[k];
   return out;
 }
 
@@ -257,8 +261,13 @@ export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<Dea
 
 /** Workstream A/B integration slots, read from the engine read model when it carries them. */
 function integrationSlots(b: DealBoardData): Partial<DealBoardPlus> {
-  const x = b as DealBoardData & { vendor_contact?: DealBoardPlus["vendor_contact"]; selection?: DealBoardPlus["selection"] };
-  return { ...(x.vendor_contact && Object.keys(x.vendor_contact).length ? { vendor_contact: x.vendor_contact } : {}), ...(x.selection && Object.keys(x.selection).length ? { selection: x.selection } : {}) };
+  const x = b as DealBoardData & { vendor_contact?: DealBoardPlus["vendor_contact"] };
+  // Per current quote: why it was recommended, is selectable, or can't be selected (ranking/selection.ts).
+  const selection = Object.fromEntries(b.quotes.flatMap((q) => {
+    const sel = (q as { selection?: { status: "recommended" | "selectable" | "not_selectable"; reason: string } }).selection;
+    return q.status === "current" && sel ? [[q.quote_id, sel]] : [];
+  }));
+  return { ...(x.vendor_contact && Object.keys(x.vendor_contact).length ? { vendor_contact: x.vendor_contact } : {}), ...(Object.keys(selection).length ? { selection } : {}) };
 }
 
 function fullDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus>): DealBoardPlus {

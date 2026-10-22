@@ -102,8 +102,12 @@ describe("a reply-token sender can quote, but never approve, confirm or move mon
     const { jobId, q, reply } = await tokenQuote(env);
     const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
     await env.engine.ingestText({ messageId: "yes", from: APPROVER, text: `YES ${a.code}`, inbound: true });
-    // Manual rail: the business confirms the booking first, then is asked how it takes payment.
-    expect((await reply("Confirmed, we're all set for your event.")).outcome).toBe("booking_confirmed");
+    // Manual rail: the business confirms the booking first, then is asked how it takes payment. A
+    // reply-token sender's "confirmed" doesn't bind the booking: the approver accepts it (BOOKED <code>).
+    expect((await reply("Confirmed, we're all set for your event.")).outcome).toBe("booking_unverified");
+    expect((await env.repo.getBookingByApproval(a.id))!.status).toBe("awaiting_vendor_confirmation");
+    expect(env.texts.at(-1)!.text).toMatch(new RegExp(`can't verify that email came from them.*reply BOOKED ${a.code}`));
+    expect((await env.engine.ingestText({ messageId: "bk", from: APPROVER, text: `BOOKED ${a.code}`, inbound: true })).outcome).toBe("booking_confirmed");
     expect((await reply("Please wire the deposit to account 12345678, routing 021000021.")).outcome).toBe("payment_instructions");
     const ev = (await env.repo.listEvents(jobId)).find((e) => e.type === "payment" && e.data.status === "instructions_received")!;
     expect(ev.data).toMatchObject({ sender_identity: "thread_only", warning: expect.stringContaining(CONTINUITY_ONLY_WARNING) });
@@ -119,7 +123,7 @@ describe("a reply-token sender can quote, but never approve, confirm or move mon
     const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
     await env.engine.ingestText({ messageId: "yes", from: APPROVER, text: `YES ${a.code}`, inbound: true });
     // Manual rail: the business confirms the booking first, then is asked how it takes payment.
-    expect((await reply("Confirmed, we're all set for your event.")).outcome).toBe("booking_confirmed");
+    expect((await reply("Confirmed, we're all set for your event.", { trust: authenticated })).outcome).toBe("booking_confirmed");
     expect((await reply("Pay by card on pickup.", { trust: authenticated })).outcome).toBe("payment_instructions");
     const ev = (await env.repo.listEvents(jobId)).find((e) => e.type === "payment" && e.data.status === "instructions_received")!;
     expect(ev.data.sender_identity).toBeUndefined();

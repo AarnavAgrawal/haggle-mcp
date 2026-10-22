@@ -45,7 +45,7 @@ describe("approval by text (SMS) through the webhook", () => {
     // itself; the approve tool (card plus a text) reuses that same approval, so no second text.
     const a = await engine.requestApproval(deal.job_id, q.quote_id, "view", undefined, { text: true });
     expect(texts.filter((x) => x.to === HUMAN)).toHaveLength(1);
-    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(new RegExp(`^Haggle: All quotes are in for lunch catering \\(1 quote\\)\\. Recommended: Mission Eats \\$1,070 \\(deposit \\$50\\)\\. See every option in Claude, or reply YES ${a.code} to approve the \\$50 deposit to Mission Eats \\(your assistant then pays it\\)\\.`)) });
+    expect(texts.at(-1)).toMatchObject({ to: HUMAN, text: expect.stringMatching(new RegExp(`^Haggle: All quotes are in for lunch catering, 40 people, [A-Z][a-z]{2}, [A-Z][a-z]{2} \\d+ \\(1 quote\\)\\. Recommended: Mission Eats \\$1,070 \\(deposit \\$50\\)\\. See every option in Claude, or reply YES ${a.code} to approve the \\$50 deposit to Mission Eats \\(your assistant then pays it\\)\\.`)) });
 
     const stranger = textFrom("tx_s", "+14155550000", `YES ${a.code}`);
     expect((await handleInkboxWebhook(rt, stranger, signed(stranger))).outcome).toBe("unknown_sender");

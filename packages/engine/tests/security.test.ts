@@ -319,7 +319,7 @@ describe("spending caps and approvals are rechecked after resume and recovery", 
 
   // Workstream B's region (startHandoff / startBooking): the handoff (asking the vendor how to be paid)
   // should re-run paymentVerdict(job, a, { bookingHeld: true }) first. Patch in the sprint-4 D report.
-  it.fails("manual rail: once the cap no longer covers the approved deposit, the vendor isn't asked how to be paid", async () => {
+  it("manual rail: once the cap no longer covers the approved deposit, the vendor isn't asked how to be paid", async () => {
     const { env, jobId, q, mail } = await dealt({ manualPaymentHandoff: true });
     const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
     await env.engine.ingestText({ messageId: "yh", from: ALPHA_HUMAN, text: `YES ${a.code}`, inbound: true });
@@ -354,9 +354,9 @@ describe("simulated replies, keyword-fallback readings and quarantined messages 
   it("a simulated reply on a live job: approved by a real human, the Stripe charge is still refused (payee not quoted), and nothing is charged", async () => {
     const { env, jobId, charges } = await quoted({ simulated: true });
     const q = (await env.engine.getQuotes(jobId)).quotes[0]!;
-    const a = await approveByText(env, jobId, q.quote_id);
-    await expect(env.engine.pay(jobId, q.quote_id)).rejects.toMatchObject({ code: "payment_refused_payee_not_quoted" });
-    expect(await env.engine.ingestText({ messageId: "pay1", from: ALPHA_HUMAN, text: `PAY ${a.code}`, inbound: true })).not.toMatchObject({ outcome: "paid" });
+    // Refused at approval now (S4-B applied D's openApproval patch), so no code is ever texted.
+    await expect(env.engine.requestApproval(jobId, q.quote_id, "imessage")).rejects.toMatchObject({ code: "quote_not_eligible" });
+    await expect(env.engine.pay(jobId, q.quote_id)).rejects.toBeTruthy();
     expect(charges.n).toBe(0);
     expect((await env.repo.getPaymentForJob(jobId))?.status ?? null).not.toBe("settled");
   });
@@ -364,19 +364,19 @@ describe("simulated replies, keyword-fallback readings and quarantined messages 
   it("a simulated reply on a live job, manual rail: PAID <code> is never recorded as a payment", async () => {
     const { env, jobId, b } = await quoted({ simulated: true, config: { manualPaymentHandoff: true } });
     const q = (await env.engine.getQuotes(jobId)).quotes[0]!;
-    const a = await approveByText(env, jobId, q.quote_id);
+    await expect(env.engine.requestApproval(jobId, q.quote_id, "imessage")).rejects.toMatchObject({ code: "quote_not_eligible" });
     await env.engine.pay(jobId, q.quote_id).catch(() => null);
     // Even once the business "confirms" the booking (another simulated email) ...
     await env.engine.ingest({ providerEventId: "es2", eventType: "message.received", providerEmailId: "in_s2", threadId: "ts", messageId: "<in_s2@x>", inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: HARBOR, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "Confirmed, we're all set for your event. Pay by invoice.", attachments: [], attachmentsDownloadUrl: null }, trusted, { simulated: true });
-    const r = await env.engine.ingestText({ messageId: "paid1", from: ALPHA_HUMAN, text: `PAID ${a.code}`, inbound: true });
+    const r = await env.engine.ingestText({ messageId: "paid1", from: ALPHA_HUMAN, text: "PAID 1234", inbound: true });
     expect(r.outcome).not.toBe("handoff_confirmed");
     expect((await env.repo.getJob(jobId))!.state).not.toBe("paid");
-    expect((await env.repo.getHandoffByApproval(a.id))?.status ?? null).not.toBe("human_confirmed");
+    expect(await env.repo.getLatestApproval(jobId)).toBeNull();
   });
 
   // Workstream B's region (openApproval / approvability): the approval itself should refuse a simulated reply on a
   // live job, so no booking request goes to the vendor either. Patch in the sprint-4 D report.
-  it.fails("a simulated reply on a live job can't even be approved (approvability: simulated_reply)", async () => {
+  it("a simulated reply on a live job can't even be approved (approvability: simulated_reply)", async () => {
     const { env, jobId } = await quoted({ simulated: true });
     const q = (await env.engine.getQuotes(jobId)).quotes[0]!;
     await expect(env.engine.requestApproval(jobId, q.quote_id, "imessage")).rejects.toMatchObject({ code: "quote_not_eligible" });

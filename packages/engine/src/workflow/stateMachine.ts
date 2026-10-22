@@ -19,6 +19,7 @@ export type JobEvent =
   | { type: "approval_void" } // declined, expired, locked, or the quote was revised
   | { type: "payment_settled" }
   | { type: "payment_failed_final" }
+  | { type: "booking_confirmed" } // manual rail, confirm-only: the business confirmed the order in writing
   | { type: "cancelled" };
 
 /** What the human approves: confirm the order, pay, or both (ported from haggle-testing request_approval). */
@@ -55,6 +56,8 @@ export interface TransitionContext {
   paymentInFlight: boolean;
   /** The action of the approval being verified (confirm-only approvals finish without a payment). */
   approvalAction?: ApprovalAction;
+  /** Manual pilot rail: a confirm-only approval is "confirmed" only once the business confirms in writing. */
+  bookingFirst?: boolean;
 }
 
 export type Effect =
@@ -117,7 +120,8 @@ export function transition(s: MachineState, e: JobEvent, ctx: TransitionContext)
     case "awaiting_approval":
       if (e.type === "approval_verified") {
         // Confirm-only: the business is told and the deal is done; nothing is paid.
-        if (ctx.approvalAction === "confirm") return to(s, { state: "confirmed" }, [{ type: "send_confirmation" }]);
+        // Manual rail: the business is asked first (send_accept starts the booking); "confirmed" waits for its yes.
+        if (ctx.approvalAction === "confirm") return ctx.bookingFirst ? to(s, { state: "paying" }, [{ type: "send_accept" }]) : to(s, { state: "confirmed" }, [{ type: "send_confirmation" }]);
         return to(s, { state: "paying" }, [{ type: "send_accept" }]);
       }
       if (e.type === "approval_void") return to(s, { state: s.round > 1 ? "negotiating" : "collecting", ready: true });
@@ -127,6 +131,7 @@ export function transition(s: MachineState, e: JobEvent, ctx: TransitionContext)
       // The approved quote changed (or the approval lapsed) before any money moved: back to choosing.
       if (e.type === "approval_void") return ctx.paymentInFlight ? { ok: false, reason: "a payment is in flight" } : to(s, { state: s.round > 1 ? "negotiating" : "collecting", ready: true });
       if (e.type === "payment_failed_final") return to(s, { state: "failed", failure_reason: "payment_failed" });
+      if (e.type === "booking_confirmed" && ctx.approvalAction === "confirm") return to(s, { state: "confirmed" }, [{ type: "send_confirmation" }]);
       return reject(s, e);
   }
   return reject(s, e);

@@ -71,3 +71,5 @@ export * from "./workflow/contactWindow.ts";
 export * from "./inbound/contactStatus.ts";
 export * from "./inbound/quarantineReview.ts";
 export * from "./inbound/trustStrength.ts";
+// Sprint 4 B: why each quote was selected or rejected.
+export * from "./ranking/selection.ts";

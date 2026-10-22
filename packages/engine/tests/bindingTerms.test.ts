@@ -41,7 +41,7 @@ describe("booking and receipt from a reply-token-only sender (workstream B hook)
     expect((await env.repo.listEvents(jobId)).some((e) => e.type === "booking" && e.data.status === "confirmed")).toBe(true);
   });
 
-  it.fails("a token-only 'Confirmed' must not mark the booking confirmed without the human acknowledging it (records sender_identity thread_only)", async () => {
+  it("a token-only 'Confirmed' must not mark the booking confirmed without the human acknowledging it (records sender_identity thread_only)", async () => {
     const { env, jobId, reply } = await approvedManualDeal();
     await reply("Confirmed, we're all set for your event.");
     const confirmed = (await env.repo.listEvents(jobId)).find((e) => e.type === "booking" && e.data.status === "confirmed");
@@ -49,7 +49,7 @@ describe("booking and receipt from a reply-token-only sender (workstream B hook)
     expect(confirmed === undefined || confirmed.data.sender_identity === "thread_only").toBe(true);
   });
 
-  it.fails("a token-only 'payment received' must not make a manual payment settled_verified", async () => {
+  it("a token-only 'payment received' must not make a manual payment settled_verified", async () => {
     const { env, jobId, a, reply } = await approvedManualDeal();
     await reply("Confirmed, we're all set for your event.", authenticated);
     await reply("Pay by card on pickup.", authenticated);

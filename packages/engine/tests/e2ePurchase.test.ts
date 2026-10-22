@@ -212,13 +212,18 @@ describe("SIMULATED end-to-end purchase: three realistic vendors, re-confirmatio
     // A PAID text now records nothing (the business hasn't confirmed).
     expect((await engine.ingestText({ messageId: "paid0", from: APPROVER, text: `PAID ${yes}`, inbound: true })).outcome).toBe("paid_before_booking");
 
-    // 6. Harbor confirms the booking and sends payment instructions with a link (untrusted text).
+    // 6. Harbor confirms the booking and sends payment instructions with a link (untrusted text). Its
+    // email is proven only by the reply token, so the confirmation doesn't bind the booking by itself:
+    // the human checks with Harbor and accepts it by text (BOOKED <code>).
     clock.advance(2 * 3_600_000);
-    expect((await vendorReply(env, jobId, VENDORS.harbor, (qq) => `Confirmed! We're all set for Saturday 11/14, 60 guests, delivered by 11:00.\nFor the $500 deposit you can Zelle payments@harbortable.example or pay the invoice here: https://pay.harbortable.example/inv/1114\n\nMaria${gmailQuote(qq)}`)).outcome).toBe("booking_confirmed");
+    expect((await vendorReply(env, jobId, VENDORS.harbor, (qq) => `Confirmed! We're all set for Saturday 11/14, 60 guests, delivered by 11:00.\nFor the $500 deposit you can Zelle payments@harbortable.example or pay the invoice here: https://pay.harbortable.example/inv/1114\n\nMaria${gmailQuote(qq)}`)).outcome).toBe("booking_unverified");
+    expect((await engine.getQuotes(jobId)).purchase).toMatchObject({ stage: "awaiting_vendor_confirmation", booked: false });
+    expect(texts.filter((t) => t.to === APPROVER).at(-1)!.text).toMatch(new RegExp(`can't verify that email came from them.*reply BOOKED ${yes}`));
+    expect((await engine.ingestText({ messageId: "booked1", from: APPROVER, text: `BOOKED ${yes}`, inbound: true })).outcome).toBe("booking_confirmed");
     board = await engine.getQuotes(jobId);
     expect(board.purchase).toMatchObject({ stage: "instructions_received", booked: true, money_verified: false, instructions: { untrusted: true, has_link: true } });
     expect(board.purchase!.instructions!.text).toContain("https://pay.harbortable.example/inv/1114");
-    expect(texts.filter((t) => t.to === APPROVER).at(-1)!.text).toMatch(/confirmed the booking and sent payment instructions .*check it with them before paying.*PAID/);
+    expect(texts.filter((t) => t.to === APPROVER).at(-1)!.text).toMatch(/accepted the booking with Harbor Table\. Their payment instructions are on the deal board; confirm them with Harbor Table by phone before paying \$500 directly, then reply PAID/);
     // Nothing was read as a new quote (no revision, no voided approval).
     expect((await repo.getApproval((await repo.getLatestApproval(jobId))!.id))!.status).toBe("approved");
 
@@ -233,11 +238,13 @@ describe("SIMULATED end-to-end purchase: three realistic vendors, re-confirmatio
     expect(told.bodyText).toMatch(/The customer has told us they have paid the \$500\.00 directly to you/);
     expect(told.bodyText).toMatch(/reply to confirm once it arrives/);
 
-    // 8. Harbor confirms receipt (verified sender): only now is the money "settled_verified".
+    // 8. Harbor says the deposit arrived, but from a sender proven only by the reply token: never
+    // "settled_verified" on that alone; the human is told instead.
     clock.advance(3_600_000);
-    expect((await vendorReply(env, jobId, VENDORS.harbor, (qq) => `Got the deposit, thanks! See you on the 14th.${gmailQuote(qq)}`)).outcome).toBe("receipt_confirmed");
+    expect((await vendorReply(env, jobId, VENDORS.harbor, (qq) => `Got the deposit, thanks! See you on the 14th.${gmailQuote(qq)}`)).outcome).toBe("receipt_unverified");
     board = await engine.getQuotes(jobId);
-    expect(board.purchase).toMatchObject({ stage: "settled_verified", money_verified: true });
+    expect(board.purchase).toMatchObject({ stage: "human_reported_paid", money_verified: false });
+    expect(texts.filter((t) => t.to === APPROVER).at(-1)!.text).toMatch(/says your \$500 payment arrived, but Haggle can't verify who sent it/);
 
     // Honesty, end to end: no message to any vendor claims money moved; the human was never told "paid"
     // before reporting it; Golden Grill and Sunset were never accepted.

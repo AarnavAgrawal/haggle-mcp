@@ -159,7 +159,7 @@ async function boardFor(c: CorpusCase, extractor: ExtractorPort) {
 }
 
 describe("highest-risk parsing failures (f2 corpus): regression tests", { timeout: 60_000 }, () => {
-  it.fails("known gap (needs an extraction field; handoff A + shared contract): a quote for ANOTHER date is never approvable without a caveat", async () => {
+  it("regression, formerly a known gap: a quote for ANOTHER date is never approvable without a caveat", async () => {
     // c43: "booked on the 29th, but we can do Friday the 30th". QuoteExtraction has no offered-date field and
     // the request date is not a requirement, so even a perfect reading yields an approvable, recommended quote.
     const b = await boardFor(byId("c43-other-date"), claudeLike(byId("c43-other-date")));
@@ -167,18 +167,18 @@ describe("highest-risk parsing failures (f2 corpus): regression tests", { timeou
     expect(q.approvable && q.flags.length === 0).toBe(false);
   });
 
-  it.fails("known gap (handoff A): a reply signed by a different business than the mailbox is flagged before approval", async () => {
+  it("regression, formerly a known gap: a reply signed by a different business than the mailbox is flagged before approval", async () => {
     const b = await boardFor(byId("c46-identity-mismatch"), claudeLike(byId("c46-identity-mismatch")));
     const q = b.quotes[0]!;
     expect(q.approvable && q.flags.length === 0).toBe(false);
   });
 
-  it.fails("fallback reader (handoff A, parsing/heuristic.ts): 'Total: $1,050 ... plus 8.625% sales tax' is never shown as a firm total", async () => {
+  it("fallback reader (regression): 'Total: $1,050 ... plus 8.625% sales tax' is never shown as a firm total", async () => {
     const o = await observeCase(byId("c38-total-plus-tax"));
     expect(o.shown_total_usd === null || o.flags.includes("tax_excluded")).toBe(true);
   });
 
-  it.fails("fallback reader (handoff A, parsing/heuristic.ts): a gratuity added on top is never dropped from the shown total", async () => {
+  it("fallback reader (regression): a gratuity added on top is never dropped from the shown total", async () => {
     const o = await observeCase(byId("c39-gratuity"));
     expect(o.shown_total_usd === null || o.shown_total_usd === 1200 || o.flags.includes("fees_unclear")).toBe(true);
   });

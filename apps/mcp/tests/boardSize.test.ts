@@ -110,10 +110,11 @@ describe("get_quotes size budget (simulated golden fleet)", { timeout: 60_000 },
   it("integration slots for vendor contact status (A) and selection reasons (B) pass through", async () => {
     const b = await goldenBoard();
     const q = b.quotes[0]!;
-    const withSlots = { ...b, vendor_contact: { [q.business_id]: { status: "delivered", detail: "RFQ delivered 09:02" } }, selection: { [q.quote_id]: { outcome: "selected", reason: "cheapest compliant" } } } as DealBoardData;
+    // vendor_contact comes from the engine read model; selection from each current quote's `selection` (S4-B).
+    const withSlots = { ...b, vendor_contact: { [q.business_id]: { status: "bounced", detail: "email bounced" } }, quotes: b.quotes.map((x, i) => (i === 0 ? { ...x, status: "current", selection: { status: "not_selectable", reason: "doesn't meet: 12 vegetarian" } } : x)) } as DealBoardData;
     const out = toDealBoardPlus(withSlots, "mock");
-    expect(out.vendor_contact).toEqual({ [q.business_id]: { status: "delivered", detail: "RFQ delivered 09:02" } });
-    expect(out.selection).toEqual({ [q.quote_id]: { outcome: "selected", reason: "cheapest compliant" } });
+    expect(out.vendor_contact).toEqual({ [q.business_id]: { status: "bounced", detail: "email bounced" } });
+    expect(out.selection?.[q.quote_id]).toEqual({ status: "not_selectable", reason: "doesn't meet: 12 vegetarian" });
     expect(toDealBoardPlus(b, "mock")).not.toHaveProperty("vendor_contact");
   });
 });
