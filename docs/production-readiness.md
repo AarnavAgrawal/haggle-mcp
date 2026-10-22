@@ -171,6 +171,42 @@ Verified on the fully merged tree:
 - No staging environment. Live migrations 103–111 aren't applied, and the CI workflow has never run on GitHub.
 - The views and `packages/core` don't show the booking/handoff stages yet (Aarnav, §11 of the sprint report). Brain tenancy is still open.
 
+### Pass 4: sprint 4, pilot readiness (2026-10-22)
+
+Branch `yashnil`, on `ef122fe` (which is pushed, with CI green on draft PR #1). The sprint-4 commits are local only: GitHub push protection blocked the push over synthetic test secrets (`docs/sprint-4-report.md` §11). Not deployed. Migrations 112, 113 and 115–117 are applied only to throwaway databases. No real email, text, call or payment was sent. Full write-up: `docs/sprint-4-report.md`.
+
+Verified on the fully merged tree:
+- typecheck: clean
+- MCP build: OK
+- unit tests: 1,378 passed, 21 skipped
+- Postgres 17: 938 passed, 1 skipped, plus 4 ledger tests
+- migrations 100–106, 108–113 and 115–117 apply; each 112+ migration also applies alone on 100–111
+- secret scan of the docs: clean
+
+**Still not production readiness:** all channel, payment and extraction evidence comes from simulated providers and deterministic readers.
+
+| Area | After pass 4 (verified by) |
+| --- | --- |
+| Pilot onboarding | `workspace-create` / `workspace-admin show` PASS/FAIL readiness; `deal` without names uses the workspace's consented vendors; plain-language requests carried through every stage (`pilotOnboarding`, `requestPlain`, simulated `acceptancePilot`: 12 tool calls, 5 human steps) |
+| Real-format email | 20 Inkbox-format fixtures through the webhook to a quote or quarantine; reply-all in Cc accepted; tokens scoped to one deal and vendor; quarantine release/reject with permanent provenance (112) (`emailFixtures`, `replyTokenScope`, `quarantineReview`) |
+| Email trial runner | `validate` and `dry-run` contact nothing; offline replay through the real path; every send gate tested. **Never run live** |
+| Vendor contact policy | Business-hours window (default Mon–Sat 08:00–19:00 Pacific, on in live mode), at most 2 reminders, none after a reply, opt-out or bounce; per-vendor contact status on the board (`contactWindow*`, `boardVendorContact`) |
+| Quote validity | Date, delivery-window and identity mismatches block approval; tax-excluded totals and added gratuities flagged; per-quote selection reason; stale quotes never recommended (`termsCheck`, `evalFields`, `valueExplain`) |
+| Booking and payment honesty | Text vendors confirm by text; confirm-only needs the vendor's written yes (113); a token-only "confirmed" needs `BOOKED <code>`, and a token-only "received" is never verified; the cap is rechecked before the handoff (`purchasingPilot`, `bindingTerms`, `security`) |
+| Transaction integrity | `call_back` needs the approver's `CALL <code>` and callee consent; a charge in progress counts as money in flight; simulated, heuristic, held and unverified sources can't carry money; payment states final (115) (`security`, `security.tenancy.e2e`) |
+| Reliability | Lease-renewal errors and ambiguous sends (including Inkbox 409) never bounce or escalate; reconciler catch-up after outages (117); stuck-job recovery now runs on the live tick; alerts from engine events (`leaseFence`, `outboxAmbiguity`, `reconcileCatchUp`, `failureDrill`, `inkboxConflict`) |
+| Operations | Env manifest validates config (silent fallbacks are now startup errors); ledger detects database-ahead; pool gate; request-size and rate limits; `launch-gate`, `smoke --live-readonly`, `ops-report`, `quarantine`; backup/restore drill run locally (`envManifest`, `configRules`, `migrationsLedger`, `limits`, `opsReport`) |
+| Output size | Compact `get_quotes` ≤ 10,000 characters for 6 quotes (was 14,569); `detail:true` gives the full board (`boardSize`, `mcp.e2e`) |
+| Evaluation | 59-case corpus (49 independent), per-field and money-error scoring, a raw-email baseline, traction and funnel queries excluding test data (116). Claude extraction not measured |
+
+**Blockers after pass 4:**
+- No real Gmail or Outlook reply ingested. The send-time vs SES Message-ID question is still open.
+- The Inkbox subscription lacks `message.bounced` and `message.failed`.
+- Inkbox gives no sender-authentication results.
+- No staging environment; live migrations 103–117 not applied.
+- Sprint-4 push blocked pending your decision (GitHub push protection on synthetic test secrets).
+- Views and `packages/core` don't show the new stages yet; brain tenancy is still open (Aarnav).
+
 ## 1. Production infrastructure
 - [ ] Finalize and verify the shared TypeScript contracts between the deal engine and the business brain.
 - [ ] Apply all Supabase migrations; verify schemas, indexes, constraints and relationships.
