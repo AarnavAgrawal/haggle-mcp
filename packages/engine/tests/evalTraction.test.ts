@@ -4,7 +4,7 @@
 // vendor-confirmed bookings, customer-reported payments and vendor-verified receipts count.
 import postgres from "postgres";
 import { describe, expect, it } from "vitest";
-import { buildFunnel, jobMilestone, loadFunnel, loadTraction, markTest, STOP_REASON, type FunnelEvent } from "../src/ops/traction.ts";
+import { buildFunnel, jobMilestone, loadFunnel, loadTraction, markTest, STOP_REASON, TRACTION_METRICS, tractionText, type FunnelEvent } from "../src/ops/traction.ts";
 import { CORPUS_REQUEST } from "../eval/corpus.ts";
 import { makeEnv, trusted } from "../eval/harness.ts";
 import { heuristicExtractor } from "../src/live/adapters.ts";
@@ -43,6 +43,17 @@ describe("abandonment funnel (from job_events)", () => {
     expect(stop[STOP_REASON.approved]!.reason).toMatch(/booking unconfirmed/);
     expect(stop[STOP_REASON.booked]!.reason).toMatch(/handoff stalled/);
     expect(f.rows.find((r) => r.job_id === "j8")).toMatchObject({ stopped_at: null, ended: "done" });
+  });
+
+  it("the script's text report states every definition and where jobs stopped", () => {
+    const traction = Object.fromEntries(TRACTION_METRICS.map((k) => [k, 0])) as Parameters<typeof tractionText>[0]["traction"];
+    const text = tractionText({ traction: { ...traction, deals_created: 3 }, excluded: { mock_jobs: 7, live_jobs_marked_test: 2, simulated_vendors_in_real_jobs: 1, simulated_or_test_payments: 4, test_workspaces: 1, test_jobs: 1 } },
+      buildFunnel([{ id: "a", state: "collecting", events: contacted }, { id: "b", state: "failed", events: quoted }]));
+    for (const k of TRACTION_METRICS) expect(text).toContain(k);
+    expect(text).toMatch(/live_card_payments .*always 0/);
+    expect(text).toContain("Excluded: 7 mock jobs, 2 live jobs marked test");
+    expect(text).toContain(`${STOP_REASON.contacted}: 1 open, 0 ended`);
+    expect(text).toContain(`${STOP_REASON.quoted}: 0 open, 1 ended`);
   });
 
   it("reads real engine event logs: contacted with no reply, then quoted after a reply", async () => {
