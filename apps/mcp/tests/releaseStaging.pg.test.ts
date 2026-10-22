@@ -33,6 +33,7 @@ describe.skipIf(!URL_ || !HAS_PSQL)("staging-release --execute on throwaway Post
   const admin = URL_ ? postgres(URL_, { max: 1, onnotice: () => {} }) : null!;
   const created: string[] = [];
   let madeLink = false;
+  const hadDir = existsSync(join(ROOT, ".mcp-use"));
   const create = async (name: string) => { await admin.unsafe(`create database "${name}"`); created.push(name); };
   beforeAll(() => {
     // The script refuses a checkout without a Manufact link; a throwaway one (gitignored) if none exists.
@@ -41,7 +42,7 @@ describe.skipIf(!URL_ || !HAS_PSQL)("staging-release --execute on throwaway Post
   afterAll(async () => {
     for (const d of created) await admin.unsafe(`drop database if exists "${d}" with (force)`).catch(() => undefined);
     await admin.end({ timeout: 5 });
-    if (madeLink) rmSync(join(ROOT, ".mcp-use", "cloud"), { recursive: true, force: true });
+    if (madeLink) rmSync(join(ROOT, hadDir ? join(".mcp-use", "cloud") : ".mcp-use"), { recursive: true, force: true });
   });
 
   it("a new, empty database: every engine migration applied in order, the ledger verified, the launch gate green; a rerun applies nothing", async () => {

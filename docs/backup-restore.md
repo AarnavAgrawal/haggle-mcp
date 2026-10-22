@@ -35,6 +35,7 @@ pg_dump "$SUPABASE_DB_URL" --format=custom --no-owner --no-privileges \
   --schema=public --file "haggle-$(date -u +%Y%m%dT%H%M%SZ).dump"
 ```
 
+- **Staging.** `staging-release.ts --execute --backup-dump <file>` takes the same dump (`--schema=public`, or `HAGGLE_DB_SCHEMA`) before any DDL. It passes the database to `pg_dump` in `PG*` variables, never on the command line. It refuses a path inside the repository and refuses to touch the schema without a dump or a `--backup-ref` (`docs/staging.md` §4).
 - **The file is sensitive.** It contains contact details, hashed credentials and vendor messages. Store it encrypted (an encrypted disk or a vault). Never put it in the repo or a chat. Delete it when its retention ends.
 - **Record the dump name** in the migration's change log, next to the ledger output (`migrations.ts status`).
 - **Brain profiles.** With `HAGGLE_DB_SCHEMA` set, dump that schema instead of `public`. Also dump the brain's tables if they live elsewhere (`200_brain_profiles`).
@@ -67,6 +68,8 @@ docker rm -f haggle-restore-test
 - `pg_restore` exits 0. Grant warnings for Supabase-only roles are acceptable; note them.
 - `migrations.ts status` shows the ledger present, with no drift against the commit the source runs.
 - The row counts match the source's counts taken just before the dump.
+
+**Upgrading a restored or old copy.** CI's `scripts/migration-compat.sh` runs the same upgrade the live database will need on a throwaway database, on every push. It starts from 102 with demo-era rows, applies 103 to the latest one file at a time, then runs the ledger backfill, record and verify. A restored copy at any migration upgrades the same way: `migrations.ts status`, then each pending file and its `record`.
 
 **Never point a Haggle server at the restored copy in live mode.** It holds real contacts, and a live server would resume their deals. To inspect, use `psql` or `job-ops.ts` with `HAGGLE_ENV=development` against the throwaway URL.
 

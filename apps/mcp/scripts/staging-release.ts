@@ -126,7 +126,7 @@ export function planSteps(o: StagingOptions, sha: string, buildTime: string): St
   const steps: Step[] = [
     { id: "target", title: "Refuse anything but staging (env file, database, Manufact link, checkout)", who: "script", commands: [], runs: true },
     o.backupDump
-      ? { id: "backup", title: "Back up the staging database before any DDL", who: "script", commands: [`pg_dump --format=custom --no-owner --no-privileges --file ${o.backupDump}   # database from SUPABASE_DB_URL via PG* variables`], runs: o.execute }
+      ? { id: "backup", title: "Back up the staging database before any DDL", who: "script", commands: [`pg_dump --format=custom --no-owner --no-privileges --schema=public --file ${o.backupDump}   # SUPABASE_DB_URL via PG* variables; HAGGLE_DB_SCHEMA if set`], runs: o.execute }
       : { id: "backup", title: "Back up the staging database before any DDL", who: "user", commands: o.backupRef ? [] : ["(pass --backup-dump <file outside the repo> or --backup-ref <your backup / PITR reference>)"], runs: false, ...(o.backupRef ? { note: "operator reference recorded" } : { note: "BLOCKED until a backup is given" }) },
     { id: "migrations", title: "Apply this checkout's pending engine migrations, each in one transaction, and record them in the ledger", who: "script", runs: o.execute, commands: [
       ledger("status --json"),
@@ -213,7 +213,7 @@ export async function runStaging(o: StagingOptions, d: StagingDeps): Promise<Sta
 
   if (backupMissing) { mark("backup", "blocked", "refused: give --backup-dump <file> or --backup-ref <reference> before any DDL"); return done(false); }
   if (o.backupDump) {
-    const r = d.run("pg_dump", ["--format=custom", "--no-owner", "--no-privileges", "--file", resolve(o.backupDump)], { env: { ...base, ...pgEnv(env.SUPABASE_DB_URL!) }, cwd: checkout });
+    const r = d.run("pg_dump", ["--format=custom", "--no-owner", "--no-privileges", `--schema=${env.HAGGLE_DB_SCHEMA?.trim() || "public"}`, "--file", resolve(o.backupDump)], { env: { ...base, ...pgEnv(env.SUPABASE_DB_URL!) }, cwd: checkout });
     if (r.status !== 0) return fail("backup", `pg_dump exited ${r.status}: ${r.stderr.trim().split("\n").slice(-2).join(" | ")}`);
     mark("backup", "ok", `dump written to ${o.backupDump}`);
   } else mark("backup", "ok", `operator reference: ${o.backupRef!.slice(0, 80)}`);

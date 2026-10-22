@@ -128,7 +128,7 @@ describe("staging-release: execute", () => {
     }
     const seq = calls.filter((c) => c.cmd !== "git").map((c) => [c.cmd.split("/").pop(), ...c.args.map((a) => a.split("/").pop())].join(" ").replace(/^node(\.exe)? /, "").replace(/^\S*node /, ""));
     expect(seq.map((s) => s.replace(/ -X -v ON_ERROR_STOP=1 -1 -f /, " -1 ")).map((s) => s.replace(/^.*?(migrations\.ts|launch-gate\.ts|smoke\.ts)/, "$1"))).toEqual([
-      "pg_dump --format=custom --no-owner --no-privileges --file staging.dump",
+      "pg_dump --format=custom --no-owner --no-privileges --schema=public --file staging.dump",
       "migrations.ts status --json",
       "psql -1 111_engine_ops.sql",
       "migrations.ts backfill --through 102_engine_stripe.sql --confirm",

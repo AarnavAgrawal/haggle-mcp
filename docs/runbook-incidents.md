@@ -19,7 +19,15 @@ Tools used below:
 
 ## 1. After every deploy (health checks)
 
-1. Within 2 minutes: `curl -s https://<server>/ready`. It should answer 200 with `ready: true`, `build` = the deployed short SHA, and `migrations.ok: true`.
+1. Within 2 minutes: `curl -s https://<server>/ready`. It should answer 200 with:
+   - `ready: true`;
+   - `version`;
+   - `build_sha` = the deployed short SHA, with `build_time` = when it was built;
+   - `migrations.ok: true`.
+
+   `build_sha: "invalid"` means `HAGGLE_BUILD_SHA` holds something that isn't a commit label. Fix the variable: it is never echoed, so check what was pasted. `"unknown"` means it isn't set.
+
+   On staging, `staging-release.ts --execute --deploy` waits for the new `build_sha` and runs step 2 itself (`docs/staging.md`).
 2. Run `HAGGLE_SMOKE_TOKEN=… node apps/mcp/scripts/smoke.ts https://<server> --live-readonly --expect-build <sha>`. It should exit 0.
 3. Check the logs for `config_warnings`, `live_ready` (channels, payments mode, reconcile), and any `*_failed` in the first 5 minutes.
 4. Check `/ready` → `database.pool`: `in_use` should sit well below `max`, with `timeouts: 0`.
@@ -61,7 +69,7 @@ The schema stays on rollback. `/ready` lists the newer migrations under `unexpec
    ```bash
    node apps/mcp/scripts/launch-gate.ts --target <env> --env-file <file> --skip-build --check-webhooks --webhook-url https://<server>/webhooks/inkbox
    ```
-   It shows the URL and the missing events. Fixing a subscription is an operator action (`packages/engine/scripts/inkbox-webhook-move.ts`, dry run first).
+   It shows the URL and the missing events. The gate fails unless `message.received`, `message.bounced` and `message.failed` are all subscribed; without the last two, bounces of our own mail surface only through reconciliation. Fixing a subscription is an operator action (`packages/engine/scripts/inkbox-webhook-move.ts`, dry run first).
 4. **Lost mail is recovered by reconciliation** (`HAGGLE_RECONCILE`, every 60 s, and before a round closes). Confirm `live_ready` shows `reconcile` on and that `reconcile_failed` isn't repeating.
 5. **If replies were dropped:** check `job-ops.ts list-review` for quarantined or late replies, and resolve each one there.
 
