@@ -49,8 +49,11 @@ describe("the manifest covers every environment read", () => {
   it("every manifest entry is really read somewhere (no invented names)", () => {
     const corpus = [...SCANNED, "apps/sellers/src", "apps/sellers/scripts", "scripts"].flatMap((p) => files(p)).map((f) => readFileSync(f, "utf8")).join("\n")
       + readdirSync(join(ROOT, "scripts")).filter((f) => f.endsWith(".sh")).map((f) => readFileSync(join(ROOT, "scripts", f), "utf8")).join("\n");
-    const unread = ENV_MANIFEST.filter((s) => !s.readBy.includes("platform") && !new RegExp(`\\b${s.name}\\b`).test(corpus)).map((s) => s.name);
+    const unread = ENV_MANIFEST.filter((s) => !s.readBy.includes("platform") && !s.pendingIntegration && !new RegExp(`\\b${s.name}\\b`).test(corpus)).map((s) => s.name);
     expect(unread).toEqual([]);
+    // Named ahead of another branch's code: once the code reads it here, drop pendingIntegration.
+    const landed = ENV_MANIFEST.filter((s) => s.pendingIntegration && reads.has(s.name)).map((s) => s.name);
+    expect(landed, "remove pendingIntegration from these manifest entries").toEqual([]);
   });
 
   it("names are unique; secrets have no default; each entry says what it is for", () => {
@@ -110,6 +113,11 @@ describe("config.ts is driven by the manifest", () => {
     expect(satisfiesRule({ kind: "posInt" }, "1e9")).toBe(false);
     expect(satisfiesRule({ kind: "postgresUrl" }, "mysql://x@y")).toBe(false);
     expect(manifestFormatProblems({}).errors).toEqual([]);
+    expect(manifestFormatProblems({ HAGGLE_CONTACT_HOURS: "08:00-19:00", HAGGLE_CONTACT_DAYS: "Mon-Sat", HAGGLE_CONTACT_TIMEZONE: "America/Los_Angeles" })).toEqual({ errors: [], warnings: [] });
+    expect(manifestFormatProblems({ HAGGLE_CONTACT_HOURS: "off" }).warnings).toEqual([]);
+    expect(manifestFormatProblems({ HAGGLE_CONTACT_HOURS: "8am-7pm", HAGGLE_CONTACT_DAYS: "weekdays", HAGGLE_CONTACT_TIMEZONE: "Pacific" }).warnings).toEqual([
+      "HAGGLE_CONTACT_HOURS must be HH:MM-HH:MM (e.g. 08:00-19:00) or off", "HAGGLE_CONTACT_DAYS must be weekday names, e.g. Mon-Sat or Mon,Wed,Fri", "HAGGLE_CONTACT_TIMEZONE must be an IANA time zone, e.g. America/Los_Angeles",
+    ]);
     expect(targetOf({})).toBe("mock");
     expect(targetOf({ HAGGLE_MODE: "live" })).toBe("dev");
     expect(targetOf({ HAGGLE_MODE: "live", HAGGLE_ENV: "staging" })).toBe("staging");

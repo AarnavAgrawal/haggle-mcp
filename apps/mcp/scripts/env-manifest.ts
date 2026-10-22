@@ -19,7 +19,8 @@ function rule(s: EnvVarSpec): string {
     : r.kind === "postgresUrl" ? "`postgres://` URL"
     : r.kind === "minLength" ? `≥ ${r.min} characters`
     : r.kind === "pattern" ? esc(r.describe)
-    : r.kind === "json" ? "JSON" : "free text";
+    : r.kind === "json" ? "JSON"
+    : r.kind === "timezone" ? "IANA time zone" : "free text";
   return `${base}${s.conditional ? " (conditional)" : ""}; ${s.invalid === "error" ? "**error**" : "warning"}`;
 }
 

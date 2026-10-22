@@ -30,6 +30,7 @@ export type Rule =
   | { kind: "minLength"; min: number }
   | { kind: "pattern"; re: RegExp; describe: string }
   | { kind: "json" }
+  | { kind: "timezone" }
   | { kind: "text" };
 
 export interface EnvVarSpec {
@@ -50,6 +51,11 @@ export interface EnvVarSpec {
   message?: string;
   /** A connection string checked by the production-database guard. */
   dbUrl?: true;
+  /**
+   * Read by code on another sprint branch, not yet on this one (named here ahead of integration).
+   * envManifest.test.ts fails once code reads it, so the flag is removed at integration.
+   */
+  pendingIntegration?: string;
   default?: string;
 }
 
@@ -118,6 +124,10 @@ export const ENV_MANIFEST: readonly EnvVarSpec[] = [
   { name: "HAGGLE_CALL_DELAY_S", purpose: "Delay before a Voice AI call (seconds)", secret: false, readBy: ["server"], need: LIVE_OPT, rule: { kind: "posNumber" }, invalid: "warn" },
   { name: "HAGGLE_ESCALATE_EMAIL_TO_CALL_S", purpose: "Unanswered email escalates to a call after this many seconds", secret: false, readBy: ["server"], need: LIVE_OPT, rule: { kind: "posNumber" }, invalid: "warn" },
   { name: "HAGGLE_CALL_HOURS", purpose: "Local call hours, start-end (24h)", secret: false, readBy: ["server"], need: LIVE_OPT, rule: { kind: "pattern", re: /^(\d{1,2})-(\d{1,2})$/, describe: "start-end hours, e.g. 9-20" }, invalid: "warn", default: "9-20" },
+  // Workstream A's business-hours window for vendor contact (workflow/contactWindow.ts, contactWindowFromEnv).
+  { name: "HAGGLE_CONTACT_HOURS", purpose: "Business-hours window for contacting vendors, HH:MM-HH:MM local; off disables the window", secret: false, readBy: ["server"], need: LIVE_OPT, rule: { kind: "pattern", re: /^(off|\d{1,2}:\d{2}-\d{1,2}:\d{2})$/i, describe: "HH:MM-HH:MM (e.g. 08:00-19:00) or off" }, invalid: "warn", pendingIntegration: "A (contactWindow.ts)" },
+  { name: "HAGGLE_CONTACT_DAYS", purpose: "Weekdays vendors may be contacted, e.g. Mon-Sat or Mon,Wed,Fri", secret: false, readBy: ["server"], need: LIVE_OPT, rule: { kind: "pattern", re: /^(mon|tue|wed|thu|fri|sat|sun)([-,](mon|tue|wed|thu|fri|sat|sun))*$/i, describe: "weekday names, e.g. Mon-Sat or Mon,Wed,Fri" }, invalid: "warn", pendingIntegration: "A (contactWindow.ts)" },
+  { name: "HAGGLE_CONTACT_TIMEZONE", purpose: "Time zone of the vendor-contact window", secret: false, readBy: ["server"], need: LIVE_OPT, rule: { kind: "timezone" }, invalid: "warn", default: "America/Los_Angeles", pendingIntegration: "A (contactWindow.ts)" },
   { name: "HAGGLE_CUSTOMER_NAME", purpose: "Customer name used in outreach (40 characters max)", secret: false, readBy: ["server"], need: LIVE_OPT, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_VOICE_WORKSPACE", purpose: "Workspace whose settings the voice line uses", secret: false, readBy: ["server"], need: LIVE_OPT, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_NOTIFY_PHONE", purpose: "Phone (E.164) for update texts, else the settings approver", secret: false, pii: true, readBy: ["server"], need: LIVE_OPT, rule: { kind: "pattern", re: /^\+?[\d\s().-]{8,20}$/, describe: "a phone number" }, invalid: "warn" },
@@ -188,6 +198,7 @@ export function ruleMessage(s: EnvVarSpec): string {
     case "minLength": return `${s.name} must be at least ${r.min} characters`;
     case "pattern": return `${s.name} must be ${r.describe}`;
     case "json": return `${s.name} must be valid JSON`;
+    case "timezone": return `${s.name} must be an IANA time zone, e.g. America/Los_Angeles`;
     case "text": return `${s.name} is invalid`;
   }
 }
@@ -207,6 +218,7 @@ export function satisfiesRule(rule: Rule, raw: string): boolean {
     case "minLength": return v.length >= rule.min;
     case "pattern": return rule.re.test(v);
     case "json": try { JSON.parse(v); return true; } catch { return false; }
+    case "timezone": try { new Intl.DateTimeFormat("en-US", { timeZone: v }); return /\//.test(v) || v === "UTC"; } catch { return false; }
     case "text": return true;
   }
 }

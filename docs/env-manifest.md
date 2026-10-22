@@ -23,6 +23,8 @@ Every environment variable that the Haggle MCP server, the brain it hosts, the o
 - **refused if true:** the value `true` refuses the configuration.
 - **–:** not read in that target.
 
+The `HAGGLE_CONTACT_*` variables (the vendor-contact business-hours window) are read by workstream A's `workflow/contactWindow.ts`, which arrives at the sprint-4 integration. Until then they are listed with `pendingIntegration`.
+
 **Rule; when invalid:**
 - **error:** a malformed value refuses the configuration, so the server never runs on a value it would silently replace.
 - **warning:** the code falls back to its safe default, such as off, `info` or 9–20, and `config_warnings` is logged.
@@ -110,6 +112,9 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `HAGGLE_CALL_DELAY_S` | Delay before a Voice AI call (seconds) |  | server | – | optional | optional | optional | number > 0; warning |  |
 | `HAGGLE_ESCALATE_EMAIL_TO_CALL_S` | Unanswered email escalates to a call after this many seconds |  | server | – | optional | optional | optional | number > 0; warning |  |
 | `HAGGLE_CALL_HOURS` | Local call hours, start-end (24h) |  | server | – | optional | optional | optional | start-end hours, e.g. 9-20; warning | `9-20` |
+| `HAGGLE_CONTACT_HOURS` | Business-hours window for contacting vendors, HH:MM-HH:MM local; off disables the window |  | server | – | optional | optional | optional | HH:MM-HH:MM (e.g. 08:00-19:00) or off; warning |  |
+| `HAGGLE_CONTACT_DAYS` | Weekdays vendors may be contacted, e.g. Mon-Sat or Mon,Wed,Fri |  | server | – | optional | optional | optional | weekday names, e.g. Mon-Sat or Mon,Wed,Fri; warning |  |
+| `HAGGLE_CONTACT_TIMEZONE` | Time zone of the vendor-contact window |  | server | – | optional | optional | optional | IANA time zone; warning | `America/Los_Angeles` |
 | `HAGGLE_CUSTOMER_NAME` | Customer name used in outreach (40 characters max) |  | server | – | optional | optional | optional | free text; warning |  |
 | `HAGGLE_VOICE_WORKSPACE` | Workspace whose settings the voice line uses |  | server | – | optional | optional | optional | free text; warning |  |
 | `HAGGLE_NOTIFY_PHONE` | Phone (E.164) for update texts, else the settings approver | PII | server | – | optional | optional | optional | a phone number; warning |  |
