@@ -3,15 +3,15 @@
 // docs/pilot-metrics.md). Sourcing completion, vendor response by channel, manual interventions,
 // stage timings, the funnel, and Anthropic usage with an APPROXIMATE cost (ops/costs.ts).
 //
-//   node --env-file=.env scripts/metrics.ts [--json] [--since 2026-11-01] [--until 2026-12-01] [--workspace ws_...] [--min-quotes 3]
+//   node --env-file=.env scripts/metrics.ts [--json] [--since 2026-11-01] [--until 2026-12-01] [--workspace ws_...] [--min-quotes 3] [--prices '<json>']
 //
 // Runs in one READ ONLY transaction (the database refuses any write), never calls a provider. Needs
-// SUPABASE_DB_URL (migrations through 116; 122 adds per-job AI usage). HAGGLE_AI_PRICES overrides the
-// price table (JSON, USD per million tokens).
+// SUPABASE_DB_URL (migrations through 116; 122 adds per-job AI usage). --prices overrides entries of the
+// price table: '{"claude-sonnet-5-5":{"input":2,"output":10}}' (USD per million tokens).
 import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
 import { analyticsSql, buildMetricsReport, loadMetricsDataset, metricsText, pricesWithOverride } from "@haggle/engine";
 
-export type MetricsCommand = { json: boolean; since?: Date; until?: Date; workspace?: string; minQuotes: number };
+export type MetricsCommand = { json: boolean; since?: Date; until?: Date; workspace?: string; minQuotes: number; prices?: string };
 
 const arg = (argv: string[], name: string) => { const i = argv.indexOf(`--${name}`); return i >= 0 ? argv[i + 1] : undefined; };
 const day = (s: string | undefined, name: string) => {
@@ -22,9 +22,9 @@ const day = (s: string | undefined, name: string) => {
 
 /** Validate the command line (pure). */
 export function planMetrics(argv: string[]): MetricsCommand {
-  const valued = ["--since", "--until", "--workspace", "--min-quotes"];
+  const valued = ["--since", "--until", "--workspace", "--min-quotes", "--prices"];
   for (const [i, a] of argv.entries()) {
-    if (a.startsWith("--") && a !== "--json" && !valued.includes(a)) throw new Error(`unknown option ${a} (use --json, --since YYYY-MM-DD, --until YYYY-MM-DD, --workspace ws_..., --min-quotes N)`);
+    if (a.startsWith("--") && a !== "--json" && !valued.includes(a)) throw new Error(`unknown option ${a} (use --json, --since YYYY-MM-DD, --until YYYY-MM-DD, --workspace ws_..., --min-quotes N, --prices JSON)`);
     if (!a.startsWith("--") && !valued.includes(argv[i - 1] ?? "")) throw new Error(`unexpected argument ${a}`);
   }
   const since = day(arg(argv, "since"), "since");
@@ -34,14 +34,16 @@ export function planMetrics(argv: string[]): MetricsCommand {
   if (ws !== undefined && !/^ws_[a-z0-9_]{3,40}$/.test(ws)) throw new Error("--workspace must be a workspace id like ws_acme");
   const minQuotes = Number(arg(argv, "min-quotes") ?? 3);
   if (!Number.isInteger(minQuotes) || minQuotes < 1 || minQuotes > 10) throw new Error("--min-quotes must be 1-10");
-  return { json: argv.includes("--json"), minQuotes, ...(since ? { since } : {}), ...(until ? { until } : {}), ...(ws ? { workspace: ws } : {}) };
+  const prices = arg(argv, "prices");
+  if (prices !== undefined) pricesWithOverride(prices); // validate now (throws on a bad table)
+  return { json: argv.includes("--json"), minQuotes, ...(since ? { since } : {}), ...(until ? { until } : {}), ...(ws ? { workspace: ws } : {}), ...(prices ? { prices } : {}) };
 }
 
 async function main(argv = process.argv.slice(2)) {
   const cmd = planMetrics(argv);
   const url = process.env.SUPABASE_DB_URL;
   if (!url) throw new Error("SUPABASE_DB_URL is not set (the engine database)");
-  const prices = pricesWithOverride(process.env.HAGGLE_AI_PRICES);
+  const prices = pricesWithOverride(cmd.prices);
   const sql = analyticsSql(url);
   try {
     // One consistent snapshot; the database itself refuses any write in a read-only transaction.

@@ -16,26 +16,26 @@
 // latency is reported but excluded from the fingerprint.
 //
 // Output size: each tool's structuredContent is built with the same constructors the MCP tools use
-// (src/views.ts: toDealBoardPlus for get_quotes/open_haggle, dealStartedBoard, toApproval; the
-// wait_for_update payload trimmed to its newest 12 updates as index.ts does). Chars are JSON chars;
+// (src/views.ts: toDealBoardPlus for get_quotes/open_haggle, waitOutput for wait_for_update,
+// dealStartedBoard and toApproval approximating deal/approve/pay). Chars are JSON chars;
 // tokens are estimated at 4 chars/token. Content text and transport framing are not included.
 //
 // AI cost: mock mode makes no Claude calls, so recorded usage (migration 122 rows) is 0 by
 // construction. `projected_live_ai` multiplies the replies a live server would send to Claude by a
 // stated ASSUMPTION per call (not measured; see docs/pilot-metrics.md). --repo pg (optional) runs the
-// same deals on a throwaway local Postgres named by HAGGLE_BENCH_DATABASE_URL (localhost only).
+// same deals on the throwaway local Postgres named by HAGGLE_TEST_DATABASE_URL (localhost only;
+// scripts/test-postgres.sh style), never a shared database.
 import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildMetricsReport, callCostUsd, createMockEngine, fleetBusinesses, InMemoryRepository, loadMetricsDatasetFromRepo, PostgresRepository, simulatedStripe, type DealBoardData, type Repository } from "@haggle/engine";
-import { dealStartedBoard, requestDetails, toApproval, toDealBoardPlus } from "../src/views.ts";
+import { dealStartedBoard, requestDetails, toApproval, toDealBoardPlus, waitOutput } from "../src/views.ts";
 
 export const BENCH_T0 = "2026-10-01T16:00:00Z";
 /** wait_for_update's default timeout_s, the long-poll the reference agent uses. */
 const POLL_S = 25;
 const POLL_STEP_MS = 5_000;
-const WAIT_UPDATES_MAX = 12;
 const MAX_POLLS = 200;
 /** ASSUMPTION for projected_live_ai (not measured): one extraction call per vendor reply on claude-sonnet-5-5. */
 export const PROJECTION = { model: "claude-sonnet-5-5", input_tokens_per_reply: 4_000, output_tokens_per_reply: 800 };
@@ -148,8 +148,7 @@ async function runDeal(i: number, seed: number, repo: Repository, wallStart: () 
         t += POLL_STEP_MS;
         res = await engine.waitForUpdate(jobId, cursor, 0);
       }
-      const out = res.updates.length > WAIT_UPDATES_MAX ? { ...res, updates: res.updates.slice(-WAIT_UPDATES_MAX), updates_omitted: res.updates.length - WAIT_UPDATES_MAX } : res;
-      return { out, value: res };
+      return { out: waitOutput(res, cursor, { until: "any_change", timeoutS: POLL_S }).structured, value: res };
     });
     cursor = Number(w.cursor);
     if (sim.first_quote === null && w.updates.some((u) => u.type === "quote" && (u as { total_usd: number | null }).total_usd !== null)) sim.first_quote = since();
@@ -210,7 +209,7 @@ async function runDeal(i: number, seed: number, repo: Repository, wallStart: () 
 
 function assertLocalDb(url: string) {
   const host = new URL(url).hostname;
-  if (!["localhost", "127.0.0.1", "::1"].includes(host)) throw new Error("--repo pg needs HAGGLE_BENCH_DATABASE_URL on localhost (a throwaway database with the migrations applied); mock data never goes to a shared database");
+  if (!["localhost", "127.0.0.1", "::1"].includes(host)) throw new Error("--repo pg needs HAGGLE_TEST_DATABASE_URL on localhost (a throwaway database with the migrations applied); mock data never goes to a shared database");
 }
 
 export async function runPilotBenchmark(o: BenchOptions): Promise<BenchResult> {
@@ -218,7 +217,7 @@ export async function runPilotBenchmark(o: BenchOptions): Promise<BenchResult> {
   const kind = o.repo ?? "memory";
   let repo: Repository;
   if (kind === "pg") {
-    if (!o.databaseUrl) throw new Error("--repo pg needs HAGGLE_BENCH_DATABASE_URL");
+    if (!o.databaseUrl) throw new Error("--repo pg needs HAGGLE_TEST_DATABASE_URL (a throwaway local Postgres with the migrations applied)");
     assertLocalDb(o.databaseUrl);
     repo = new PostgresRepository(o.databaseUrl, { max: 2 });
   } else repo = new InMemoryRepository();
@@ -325,7 +324,7 @@ export function planBenchmark(argv: string[]): BenchOptions & { out?: string; js
 
 async function main(argv = process.argv.slice(2)) {
   const cmd = planBenchmark(argv);
-  const url = process.env.HAGGLE_BENCH_DATABASE_URL;
+  const url = process.env.HAGGLE_TEST_DATABASE_URL;
   const r = await runPilotBenchmark({ ...cmd, ...(cmd.repo === "pg" && url ? { databaseUrl: url } : {}) });
   const md = benchmarkMarkdown(r);
   if (cmd.out) {

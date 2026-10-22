@@ -12,7 +12,7 @@
 //   - Haiku 5.5: $0.10 / $0.50 for prompts up to 100K tokens, $0.50 / $2.50 beyond (applied per call).
 //   - A model not in the table is charged at FALLBACK (the most expensive listed tier) and reported
 //     as unpriced, so an unknown id can only overstate the cost, never hide it.
-// Override for a run: HAGGLE_AI_PRICES='{"claude-sonnet-5-5":{"input":2,"output":10}}' (merged over the table).
+// Override for a run: scripts/metrics.ts --prices '{"claude-sonnet-5-5":{"input":2,"output":10}}' (merged over the table).
 
 export interface ModelPrice {
   input: number;
@@ -53,7 +53,7 @@ export function pricesWithOverride(json: string | undefined, base: Record<string
   const out = { ...base };
   for (const [model, p] of Object.entries(parsed)) {
     const ok = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0;
-    if (!ok(p.input) || !ok(p.output) || (p.cache_read !== undefined && !ok(p.cache_read)) || (p.cache_write !== undefined && !ok(p.cache_write))) throw new Error(`HAGGLE_AI_PRICES: ${model} needs numeric input and output (USD per million tokens)`);
+    if (!ok(p.input) || !ok(p.output) || (p.cache_read !== undefined && !ok(p.cache_read)) || (p.cache_write !== undefined && !ok(p.cache_write))) throw new Error(`prices: ${model} needs numeric input and output (USD per million tokens)`);
     out[model] = p as ModelPrice;
   }
   return out;

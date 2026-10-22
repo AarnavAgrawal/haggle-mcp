@@ -55,7 +55,7 @@ describe("pilot benchmark (SIMULATED)", { timeout: 120_000 }, () => {
     expect(() => planBenchmark(["--n", "0"])).toThrow(/1-500/);
     expect(() => planBenchmark(["--repo", "live"])).toThrow(/memory or pg/);
     expect(() => planBenchmark(["--live"])).toThrow(/unknown option/);
-    await expect(runPilotBenchmark({ n: 1, seed: 1, repo: "pg" })).rejects.toThrow(/HAGGLE_BENCH_DATABASE_URL/);
+    await expect(runPilotBenchmark({ n: 1, seed: 1, repo: "pg" })).rejects.toThrow(/HAGGLE_TEST_DATABASE_URL/);
     await expect(runPilotBenchmark({ n: 1, seed: 1, repo: "pg", databaseUrl: "postgres://u:p@db.example.supabase.co:5432/postgres" })).rejects.toThrow(/localhost/);
   });
 

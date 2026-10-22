@@ -21,6 +21,8 @@ describe("metrics script", () => {
     expect(() => planMetrics(["--min-quotes", "0"])).toThrow(/1-10/);
     expect(() => planMetrics(["--delete"])).toThrow(/unknown option --delete/);
     expect(() => planMetrics(["report"])).toThrow(/unexpected argument report/);
+    expect(planMetrics(["--prices", '{"claude-sonnet-5-5":{"input":1,"output":5}}']).prices).toContain("claude-sonnet-5-5");
+    expect(() => planMetrics(["--prices", '{"x":{"input":"cheap"}}'])).toThrow(/numeric input and output/);
   });
 
   it("loads under plain node and fails on its own when no database is configured", () => {
