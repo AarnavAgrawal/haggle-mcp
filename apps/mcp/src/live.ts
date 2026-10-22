@@ -7,7 +7,7 @@
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
   businessIdForContact, MAX_ROUNDS, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
-  withHeuristicFallback, AiUsageMeter, aiLimitsFromEnv, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
+  withHeuristicFallback, AiUsageMeter, aiUsageSink, aiLimitsFromEnv, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
 } from "@haggle/engine";
 import { haggleEnv } from "./config.ts";
 import { makeBrain } from "./brain.ts";
@@ -90,6 +90,8 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // metered; over a limit it is refused and the reply waits for a human (never a keyword quote).
   const ai = new AiUsageMeter({
     limits: aiLimitsFromEnv(env), logger,
+    // Each call's reported usage is kept per job (ai_usage_events, 122) for metrics; best effort.
+    sink: aiUsageSink(repo),
     workspaceOf: async (jobId) => (await repo.getJob(jobId))?.workspace_id ?? null,
     onLimit: ({ limit, scope }) => void alerts.alert({ key: `ai_limit:${limit}:${limit === "daily_tokens" ? "day" : scope.jobId ?? "?"}`, severity: "warn", summary: limit === "daily_tokens" ? "AI daily token budget reached: new replies are held for human review until the UTC day rolls over" : `AI call limit reached for job ${scope.jobId}: its new replies are held for human review`, details: { limit, job_id: scope.jobId ?? null } }),
   });
