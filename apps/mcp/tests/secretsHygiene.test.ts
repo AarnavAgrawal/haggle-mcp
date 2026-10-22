@@ -11,6 +11,10 @@ const ROOT = join(import.meta.dirname, "..", "..", "..");
 
 // Realistic shapes, fake values. Each must disappear from a log line.
 const COVERED: [string, string][] = [
+  // Formerly gaps, masked since sprint 4 integration.
+  ["supabase secret key (new format)", "sb_secret_AbCdEfGhIjKlMnOpQrStUvWx0123"],
+  ["google api key", "AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz0123456"],
+  ["slack incoming webhook", "https://hooks.slack.com/" + "services/T0ABCDEFG/B0ABCDEFG/AbCdEfGhIjKlMnOpQrStUvWx"],
   ["postgres URL with password", "postgres://postgres.abcdefghijklmnopqrst:Sup3rS3cretPassw0rd@aws-0-us-west-1.pooler.supabase.com:5432/postgres"],
   ["postgresql URL", "postgresql://haggle:hunter2hunter2@db.internal:5432/app"],
   ["bearer token", "Bearer hgw_AbCdEfGhIjKlMnOpQrStUvWx"],
@@ -31,11 +35,7 @@ const COVERED: [string, string][] = [
 // Formats the redactor doesn't recognise in free text yet (handoff to workstream F, live/log.ts).
 // it.fails: these tests pass today only because the leak is real; fixing log.ts turns them red,
 // which is the cue to move the case to COVERED.
-const GAPS: [string, string][] = [
-  ["supabase secret key (new format)", "sb_secret_AbCdEfGhIjKlMnOpQrStUvWx0123"],
-  ["google api key", "AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz0123456"],
-  ["slack incoming webhook", "https://hooks.slack.com/" + "services/T0ABCDEFG/B0ABCDEFG/AbCdEfGhIjKlMnOpQrStUvWx"],
-];
+const GAPS: [string, string][] = [];
 
 function logged(data: Record<string, unknown>): string {
   const lines: string[] = [];

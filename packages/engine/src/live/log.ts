@@ -56,6 +56,10 @@ const PATTERNS: [RegExp, string | ((m: string, ...a: string[]) => string)][] = [
   [/\b(sk|rk|pk)_(test|live)_[A-Za-z0-9]{8,}/g, "[stripe-key]"],
   [/\bsk-ant-[A-Za-z0-9_-]{8,}/g, "[anthropic-key]"],
   [/\bwhsec_[A-Za-z0-9+/=_-]{8,}/g, "[webhook-secret]"],
+  [/\bsb_(secret|publishable)_[A-Za-z0-9_-]{16,}/g, "[supabase-key]"],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/g, "[google-key]"],
+  // A Slack incoming-webhook URL is itself the credential (HAGGLE_ALERT_WEBHOOK_URL).
+  [/https:\/\/hooks\.slack\.com\/services\/\S+/g, "https://hooks.slack.com/services/[redacted]"],
   [/\b(hgw|hgc)_[A-Za-z0-9_-]{8,}/g, "[workspace-credential]"],
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, "[jwt]"],
   // Connector URLs carry the workspace secret in the path.
