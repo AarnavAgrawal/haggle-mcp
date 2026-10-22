@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 import { disabledPayer, HaggleEngine, InMemoryRepository, StubBrain, type ExtractorPort } from "../src/index.ts";
 import { replyToken } from "../src/inbound/senderAuth.ts";
 import { vendorOwnWords } from "../src/approvals/bookingReply.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { InboundAttachmentMeta, TrustVerdict } from "../src/inbound/primitive.ts";
 import type { MessageRow } from "../src/store/types.ts";
 
 const APPROVER = "+14155550101";
@@ -97,7 +97,7 @@ type Env = ReturnType<typeof setup>;
 let n = 0;
 
 /** A vendor's reply as its mail client sends it: "Re: <our subject>", In-Reply-To our latest message to it, its own body (quoting ours). */
-async function vendorReply(env: Env, jobId: string, from: string, body: (quoted: string) => string, attachments: { filename: string; contentType: string; sizeBytes: number; tarPath: string }[] = []) {
+async function vendorReply(env: Env, jobId: string, from: string, body: (quoted: string) => string, attachments: InboundAttachmentMeta[] = []) {
   const ours = (await env.repo.listMessages(jobId)).filter((m) => m.direction === "out" && m.to_address === from).at(-1)!;
   const id = ++n;
   return env.engine.ingest({
@@ -153,7 +153,7 @@ describe("SIMULATED end-to-end purchase: three realistic vendors, re-confirmatio
 
     // Sunset answers with a PDF quote (served by the fake attachment port), Outlook-style.
     clock.advance(5 * 60_000);
-    expect((await vendorReply(env, jobId, VENDORS.sunset, (q) => `Thanks Dev here again - please find our quote attached. Let me know if you have any questions.\n\nDev${outlookQuote(q)}`, [{ filename: "Sunset-Quote-SK-1114.pdf", contentType: "application/pdf", sizeBytes: SUNSET_PDF.byteLength, tarPath: "Sunset-Quote-SK-1114.pdf" }])).outcome).toBe("stored");
+    expect((await vendorReply(env, jobId, VENDORS.sunset, (q) => `Thanks Dev here again - please find our quote attached. Let me know if you have any questions.\n\nDev${outlookQuote(q)}`, [{ filename: "Sunset-Quote-SK-1114.pdf", contentType: "application/pdf", sizeBytes: SUNSET_PDF.byteLength, partIndex: 1, tarPath: "Sunset-Quote-SK-1114.pdf" }])).outcome).toBe("stored");
     await engine.advanceJob(jobId);
 
     // 3. Quotes close; compare. Golden Grill is cheapest but misses the vegetarian count; Sunset's

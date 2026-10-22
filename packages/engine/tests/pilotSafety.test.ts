@@ -403,6 +403,10 @@ describe.skipIf(!PG_URL)("pilot safety on Postgres (two instances)", { timeout: 
       expect((await env.engine.ingestText({ messageId: `p_${uniq()}`, from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("handoff_confirmed");
       expect((await pg.getJob(jobId))!.state).toBe("paid");
       expect(env.emails.filter((e) => e.to === addr).some((e) => /has been sent/i.test(e.bodyText))).toBe(false);
+      expect((await env.engine.getQuotes(jobId)).purchase).toMatchObject({ stage: "human_reported_paid", amount_usd: 345, money_verified: false });
+      // The business's own "received" (verified sender) is stored under 110's trigger: settled_verified.
+      expect((await mail(env, b, 4, { from: addr, providerEmailId: `in_${uniq()}`, bodyText: "Payment received, thank you!" }, trusted)).outcome).toBe("receipt_confirmed");
+      expect((await env.engine.getQuotes(jobId)).purchase).toMatchObject({ stage: "settled_verified", money_verified: true });
       // Opt-out recorded on Postgres stops a later deal from another engine.
       const other = `stop-${uniq()}@inkboxmail.test`;
       const d2 = await dealWith(env, other);

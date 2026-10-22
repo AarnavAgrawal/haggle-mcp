@@ -104,6 +104,25 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   /** The best-value quote when it isn't the recommendation because it can't be approved; and why. */
   best_value_quote_id: z.string().optional(),
   recommendation_note: z.string().optional(),
+  /** No quote meets every must: the closest approvable one. Never the recommendation; the human may choose it knowingly. */
+  best_available_quote_id: z.string().optional(),
+  /** Per current quote: does it meet every must (compliant / unconfirmed / noncompliant), and what it misses. Only compliant quotes are recommended. */
+  compliance: z.record(z.string(), z.object({ status: z.enum(["compliant", "unconfirmed", "noncompliant"]), issues: z.array(z.object({ code: z.string(), text: z.string() })), assumed: z.array(z.string()) })).optional(),
+  /** Per current quote: until when it can be approved as is; a stale one is re-confirmed with the business first. */
+  freshness: z.record(z.string(), z.object({ stale: z.boolean(), good_until: z.string(), valid_until: z.string().nullable(), reconfirmation: z.literal("requested").optional() })).optional(),
+  /**
+   * After approval under the manual handoff: booking, payment instructions (untrusted text, links never
+   * opened), the customer's reported payment and the business's confirmation of receipt. money_verified
+   * is true only when the business itself confirmed it received the money.
+   */
+  purchase: z.object({
+    stage: z.string(), rail: z.literal("manual"), booked: z.boolean(), booked_by_human: z.literal(true).optional(), money_verified: z.boolean(),
+    amount_usd: z.number(), total_usd: z.number(),
+    vendor_reply: z.object({ text: z.string(), untrusted: z.literal(true), has_link: z.boolean() }).optional(),
+    instructions: z.object({ text: z.string(), untrusted: z.literal(true), has_link: z.boolean() }).optional(),
+    reported_paid_at: z.string().optional(), verified_at: z.string().optional(), stalled: z.literal(true).optional(), operator_attention: z.string().optional(),
+    summary: z.string(), next: z.string(),
+  }).optional(),
   /** Quote ids that counteroffers cited as estimates ("about $1,200"), not firm quotes. */
   negotiation_estimates: z.array(z.string()).optional(),
   /** deal(dry_run): who would be contacted; nothing was sent. */
@@ -156,6 +175,11 @@ export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<Dea
     ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...(b.stages ? { stages: b.stages } : {}), ...(b.terms && Object.keys(b.terms).length ? { terms: b.terms } : {}), ...(b.contact_learning ? { contact_learning: b.contact_learning } : {}),
     quote_status: Object.fromEntries(b.quotes.filter((q) => q.total_usd !== null).map((q) => [q.quote_id, { approvable: q.approvable, ...(q.total_approximate ? { approximate: true } : {}), ...(q.approval_block ? { block: q.approval_block } : {}) }])),
     ...(b.best_value_quote_id ? { best_value_quote_id: b.best_value_quote_id } : {}), ...(b.recommendation_note ? { recommendation_note: b.recommendation_note } : {}),
+    ...(b.best_available_quote_id ? { best_available_quote_id: b.best_available_quote_id } : {}),
+    compliance: Object.fromEntries(b.quotes.filter((q) => q.status === "current" && q.compliance).map((q) => [q.quote_id, { status: q.compliance!.status, issues: q.compliance!.issues.map((x) => ({ code: x.code, text: x.text })), assumed: q.compliance!.assumed }])),
+    // Only quotes that need attention (stale, or being re-confirmed): keeps the output compact.
+    freshness: Object.fromEntries(b.quotes.filter((q) => q.status === "current" && q.freshness && (q.freshness.stale || q.freshness.reconfirmation)).map((q) => [q.quote_id, { stale: q.freshness!.stale, good_until: q.freshness!.good_until, valid_until: q.freshness!.valid_until, ...(q.freshness!.reconfirmation ? { reconfirmation: q.freshness!.reconfirmation } : {}) }])),
+    ...(b.purchase ? { purchase: b.purchase } : {}),
     ...(b.negotiation.some((n) => n.basis_approximate) ? { negotiation_estimates: [...new Set(b.negotiation.filter((n) => n.basis_approximate).map((n) => n.basis_quote_id))] } : {}), ...extra,
   });
 }

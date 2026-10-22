@@ -50,3 +50,9 @@ export * from "./live/inkbox.ts";
 export * from "./live/reconcile.ts";
 export * from "./live/transient.ts";
 export * from "./payments/stripe.ts";
+// Workstream D: purchase after approval, compliance, freshness, request normalization.
+export * from "./payments/purchase.ts";
+export * from "./ranking/compliance.ts";
+export * from "./ranking/validity.ts";
+export * from "./approvals/bookingReply.ts";
+export * from "./workflow/requestNormalize.ts";
