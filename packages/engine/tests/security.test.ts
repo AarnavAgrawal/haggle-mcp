@@ -544,6 +544,33 @@ describe("hard requirements can't be changed or bypassed by other tool sequences
   });
 });
 
+// ───────────────────────────── the shared brain learns only from trustworthy readings ─────────────────────────────
+
+describe("the brain (shared across workspaces until it is tenant-scoped) learns only from trustworthy readings", () => {
+  async function learned(o: { simulated?: boolean; heuristic?: boolean; untrusted?: boolean }) {
+    const env = setup({ notifyPhone: ALPHA_HUMAN });
+    const seen: string[] = [];
+    const d = (env.engine as unknown as { d: { brain: StubBrain; extractor: unknown } }).d;
+    const brain = d.brain;
+    brain.learnFromReply = (async (id: string) => { seen.push(id); return null; }) as never;
+    if (o.heuristic) d.extractor = { async extract(i: { bodyText: string }) { const x = await textExtractor.extract(i); return { ...x, sources: x.sources.map((s) => ({ ...s, source: "email body (heuristic)" })) }; } };
+    const V = "learn@inkboxmail.test";
+    const deal = await env.engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: V }, { name: "Quiet", email: "quiet-learn@inkboxmail.test" }] });
+    const b = (await env.repo.getBusinesses(deal.job_id)).find((x) => x.email === V)!;
+    const verdict = o.untrusted ? () => ({ trusted: false as const, address: V, reason: "dmarc_fail" as const, retryable: false, evidence: { dmarc: "fail", dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } }) : trusted;
+    await env.engine.ingest({ providerEventId: "el", eventType: "message.received", providerEmailId: "in_l", threadId: "tl", messageId: "<in_l@x>", inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: V, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "$400 total, delivered. $40 deposit.", attachments: [], attachmentsDownloadUrl: null }, verdict as never, o.simulated ? { simulated: true } : {});
+    await env.engine.advanceJob(deal.job_id);
+    return seen;
+  }
+
+  it("a verified, Claude-read reply teaches it; an unverified sender, a keyword-fallback reading or a simulated reply on a live job doesn't", async () => {
+    expect(await learned({})).toHaveLength(1);
+    expect(await learned({ untrusted: true })).toEqual([]);
+    expect(await learned({ heuristic: true })).toEqual([]);
+    expect(await learned({ simulated: true })).toEqual([]);
+  });
+});
+
 // ───────────────────────────── the shared line: calls, held texts, overlapping vendors ─────────────────────────────
 
 describe("one Inkbox identity for every workspace: inbound events reach only the intended workspace", () => {

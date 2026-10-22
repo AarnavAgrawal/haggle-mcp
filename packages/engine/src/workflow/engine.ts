@@ -4670,8 +4670,11 @@ export class HaggleEngine {
     // batched follow-up: the missing answers plus the total ask (exact, firm or all-in), once.
     if (missing.length) await this.sendMissingFollowUp(job, { ...b, status }, missing, totalAsk && followupsBefore < 1 ? { totalAsk, firmTotal: firmAsk !== null } : {});
     else if (!needExact && totalAsk && chase && followupsBefore < 1) await this.sendMissingFollowUp(job, { ...b, status }, [], { totalAsk, firmTotal: firmAsk !== null });
-    // Partner's brain learns from every parsed reply; a brain failure never blocks the deal.
-    try {
+    // Partner's brain learns from every parsed reply; a brain failure never blocks the deal. Profiles are
+    // shared across workspaces (until the brain is tenant-scoped), so only trustworthy readings teach
+    // it: never an unverified sender, a keyword-fallback reading, or a simulated reply on a live job.
+    const teaches = msg.sender_trusted === true && !heuristicReading(record) && !(job.mode === "live" && msg.simulated);
+    if (teaches) try {
       const contractQuote = quoteRow ? toContractQuote(quoteRow, b, { budgetCents: job.budget_cents }) : null;
       await this.d.brain.learnFromReply(b.business_id, toParsedReply(x, contractQuote, questionIds), {
         job_id: job.id, business_id: b.business_id, business_name: b.name, business_email: b.email ?? `tel:${b.phone ?? ""}`, message_id: msg.id, thread_id: msg.thread_id ?? "",
