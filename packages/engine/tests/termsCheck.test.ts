@@ -104,6 +104,7 @@ describe("in the engine: flagged, not approvable, never recommended; the board's
     }
     expect(board.quotes.find((x) => x.business === "Laurel Village Deli")!.approval_block!.reason).toMatch(/2026-10-30, not the requested date/);
     // The board's vendor_contact read model (E's views.ts passes it through).
-    expect(Object.values(board.vendor_contact!).map((v) => v.status)).toEqual(["replied", "replied", "replied", "replied"]);
+    // Only contacts needing explanation are listed (bounced, failed, opted out, held, deferred); all four replied.
+    expect(board.vendor_contact).toBeUndefined();
   });
 });

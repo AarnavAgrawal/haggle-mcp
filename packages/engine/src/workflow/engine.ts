@@ -5495,7 +5495,6 @@ export class HaggleEngine {
       payment ? this.withReceipt(jobId, paymentStatus(payment), events) : this.handoffFor(job, events),
     ]);
     const purchase = payment ? null : await this.purchaseFor(job, events);
-    const vendorContact = Object.fromEntries((await this.contactStatuses(jobId)).map((c) => [c.business_id, { status: c.contact_status, ...(["replied", "awaiting_reply", "not_contacted"].includes(c.contact_status) && !c.reminders_sent ? {} : { detail: c.line }) }]));
     const next = finalNext
       ? recommended
         ? `Quotes are final. Call approve(job_id, quote_id='${recommended.quote_id}') for ${recommended.business}, the recommended quote the human can approve${recommendation_note ? ` (${bestValue!.business} is better value but blocked: ${bestValue!.approval_block?.code})` : ""}.`
@@ -5536,7 +5535,6 @@ export class HaggleEngine {
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
       payment_ceiling_usd: centsToUsd(Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents)),
       payments_enabled: this.d.stripe !== undefined || !this.d.payer.disabledReason,
-      ...(Object.keys(vendorContact).length ? { vendor_contact: vendorContact } : {}),
       next,
     };
   }
