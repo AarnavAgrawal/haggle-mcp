@@ -27,6 +27,8 @@ import {
   type BookingRow,
   type HandoffReceiptRow,
   type QuarantineResolutionRow,
+  type OperatorActionRow,
+  type OperatorAction,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -586,5 +588,20 @@ export class InMemoryRepository implements Repository {
     const k = `${scope}|${channel}`;
     const cur = this.cursors.get(k);
     if (!cur || Date.parse(at) > Date.parse(cur)) this.cursors.set(k, new Date(at).toISOString());
+  }
+  // operator actions (migration 119): append-only, the same checks as its constraints.
+  private operatorActions: OperatorActionRow[] = [];
+  async appendOperatorAction(a: Omit<OperatorActionRow, "at">) {
+    const op = a.operator.trim().length;
+    const why = a.reason.trim().length;
+    if (op < 2 || op > 80 || why < 3 || why > 500 || JSON.stringify(a.detail).length > 4000 || (!a.workspace_id && !a.job_id && a.action !== "suppression_removed")) throw new Error("operator action check failed");
+    if (this.operatorActions.some((x) => x.id === a.id)) throw new Error("duplicate operator action id");
+    const row = { ...clone(a), at: now() };
+    this.operatorActions.push(row);
+    return clone(row);
+  }
+  async listOperatorActions(q: { workspaceId?: string; jobId?: string; actions?: OperatorAction[]; limit?: number }) {
+    return this.operatorActions.filter((r) => (q.workspaceId === undefined || r.workspace_id === q.workspaceId) && (q.jobId === undefined || r.job_id === q.jobId) && (!q.actions || q.actions.includes(r.action)))
+      .reverse().slice(0, q.limit ?? 200).map(clone);
   }
 }

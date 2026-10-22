@@ -6,7 +6,7 @@ import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import { gatedSql, PoolGate, type PoolStats } from "./poolGate.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -572,5 +572,21 @@ export class PostgresRepository implements Repository {
     await this.sql`
       insert into reconcile_cursors (scope, channel, high_water) values (${scope}, ${channel}, ${at})
       on conflict (scope, channel) do update set high_water = greatest(reconcile_cursors.high_water, excluded.high_water), updated_at = now()`;
+  }
+  // operator actions (migration 119): append-only
+  async appendOperatorAction(a: Omit<OperatorActionRow, "at">) {
+    const x = await this.sql`insert into operator_actions (id, workspace_id, job_id, action, operator, reason, detail)
+      values (${a.id}, ${a.workspace_id}, ${a.job_id}, ${a.action}, ${a.operator}, ${a.reason}, ${this.sql.json(a.detail as never)})
+      returning id, workspace_id, job_id, action, operator, reason, detail, at`;
+    return row<OperatorActionRow>(x[0])!;
+  }
+  async listOperatorActions(q: { workspaceId?: string; jobId?: string; actions?: OperatorAction[]; limit?: number }) {
+    const s = this.sql;
+    return rows<OperatorActionRow>(await s`
+      select id, workspace_id, job_id, action, operator, reason, detail, at from operator_actions where true
+        ${q.workspaceId !== undefined ? s`and workspace_id = ${q.workspaceId}` : s``}
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+        ${q.actions ? s`and action = any(${q.actions})` : s``}
+      order by seq desc limit ${q.limit ?? 200}`);
   }
 }

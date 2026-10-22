@@ -77,3 +77,6 @@ export * from "./store/poolGate.ts";
 // Workstream F (sprint 4): reconciler catch-up, the operator report.
 export * from "./live/reconcileWindow.ts";
 export * from "./ops/report.ts";
+// Sprint 5 B: operator actions (audit, suspension, approver verification, reviewed requests) and the vendor roster.
+export * from "./ops/operator.ts";
+export * from "./ops/roster.ts";
