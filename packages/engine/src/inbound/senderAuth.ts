@@ -56,6 +56,16 @@ export function verifyExternalReply(i: {
 }
 
 /**
+ * A text that is exactly one of the standard carrier opt-out keywords (CTIA: STOP, STOPALL,
+ * UNSUBSCRIBE, CANCEL, END, QUIT, OPTOUT, REVOKE). Carriers and SMS providers commonly block texts to
+ * a number after it sends one, whatever Haggle does (provider-dependent: docs/carrier-keywords.md).
+ * Haggle's own commands always carry a code ("CANCEL 482913"), so they never match.
+ */
+export function isCarrierOptOut(text: string | null): boolean {
+  return /^\s*(stop|stop\s*all|unsubscribe|cancel|end|quit|opt[\s-]?out|revoke)\s*[.!]*\s*$/i.test(text ?? "");
+}
+
+/**
  * An explicit request not to be contacted, in the business's own first lines (quoted history,
  * signatures and footers ignored): STOP, unsubscribe me, remove me, do not contact/email, opt out.
  * A footer's "reply UNSUBSCRIBE to stop marketing mail" or an unsubscribe link is not one.

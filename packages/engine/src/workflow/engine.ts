@@ -24,7 +24,7 @@ import { applyDeliveryStatus, type DeliveryStatusInput } from "../inbound/delive
 import { CONTINUITY_ONLY_REASONS, CONTINUITY_ONLY_WARNING, provesSenderIdentity, senderIdentityOf, TEXT_OR_CALLER_ID_REASONS } from "../inbound/trustStrength.ts";
 import { explainQuarantine, quarantineEventData } from "../inbound/quarantineReasons.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
-import { isDsnSender, isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
+import { isCarrierOptOut, isDsnSender, isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers, type PlannedCounter } from "../negotiation/counteroffer.ts";
@@ -2019,10 +2019,11 @@ export class HaggleEngine {
     const short = t.key.replace(`notify:${job.id}:`, "");
     if (!(await this.stillLeased(job.id))) return { ok: false, reason: "lease_lost" };
     if (budget.isBlocked(to)) {
+      const reason = budget.blockReason(to) ?? "unanswered_limit";
       await this.holdText(to, job, t);
-      this.log("notify_held", { job_id: job.id, key: short, reason: "unanswered_limit" });
-      await this.noteTextsPaused(job, to);
-      return { ok: false, reason: "unanswered_limit" };
+      this.log("notify_held", { job_id: job.id, key: short, reason });
+      if (reason === "unanswered_limit") await this.noteTextsPaused(job, to);
+      return { ok: false, reason };
     }
     // Durable dedupe across restarts and instances (the in-memory sets are per process). Fails
     // closed: a text whose claim can't be made or re-made (the database is down, another instance
@@ -2127,6 +2128,12 @@ export class HaggleEngine {
     const to = m.to?.replace(/[\s().-]/g, "");
     if (to && /^\+\d{8,15}$/.test(to) && this.textLine() !== "default" && to !== this.textLine()) return { jobId: null, outcome: "not_our_line" };
     if (await this.repo.findMessageByProviderId(`sms-in:${m.messageId}`)) return { jobId: null, outcome: "duplicate" };
+    // A bare carrier opt-out keyword (STOP, CANCEL, END...): the carrier may now block texts to this
+    // number, so nothing more is texted to it (held) until it texts again, e.g. START (docs/carrier-keywords.md).
+    if (isCarrierOptOut(m.text)) {
+      this.textBudget?.carrierOptOut(from);
+      return this.routeText(m, from);
+    }
     // Any reply lifts Inkbox's pause on this number; what the human missed is re-sent after routing.
     this.textReplied(from);
     const r = await this.routeText(m, from);
@@ -2983,6 +2990,37 @@ export class HaggleEngine {
     }
   }
 
+  /**
+   * The approver texted a bare carrier opt-out keyword. Nothing is texted back (the carrier may block it,
+   * and texting after an opt-out isn't allowed); texts are held until they text again. Recorded on each
+   * of their open deals (the agent sees it) and flagged for the operator.
+   */
+  private async approverOptedOut(m: { messageId: string; text: string }, from: string, jobs: JobRow[]): Promise<{ jobId: string | null; outcome: string }> {
+    const home = [...jobs].sort((x, y) => y.created_at.localeCompare(x.created_at))[0]!;
+    const stored = await this.repo.insertMessage({
+      job_id: home.id, business_id: null, approval_id: null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
+      rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 100), attachments: [], attachments_download_url: null,
+      sender_trusted: true, trust_reason: "sms-from-text-approver", matched_via: null, parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+    });
+    if (!stored) return { jobId: home.id, outcome: "duplicate" };
+    const word = m.text.trim().replace(/[.!\s]+$/, "").toUpperCase();
+    for (const job of jobs) {
+      await this.repo.appendEvent(job.id, "operator_attention", { reason: "approver_carrier_opt_out", keyword: word });
+      await this.repo.appendEvent(job.id, "reply", { business_id: null, kind: "approver_opted_out", summary: `The approver texted ${word}, which carriers treat as "stop texting me": Haggle won't text them until they text again (START, or any reply). Nothing was approved, cancelled or paid by it. Codes like CANCEL 482913 must include the code.` });
+      await this.repo.touchJob(job.id);
+    }
+    this.log("operator_attention", { job_id: home.id, reason: "approver_carrier_opt_out" });
+    return { jobId: home.id, outcome: "approver_opted_out" };
+  }
+
+  /** The business holding this deal's live approval opted out: the human hears Haggle can't text it any more. */
+  private async noteBookedVendorOptedOut(job: JobRow, b: Pick<JobBusinessRow, "business_id" | "name">) {
+    const a = await this.repo.getLatestApproval(job.id);
+    if (!a || a.business_id !== b.business_id || !["approved", "used"].includes(a.status) || job.state !== "paying") return;
+    await this.repo.appendEvent(job.id, "operator_attention", { reason: "booked_vendor_opted_out", approval_id: a.id, business_id: b.business_id });
+    await this.notifyHuman(job, `vendor-opted-out:${a.id}`, `${clip(b.name, 30)} texted an opt-out word, so Haggle can't text them any more. Check the booking with them directly. Don't pay before you have.`);
+  }
+
   private async routeText(m: { messageId: string; from: string; text: string }, from: string): Promise<{ jobId: string | null; outcome: string }> {
     const all = await this.repo.listOpenJobs();
     // Only the workspace (and, if the text names one, the deal) this number belongs to; between two
@@ -2997,8 +3035,16 @@ export class HaggleEngine {
     if (paid) return this.ingestPaidText(hm, from, open, paid[1], scope);
     const booked = hm.text.trim().match(BOOKED_TEXT);
     if (booked) return this.ingestBookedText(hm, from, open, booked[1], scope);
-    // STOP (or any opt-out) from a number Haggle texted as a business: never contacted again.
-    if (isOptOut(m.text)) {
+    // STOP (or any opt-out, including a bare carrier keyword like CANCEL or QUIT) from a number Haggle
+    // texted as a business: never contacted again.
+    const carrierWord = isCarrierOptOut(m.text);
+    if (isOptOut(m.text) || carrierWord) {
+      if (carrierWord) {
+        // The approver's own bare keyword: Haggle stops texting them (ingestText holds every text) and says so on the deal.
+        const theirs: JobRow[] = [];
+        for (const job of open) if (from === (await this.notifyTarget(job))) theirs.push(job);
+        if (theirs.length) return this.approverOptedOut(m, from, theirs);
+      }
       for (const job of open) {
         const b = (await this.repo.getBusinesses(job.id)).find((x) => x.phone === from);
         if (!b || from === (await this.notifyTarget(job))) continue;
@@ -3009,6 +3055,7 @@ export class HaggleEngine {
         });
         if (!stored) return { jobId: job.id, outcome: "duplicate" };
         await this.optOut(job.id, b, from, m.text.slice(0, 200));
+        await this.noteBookedVendorOptedOut(job, b);
         return { jobId: job.id, outcome: "opted_out" };
       }
     }
@@ -3280,6 +3327,18 @@ export class HaggleEngine {
     // waiting on its answer (newest ask), else the most recently contacted job.
     const { hit: { job, b }, via } = pickTextDeal(hits, m.text);
     const byCode = via === "code";
+    // STOP (or another opt-out) by iMessage: the same as by SMS, never contacted again on any channel.
+    if (isOptOut(m.text) || isCarrierOptOut(m.text)) {
+      const stored = await this.repo.insertMessage({
+        job_id: job.id, business_id: b.business_id, approval_id: null, direction: "in", kind: "reply", channel: "imessage", provider_email_id: `imsg-in:${m.messageId}`, idempotency_key: null,
+        rfc_message_id: null, thread_id: null, from_address: m.from, to_address: job.inbox, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
+        sender_trusted: true, trust_reason: "imessage-from-pinned-number", matched_via: "imessage_number", parse_status: "none", quarantine_reason: null, round: null, simulated: false,
+      });
+      if (!stored) return { jobId: job.id, outcome: "duplicate" };
+      await this.optOut(job.id, b, m.from, m.text.slice(0, 200));
+      await this.noteBookedVendorOptedOut(job, b);
+      return { jobId: job.id, outcome: "opted_out" };
+    }
     // A booking confirmation, re-confirmation, payment instructions or receipt by text: the same purchase
     // reader as email, on the same identity (this business's pinned number on this deal's text channel),
     // and only when the deal is certain (one open deal for this number, or the text quotes its HG code).
