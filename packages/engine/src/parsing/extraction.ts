@@ -216,4 +216,10 @@ export interface QuoteRecord {
   fields_missing?: string[];
   /** Claude's per-requirement judgement by requirement id (absent from the keyword fallback). */
   requirement_checks?: Record<string, RequirementCheck>;
+  /**
+   * Terms that don't match the request (parsing/termsCheck.ts): another date, a delivery window that
+   * misses the requested time, a reply signed as another business. Each also sets a flag
+   * (date_mismatch, delivery_window_mismatch, identity_mismatch) that blocks approval.
+   */
+  terms_mismatch?: { offered_date?: string; delivery_window?: string; signed_as?: string; notes: string[] };
 }
