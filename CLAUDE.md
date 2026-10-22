@@ -76,6 +76,7 @@ Yash and Aarnav both work across the whole codebase; there are no ownership lane
 | --- | --- | --- |
 | MCP server and deal engine | `apps/mcp/index.ts`, `apps/mcp/src/**` (tools, settings, mentions, webhook route), `packages/engine/`, `supabase/migrations/1xx_engine_*.sql` | `haggle` buyer identity |
 | Views, brain, sellers, benchmark | `apps/mcp/views/**`, `packages/brain/`, `apps/sellers/`, `apps/bench/`, `fixtures/`, `supabase/migrations/2xx_brain_*.sql` | 6 seller identities, A2A, Voice AI persona |
+| Web app (sign-in, chat, dashboard; reaches deals only through the MCP server) | `apps/web/`, `supabase/migrations/3xx_web_*.sql` | |
 | Shared contracts and docs | `packages/core/` (`contracts.ts`, `views.ts`), this file, `CONTRACTS.md`, `PLAN.md`, `apps/mcp/package.json`, `.env.example` | |
 
 Rules for Claude Code:

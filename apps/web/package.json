@@ -1,0 +1,29 @@
+{
+  "name": "@haggle/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Haggle web app: sign-in, chat that gathers requirements, live deal dashboard. Every deal action goes through the Haggle MCP server.",
+  "scripts": {
+    "dev": "next dev --port 3200",
+    "build": "next build",
+    "start": "next start --port 3200",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@haggle/core": "*",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.118.0",
+    "next": "16.4.2",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

@@ -81,6 +81,7 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `ANTHROPIC_API_KEY` | Claude API key (extraction, question answering, negotiation strategist) | yes | server, eval | – | **required** | **required** | **required** | free text (conditional); **error** |  |
 | `SUPABASE_DB_URL` | Postgres connection string (session pooler, port 5432, BYPASSRLS role) | yes | server, script | – | **required** | **required** | **required** | `postgres://` URL (conditional); **error** |  |
 | `HAGGLE_TICK_SECRET` | Bearer secret for POST /internal/tick (external cron); empty disables the route | yes | server | – | optional | optional | optional | ≥ 16 characters; **error** |  |
+| `HAGGLE_SERVICE_TOKEN` | Shared secret with the web app (apps/web): /mcp with x-haggle-workspace, and POST /internal/workspaces; empty disables both | yes | server | – | optional | optional | optional | ≥ 32 characters; **error** |  |
 | `HAGGLE_ALERT_WEBHOOK_URL` | Slack-compatible incoming webhook for operator alerts (the URL is itself a secret) | yes | server | – | optional | recommended | recommended | `https://` URL; **error** |  |
 | `HAGGLE_AI_MAX_CALLS_PER_JOB` | Claude calls allowed per job; over it, replies wait for a human |  | server | – | optional | recommended | recommended | integer > 0; **error** |  |
 | `HAGGLE_AI_DAILY_TOKEN_BUDGET` | Claude tokens per UTC day per process; over it, replies wait for a human |  | server | – | optional | recommended | recommended | integer > 0; **error** |  |
