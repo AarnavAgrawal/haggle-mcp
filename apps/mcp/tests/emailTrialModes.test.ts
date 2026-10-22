@@ -7,14 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { InkboxMessageDetail } from "@haggle/engine";
-import { buildReport, compareMessageIds, evaluateReply, newRun, planTrial, plannedSend, renderMarkdown, sendGates, TRIAL_FLAG, trialEmail, validateTrial, withPipeline, type TrialRun } from "../scripts/email-trial-lib.ts";
+import { buildReport, compareMessageIds, EMPTY_FS, evaluateReply, newRun, planTrial, plannedSend, problems, renderMarkdown, sendGates, TRIAL_FLAG, trialEmail, validateTrial, withPipeline, type TrialRun } from "../scripts/email-trial-lib.ts";
 import { replayCaptures } from "../scripts/email-trial-replay.ts";
 
 const REPO = "/repo/haggle";
 const ME = "tester@gmail.example";
 const OTHER = "tester2@outlook.example";
 const BUYER = "haggle@inkboxmail.test";
-const env = { HAGGLE_EMAIL_TRIAL: "1", HAGGLE_EMAIL_TRIAL_MAILBOXES: `${ME}, ${OTHER}` };
+const env = { HAGGLE_EMAIL_TRIAL: "1", HAGGLE_EMAIL_TRIAL_MAILBOXES: `${ME}, ${OTHER}`, HAGGLE_ENV: "staging", INKBOX_API_KEY: "ik_test_key_value", INKBOX_IDENTITY: "haggle-staging" };
 const send = ["send", "--to", ME, "--run", "/tmp/trials/t1", TRIAL_FLAG];
 
 describe("sending: each gate refuses on its own", () => {
@@ -22,8 +22,8 @@ describe("sending: each gate refuses on its own", () => {
     ["HAGGLE_EMAIL_TRIAL unset", send, { ...env, HAGGLE_EMAIL_TRIAL: undefined }, /disabled/],
     ["HAGGLE_EMAIL_TRIAL=true (only 1 counts)", send, { ...env, HAGGLE_EMAIL_TRIAL: "true" }, /disabled/],
     ["no allowlist", send, { ...env, HAGGLE_EMAIL_TRIAL_MAILBOXES: undefined }, /empty/],
-    ["allowlist of malformed entries only", send, { ...env, HAGGLE_EMAIL_TRIAL_MAILBOXES: "not-an-address, @gmail.com" }, /empty/],
-    ["recipient not listed", ["send", "--to", "stranger@example.com", "--run", "/tmp/t", TRIAL_FLAG], env, /not in HAGGLE_EMAIL_TRIAL_MAILBOXES/],
+    ["allowlist of malformed entries only", send, { ...env, HAGGLE_EMAIL_TRIAL_MAILBOXES: "not-an-address, @gmail.com" }, /not one plain ASCII address/],
+    ["recipient not listed", ["send", "--to", "stranger@example.com", "--run", "/tmp/t", TRIAL_FLAG], env, /not an exact entry of HAGGLE_EMAIL_TRIAL_MAILBOXES/],
     ["no ownership flag", send.filter((a) => a !== TRIAL_FLAG), env, new RegExp(TRIAL_FLAG)],
     ["a look-alike flag", [...send.filter((a) => a !== TRIAL_FLAG), "--i-own-this-mailbox=yes"], env, new RegExp(TRIAL_FLAG)],
     ["run directory inside the repository", ["send", "--to", ME, "--run", `${REPO}/x`, TRIAL_FLAG], env, /outside the repository/],
@@ -40,8 +40,10 @@ describe("sending: each gate refuses on its own", () => {
   });
   it("all gates passed: a send plan; sendGates reports each one", () => {
     expect(planTrial(send, env, REPO)).toMatchObject({ ok: true, cmd: { kind: "send", to: ME } });
-    expect(sendGates(env, send, ME)).toEqual({ HAGGLE_EMAIL_TRIAL: true, HAGGLE_EMAIL_TRIAL_MAILBOXES: true, to_listed: true, [TRIAL_FLAG]: true });
-    expect(sendGates({}, [], "x@y.example")).toEqual({ HAGGLE_EMAIL_TRIAL: false, HAGGLE_EMAIL_TRIAL_MAILBOXES: false, to_listed: false, [TRIAL_FLAG]: false });
+    expect(problems(sendGates(env, send, ME, REPO, EMPTY_FS, "0.7.19", "/tmp/trials/t1"))).toEqual([]);
+    expect(problems(sendGates({}, [], "x@y.example")).map((c) => `${c.status} ${c.check}`)).toEqual([
+      "BLOCKED HAGGLE_EMAIL_TRIAL", "BLOCKED HAGGLE_ENV", "BLOCKED INKBOX_API_KEY", "BLOCKED INKBOX_IDENTITY", "BLOCKED HAGGLE_EMAIL_TRIAL_MAILBOXES", `BLOCKED ${TRIAL_FLAG}`, "FAIL --to", "BLOCKED --run",
+    ]);
   });
 });
 
@@ -54,18 +56,23 @@ describe("validate and dry-run contact nothing and need no gate", () => {
   });
 
   it("validate reports env names (never values), the allowlist, the run directory, the SDK and the gates", () => {
-    const fs = { exists: (p: string) => p === "/tmp/t" || p === "/tmp/t/run.json" || p === "/tmp/t/raw", writable: () => true, list: () => ["a.json", "b.json", "x.txt"] };
-    const v = validateTrial({ kind: "validate", runDir: "/tmp/t", to: ME }, { ...env, HAGGLE_EMAIL_TRIAL_MAILBOXES: `${ME}, junk`, INKBOX_API_KEY: "ik_live_SECRET_VALUE" }, [TRIAL_FLAG], REPO, fs, "0.7.19");
+    const run = newRun({ to: ME, buyerMailbox: BUYER, now: new Date("2026-10-23T09:00:00Z") });
+    run.send = { id: "out_1", messageId: "<a@b.example>", status: "sent", at: "2026-10-23T09:00:01Z" };
+    const fs = { ...EMPTY_FS, exists: (p: string) => p === "/tmp/t" || p === "/tmp/t/run.json" || p === "/tmp/t/raw", list: () => ["a.json", "b.json", "x.txt"], mode: () => 0o700, read: () => JSON.stringify(run) };
+    const v = validateTrial({ kind: "validate", runDir: "/tmp/t", to: ME }, { ...env, INKBOX_API_KEY: "ik_live_SECRET_VALUE" }, [TRIAL_FLAG], REPO, fs, "0.7.19");
     expect(JSON.stringify(v)).not.toContain("SECRET_VALUE");
+    expect(v.target).toBe("collect"); // the directory holds a run: collect is next
     const by = Object.fromEntries(v.checks.map((c) => [c.check, c]));
-    expect(by.INKBOX_API_KEY).toMatchObject({ ok: true, detail: "set (value not shown)" });
-    expect(by.HAGGLE_EMAIL_TRIAL_MAILBOXES).toMatchObject({ ok: false, level: "warn", detail: expect.stringMatching(/ignored 1 malformed/) });
-    expect(by["--run"]).toMatchObject({ ok: true, detail: expect.stringMatching(/has run\.json.*2 capture/) });
-    expect(by["@inkbox/sdk"]).toMatchObject({ ok: true, detail: expect.stringMatching(/0\.7\.19/) });
+    expect(by.INKBOX_API_KEY).toMatchObject({ status: "ok", detail: "set (value not shown)" });
+    expect(by["run state"]).toMatchObject({ status: "ok", detail: expect.stringMatching(/sent .*2 capture/) });
+    expect(by["@inkbox/sdk"]).toMatchObject({ status: "ok", detail: expect.stringMatching(/0\.7\.19/) });
     expect(v.ok).toBe(true);
-    const bad = validateTrial({ kind: "validate", runDir: `${REPO}/t`, to: "x@y.example" }, {}, [], REPO, fs, null);
+    const junk = validateTrial({ kind: "validate", runDir: "/tmp/t", to: ME }, { ...env, HAGGLE_EMAIL_TRIAL_MAILBOXES: `${ME}, junk` }, [TRIAL_FLAG], REPO, fs, "0.7.19");
+    expect(junk.checks.find((c) => c.check === "HAGGLE_EMAIL_TRIAL_MAILBOXES")).toMatchObject({ status: "FAIL", detail: expect.stringMatching(/1 entry is not one plain ASCII address/) });
+    const bad = validateTrial({ kind: "validate", runDir: `${REPO}/t`, to: "x@y.example" }, {}, [], REPO, EMPTY_FS, null);
     expect(bad.ok).toBe(false);
-    expect(bad.checks.filter((c) => !c.ok && c.level === "error").map((c) => c.check)).toEqual(["INKBOX_API_KEY", "HAGGLE_EMAIL_TRIAL_MAILBOXES", "--to", "--run", "@inkbox/sdk"]);
+    expect(problems(bad.checks).map((c) => c.check)).toEqual(["HAGGLE_EMAIL_TRIAL", "HAGGLE_ENV", "INKBOX_API_KEY", "INKBOX_IDENTITY", "@inkbox/sdk", "HAGGLE_EMAIL_TRIAL_MAILBOXES", TRIAL_FLAG, "--to", "--run"]);
+    for (const c of problems(bad.checks)) expect(c.fix, c.check).toBeTruthy();
   });
 
   it("the planned send is exactly the test email with its idempotency key", () => {
@@ -88,9 +95,10 @@ describe("validate and dry-run contact nothing and need no gate", () => {
     expect(d.stdout).toMatch(/Subject: \[HAGGLE TEST\]/);
     expect(existsSync(dir)).toBe(false);
     const s = run(send.map((a) => (a === "/tmp/trials/t1" ? dir : a)), { HAGGLE_EMAIL_TRIAL_MAILBOXES: ME });
-    expect(s.stderr).toMatch(/email-trial failed: email trial is disabled/);
+    expect(s.stderr).toMatch(/email-trial failed: send refused before any network call[\s\S]*BLOCKED HAGGLE_EMAIL_TRIAL /);
     const k = run(send.map((a) => (a === "/tmp/trials/t1" ? dir : a)), { HAGGLE_EMAIL_TRIAL: "1", HAGGLE_EMAIL_TRIAL_MAILBOXES: ME });
-    expect(k.stderr).toMatch(/INKBOX_API_KEY is not set/);
+    expect(k.stderr).toMatch(/send refused before any network call/);
+    expect(k.stderr).toMatch(/BLOCKED INKBOX_API_KEY/);
     expect(existsSync(dir)).toBe(false);
   }, 90_000);
 });

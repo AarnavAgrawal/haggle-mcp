@@ -84,6 +84,11 @@ export interface ReplayResult {
   sender_trusted: boolean | null;
   quote_total_usd: number | null;
   approvable: boolean | null;
+  /** The keyword reader's (or the given extractor's) deposit and flags for this message's quote. */
+  quote_deposit_usd?: number | null;
+  quote_flags?: string[];
+  /** Why the board would not offer Approve (null when approvable or no quote). */
+  approval_block?: string | null;
 }
 
 /**
@@ -136,6 +141,8 @@ export async function replayPipeline(o: { buyer: string; vendors: ReplayVendor[]
       id: detail.id, webhook_status: r.status, outcome: r.outcome ?? String(r.body.error ?? ""), stored_as: after?.kind ?? null, trust_reason: after?.trust_reason ?? null,
       quarantine_reason: after?.quarantine_reason ?? null, sender_trusted: after?.sender_trusted ?? null,
       quote_total_usd: own ? (own.total_cents === null ? null : own.total_cents / 100) : null, approvable: board ? board.approvable : null,
+      quote_deposit_usd: own ? (own.deposit_cents === null ? null : own.deposit_cents / 100) : null, quote_flags: own ? [...(own.record.flags ?? [])] : [],
+      approval_block: board?.approval_block?.reason ?? null,
     };
   }
   /**

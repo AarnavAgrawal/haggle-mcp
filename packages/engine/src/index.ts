@@ -83,3 +83,5 @@ export * from "./ops/roster.ts";
 // Sprint 5 E: usage metrics from database rows (simulated vs real), approximate AI cost.
 export * from "./ops/costs.ts";
 export * from "./ops/metrics.ts";
+// Email trial (apps/mcp/scripts/email-trial.ts): plain-English quarantine reasons in its report.
+export { explainQuarantine, type QuarantineExplanation } from "./inbound/quarantineReasons.ts";
