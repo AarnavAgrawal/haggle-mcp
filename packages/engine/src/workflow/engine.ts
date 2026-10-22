@@ -24,7 +24,7 @@ import { applyDeliveryStatus, type DeliveryStatusInput } from "../inbound/delive
 import { CONTINUITY_ONLY_REASONS, CONTINUITY_ONLY_WARNING, provesSenderIdentity } from "../inbound/trustStrength.ts";
 import { explainQuarantine, quarantineEventData } from "../inbound/quarantineReasons.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
-import { isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
+import { isDsnSender, isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers, type PlannedCounter } from "../negotiation/counteroffer.ts";
@@ -2860,7 +2860,8 @@ export class HaggleEngine {
    */
   async ingest(msg: InboundMessage, trustFor: (expected: string) => TrustVerdict, opts: { simulated?: boolean; inlineAttachments?: { filename: string; contentType: string; data: Uint8Array }[] } = {}): Promise<{ jobId: string | null; outcome: string }> {
     const bounce = parseBounce(msg);
-    if (bounce) return this.ingestBounce(msg, bounce);
+    // A bounce-looking message from a business's own address in its thread is that business writing, not a DSN.
+    if (bounce && (isDsnSender(msg.from) || !(await this.fromPinnedBusiness(msg)))) return this.ingestBounce(msg, bounce);
     const codes = [...new Set([...msg.to.map((a) => jobInboxCode(a, this.d.config.inboxDomain)), subjectShortCode(msg.subject)].filter((c): c is string => c !== null))];
     const messageIds = [...msg.inReplyTo, ...msg.references];
     const lookup = { shortCodes: codes, threadId: msg.threadId, messageIds };
@@ -2930,21 +2931,21 @@ export class HaggleEngine {
     const b = bizRows.find((x) => x.job_id === match.jobId && x.business_id === match.businessId)!;
     let trust = trustFor(b.email!);
     if (!trust.trusted && trust.retryable) throw new RetryLater("sender authentication temporarily unavailable");
-    // An opt-out from the business's own address is honoured even before its identity is proven:
-    // never contacting someone who may have asked us to stop is the safe side.
+    // Mail from outside Inkbox: a From address and a thread are never proof (inbound/senderAuth.ts).
+    const external = !trust.trusted && this.d.config.externalSenders === "reply_token" ? await this.verifyExternal(b, msg, trust) : null;
+    // An opt-out from the business's own address is honoured on this job even before its identity is
+    // proven (never contacting someone who may have asked us to stop is the safe side), but only a
+    // verified one suppresses the address everywhere: an unverified STOP may be a competitor's spoof.
     if (isOptOut(msg.bodyText) && normalizeAddress(msg.from) === normalizeAddress(b.email!)) {
-      const stored = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "reply", sender_trusted: trust.trusted, trust_reason: trust.reason, matched_via: match.via, parse_status: "none", quarantine_reason: null });
+      const verified = trust.trusted || external?.ok === true;
+      const stored = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "reply", sender_trusted: verified, trust_reason: trust.trusted ? trust.reason : external?.ok ? external.reason : trust.reason, matched_via: match.via, parse_status: "none", quarantine_reason: null });
       if (!stored) return { jobId: b.job_id, outcome: "duplicate" };
-      await this.optOut(b.job_id, b, b.email!, (msg.bodyText ?? "").slice(0, 200));
+      if (verified) await this.optOut(b.job_id, b, b.email!, (msg.bodyText ?? "").slice(0, 200));
+      else await this.optOutThisJob(b.job_id, b, (msg.bodyText ?? "").slice(0, 200));
       return { jobId: b.job_id, outcome: "opted_out" };
     }
-    // Mail from outside Inkbox: a From address and a thread are never proof (inbound/senderAuth.ts).
-    if (!trust.trusted && this.d.config.externalSenders === "reply_token") {
-      const ours = (await this.repo.listMessages(b.job_id)).filter((m) => m.direction === "out" && m.business_id === b.business_id).map((m) => m.rfc_message_id);
-      const v = verifyExternalReply({
-        from: msg.from, pinned: b.email!, inReplyTo: msg.inReplyTo, references: msg.references, ourMessageIds: [b.rfq_message_id, ...ours],
-        subject: msg.subject, bodyText: msg.bodyText, token: replyToken(this.d.config.replyTokenSecret!, b.job_id, b.business_id), evidence: trust.evidence,
-      });
+    if (external) {
+      const v = external;
       if (!v.ok) {
         const q = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "quarantine", sender_trusted: false, trust_reason: trust.reason, matched_via: match.via, parse_status: "none", quarantine_reason: `${v.reason}:${v.detail}` });
         if (!q) return { jobId: b.job_id, outcome: "duplicate" };
@@ -3008,6 +3009,33 @@ export class HaggleEngine {
   /** Inkbox message.bounced / message.failed (or the reconciler's outbound status sweep) for one of our own emails. See inbound/deliveryStatus.ts. */
   ingestDeliveryStatus(s: DeliveryStatusInput): Promise<{ jobId: string | null; outcome: string }> {
     return applyDeliveryStatus(this.repo, s, (event, data) => this.log(event, data));
+  }
+
+  /** The reply-token check for mail from outside Inkbox (inbound/senderAuth.ts verifyExternalReply). */
+  private async verifyExternal(b: JobBusinessRow, msg: InboundMessage, trust: TrustVerdict) {
+    const ours = (await this.repo.listMessages(b.job_id)).filter((m) => m.direction === "out" && m.business_id === b.business_id).map((m) => m.rfc_message_id);
+    return verifyExternalReply({
+      from: msg.from ?? "", pinned: b.email!, inReplyTo: msg.inReplyTo, references: msg.references, ourMessageIds: [b.rfq_message_id, ...ours],
+      subject: msg.subject, bodyText: msg.bodyText, token: replyToken(this.d.config.replyTokenSecret!, b.job_id, b.business_id), evidence: trust.evidence,
+    });
+  }
+
+  /** Is this message from the pinned address of a business it threads to (by job code, thread or our Message-IDs)? */
+  private async fromPinnedBusiness(msg: InboundMessage): Promise<boolean> {
+    if (!msg.from) return false;
+    const codes = [...new Set([...msg.to.map((a) => jobInboxCode(a, this.d.config.inboxDomain)), subjectShortCode(msg.subject)].filter((c): c is string => c !== null))];
+    const rows = await this.repo.findBusinessCandidates({ shortCodes: codes, threadId: msg.threadId, messageIds: [...msg.inReplyTo, ...msg.references] });
+    return rows.some((r) => r.email && normalizeAddress(r.email) === normalizeAddress(msg.from!));
+  }
+
+  /**
+   * An opt-out Haggle couldn't verify came from the business (no provider authentication, no reply
+   * token): this job stops contacting it, recorded as `opt_out_unverified`; no global suppression.
+   */
+  private async optOutThisJob(jobId: string, b: Pick<JobBusinessRow, "business_id" | "name">, evidence: string) {
+    await this.repo.updateBusiness(jobId, b.business_id, { status: "declined", next_attempt_at: null });
+    await this.repo.appendEvent(jobId, "reply", { business_id: b.business_id, opt_out: "opt_out_unverified", evidence, summary: `${b.name} appears to have asked not to be contacted (sender not verified); Haggle stops contacting them on this deal only` });
+    await this.repo.touchJob(jobId);
   }
 
   /** The business asked not to be contacted: suppressed for every workspace and deal, and marked declined here. */

@@ -27,6 +27,12 @@ describe("cleanEmailBody cuts quoted history", () => {
       expect(c).not.toMatch(/\$2000|HGR-/);
     });
   }
+  it("bottom-posted reply: attribution and '>' quote first, the business's words below", () => {
+    const body = `On Thu, Oct 22, 2026 at 10:15 AM Haggle <haggle@inkboxmail.test> wrote:\n> ${RFQ.split("\n").join("\n> ")}\n> Could you quote the following?\n\n${OWN}\n`;
+    expect(cleanEmailBody(body)).toBe(OWN);
+    const wrapped = `On Thu, Oct 22, 2026 at 10:15 AM Haggle AI Buyer <\nhaggle@inkboxmail.test> wrote:\n> ${RFQ.split("\n").join("\n> ")}\n\n${OWN}\n\n--\nSent via Inkbox`;
+    expect(cleanEmailBody(wrapped)).toBe(OWN);
+  });
   it("'>' quoted lines are dropped wherever they are", () => {
     expect(cleanEmailBody(`${OWN}\n> ${RFQ.replace(/\n/g, "\n> ")}`)).toBe(OWN);
   });

@@ -56,20 +56,33 @@ export function verifyExternalReply(i: {
 }
 
 /**
- * An explicit request not to be contacted, in the business's own first lines (quoted history and
- * signatures ignored): STOP, unsubscribe, remove me, do not contact/email, opt out.
+ * An explicit request not to be contacted, in the business's own first lines (quoted history,
+ * signatures and footers ignored): STOP, unsubscribe me, remove me, do not contact/email, opt out.
+ * A footer's "reply UNSUBSCRIBE to stop marketing mail" or an unsubscribe link is not one.
  */
 export function isOptOut(text: string | null): boolean {
-  const own = (text ?? "").split(/\n\s*(?:On .{0,200}wrote:|-{2,}\s*Original Message|From: )/i)[0]!.split("\n").filter((l) => !/^\s*>/.test(l)).join(" ").trim();
+  const top = (text ?? "").split(/\n\s*(?:On .{0,200}wrote:|-{2,}\s*Original Message|From: )/i)[0]!.split("\n");
+  const sig = top.findIndex((l) => /^\s*(--|__+|-- )\s*$/.test(l) || /^\s*sent from my /i.test(l));
+  const lines = (sig >= 0 ? top.slice(0, sig) : top).filter((l) => !/^\s*>/.test(l))
+    // Footer/marketing lines: an unsubscribe link or instruction addressed to a list, not to Haggle.
+    .filter((l) => !/(https?:\/\/|www\.|newsletter|marketing|mailing list|to unsubscribe|reply\s+["']?unsubscribe|click)/i.test(l) || !/unsubscribe|opt.?out/i.test(l));
+  const own = lines.join(" ").trim();
   if (!own || own.length > 400) return false;
   // Whole-message commands, or unmistakable requests; "don't contact us before Monday" is not one.
   return /^\s*(stop|stop all|unsubscribe|opt[ -]?out|remove me|remove)\s*[.!]*\s*$/i.test(own)
-    || /\bunsubscribe\b/i.test(own)
+    || /^\s*(please\s+)?unsubscribe\b/i.test(own)
+    || /\b(please\s+)?unsubscribe (me|us)\b/i.test(own)
     || /\b(remove (me|us) from (your|this) (mailing )?list|opt (me|us) out)\b/i.test(own)
     || /\b(do not|don'?t|please stop|stop) (contact|email|text|call|messag)(ing|e)? (me|us)\b\s*(again|anymore|any more|ever)?\s*([.!]|$)/i.test(own);
 }
 
 const BOUNCE_FROM = /^(mailer-daemon|postmaster|mail-daemon|bounce[s]?)@/i;
+const ENHANCED = /\b[45]\.\d{1,3}\.\d{1,3}\b/;
+
+/** A delivery-status sender (mailer-daemon, postmaster). */
+export function isDsnSender(from: string | null): boolean {
+  return !!from && BOUNCE_FROM.test(from);
+}
 const BOUNCE_SUBJECT = /(delivery status notification|undeliverable|undelivered mail|mail delivery (failed|subsystem)|returned mail|delivery (has )?failed|failure notice)/i;
 
 /**
@@ -77,9 +90,12 @@ const BOUNCE_SUBJECT = /(delivery status notification|undeliverable|undelivered 
  * only when it names one of Haggle's own outbound messages); `hard` = a permanent 5.x.x failure.
  */
 export function parseBounce(m: { from: string | null; subject: string | null; bodyText: string | null; inReplyTo: string[]; references: string[] }): { hard: boolean; messageIds: string[]; text: string } | null {
-  if (!(m.from && BOUNCE_FROM.test(m.from)) && !BOUNCE_SUBJECT.test(m.subject ?? "")) return null;
   const text = m.bodyText ?? "";
+  // A DSN sender, or a bounce subject that also carries an enhanced status code (5.1.1). A subject
+  // alone ("resending: mail delivery failed") from anyone else is an ordinary message.
+  if (!isDsnSender(m.from) && !(BOUNCE_SUBJECT.test(m.subject ?? "") && ENHANCED.test(text))) return null;
   const ids = [...m.inReplyTo, ...m.references, ...[...text.matchAll(/<[^<>\s@]+@[^<>\s]+>/g)].map((x) => x[0])];
-  const hard = /\b5\.\d{1,3}\.\d{1,3}\b|\b55[0-4]\b/.test(text) && !/\b4\.\d{1,3}\.\d{1,3}\b/.test(text.split(/\b5\.\d/)[0] ?? "");
+  // SMTP 550-554 only as a reply code: never "$550", "550.00" or "5,550".
+  const hard = /\b5\.\d{1,3}\.\d{1,3}\b|(?<![$\d.,]|\$\s)\b55[0-4]\b(?![\d.,]\d)/.test(text) && !/\b4\.\d{1,3}\.\d{1,3}\b/.test(text.split(/\b5\.\d/)[0] ?? "");
   return { hard, messageIds: [...new Set(ids)], text: text.slice(0, 500) };
 }

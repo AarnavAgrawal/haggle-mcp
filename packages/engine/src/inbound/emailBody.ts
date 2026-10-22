@@ -65,12 +65,33 @@ function wrappedAttributionAt(lines: string[], i: number): boolean {
   return false;
 }
 
+/** The unquoted text after an attribution at line i and its '>' block, up to the next quote marker; "" if none. */
+function bottomPosted(lines: string[], i: number): string {
+  let j = i;
+  while (j < lines.length && !/wrote:\s*$/i.test(lines[j]!)) j++; // the attribution may wrap
+  const own: string[] = [];
+  let sawQuote = false;
+  for (j = j + 1; j < lines.length; j++) {
+    const l = lines[j]!;
+    if (l.trimStart().startsWith(">")) { sawQuote = true; continue; }
+    if (/^--\s*$/.test(l.trim()) || CUT_AT.some((re) => re.test(l.trim())) || headerBlockAt(lines, j) || wrappedAttributionAt(lines, j)) break; // "--": the signature
+    own.push(l);
+  }
+  return sawQuote ? own.join("\n").replace(/\n{3,}/g, "\n\n").trim() : "";
+}
+
 export function cleanEmailBody(body: string): string {
   const out: string[] = [];
   const lines = body.replace(/\r\n/g, "\n").split("\n").map((l) => l.trimEnd());
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    if (CUT_AT.some((re) => re.test(line.trim())) || headerBlockAt(lines, i) || wrappedAttributionAt(lines, i)) break;
+    const cut = CUT_AT.some((re) => re.test(line.trim())) || headerBlockAt(lines, i) || wrappedAttributionAt(lines, i);
+    if (cut && !out.some((l) => l.trim()) && (CUT_AT[0]!.test(line.trim()) || wrappedAttributionAt(lines, i))) {
+      // Bottom-posted: "On … wrote:" first, the '>' quote, then the business's own words below it.
+      const below = bottomPosted(lines, i);
+      if (below) return below;
+    }
+    if (cut) break;
     if (line.trimStart().startsWith(">")) continue;
     out.push(line);
   }
