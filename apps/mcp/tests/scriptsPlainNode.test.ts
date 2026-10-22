@@ -10,7 +10,7 @@ const APP = join(import.meta.dirname, "..");
 const env = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
 
 describe("operator scripts load under plain node", () => {
-  for (const s of ["workspace-admin", "workspace-create", "job-ops", "migrations"]) {
+  for (const s of ["workspace-admin", "workspace-create", "job-ops", "migrations", "traction"]) {
     it(s, () => {
       const r = spawnSync(process.execPath, [`scripts/${s}.ts`], { cwd: APP, env, encoding: "utf8", timeout: 60_000 });
       expect(r.stderr).not.toMatch(/ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX|SyntaxError|ERR_MODULE_NOT_FOUND/);
