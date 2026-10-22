@@ -2055,7 +2055,8 @@ export class HaggleEngine {
       return { jobId: job.id, outcome: "handoff_already_confirmed" };
     }
     const fresh = (await this.repo.getJob(job.id)) ?? job;
-    const verdict = await this.paymentVerdict(fresh, target);
+    const held = (await this.repo.getBookingByApproval(target.id))?.status;
+    const verdict = await this.paymentVerdict(fresh, target, { bookingHeld: held === "confirmed" || held === "not_in_writing" });
     if (!verdict.ok) {
       await this.repo.appendEvent(job.id, "payment_refused", { code: verdict.code, approval_id: target.id, rail: "manual" });
       await reply(`couldn't record that payment: the approval no longer matches (${verdict.code.toLowerCase().replace(/_/g, " ")}). Nothing was sent to the business; see the deal board.`);
@@ -2075,13 +2076,16 @@ export class HaggleEngine {
    * for this exact quote revision, business and amount, unexpired; amount within the job, approval,
    * server and current workspace caps; payee = the business that quoted; job still paying.
    */
-  private async paymentVerdict(job: JobRow, approval: ApprovalRow) {
+  private async paymentVerdict(job: JobRow, approval: ApprovalRow, opts: { bookingHeld?: boolean } = {}) {
     const quote = await this.repo.getQuote(approval.quote_id);
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === approval.business_id);
     return checkStripePaymentAllowed({
       stripeConfigured: true,
       job: { id: job.id, state: job.state },
-      approval: { id: approval.id, job_id: approval.job_id, quote_id: approval.quote_id, business_id: approval.business_id, quote_total_cents: approval.quote_total_cents, payment_cents: approval.payment_cents, status: approval.status, expires_at: approval.expires_at },
+      approval: { id: approval.id, job_id: approval.job_id, quote_id: approval.quote_id, business_id: approval.business_id, quote_total_cents: approval.quote_total_cents, payment_cents: approval.payment_cents, status: approval.status,
+        // Manual handoff: an approval whose booking the business confirmed doesn't lapse while the human
+        // arranges payment (hours or days); everything else is still revalidated.
+        expires_at: opts.bookingHeld ? new Date(this.now().getTime() + 60_000).toISOString() : approval.expires_at },
       quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
       payee: b && quote ? { business_id: b.business_id, on_job: true, quoted_from_trusted_sender: quote.sender_trusted && quote.business_id === b.business_id } : null,
       existingPayment: null,
@@ -2185,7 +2189,9 @@ export class HaggleEngine {
         continue;
       }
       // A newer quote from the business since the request: the same firm terms in its own words confirm; anything else is news.
-      const newer = all.filter((q) => q.business_id === bid && q.id !== quoteId && Date.parse(q.created_at) >= Date.parse(String(r.data.at)) - 1000).sort((x, y) => y.created_at.localeCompare(x.created_at))[0];
+      // (event order, not timestamps: rows and events may be stamped by different clocks)
+      const after = new Set(events.filter((e) => e.type === "quote" && e.seq > r.seq && e.data.business_id === bid).map((e) => String(e.data.quote_id)));
+      const newer = all.filter((q) => q.id !== quoteId && after.has(q.id)).sort((x, y) => y.created_at.localeCompare(x.created_at))[0];
       if (newer && newer.status === "current") {
         const msg = await this.repo.getMessage(newer.message_id);
         const same = newer.total_cents === r.data.total_cents && (newer.deposit_cents ?? null) === (r.data.deposit_cents ?? null);

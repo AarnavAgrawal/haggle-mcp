@@ -44,6 +44,7 @@ export function vendorOwnWords(body: string): string {
   const out: string[] = [];
   for (const line of cleanEmailBody(body).split("\n")) {
     if (QUOTE_START.some((re) => re.test(line.trim()))) break;
+    if (line.trimStart().startsWith(">")) continue; // quoted lines (cleanEmailBody keeps them when nothing else is left)
     out.push(line);
   }
   return out.join("\n").trim();
