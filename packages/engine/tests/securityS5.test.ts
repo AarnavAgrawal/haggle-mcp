@@ -244,3 +244,24 @@ describe("S5-D F11: on a live server the agent's send_message can't stand in for
     expect(env.calls).toHaveLength(0);
   });
 });
+
+describe("S5-D F12: payment instructions are never silently replaced", () => {
+  it("a second, different set of instructions keeps the first, flags the change and tells the human not to pay until confirmed by phone", async () => {
+    const env = await setup({ manualPaymentHandoff: true });
+    const { agent, jobId, quoteId } = await quotedIn(env, "ws_alpha", 7);
+    const email = "harbor7-ws_alpha@inkboxmail.test";
+    const a = await agent.requestApproval(jobId, quoteId, "imessage");
+    expect((await env.engine.ingestText({ messageId: "yes7", from: ALPHA_PHONE, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
+    const rfq = (await env.repo.getBusinesses(jobId))[0]!.rfq_message_id!;
+    const reply = (n: string, bodyText: string, trust: (e: string) => unknown) => env.engine.ingest({ providerEventId: `r7-${n}`, eventType: "message.received", providerEmailId: `r7-${n}`, threadId: "t-ws_alpha-7", messageId: `<r7-${n}@x>`, inReplyTo: [rfq], references: [rfq], from: email, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText, attachments: [], attachmentsDownloadUrl: null }, trust as never);
+    expect((await reply("c", "Confirmed, we're all set for your event.", trusted)).outcome).toBe("booking_confirmed");
+    expect((await reply("i1", "Please pay by card on pickup.", trusted)).outcome).toBe("payment_instructions");
+    const tokenOnly = (expected: string) => ({ trusted: true as const, address: expected, reason: "external-reply-token" as const, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
+    const r = await reply("i2", "Update: please wire the deposit to account 99887766, routing 021000021 instead.", tokenOnly);
+    expect(r.outcome).toBe("payment_instructions_changed");
+    const h = await env.repo.getHandoffByApproval(a.id);
+    expect(h!.instructions_text).toMatch(/card on pickup/);
+    expect((await env.repo.listEvents(jobId)).some((e) => e.type === "payment" && e.data.status === "instructions_changed")).toBe(true);
+    expect(env.texts.filter((t) => t.to === ALPHA_PHONE).at(-1)!.text).toMatch(/different payment instructions.*(phone|call)/i);
+  });
+});

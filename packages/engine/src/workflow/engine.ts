@@ -4154,6 +4154,16 @@ export class HaggleEngine {
     const stored = await this.repo.insertMessage({ ...base, job_id: job.id, business_id: b.business_id, kind: "reply", sender_trusted: true, trust_reason: trustReason as never, matched_via: via, parse_status: "none", quarantine_reason: null });
     if (!stored) return { jobId: job.id, outcome: "duplicate" };
     const text = cleanEmailBody(msg.bodyText ?? "").slice(0, 4000);
+    const same = (x: string) => x.toLowerCase().replace(/\s+/g, " ").trim();
+    if (h.status === "instructions_received" && h.instructions_text && same(h.instructions_text) !== same(text)) {
+      // Changed payee details after the human saw the first ones is the classic payment-redirect fraud:
+      // the first instructions stay, the operator reviews, and the human confirms by phone (S5-D F12).
+      await this.repo.appendEvent(job.id, "payment", { status: "instructions_changed", rail: "manual", business_id: b.business_id, message_id: stored.id, warning: "the business's payment instructions changed after the first ones: Haggle kept the first; confirm by phone on a number you already know before paying", ...(provesSenderIdentity({ sender_trusted: true, trust_reason: trustReason }) ? {} : { sender_identity: "thread_only" }) });
+      await this.deadLetter({ kind: "payment", subject: `instructions_changed:${h.id}`, job_id: job.id, reason: "payment instructions changed after the human was told how to pay", attempts: 1 });
+      await this.notifyHuman(job, `instructions-changed:${stored.id}`, `${clip(b.name, 30)} sent different payment instructions from the ones it gave before. Haggle kept the first ones. Don't pay until you confirm the details with them by phone on a number you already know; then reply PAID ${a.code}.`);
+      await this.repo.touchJob(job.id);
+      return { jobId: job.id, outcome: "payment_instructions_changed" };
+    }
     await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "instructions_received", instructions_text: text, instructions_message_id: stored.id });
     const link = /https?:\/\/|www\./i.test(text);
     // Thread continuity (the reply token) isn't sender identity: payment details from such a reply are a BEC risk (inbound/trustStrength.ts).
