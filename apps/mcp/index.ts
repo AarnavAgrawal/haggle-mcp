@@ -1222,7 +1222,7 @@ export const businessProfile = server.tool(
         : !found ? (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business))) : null;
       // Brain profiles are shared across workspaces: only this workspace's own deals (and labelled seed samples) are shown.
       const own = shared ? await engine.ownJobIds(shared.history.map((h) => h.job_id)) : new Set<string>();
-      const p = historyOnly(shared, (jobId) => isSeedJob(jobId) || own.has(jobId));
+      const p = historyOnly(shared, (jobId) => isSeedJob(jobId) || own.has(jobId), { exact: true });
       if (!vendor && !found && !p) {
         return fail(mode, "NOT_LEARNED", `Haggle doesn't know ${business}: it isn't a configured vendor, wasn't in a recent discover result, and Haggle has no quotes from it${mode === "live" ? " (sample data is never shown as history)" : ""}.`,
           rt.placesKey ? "Call discover(category, area) to find real businesses, then ask about one by name." : "Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY); configured vendors are listed by discover.", "deal");

@@ -3666,6 +3666,11 @@ export class HaggleEngine {
     for (const c of moves) {
       const b = byId.get(c.businessId);
       if (!b) continue;
+      // Asked not to be contacted (even unverified, even if an earlier quote of its was read afterwards): never countered (S5-D F10).
+      if (await this.optedOut(job, b)) {
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `No counter to ${b.name}: it asked not to be contacted` });
+        continue;
+      }
       const counter = { haggle: "counter/1", protocol: "haggle.v0", type: "counter", job_id: job.id, round: c.round, target_total_usd: centsToUsd(c.targetTotalCents), basis: c.basis, ...(c.basis === "competing_quote" ? { basis_quote_total_usd: centsToUsd(c.targetTotalCents), ...(c.basisApproximate ? { basis_is_estimate: true } : {}) } : { buyer_target_usd: centsToUsd(c.targetTotalCents) }), respond_by: job.collect_until };
       const why = `${c.basis === "competing_quote" ? (c.basisApproximate ? `match about ${centsToUsd(c.targetTotalCents)} (another business's estimate ${c.basisQuoteId}, not yet firm)` : `match ${centsToUsd(c.targetTotalCents)} (real quote ${c.basisQuoteId})`) : `get closer to the buyer's $${centsToUsd(c.targetTotalCents)} target`} · ${c.strategy.reason}`;
       if (b.channel === "imessage") {
@@ -5994,11 +5999,14 @@ export class HaggleEngine {
    * suppression of any of its contacts) gets no agent-written message on any channel: an email STOP
    * suppresses only the address, never permission to call or text instead (S5-D F10).
    */
-  private async refuseIfOptedOut(job: JobRow, b: JobBusinessRow) {
-    const onJob = (await this.repo.listEvents(job.id)).some((e) => e.data.business_id === b.business_id && e.data.opt_out !== undefined);
+  private async optedOut(job: JobRow, b: JobBusinessRow): Promise<boolean> {
+    if ((await this.repo.listEvents(job.id)).some((e) => e.data.business_id === b.business_id && e.data.opt_out !== undefined)) return true;
     const contacts = [b.email ? normalizeAddress(b.email) : null, b.phone, b.a2a_card_url?.toLowerCase() ?? null].filter((c): c is string => !!c);
-    const suppressed = contacts.length ? (await this.repo.findSuppressions(contacts)).some((s) => s.reason === "opt_out") : false;
-    if (onJob || suppressed) throw new EngineError("business_opted_out", `${b.name} asked not to be contacted; Haggle won't message it on any channel.`, "Choose among the other businesses (get_quotes).", "get_quotes");
+    return contacts.length ? (await this.repo.findSuppressions(contacts)).some((s) => s.reason === "opt_out") : false;
+  }
+
+  private async refuseIfOptedOut(job: JobRow, b: JobBusinessRow) {
+    if (await this.optedOut(job, b)) throw new EngineError("business_opted_out", `${b.name} asked not to be contacted; Haggle won't message it on any channel.`, "Choose among the other businesses (get_quotes).", "get_quotes");
   }
 
   /**

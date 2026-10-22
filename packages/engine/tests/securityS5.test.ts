@@ -305,3 +305,28 @@ describe("S5-D F14: an approval's terms are immutable and a decided approval nev
     await expect(env.repo.insertApproval({ ...base, quote_total_cents: 1 })).rejects.toThrow(/own job's quote/);
   });
 });
+
+describe("S5-D F10b: a business that said STOP after quoting gets no counteroffer", () => {
+  it("negotiate skips a quoted business that then asked not to be contacted (unverified STOP: no suppression, declined on this deal)", async () => {
+    const env = await setup();
+    const agent = env.engine.forWorkspace("ws_alpha");
+    const hi = "hi-stop@inkboxmail.test", lo = "lo-quote@inkboxmail.test";
+    const deal = await agent.deal({ request, budget_usd, businesses: [{ name: "High Grill", email: hi }, { name: "Low Grill", email: lo }] });
+    const rows = await env.repo.getBusinesses(deal.job_id);
+    const send = (n: string, from: string, bodyText: string, trust: unknown) => {
+      const rfq = rows.find((b) => b.email === from)!.rfq_message_id!;
+      return env.engine.ingest({ providerEventId: `n-${n}`, eventType: "message.received", providerEmailId: `n-${n}`, threadId: `t-${from}`, messageId: `<n-${n}@x>`, inReplyTo: [rfq], references: [rfq], from, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText, attachments: [], attachmentsDownloadUrl: null }, trust as never);
+    };
+    await send("hq", hi, "$1,150 total, 12 vegetarian, delivered. $345 deposit.", trusted);
+    await send("lq", lo, "$900 total, 12 vegetarian, delivered. $200 deposit.", trusted);
+    const untrusted = () => ({ trusted: false as const, retryable: false as const, reason: "unverified-external-sender" as const, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
+    expect((await send("hs", hi, "Please stop emailing us.", untrusted)).outcome).toBe("opted_out");
+    const before = env.emails.filter((m) => m.to === hi).length;
+    env.clock.advance(2 * 3_600_000); // quotes final: Haggle's own counter round runs
+    await env.engine.advanceJob(deal.job_id);
+    await agent.negotiate(deal.job_id).catch(() => null);
+    await env.engine.advanceJob(deal.job_id);
+    expect(env.emails.filter((m) => m.to === hi).length).toBe(before);
+    expect((await env.repo.listEvents(deal.job_id)).some((e) => /Counteroffer to High Grill/.test(String(e.data.summary)))).toBe(false);
+  });
+});
