@@ -179,7 +179,8 @@ const APPROVAL_TERMS = ["id", "job_id", "quote_id", "business_id", "quote_total_
 const APPROVAL_STATUS_FROM: Record<string, readonly string[]> = { approved: ["pending"], declined: ["pending"], locked: ["pending"], used: ["approved"], pending: [] };
 
 /** Why this update to a stored approval is refused (S5-D F14), or null when it only records a decision. */
-export function approvalUpdateViolation(old: Record<string, unknown> & { status: string }, patch: Record<string, unknown>): string | null {
+export function approvalUpdateViolation(row: { status: string }, change: object): string | null {
+  const old = row as Record<string, unknown> & { status: string }, patch = change as Record<string, unknown>;
   for (const k of APPROVAL_TERMS) if (patch[k] !== undefined && patch[k] !== old[k]) return `an approval's terms are immutable (${k})`;
   const to = patch.status;
   if (typeof to === "string" && to !== old.status && to !== "expired" && !(APPROVAL_STATUS_FROM[to] ?? []).includes(old.status)) return `approval status can't go from ${old.status} to ${to}`;
