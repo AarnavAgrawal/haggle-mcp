@@ -12,20 +12,25 @@ doubt, do what `next` says.
 | Step | Who | Tool call or action |
 | --- | --- | --- |
 | 1 | agent | `deal(request, budget)`: the user's request, in their words |
-| 2 | agent | `wait_for_update(job_id)`, repeated with the returned cursor |
+| 2 | agent | `wait_for_update(job_id)`, repeated with the returned cursor; a vendor question arrives in it (id and words) |
 | 3 | agent + human | `answer_business(job_id, question_id, answer)` only with an answer the user gave |
 | 4 | agent | `wait_for_update(job_id, until="ready")`, then `get_quotes(job_id)` |
 | 5 | agent | `approve(job_id, recommended_quote_id)`: sends the approval to the human |
 | 6 | human | replies `YES <code>` to Haggle's text |
-| 7 | vendor | confirms the booking in writing (Haggle asked it automatically) and sends payment instructions |
-| 7a | human | only if Haggle can't verify the vendor's email (outside mail): checks with the vendor, replies `BOOKED <code>` |
-| 8 | agent | `get_quotes(job_id)` or `pay(job_id, quote_id)`: reports the stage; nothing is charged |
+| 7 | agent | `wait_for_update(job_id, until="approval_decided")`: its `next` says where the booking stands |
+| 8 | vendor | confirms the booking in writing (Haggle asked it automatically) and sends payment instructions |
+| 8a | human | only if Haggle can't attribute the vendor's yes to it (outside mail), or can't get one in writing (a vendor reached by phone): checks with the vendor directly, replies `BOOKED <code>` |
 | 9 | human | pays the vendor directly, then replies `PAID <code>` |
-| 10 | agent | `get_quotes(job_id)`: the customer reports paying; later, the vendor confirmed receipt |
+| 10 | agent | `wait_for_update` (or, in a new conversation, `list_deals`): the customer reports paying; later, the vendor confirmed receipt |
 
-In the simulated acceptance run (`apps/mcp/tests/acceptancePilot.test.ts`) this took 12 tool calls
-and 5 human steps: answering one vendor question in chat, `YES`, `BOOKED` (the vendor's email was
-outside mail), paying the vendor, and `PAID`.
+No `pay` call is needed on a pilot server: it only repeats the stage that `wait_for_update`,
+`get_quotes` and `list_deals` already report.
+
+In the simulated acceptance run (`apps/mcp/tests/acceptancePilot.test.ts`) this takes 9 tool calls
+(sprint 4: 12) and 5 human steps: answering one vendor question in chat, `YES`, `BOOKED` (the
+vendor's email was outside mail), paying the vendor, and `PAID`. The calls saved: no board read to
+find a vendor's question (the wait carries it), none after `approve` (the wait's `next` carries the
+booking stage), none on resume (`list_deals` carries it), and no `pay`.
 
 ## 1. Start: `deal`, in ordinary language
 
@@ -48,7 +53,7 @@ Pass what the user said. Structured values are fine too:
 | Field | Accepts |
 | --- | --- |
 | `quantity` | 60, or "about 60 guests" |
-| `date` / `when` | 2026-11-14, "Nov 14", "next Saturday", "tomorrow". A past day is refused |
+| `date` / `when` | 2026-11-14, "Nov 14", "next Saturday", "tomorrow", read on the workspace's calendar (its timezone, America/Los_Angeles by default; "tomorrow" said at 11 pm in San Francisco is the next San Francisco day). A past day is refused |
 | `time` | "11:30", "11:30am", "noon" |
 | `area` / `where` | the city or address (default: the workspace's area) |
 | `venue` | the delivery place |
@@ -114,9 +119,18 @@ Haggle recommends only a quote that:
 - and is fresh.
 
 A cheaper quote that misses a must-have (e.g. "only 6 of 12 vegetarian") never wins. It stays
-visible, and the user may still choose it knowingly; the caveat goes with the approval. Each quote
-also carries a one-line `selection` reason in the engine's data (surfaced in `get_quotes` once
-workstream E maps it).
+visible, and the user may still choose it knowingly; the caveat goes with the approval.
+
+Why, in plain words you can repeat to the user:
+- **Each quote** has a one-line `selection` reason: recommended; or selectable but not picked
+  ("doesn't meet: At least 12 vegetarian meals (only 6 of 12)", "$400 over the $2,500 budget",
+  ranked lower on value); or not selectable as is (stale until the vendor re-confirms, a different
+  date or delivery window than asked, not clearly from the vendor, no firm all-in total).
+- **Each vendor that isn't compared** has a line in `vendor_contact`: declined, didn't reply before
+  quotes closed, asked a question first, sent a reply Haggle couldn't read, couldn't be contacted,
+  bounced, opted out, or a reply held for review.
+- Once quotes are final, `next` ends with "Not compared: Bay Catering (no quote), Delta Deli
+  (declined)".
 
 ## 5. Approve: the human decides, by text
 
@@ -142,7 +156,16 @@ confirm in writing:
 - the approved total (and deposit),
 - every must-have.
 
-Nothing is booked or paid until it does. Stages, as `get_quotes.purchase.stage` (and `pay`) report them:
+Nothing is booked or paid until it does:
+- A yes counts only from the vendor itself (a sender Haggle can verify), naming no other date than
+  the event's, and covering every must-have its quote never confirmed (Haggle names those in the
+  booking request; a bare "confirmed" then stays unclear and the vendor is asked about them once).
+- A yes Haggle can't attribute to the vendor (outside mail proven only by Haggle's thread), or a
+  vendor Haggle can't get a yes from in writing (reached by phone), needs the human: they check with
+  the vendor directly and reply `BOOKED <code>`. No payment step starts before that (enforced in the
+  database too, migration 118).
+
+Stages, as `wait_for_update`'s `next`, `get_quotes.purchase.stage` and `list_deals` report them:
 
 | Stage | What it means | What to tell the user |
 | --- | --- | --- |
@@ -157,12 +180,16 @@ Nothing is booked or paid until it does. Stages, as `get_quotes.purchase.stage` 
 | `cancelled` | cancelled before the customer paid; the vendor was told | "Nothing was paid." |
 
 `stalled: true` means the vendor hasn't answered after Haggle's reminder (24 h for a booking, 48 h
-for payment instructions). Suggest the user call the vendor or choose another option.
+for payment instructions), or the human hasn't confirmed a phone vendor's booking. Suggest the user
+call the vendor or choose another option: once stalled (or after `handoff_refused`), `approve` for
+another quote (or the same one again, e.g. after the cap was raised) withdraws the stuck approval,
+tells the first vendor not to hold the booking (nothing was paid), and sends the new approval to the
+human. Before it is stalled, `approve` is refused (`not_approvable`): the vendor still has time.
 
 ## 7. Pay the vendor directly; PAID
 
-On a pilot server, Haggle never charges, holds or sends money. `pay(job_id, quote_id)` only reports
-the stage above and starts the booking if it hasn't started. Then:
+On a pilot server, Haggle never charges, holds or sends money, and you needn't call `pay`: it only
+reports the stage above (and starts the booking if it hasn't started). Then:
 
 1. The human pays the vendor directly, following the vendor's instructions, after verifying them.
 2. The human replies `PAID <code>` to Haggle's text. Only that text marks the payment as reported.
@@ -178,17 +205,25 @@ Use it only when the user wants to stop. To switch quotes before approving, just
   replied get a thank-you note.
 - **After the customer reported paying:** Haggle can't cancel or refund a direct payment. The deal
   stays as it is, the operator is flagged, and the response says what to tell the user: contact the
-  vendor about a refund under its terms. Never promise a refund.
+  vendor about a refund under its terms. Never promise a refund. The same holds if the vendor backs
+  out or doesn't show after the customer paid.
+- **A confirm-only order the vendor already confirmed:** refused (`cannot_cancel`); tell the user to
+  contact the vendor directly. Nothing is sent.
 
 ## 9. Resume from another conversation: `list_deals`
 
 Deals belong to the workspace, not to a chat. In a new conversation, session or client using the
 same workspace credentials:
 
-1. `list_deals`: the workspace's recent deals, open ones first.
+1. `list_deals`: the workspace's recent deals, open ones first. A deal past approval carries its
+   `purchase` stage, summary and `next` (and the vendor's payment instructions as untrusted text), so
+   that is usually all you need.
 2. If more than one could be the one the user means, ask which (by what, date and when it started).
-3. `get_quotes(job_id)` for the deal they mean; then continue from its `next` (answer, approve, pay,
-   cancel).
+3. Otherwise `get_quotes(job_id)` for the deal they mean; then continue from its `next` (answer,
+   approve, cancel).
+
+A deal survives restarts: a new conversation, a server restart or another server instance picks it
+up from the database, and nothing (RFQ, booking request, approval text, payment ask) is sent twice.
 
 Never show an earlier deal as the answer to a new request; a new request is a new `deal`.
 

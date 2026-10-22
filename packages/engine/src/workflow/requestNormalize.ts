@@ -63,6 +63,23 @@ export function normalizeRequirements(rs: readonly RequirementInput[]): Requirem
 // than guess; a structured field the agent also passed always wins. Relative days ("next Saturday",
 // "tomorrow") resolve from `today` (YYYY-MM-DD, the workspace's local date when known).
 
+/** The pilot's timezone when a workspace has none (SF Bay Area). */
+export const DEFAULT_REQUEST_TIMEZONE = "America/Los_Angeles";
+
+/**
+ * Today's date (YYYY-MM-DD) where the user is: the workspace's timezone, not UTC. At 5pm in San
+ * Francisco it is already tomorrow in UTC, so "tomorrow" or "Saturday" read in UTC would be a day off.
+ * An unknown timezone falls back to the pilot default.
+ */
+export function localDate(now: Date, timeZone: string | null | undefined = DEFAULT_REQUEST_TIMEZONE): string {
+  const fmt = (tz: string) => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  try {
+    return fmt(timeZone || DEFAULT_REQUEST_TIMEZONE);
+  } catch {
+    return fmt(DEFAULT_REQUEST_TIMEZONE);
+  }
+}
+
 const MONTH_NAMES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const DAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);

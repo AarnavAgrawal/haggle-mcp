@@ -42,7 +42,8 @@ describe("get_quotes size budget (simulated golden fleet)", { timeout: 60_000 },
   });
 
   it("a board read after the quotes went stale (every quote needs re-confirmation) still fits", async () => {
-    const b = await goldenBoard(3 * 86_400_000);
+    // Past the 7-day validity window and the fleet's own valid-until (14 days from the quote, sim/fleet.ts).
+    const b = await goldenBoard(15 * 86_400_000);
     const c = toDealBoardPlus(b, "mock");
     expect(Object.keys(c.freshness ?? {}).length).toBeGreaterThan(0);
     for (const [id, f] of Object.entries(toDealBoardPlus(b, "mock", {}, { detail: true }).freshness ?? {})) {

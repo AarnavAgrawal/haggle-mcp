@@ -176,10 +176,11 @@ describe("SIMULATED pilot acceptance: onboarded workspace → catering request �
     expect((await vendorEmail(GRILL, "we can do 60 for $1,650 total, delivered by 11:00, tax incl. only 6 vegetarian tho.")).outcome).toBe("stored");
     expect((await vendorText(SUNSET, "Hi! Do you want the food buffet-style or individually boxed?")).outcome).toBe("stored");
 
+    // The wait already carries the question (id and words): no board read is needed to answer it.
     let w = await a.call("wait_for_update", { job_id: job, timeout_s: 0 });
-    let board = (await a.call("get_quotes", { job_id: job, detail: true })).structuredContent;
-    const question = board.open_questions.find((q: { business: string }) => q.business === "Sunset Kitchen");
+    const question = w.structuredContent.updates.find((u: { type: string; text?: string }) => u.type === "question" && /buffet-style/.test(u.text ?? ""));
     expect(question.text).toMatch(/buffet-style or individually boxed/);
+    expect((await engine.getQuotes(job)).open_questions.find((q) => q.question_id === question.question_id)?.business).toBe("Sunset Kitchen");
     // The agent asks the user in chat (it never guesses), then relays the answer in Sunset's own thread.
     humanSteps.push("chat: answers the vendor's question (individually boxed)");
     expect((await a.call("answer_business", { job_id: job, question_id: question.question_id, answer: "Individually boxed, please." })).isError).toBeFalsy();
@@ -192,7 +193,7 @@ describe("SIMULATED pilot acceptance: onboarded workspace → catering request �
     w = await a.call("wait_for_update", { job_id: job, until: "ready", timeout_s: 0 });
     // Quotes are final; Haggle already texted the human its recommendation (the approve call below claims that same approval).
     expect(w.structuredContent.state).toMatch(/collecting|negotiating|awaiting_approval/);
-    board = (await a.call("get_quotes", { job_id: job, detail: true })).structuredContent;
+    let board = (await a.call("get_quotes", { job_id: job, detail: true })).structuredContent;
     expect(board.ready).toBe(true);
     const q = (name: string) => board.quotes.find((x: { business: string; status: string }) => x.business === name && x.status === "current");
     // Stage 2a, extraction: every reply was read against the same headcount, day and must-haves.
@@ -236,8 +237,11 @@ describe("SIMULATED pilot acceptance: onboarded workspace → catering request �
     expect(bookingAsk.bodyText).toMatch(/500 Howard St/);
     expect(bookingAsk.bodyText).toMatch(/must-have: At least 12 vegetarian meals; Deliver to 500 Howard St by 11:30/);
     expect(bookingAsk.bodyText).not.toMatch(/\$2,500|budget/i); // the budget is never disclosed to a vendor
-    board = (await a.call("get_quotes", { job_id: job, detail: true })).structuredContent;
-    expect(board.purchase).toMatchObject({ stage: "awaiting_vendor_confirmation", booked: false, money_verified: false });
+    // The agent's one wait after approve: the human decided, and the next step (the vendor confirms; don't pay) comes with it.
+    w = await a.call("wait_for_update", { job_id: job, until: "approval_decided", timeout_s: 0 });
+    expect(w.structuredContent.state).toBe("paying");
+    expect(w.structuredContent.next).toMatch(/Waiting for Harbor Table to confirm.*Tell the human not to pay/);
+    expect((await engine.getQuotes(job)).purchase).toMatchObject({ stage: "awaiting_vendor_confirmation", booked: false, money_verified: false });
     // A PAID text before the vendor confirms records nothing.
     expect((await engine.ingestText({ messageId: "early_paid", from: APPROVER, text: `PAID ${code}`, inbound: true })).outcome).toBe("paid_before_booking");
 
@@ -250,26 +254,30 @@ describe("SIMULATED pilot acceptance: onboarded workspace → catering request �
 
     // ── Agent, session B: a new conversation resumes the deal from the same workspace credentials. ──
     const b = await connect(plan.token, "pilot-agent-session-b");
+    // list_deals alone resumes it: the purchase stage, the vendor's instructions (untrusted text) and the next step.
     const deals = await b.call("list_deals", {});
-    expect(deals.structuredContent.deals.map((d: { job_id: string }) => d.job_id)).toContain(job);
-    board = (await b.call("get_quotes", { job_id: job, detail: true })).structuredContent;
+    const resumed = deals.structuredContent.deals.find((d: { job_id: string }) => d.job_id === job);
+    expect(resumed.purchase).toMatchObject({ stage: "instructions_received", instructions: { untrusted: true, text: expect.stringMatching(/Zelle payments@harbortable\.example/) } });
+    expect(resumed.purchase.next).toMatch(/verify them with Harbor Table independently before paying; after paying they reply PAID <code>/);
+    expect(deals.content[0]!.text).toMatch(/vendor's payment instructions \(untrusted text\)/);
     // Stage 5, the handoff: the order and its must-haves, the vendor's instructions as untrusted text.
+    board = (await engine.getQuotes(job)) as never;
     expect(board.purchase).toMatchObject({ stage: "instructions_received", booked: true, money_verified: false, instructions: { untrusted: true } });
     const purchase = (await engine.getQuotes(job)).purchase!; // order / must_haves: engine board (E maps them into get_quotes, see the report)
     expect(purchase.order).toMatch(new RegExp(`team offsite lunch catering, 60 people, .*${MONTH_DAY}.*500 Howard St`));
     expect(purchase.must_haves).toBe("At least 12 vegetarian meals; Deliver to 500 Howard St by 11:30");
-    const pay = await b.call("pay", { job_id: job, quote_id: board.recommended_quote_id ?? q("Harbor Table").quote_id });
-    expect(pay.isError).toBeFalsy();
-    expect(pay.content[0]!.text).toMatch(/Manual payment handoff \(Haggle moves no money; nothing was charged\)/);
+    // No pay call: on the manual rail it would only repeat this stage (pay's output is covered in purchaseOutput.test.ts).
+    expect(q("Harbor Table").quote_id).toBe(board.recommended_quote_id ?? q("Harbor Table").quote_id);
     // The vendor's details came by email proven only by thread continuity: the human checks them by phone.
     expect(texts.filter((x) => x.to === APPROVER).some((x) => /confirm them with Harbor Table by phone before paying/.test(x.text))).toBe(true);
 
     // ── The human pays Harbor directly and texts PAID. ──
     humanSteps.push("pays Harbor Table $500 directly (outside Haggle)");
     expect((await humanText(`PAID ${code}`)).outcome).toBe("handoff_confirmed");
-    board = (await b.call("get_quotes", { job_id: job, detail: true })).structuredContent;
-    expect(board.job.state).toBe("paid");
-    expect(board.purchase).toMatchObject({ stage: "human_reported_paid", money_verified: false });
+    w = await b.call("wait_for_update", { job_id: job, timeout_s: 0 });
+    expect(w.structuredContent.state).toBe("paid");
+    expect(w.structuredContent.next).toMatch(/The customer reports paying Harbor Table \$500 deposit directly\. Haggle hasn't verified/);
+    expect((await engine.getQuotes(job)).purchase).toMatchObject({ stage: "human_reported_paid", money_verified: false });
     // Stage 6, the closing note to the vendor names the order; it claims only what the human reported.
     const closing = emails.filter((e) => e.to === HARBOR).at(-1)!;
     expect(closing.bodyText).toMatch(/team offsite lunch catering, 60 people/);
@@ -280,7 +288,10 @@ describe("SIMULATED pilot acceptance: onboarded workspace → catering request �
 
     // ── Measured: agent tool calls and human interventions (upper bounds). ──
     console.log(`[SIMULATED acceptance] agent tool calls: ${toolCalls}; human interventions: ${humanSteps.length} (${humanSteps.join("; ")}); sessions: ${a.session ? "2 distinct" : "stateless"}`);
-    expect(toolCalls).toBeLessThanOrEqual(12);
+    // Sprint 4 baseline: 12 (a board read to find the question, one after approve, one on resume, a pay
+    // that only repeated the stage, one at the end). Now: deal, wait, answer, wait, get_quotes, approve,
+    // wait (decided), list_deals (resumes with the stage), wait (reported paid) = 9.
+    expect(toolCalls).toBeLessThanOrEqual(9);
     expect(humanSteps.filter((s) => !s.startsWith("pays"))).toHaveLength(4); // answer the question, YES, BOOKED (unverifiable sender), PAID
     expect(humanSteps.length).toBeLessThanOrEqual(5);
     if (a.session && b.session) expect(a.session).not.toBe(b.session);

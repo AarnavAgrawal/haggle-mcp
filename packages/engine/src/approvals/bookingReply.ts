@@ -14,6 +14,13 @@ export interface VendorReplyContext {
   agreedCents: number[];
   /** The headcount the booking is for, when there is one. */
   quantity?: number;
+  /** The event day (YYYY-MM-DD): a confirmation naming another day is a change of terms, never a yes. */
+  eventDate?: string;
+  /**
+   * Must-haves the vendor's quote never confirmed (their text): a yes books only if it covers each one
+   * (names it, or says "all of the above"); otherwise it is unclear and the vendor is asked about them.
+   */
+  mustConfirm?: string[];
 }
 
 export interface VendorReplyReading {
@@ -28,6 +35,8 @@ export interface VendorReplyReading {
   hasLink: boolean;
   /** Why this reading, in a few words (for the board and the operator). */
   why: string;
+  /** Of ctx.mustConfirm, the ones this reply didn't cover (only when it otherwise confirms). */
+  unconfirmedMusts?: string[];
 }
 
 /** Lines that start quoted history in common clients (Gmail, Outlook with or without a separator, Apple Mail). */
@@ -78,9 +87,49 @@ function reading(intent: VendorReplyIntent, own: string, other: number[], why: s
   return { intent, ownText: own.slice(0, 4000), otherAmountsCents: other, paymentInstructions: PAY_HOW.test(own) || LINK.test(own), hasLink: LINK.test(own), why };
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTH_DAY = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b/gi;
+const DAY_MONTH = /\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/gi;
+const ON_THE_DAY = /\b(?:on|for)\s+the\s+(\d{1,2})(?:st|nd|rd|th)\b/gi;
+
+/**
+ * The first calendar day the vendor names that isn't the event's ("Nov 15", "15 November", "on the
+ * 15th"), or null. Any day counts (a deposit due date too): the reply is then read as unclear, never
+ * as a yes, and the human checks the date with the vendor.
+ */
+function otherDay(own: string, eventDate: string): string | null {
+  const m = Number(eventDate.slice(5, 7));
+  const d = Number(eventDate.slice(8, 10));
+  for (const x of own.matchAll(MONTH_DAY)) if (MONTHS.indexOf(x[1]!.toLowerCase()) + 1 !== m || Number(x[2]) !== d) return x[0].trim();
+  for (const x of own.matchAll(DAY_MONTH)) if (MONTHS.indexOf(x[2]!.toLowerCase()) + 1 !== m || Number(x[1]) !== d) return x[0].trim();
+  for (const x of own.replace(MONTH_DAY, " ").matchAll(ON_THE_DAY)) if (Number(x[1]) !== d) return x[0].trim();
+  return null;
+}
+
+const ALL_OF_IT = /\b(all (of )?(the above|that|those|of it|three|3|four|4|items|points|must[- ]haves|requirements)|everything (listed|above|you listed|you asked for)|as (listed|requested|described|asked)|(1|one)\s*(-|–|to|through|and)\s*(3|three|4|four)|yes to (all|everything))\b/i;
+const DIETS = /\b(vegetarian|vegan|gluten[- ]free|halal|kosher|nut[- ]free|dairy[- ]free|pescatarian)\b/i;
+const NEGATED = /\b(no|not|can'?t|cannot|won'?t|without|only|unable|except)\b/i;
+const STOP = new Set(["least", "meals", "minimum", "must", "should", "needs", "about", "which", "their", "there", "please", "people", "guests", "before", "after", "street"]);
+
+/** The words a vendor would use to say it meets this must-have (the diet, "deliver", else its own longer words). */
+function mustKeywords(must: string): RegExp[] {
+  const diet = DIETS.exec(must)?.[1];
+  if (diet) return [new RegExp(`\\b${diet.replace(/[- ]/, "[- ]?")}\\b`, "i")];
+  if (/\bdeliver|drop[- ]?off\b/i.test(must)) return [/\bdeliver\w*|\bdrop[- ]?off\b/i];
+  return must.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 5 && !STOP.has(w)).map((w) => new RegExp(`\\b${w}`, "i"));
+}
+
+/** The reply says yes to this must-have: "all of the above", or a sentence naming it without a "no"/"only"/"can't". */
+function covers(own: string, must: string): boolean {
+  if (ALL_OF_IT.test(own)) return true;
+  const keys = mustKeywords(must);
+  return keys.length > 0 && sentences(own).some((s) => !s.endsWith("?") && !NEGATED.test(s.replace(/\bno (problem|worries|issue)s?\b/gi, "")) && keys.some((k) => k.test(s)));
+}
+
 /**
  * A reply to Haggle's booking request (or re-confirmation request): confirm (an explicit yes and no
- * other figures), decline (can't do it), change (a different price or headcount), else unclear.
+ * other figures), decline (can't do it), change (a different price or headcount), else unclear (also
+ * a yes that names another day, or that skips a must-have the quote never confirmed).
  */
 export function readBookingReply(body: string, ctx: VendorReplyContext): VendorReplyReading {
   const own = vendorOwnWords(body);
@@ -91,7 +140,13 @@ export function readBookingReply(body: string, ctx: VendorReplyContext): VendorR
   if (sentences(own).some((s) => DECLINE.test(s) && !s.endsWith("?"))) return reading("decline", own, other, "says it can't do it");
   if (other.length) return reading("change", own, other, `mentions ${other.length === 1 ? "an amount" : "amounts"} other than the agreed terms`);
   if (ctx.quantity !== undefined && counts.some((n) => n !== ctx.quantity)) return reading("change", own, other, "mentions a different headcount");
-  if (affirms(own)) return reading("confirm", own, other, "explicitly confirms");
+  const day = ctx.eventDate ? otherDay(own, ctx.eventDate) : null;
+  if (day) return reading("unclear", own, other, `mentions another date (${day}); check the event date with them`);
+  if (affirms(own)) {
+    const missed = (ctx.mustConfirm ?? []).filter((m) => !covers(own, m));
+    if (missed.length) return { ...reading("unclear", own, other, `didn't confirm: ${missed.join("; ").slice(0, 160)}`), unconfirmedMusts: missed };
+    return reading("confirm", own, other, "explicitly confirms");
+  }
   return reading("unclear", own, other, PENDING.test(own) ? "says it will confirm later" : "no explicit confirmation");
 }
 

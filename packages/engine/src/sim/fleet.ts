@@ -27,10 +27,19 @@ export interface Persona {
   reply(trigger: Trigger, ctx: { jobId: string; inbox: string; msg: OutboundEmail; nowMs: number; count: number }): Reply | null;
 }
 
+/** How long a simulated quote is good for, from when it is given (a fixed date went stale on 2026-10-22). */
+export const SIM_QUOTE_VALID_DAYS = 14;
+/** The valid-until day of a simulated quote given at `nowMs` (YYYY-MM-DD, UTC). */
+export function simValidUntil(nowMs: number): string {
+  return new Date(nowMs + SIM_QUOTE_VALID_DAYS * 86_400_000).toISOString().slice(0, 10);
+}
+/** A persona's reading with its valid-until dated from when it was given (personas leave it null). */
+const dated = (x: QuoteExtraction, nowMs: number): QuoteExtraction => (x.valid_until ? x : { ...x, valid_until: simValidUntil(nowMs) });
+
 const blank: QuoteExtraction = {
   available: true, price_per_head_usd: null, headcount: 40, subtotal_usd: null, delivery_fee_usd: null, delivery_included: true,
   tax_usd: null, tax_included: true, total_usd: null, deposit_usd: null, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }],
-  valid_until: "2026-10-21", questions: [], payment_request: "none", instructions_to_agent: false, sources: [], missing_fields: [], confidence: 0.9,
+  valid_until: null, questions: [], payment_request: "none", instructions_to_agent: false, sources: [], missing_fields: [], confidence: 0.9,
 };
 const priced = (total: number, deposit: number | null, source = "email body", extra: Partial<QuoteExtraction> = {}): QuoteExtraction => ({
   ...blank,
@@ -53,7 +62,7 @@ export const GOLDEN_PERSONAS: Persona[] = [
       const quote = (total: number, revision?: number) => json("quote.json", {
         haggle: "quote/1", job_id: jobId, business: "Bay Catering", total_usd: total, per_unit_usd: Math.round((total / 40) * 100) / 100, deposit_usd: 5,
         items: ["12 vegetarian grain bowls", "28 chicken mains", "delivery"], requirements_met: [{ requirement_id: "veg12", met: true }, { requirement_id: "delivery", met: true }],
-        valid_until: "2026-10-21", ...(revision ? { revision_of: revision } : {}),
+        valid_until: simValidUntil(nowMs), ...(revision ? { revision_of: revision } : {}),
       });
       if (t === "rfq") return { text: "Hi! Our agent-ready quote is attached as quote.json: $1,150 total, $5 deposit.", attachments: [quote(1150)] };
       if (t === "counter") return { text: "We can do $995 total, same menu, $5 deposit. Updated quote.json attached.", attachments: [quote(995, 1150)] };
@@ -241,7 +250,7 @@ export class SimFleet implements EmailPort, ExtractorPort, PhonePort {
     const p = (this.opts.personas ?? GOLDEN_PERSONAS).find((x) => x.phone === req.toNumber);
     const r = p?.reply("call", { jobId: req.jobId, inbox: "", msg: { from: "", to: req.toNumber, subject: "", bodyText: req.reason, idempotencyKey: req.idempotencyKey }, nowMs: this.opts.now().getTime(), count: 1 });
     const dueMs = this.opts.now().getTime() + (p?.delayMs ?? 1_000) * (this.opts.delayScale ?? 1);
-    if (r?.extraction) this.extractions.set(`call-ended:${callId}`, r.extraction);
+    if (r?.extraction) this.extractions.set(`call-ended:${callId}`, dated(r.extraction, this.opts.now().getTime()));
     this.callQueue.push({ dueMs, call: r ? { callId, outcome: "completed", transcript: r.text, simulated: true } : { callId, outcome: "no_answer", transcript: "", simulated: true } });
     return { callId };
   }
@@ -278,7 +287,7 @@ export class SimFleet implements EmailPort, ExtractorPort, PhonePort {
   private schedule(p: Persona, out: OutboundEmail, outId: string, r: Reply) {
     const n = ++this.seq;
     const id = `sim_in_${this.prefix}_${n}`;
-    if (r.extraction) this.extractions.set(id, r.extraction);
+    if (r.extraction) this.extractions.set(id, dated(r.extraction, this.opts.now().getTime()));
     this.queue.push({
       dueMs: this.opts.now().getTime() + p.delayMs * (this.opts.delayScale ?? 1),
       attachments: r.attachments ?? [],

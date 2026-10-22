@@ -140,7 +140,8 @@ export class InMemoryRepository implements Repository {
     const a = this.approvals.find((x) => x.id === h.approval_id);
     if (!a || a.job_id !== h.job_id || a.business_id !== h.business_id || a.payment_cents !== h.amount_cents || a.action === "confirm" || !["approved", "used"].includes(a.status)) throw new Error("handoff must match a human-approved paying approval");
     // 110: a handoff starts only after the booking is confirmed (or confirmed by the human directly).
-    if (!this.bookings.some((x) => x.approval_id === h.approval_id && ["confirmed", "not_in_writing"].includes(x.status))) throw new Error("a payment handoff starts only after the booking is confirmed");
+    // 118: a booking Haggle can't confirm in writing counts only once the human accepted it (BOOKED <code>).
+    if (!this.bookings.some((x) => x.approval_id === h.approval_id && (x.status === "confirmed" || (x.status === "not_in_writing" && !!x.human_attested_at)))) throw new Error("a payment handoff starts only after the booking is confirmed");
     const row = { stalled_at: null, ...h, created_at: now(), updated_at: now() };
     this.handoffs.push(row);
     return clone(row);
@@ -528,6 +529,7 @@ export class InMemoryRepository implements Repository {
       throw new Error("booking must match a human-approved approval");
     }
     if (!["awaiting_vendor_confirmation", "not_in_writing"].includes(b.status)) throw new Error("a booking starts awaiting the business (or not in writing)");
+    if (b.human_attested_at) throw new Error("a booking starts unattested");
     const row = { ...b, created_at: now(), updated_at: now() };
     this.bookings.push(row);
     return clone(row);
@@ -536,11 +538,13 @@ export class InMemoryRepository implements Repository {
     const b = this.bookings.find((x) => x.approval_id === approvalId);
     return b ? clone(b) : null;
   }
-  async updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason">>) {
+  async updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason" | "human_attested_at">>) {
     const i = this.bookings.findIndex((x) => x.id === id);
     const cur = this.bookings[i];
     if (!cur || !fromStatuses.includes(cur.status) || ["declined", "changed", "cancelled"].includes(cur.status)) return null;
     if (["confirmed", "not_in_writing"].includes(cur.status) && patch.status && patch.status !== cur.status && patch.status !== "cancelled") return null;
+    // 118: the human's attestation is set once, only on a booking Haggle can't confirm in writing.
+    if (patch.human_attested_at !== undefined && patch.human_attested_at !== (cur.human_attested_at ?? null) && (cur.human_attested_at || (patch.status ?? cur.status) !== "not_in_writing")) throw new Error("only a not_in_writing booking is attested by the human, once");
     this.bookings[i] = { ...cur, ...patch, updated_at: now() };
     return clone(this.bookings[i]!);
   }

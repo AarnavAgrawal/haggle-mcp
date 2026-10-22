@@ -385,6 +385,11 @@ export interface BookingRow {
   cancel_reason: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * A not_in_writing booking the approver confirmed with the business directly and accepted by text
+   * (BOOKED <code>; migration 118). No payment handoff starts before it. Absent on stores before 118.
+   */
+  human_attested_at?: string | null;
 }
 
 /** The business's explicit "payment received" (verified sender) after the customer reported paying. */
@@ -561,7 +566,7 @@ export interface Repository {
   insertBooking(b: Omit<BookingRow, "created_at" | "updated_at">): Promise<BookingRow | null>;
   getBookingByApproval(approvalId: string): Promise<BookingRow | null>;
   /** CAS on status; null when the booking isn't in one of `fromStatuses`. */
-  updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason">>): Promise<BookingRow | null>;
+  updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason" | "human_attested_at">>): Promise<BookingRow | null>;
   /** Mark a handoff's instructions overdue (once; only while it waits for them). */
   markHandoffStalled(id: string, at: string): Promise<PaymentHandoffRow | null>;
   /** Null when the handoff already has a receipt. */
