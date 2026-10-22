@@ -4,9 +4,9 @@
 // reuse fixtures/buyer/emails (read-only) with labels translated from their `expect` blocks.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CorpusCase, CorpusRequest, Labels } from "./types.ts";
+import type { CorpusCase, CorpusRequest, Labels, NearDuplicate } from "./types.ts";
 
-export const CORPUS_VERSION = "f1";
+export const CORPUS_VERSION = "f2";
 
 /** The eval clock: every run starts here (dates in the corpus are relative to it). */
 export const EVAL_START = Date.parse("2026-10-20T16:00:00.000Z");
@@ -149,7 +149,57 @@ const OWN: CorpusCase[] = [
   { id: "c37-euro-format", origin: "own", description: "European number format ('1.150,00 USD').", vendor: v("euro", "Café Berlin SF"), client: "apple_mail", quoted: "rfq",
     own: "Total: 1.150,00 USD, delivery and tax included. 12 vegetarian.",
     labels: L({ outcome: "quote", total_usd: 1150, delivery: true, tax: "included", veg_count: 12, compliant: true }), tags: ["phrasing", "locale"] },
+  // ── f2 (sprint 4): real-world terms the f1 corpus didn't cover ──
+  { id: "c38-total-plus-tax", origin: "own", description: "Labelled 'Total' that still excludes tax ('plus 8.625% sales tax').", vendor: v("soma", "SoMa Kitchen"), client: "gmail", quoted: "rfq",
+    own: "Total: $1,050 delivered, plus 8.625% sales tax. 12 vegetarian.",
+    labels: L({ outcome: "quote", total_usd: 1140.56, delivery: true, tax: "added_on_top", veg_count: 12, compliant: true }), tags: ["tax", "f2"] },
+  { id: "c39-gratuity", origin: "own", description: "A 20% gratuity added on top of a delivered, tax-included total.", vendor: v("gratuity", "Russian Hill Catering"), client: "outlook_rule", quoted: "rfq",
+    own: "Total: $1,000 delivered, tax included, 12 vegetarian. A 20% gratuity ($200) is added to all event orders.",
+    labels: L({ outcome: "quote", total_usd: 1200, delivery: true, fees: [{ label: "gratuity", amount_usd: 200, included: false }], tax: "included", veg_count: 12, compliant: true }), tags: ["fees", "f2"] },
+  { id: "c40-fee-stack", origin: "own", description: "Itemised food, delivery fee and service fee, with a stated total that already includes them.", vendor: v("feestack", "Dogpatch Provisions"), client: "gmail", quoted: "rfq",
+    own: "Food: $900\nDelivery: $50\nService fee (10% of food): $90\nTax included.\nTotal due: $1,040\n14 vegetarian.",
+    labels: L({ outcome: "quote", total_usd: 1040, delivery: true, fees: [{ label: "delivery", amount_usd: 50, included: true }, { label: "service fee", amount_usd: 90, included: true }], tax: "included", veg_count: 14, compliant: true }), tags: ["fees", "f2"] },
+  { id: "c41-minimum-order", origin: "own", description: "Minimum-order rule: the order prices at $1,050 but the vendor bills its $1,300 minimum.", vendor: v("minimum", "Marina Events Co"), client: "apple_mail", quoted: "rfq",
+    own: "Our minimum order is $1,300. Your 40 lunches come to $1,050, so we would bill the $1,300 minimum, delivered and tax included. 12 vegetarian.",
+    labels: L({ outcome: "quote", total_usd: 1300, delivery: true, tax: "included", veg_count: 12, compliant: true }), tags: ["minimum", "f2"] },
+  { id: "c42-delivery-window", origin: "own", description: "Delivery only in a 9:00-10:30 AM window for a 12:00 lunch.", vendor: v("window", "Bernal Heights Bakery"), client: "ios_mail", quoted: "rfq",
+    own: "Total: $1,080 delivered, tax included, 12 vegetarian. Heads up: our drivers only deliver between 9:00 and 10:30 AM.",
+    labels: L({ outcome: "quote", total_usd: 1080, delivery: true, tax: "included", veg_count: 12, compliant: true, date_ok: false }), tags: ["date", "f2"] },
+  { id: "c43-other-date", origin: "own", description: "Booked on the requested date; quotes the next day instead.", vendor: v("otherdate", "Laurel Village Deli"), client: "gmail", quoted: "rfq",
+    own: "We're booked on the 29th, but we can do Friday the 30th: Total $1,000 delivered, tax included, 12 vegetarian.",
+    labels: L({ outcome: "quote", total_usd: 1000, delivery: true, tax: "included", veg_count: 12, compliant: true, date_ok: false }), tags: ["date", "f2"] },
+  { id: "c44-half-deposit", origin: "own", description: "Deposit as 'half up front'.", vendor: v("halfup", "Cole Valley Kitchen"), client: "outlook_mobile", quoted: "rfq",
+    own: "Total: $1,120 delivered, tax included, 12 vegetarian. Half up front, balance on the day.",
+    labels: L({ outcome: "quote", total_usd: 1120, deposit_usd: 560, delivery: true, tax: "included", veg_count: 12, compliant: true }), tags: ["deposit", "f2"] },
+  { id: "c45-multi-option", origin: "own", description: "Two priced options and a request to choose: no single firm total until the buyer picks.", vendor: v("options", "Inner Sunset Catering"), client: "gmail", quoted: "rfq",
+    own: "Option A, sandwich platters: $890. Option B, hot buffet: $1,180. Both delivered, tax included, 12 vegetarian either way. Which would you prefer?",
+    labels: L({ outcome: "quote", total_usd: null, delivery: true, tax: "included", veg_count: 12, compliant: true, question: true }), tags: ["options", "f2"] },
+  { id: "c46-identity-mismatch", origin: "own", description: "Reply from the vendor's mailbox signed as a different business.", vendor: v("sharedbox", "Harborview Catering"), client: "gmail", quoted: "rfq",
+    own: "Hi, this is Golden Gate Grill (we share this inbox with Harborview Catering). Total: $990 delivered, tax included, 12 vegetarian.\n\nGolden Gate Grill",
+    labels: L({ outcome: "quote", total_usd: 990, delivery: true, tax: "included", veg_count: 12, compliant: true, identity: "mismatch" }), tags: ["identity", "f2"] },
+  { id: "c47-delivery-fee-tbd", origin: "own", description: "Delivery offered but its fee 'depends on distance': the all-in total is unknown.", vendor: v("feetbd", "Visitacion Valley Grill"), client: "yahoo", quoted: "rfq",
+    own: "Total: $1,000, tax included, 12 vegetarian. Delivery is extra and depends on distance; we'll confirm the fee once we have the address.",
+    labels: L({ outcome: "quote", total_usd: null, delivery: true, tax: "included", veg_count: 12, compliant: null }), tags: ["fees", "f2"] },
 ];
+
+/**
+ * Corpus review (sprint 4): cases whose CONTENT another case already covers. c02-c09 repeat c01's clean
+ * quote in other mail-client layouts (independent for reply cleaning, near-duplicates for extraction);
+ * every case not listed here is independently meaningful (a different term, phrasing, safety or
+ * requirement situation). The report counts independent cases as corpus size minus these.
+ */
+export const NEAR_DUPLICATES: Record<string, NearDuplicate> = {
+  "c02-outlook-rule": { of: "c01-gmail-clean", adds: "Outlook '____' layout" },
+  "c03-ios": { of: "c01-gmail-clean", adds: "iOS Mail layout, terse phrasing" },
+  "c04-apple-mail": { of: "c01-gmail-clean", adds: "Apple Mail layout" },
+  "c05-yahoo": { of: "c01-gmail-clean", adds: "Yahoo layout (quote not '>'-prefixed)" },
+  "c06-gmail-wrapped": { of: "c01-gmail-clean", adds: "wrapped Gmail attribution" },
+  "c07-gmail-fr": { of: "c01-gmail-clean", adds: "French Gmail attribution" },
+  "c09-outlook-mobile": { of: "c01-gmail-clean", adds: "Outlook mobile layout" },
+  "c18-deposit-phrase": { of: "c01-gmail-clean", adds: "'a deposit of $X' phrasing" },
+  "fx-03-noncompliant-cheap": { of: "c22-veg-short", adds: "the same miss through quote.json" },
+  "fx-15-html-quote": { of: "c01-gmail-clean", adds: "HTML-only body" },
+};
 
 // ── fixtures/buyer/emails, reused read-only. Labels translated from each file's `expect`. ──
 const FIXTURE_LABELS: Record<string, { labels: Labels; tags: string[] }> = {

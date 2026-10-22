@@ -46,6 +46,18 @@ export interface Labels {
   leak_values_usd?: number[];
   /** The reply holds a blocking question for the buyer. */
   question?: boolean;
+  /** Who the reply says it is: "mismatch" when the words name another business than the mailbox Haggle wrote to (default match). */
+  identity?: "match" | "mismatch";
+  /** The offer is for the requested date and time (true), for another date or an unusable delivery window (false), unstated (null/absent). */
+  date_ok?: boolean | null;
+}
+
+/** Why a case is in the corpus when another case already covers the same content. */
+export interface NearDuplicate {
+  /** The case it repeats in content (what a reader must extract). */
+  of: string;
+  /** What it adds anyway (e.g. a mail-client layout), or "" when it adds nothing independent. */
+  adds: string;
 }
 
 export interface PdfSpec {

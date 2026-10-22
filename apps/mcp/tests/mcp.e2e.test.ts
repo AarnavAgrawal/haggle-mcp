@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ApprovalOut as Approval, BusinessProfile, Conversation, DealBoardOrEmpty, DealBoardPlus, Estimates, Identity } from "../src/views.ts";
+import { ApprovalOut as Approval, BOARD_CHAR_BUDGET, BusinessProfile, Conversation, DealBoardOrEmpty, DealBoardPlus, Estimates, Identity } from "../src/views.ts";
 
 // npm workspaces hoist the binary to the repo root; a per-package install keeps it local. On
 // Windows the runnable shim is mcp-use.cmd, which needs a shell (and a quoted path).
@@ -187,6 +187,9 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(board.ready).toBe(true);
     const parsed = DealBoardPlus.safeParse(board);
     expect(parsed.success, JSON.stringify(parsed.error?.issues?.slice(0, 3))).toBe(true);
+    // Compact by default (sprint 4): six quotes within the size budget, the full board behind detail: true.
+    expect(JSON.stringify(board).length).toBeLessThanOrEqual(BOARD_CHAR_BUDGET);
+    expect(board.compact).toBe(true);
 
     const q = (name: string) => board.quotes.find((x: { business: string }) => x.business === name);
     const biz = (name: string) => board.businesses.find((x: { name: string }) => x.name === name);
