@@ -8,19 +8,20 @@
 //                marker in the URL) unless the operator sets HAGGLE_ALLOW_PROD_DB=true.
 
 export type HaggleEnv = "development" | "staging" | "production";
+import { manifestDbUrls, manifestFormatProblems, manifestLiveRequired, manifestProductionRefused, manifestProductionRefusedTrue } from "./envManifest.ts";
+
 type Env = Record<string, string | undefined>;
 
 export const HAGGLE_ENVS: readonly HaggleEnv[] = ["development", "staging", "production"];
-export const LIVE_REQUIRED = ["INKBOX_API_KEY", "INKBOX_WEBHOOK_SECRET", "ANTHROPIC_API_KEY", "SUPABASE_DB_URL"] as const;
+// The lists below come from the environment manifest (src/envManifest.ts), the one table of every
+// variable, its purpose, per-target requirement and validation rule.
+export const LIVE_REQUIRED: readonly string[] = manifestLiveRequired();
 /** Rehearsal flags that change behaviour in ways production must never have. */
-export const MOCK_ONLY_FLAGS = [
-  "HAGGLE_SIM_DELAY_SCALE", "HAGGLE_MOCK_VENDORS", "HAGGLE_MOCK_PERSONAS_FILE", "HAGGLE_PLACES_FIXTURE", "HAGGLE_MOCK_DATABASE_URL",
-  "HAGGLE_MOCK_BRAIN_FILE", "HAGGLE_MOCK_WORKSPACES", "HAGGLE_APPROVALS",
-] as const;
+export const MOCK_ONLY_FLAGS: readonly string[] = manifestProductionRefused();
 /** Boolean flags production refuses when "true" (demo shortcuts, contacting anyone). */
-export const PRODUCTION_FORBIDDEN_TRUE = ["HAGGLE_DEMO_SPEED", "HAGGLE_ALLOW_ANY_RECIPIENT", "SELLERS_ALLOW_UNSIGNED"] as const;
+export const PRODUCTION_FORBIDDEN_TRUE: readonly string[] = manifestProductionRefusedTrue();
 /** URLs that may point at a database (checked against the production-database guard). */
-export const DB_URL_VARS = ["SUPABASE_DB_URL", "HAGGLE_MOCK_DATABASE_URL", "HAGGLE_TEST_DATABASE_URL"] as const;
+export const DB_URL_VARS: readonly string[] = manifestDbUrls();
 
 export interface ConfigReport {
   env: HaggleEnv;
@@ -94,7 +95,6 @@ const isPostgresUrl = (v: string) => {
     return false;
   }
 };
-const positiveInt = (v: string | undefined) => v === undefined || v.trim() === "" || (/^\d+$/.test(v.trim()) && Number(v) > 0);
 
 /** Every configuration problem, without building anything or calling any provider. */
 export function checkConfig(env: Env = process.env): ConfigReport {
@@ -128,10 +128,11 @@ export function checkConfig(env: Env = process.env): ConfigReport {
   } else if (set(env.HAGGLE_MOCK_DATABASE_URL) && !isPostgresUrl(env.HAGGLE_MOCK_DATABASE_URL!)) {
     errors.push("HAGGLE_MOCK_DATABASE_URL is not a postgres:// connection string");
   }
-  if (set(env.HAGGLE_TICK_SECRET) && env.HAGGLE_TICK_SECRET!.trim().length < 16) errors.push("HAGGLE_TICK_SECRET must be at least 16 characters (or empty to disable /internal/tick)");
-  if (set(env.HAGGLE_ALERT_WEBHOOK_URL) && !/^https:\/\//i.test(env.HAGGLE_ALERT_WEBHOOK_URL!.trim())) errors.push("HAGGLE_ALERT_WEBHOOK_URL must be an https:// URL");
-  for (const k of ["HAGGLE_AI_MAX_CALLS_PER_JOB", "HAGGLE_AI_DAILY_TOKEN_BUDGET", "HAGGLE_STALL_CHECK_EVERY_S"]) if (!positiveInt(env[k]) && !(k === "HAGGLE_STALL_CHECK_EVERY_S" && env[k]?.trim() === "0")) errors.push(`${k} must be a positive integer`);
-  if (set(env.HAGGLE_DB_POOL_MAX) && !(/^\d+$/.test(env.HAGGLE_DB_POOL_MAX!.trim()) && Number(env.HAGGLE_DB_POOL_MAX) >= 1 && Number(env.HAGGLE_DB_POOL_MAX) <= 10)) errors.push("HAGGLE_DB_POOL_MAX must be an integer from 1 to 10");
+  // Every other variable's format, from the manifest (errors refuse; warnings mean a safe fallback).
+  const fmt = manifestFormatProblems(env);
+  errors.push(...fmt.errors);
+  warnings.push(...fmt.warnings);
+  if (mode === "live" && he !== "production" && !set(env.HAGGLE_PROD_DB_HOSTS)) warnings.push("HAGGLE_PROD_DB_HOSTS is not set: this server can recognize a production database only by a prod/production marker in its URL");
   if (he === "production" && mode === "live" && !set(env.HAGGLE_AI_DAILY_TOKEN_BUDGET)) warnings.push("HAGGLE_AI_DAILY_TOKEN_BUDGET is not set: Claude usage is metered but not capped per day");
   return { env: he, mode, errors, warnings };
 }
