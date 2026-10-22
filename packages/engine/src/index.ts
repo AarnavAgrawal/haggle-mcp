@@ -65,3 +65,6 @@ export * from "./ranking/compliance.ts";
 export * from "./ranking/validity.ts";
 export * from "./approvals/bookingReply.ts";
 export * from "./workflow/requestNormalize.ts";
+// Workstream F (sprint 4): reconciler catch-up, the operator report.
+export * from "./live/reconcileWindow.ts";
+export * from "./ops/report.ts";
