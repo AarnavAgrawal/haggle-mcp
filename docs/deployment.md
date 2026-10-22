@@ -110,7 +110,7 @@ Every channel stays off unless explicitly enabled (`HAGGLE_ENABLE_CALLS`, `HAGGL
 
    "Tests last green" isn't checkable from a laptop: it shows as `skip`. Check CI on the exact commit instead.
 
-**Node version.** Both `package.json` files require Node ≥ 22.22.2 (`engines`). CI uses `node-version: 22.x`, which resolves to the newest 22 release, and a step fails the job if that release is below the floor. Manufact builds with its own Node 22. Local Node 22.21.0 still installs (npm only warns with `EBADENGINE`) and passed the full gate on 2026-10-22. Upgrade it anyway, because the floor is what CI and production are held to.
+**Node version.** Both `package.json` files require Node ≥ 22.22.2 (`engines`). CI uses `node-version: 22.x`, which resolves to the newest 22 release (22.23.3 on the first runs, 2026-10-22), and a step fails the job if that release is below the floor. Manufact builds with its own Node 22. Local Node 22.21.0 still installs (npm only warns with `EBADENGINE`) and passed the full gate on 2026-10-22. Upgrade it anyway, because the floor is what CI and production are held to.
 
 ## 4. Migrations and the ledger
 
