@@ -551,6 +551,8 @@ export async function connectInkboxTrial(opts: { apiKey: string; handle: string 
   if (!buyerMailbox) throw new Error(`Inkbox identity "${identity.agentHandle}" has no mailbox`);
   return {
     buyerMailbox, identityId: (identity as { id?: string }).id ?? null,
+    // "whitelist": only allowed senders' mail is delivered (real vendors and trial mailboxes must be on it).
+    mailInboundFilterMode: String((identity as { mailInboundFilterMode?: unknown }).mailInboundFilterMode ?? "unknown"),
     send: (o: { to: string[]; subject: string; bodyText: string; idempotencyKey: string }) => inkbox.messages.send(buyerMailbox, o as never) as unknown as Promise<{ id: string; messageId: string; status: string; threadId?: string | null }>,
     list: (o: { direction: "inbound" | "outbound"; startDatetime: string; pageSize?: number }) => inkbox.messages.list(buyerMailbox, o as never) as unknown as AsyncIterable<InkboxListedMessage & { isRead?: boolean }>,
     get: (id: string) => inkbox.messages.get(buyerMailbox, id) as unknown as Promise<InkboxMessageDetail>,

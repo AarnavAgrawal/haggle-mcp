@@ -1,0 +1,41 @@
+{
+  "name": "forwarded-to-colleague",
+  "client": "Gmail web (forward)",
+  "notes": "A colleague the vendor forwarded the RFQ to writes to Haggle from her own address: not the pinned address.",
+  "event": {
+    "agent_identities": []
+  },
+  "detail": {
+    "id": "in_fx_11",
+    "threadId": "thr_ext_11",
+    "messageId": "<CAfx11+abcDEF123@mail.gmail.com>",
+    "fromAddress": "owner@valley.example",
+    "fromDisplayName": "Maria at Valley Catering",
+    "toAddresses": [
+      "{{BUYER}}"
+    ],
+    "ccAddresses": null,
+    "subject": "Fwd: {{RFQ_SUBJECT}}",
+    "snippet": null,
+    "bodyText": "Hi, I'm the owner. We'd do $1,150 total.\n\n---------- Forwarded message ---------\nFrom: AI assistant <{{BUYER}}>\nDate: Wed, Oct 21, 2026 at 10:02 AM\nSubject: {{RFQ_SUBJECT}}\nTo: <{{VENDOR}}>\n\nHi Valley Catering,\n\nI'm an AI assistant reaching out on behalf of a customer. Could you quote the following?\n\n- What: {{WHAT}}\n- People: 40\n- Location: {{AREA}}\n- Must have:\n  - 12 vegetarian meals\n\nPlease reply with your total price, what it includes (delivery or travel, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.\n\nThank you!\nAI assistant for a customer\n\nReference: {{TOKEN}} (please keep it when you reply)",
+    "bodyHtml": null,
+    "inReplyTo": null,
+    "references": [
+      "{{RFQ_MESSAGE_ID}}"
+    ],
+    "attachmentMetadata": null,
+    "direction": "inbound",
+    "status": "received",
+    "isRead": false,
+    "hasAttachments": false,
+    "sesMessageId": null,
+    "createdAt": "2026-10-21T17:20:00.000Z"
+  },
+  "expect": {
+    "outcome": "quarantined:sender_mismatch",
+    "stored_as": "quarantine",
+    "sender_trusted": false,
+    "quarantine_reason": "sender_mismatch",
+    "quote_total_usd": null
+  }
+}
