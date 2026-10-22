@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: sprint 5 release candidate on `yashnil` (pushed, draft PR #1); next: staging, email trial, decisions in `docs/manual-actions.md` · Aarnav: branch `merged-working-demo` (main + feat/live-demo merged; decisions in `docs/merge-decisions-working-demo.md`; needs Yash's review before it reaches main)
+**Now working on:** Yash: first staging deployment + consenting-mailbox email trial (`docs/staging-email-trial-runbook.md`); blocked on the staging accounts in `docs/manual-actions.md` §1 · Aarnav: branch `merged-working-demo` (main + feat/live-demo merged; decisions in `docs/merge-decisions-working-demo.md`; needs Yash's review before it reaches main)
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -103,6 +103,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 ## Log
 
 _One line per finished task, newest first: `time · who · what changed`._
+
+- 2026-10-22 · Yash · Staging-trial readiness: tests independent of the real date (skewed-clock CI step), email trial hardened (staging-only gates, one-shot send, per-reply Message-ID/token/webhook/quarantine/extraction diagnostics), `ops-report --brief/--fail-on-attention`, carrier opt-out keyword handling, staging email-trial runbook
 
 - 2026-10-22 · Yash · Security decisions H1–H3 implemented: texted vendor confirmations/receipts never bind (approver's BOOKED code), caller ID never callback consent, vendor-confirmed bookings cancel only on the approver's CANCEL code; in-memory store clock fix for the failure drill
 

@@ -15,7 +15,7 @@ via SES), and **does the reply token survive** Gmail/Outlook/iOS replies.
 
 - [ ] A **staging Inkbox identity** with its own mailbox (not `haggle`, the production buyer: the
       script refuses it). Note its handle.
-- [ ] A staging env file (e.g. `~/haggle-staging.env`, never committed) with `HAGGLE_ENV=staging`,
+- [ ] A staging env file (e.g. `~/.config/haggle/staging.env`, never committed) with `HAGGLE_ENV=staging`,
       `INKBOX_API_KEY=<staging org key>`, `INKBOX_IDENTITY=<staging handle>`.
 - [ ] Trial mailboxes you personally own (at most 5, bare ASCII addresses, matched exactly: no
       plus-tag or look-alike matching): one Gmail, one Outlook/Hotmail, a second address for the
@@ -45,7 +45,7 @@ via SES), and **does the reply token survive** Gmail/Outlook/iOS replies.
 ## 1. Webhook subscription (`message.received`, `message.bounced`, `message.failed`)
 
 ```
-HAGGLE_EMAIL_TRIAL=1 node --env-file=$HOME/haggle-staging.env scripts/email-trial.ts check-subscription
+HAGGLE_EMAIL_TRIAL=1 node --env-file=$HOME/.config/haggle/staging.env scripts/email-trial.ts check-subscription
 ```
 
 Read-only. Lists the staging identity's subscriptions (`scope: "identity"`: the buyer's mixed
@@ -62,7 +62,7 @@ existing, "message.bounced", "message.failed"] })` (eventTypes replaces the list
 
 ```
 HAGGLE_EMAIL_TRIAL=1 HAGGLE_EMAIL_TRIAL_MAILBOXES=me@gmail.com,me@outlook.com \
-  node --env-file=$HOME/haggle-staging.env scripts/email-trial.ts validate --run ~/haggle-trials/t1 --to me@gmail.com --i-own-this-mailbox
+  node --env-file=$HOME/.config/haggle/staging.env scripts/email-trial.ts validate --run ~/haggle-trials/t1 --to me@gmail.com --i-own-this-mailbox
 ```
 
 Checks every gate of the next command for that directory (send if it holds no run, else collect),
@@ -83,7 +83,7 @@ node scripts/email-trial.ts dry-run --to me@gmail.com --run ~/haggle-trials/t1 -
 
 ```
 HAGGLE_EMAIL_TRIAL=1 HAGGLE_EMAIL_TRIAL_MAILBOXES=me@gmail.com,me@outlook.com \
-  node --env-file=$HOME/haggle-staging.env scripts/email-trial.ts send --to me@gmail.com --run ~/haggle-trials/t1 --i-own-this-mailbox
+  node --env-file=$HOME/.config/haggle/staging.env scripts/email-trial.ts send --to me@gmail.com --run ~/haggle-trials/t1 --i-own-this-mailbox
 ```
 
 - [ ] `run.json` (0600) is created exclusively **before** the send call, then holds the run id, the
@@ -117,7 +117,7 @@ notices only with `--include-bounces`.
 
 ```
 HAGGLE_EMAIL_TRIAL=1 HAGGLE_EMAIL_TRIAL_MAILBOXES=me@gmail.com,me@outlook.com \
-  node --env-file=$HOME/haggle-staging.env scripts/email-trial.ts collect --run ~/haggle-trials/t1 --i-own-this-mailbox
+  node --env-file=$HOME/.config/haggle/staging.env scripts/email-trial.ts collect --run ~/haggle-trials/t1 --i-own-this-mailbox
 ```
 
 Reads, never sends. It opens **only** inbound mail from the allowlisted addresses (everything else is
