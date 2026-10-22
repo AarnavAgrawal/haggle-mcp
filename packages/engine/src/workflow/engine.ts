@@ -2160,6 +2160,10 @@ export class HaggleEngine {
   private async paymentVerdict(job: JobRow, approval: ApprovalRow, opts: { bookingHeld?: boolean } = {}) {
     const quote = await this.repo.getQuote(approval.quote_id);
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === approval.business_id);
+    // Rechecked at every start and resume (sprint 4 D): a quote read by the keyword fallback, from a
+    // quarantined or unverified message, or a simulated reply on a live job never carries money.
+    const src = quote ? await this.repo.getMessage(quote.message_id) : null;
+    const carriesMoney = !!quote && !!src && !heuristicReading(quote.record) && src.kind !== "quarantine" && src.sender_trusted === true && src.job_id === job.id && !(job.mode === "live" && src.simulated);
     return checkStripePaymentAllowed({
       stripeConfigured: true,
       job: { id: job.id, state: job.state },
@@ -2168,7 +2172,7 @@ export class HaggleEngine {
         // arranges payment (hours or days); everything else is still revalidated.
         expires_at: opts.bookingHeld ? new Date(this.now().getTime() + 60_000).toISOString() : approval.expires_at },
       quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
-      payee: b && quote ? { business_id: b.business_id, on_job: true, quoted_from_trusted_sender: quote.sender_trusted && quote.business_id === b.business_id } : null,
+      payee: b && quote ? { business_id: b.business_id, on_job: true, quoted_from_trusted_sender: quote.sender_trusted && quote.business_id === b.business_id && carriesMoney } : null,
       existingPayment: null,
       spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, approval.cap_cents, (await this.getSettings(job.workspace_id)).spending_cap_cents),
       now: this.now(),

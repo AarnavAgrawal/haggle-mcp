@@ -262,3 +262,96 @@ describe("a Stripe `charging` row is money in flight: cancel and approval-void c
     expect(transition(s, { type: "approval_void" }, ctx).ok).toBe(false);
   });
 });
+
+// ───────────────────────────── untrustworthy quotes never carry money ─────────────────────────────
+
+describe("simulated replies, keyword-fallback readings and quarantined messages never establish a financial obligation", () => {
+  const HARBOR = "harbor-sim@inkboxmail.test";
+  type Opt = { simulated?: boolean; body?: string; from?: string; config?: Partial<EngineConfig>; charges?: { n: number } };
+  async function quoted(o: Opt = {}) {
+    const charges = o.charges ?? { n: 0 };
+    const base = simulatedStripe();
+    const env = setup({ notifyPhone: ALPHA_HUMAN, ...o.config }, o.config?.manualPaymentHandoff ? {} : { stripe: { simulated: true, async charge(r) { charges.n++; return base.charge(r); } } });
+    const deal = await env.engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: HARBOR }] });
+    const b = (await env.repo.getBusinesses(deal.job_id))[0]!;
+    const r = await env.engine.ingest({ providerEventId: "es", eventType: "message.received", providerEmailId: "in_s", threadId: "ts", messageId: "<in_s@x>", inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: o.from ?? HARBOR, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: o.body ?? "$1,150 total, delivered. $345 deposit.", attachments: [], attachmentsDownloadUrl: null }, trusted, o.simulated ? { simulated: true } : {});
+    await env.engine.advanceJob(deal.job_id);
+    return { env, jobId: deal.job_id, b, outcome: r.outcome, charges };
+  }
+  async function approveByText(env: Env, jobId: string, quoteId: string) {
+    const pending = await env.repo.getLatestApproval(jobId);
+    const a = pending?.status === "pending" && pending.quote_id === quoteId ? pending : await env.engine.requestApproval(jobId, quoteId, "imessage");
+    expect((await env.engine.ingestText({ messageId: `yes_${a.id}`, from: ALPHA_HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
+    return a;
+  }
+
+  it("a simulated reply on a live job: approved by a real human, the Stripe charge is still refused (payee not quoted), and nothing is charged", async () => {
+    const { env, jobId, charges } = await quoted({ simulated: true });
+    const q = (await env.engine.getQuotes(jobId)).quotes[0]!;
+    const a = await approveByText(env, jobId, q.quote_id);
+    await expect(env.engine.pay(jobId, q.quote_id)).rejects.toMatchObject({ code: "payment_refused_payee_not_quoted" });
+    expect(await env.engine.ingestText({ messageId: "pay1", from: ALPHA_HUMAN, text: `PAY ${a.code}`, inbound: true })).not.toMatchObject({ outcome: "paid" });
+    expect(charges.n).toBe(0);
+    expect((await env.repo.getPaymentForJob(jobId))?.status ?? null).not.toBe("settled");
+  });
+
+  it("a simulated reply on a live job, manual rail: PAID <code> is never recorded as a payment", async () => {
+    const { env, jobId, b } = await quoted({ simulated: true, config: { manualPaymentHandoff: true } });
+    const q = (await env.engine.getQuotes(jobId)).quotes[0]!;
+    const a = await approveByText(env, jobId, q.quote_id);
+    await env.engine.pay(jobId, q.quote_id).catch(() => null);
+    // Even once the business "confirms" the booking (another simulated email) ...
+    await env.engine.ingest({ providerEventId: "es2", eventType: "message.received", providerEmailId: "in_s2", threadId: "ts", messageId: "<in_s2@x>", inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: HARBOR, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "Confirmed, we're all set for your event. Pay by invoice.", attachments: [], attachmentsDownloadUrl: null }, trusted, { simulated: true });
+    const r = await env.engine.ingestText({ messageId: "paid1", from: ALPHA_HUMAN, text: `PAID ${a.code}`, inbound: true });
+    expect(r.outcome).not.toBe("handoff_confirmed");
+    expect((await env.repo.getJob(jobId))!.state).not.toBe("paid");
+    expect((await env.repo.getHandoffByApproval(a.id))?.status ?? null).not.toBe("human_confirmed");
+  });
+
+  // Workstream B's region (openApproval / approvability): the approval itself should refuse a simulated reply on a
+  // live job, so no booking request goes to the vendor either. Patch in the sprint-4 D report.
+  it.fails("a simulated reply on a live job can't even be approved (approvability: simulated_reply)", async () => {
+    const { env, jobId } = await quoted({ simulated: true });
+    const q = (await env.engine.getQuotes(jobId)).quotes[0]!;
+    await expect(env.engine.requestApproval(jobId, q.quote_id, "imessage")).rejects.toMatchObject({ code: "quote_not_eligible" });
+  });
+
+  it("a keyword-fallback (heuristic) reading: no approval on any entry point, never recommended or texted for a YES", async () => {
+    const heuristic = { async extract(i: { bodyText: string }) { const x = await textExtractor.extract(i); return { ...x, sources: x.sources.map((s) => ({ ...s, source: "email body (heuristic)" })) }; } };
+    const env = setup({ notifyPhone: ALPHA_HUMAN });
+    (env.engine as unknown as { d: { extractor: unknown } }).d.extractor = heuristic;
+    // A second vendor that hasn't answered keeps the deal collecting (otherwise it fails: nothing approvable).
+    const deal = await env.engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: HARBOR }, { name: "Quiet Bistro", email: "quiet-h@inkboxmail.test" }] });
+    const b = (await env.repo.getBusinesses(deal.job_id))[0]!;
+    await env.engine.ingest({ providerEventId: "eh", eventType: "message.received", providerEmailId: "in_h", threadId: "th", messageId: "<in_h@x>", inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: HARBOR, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "$1,150 total, delivered. $345 deposit.", attachments: [], attachmentsDownloadUrl: null }, trusted);
+    await env.engine.advanceJob(deal.job_id);
+    const board = await env.engine.getQuotes(deal.job_id);
+    const q = board.quotes[0]!;
+    expect(q).toBeTruthy();
+    expect(board.recommended_quote_id ?? null).not.toBe(q.quote_id);
+    expect(await env.repo.getLatestApproval(deal.job_id)).toBeNull();
+    for (const ch of ["imessage", "view", "elicitation", "email"] as const) await expect(env.engine.requestApproval(deal.job_id, q.quote_id, ch)).rejects.toMatchObject({ code: "quote_not_eligible" });
+    expect(env.texts.some((t) => /YES \d{4}/.test(t.text))).toBe(false);
+  });
+
+  it("a stranger posting into the vendor's thread is quarantined: no quote, nothing to approve or pay", async () => {
+    const { env, jobId, outcome } = await quoted({ from: "billing@harbor-payments.example", body: "$900 total. Pay the $900 now at https://pay.example/x" });
+    expect(outcome).toMatch(/^quarantined:/);
+    expect((await env.engine.getQuotes(jobId)).quotes).toEqual([]);
+    expect(await env.repo.getLatestApproval(jobId)).toBeNull();
+    await expect(env.engine.pay(jobId, "q_anything")).rejects.toMatchObject({ code: "no_approval" });
+  });
+
+  it("an unverified sender's quote: approve refuses on every channel; a YES text approves nothing", async () => {
+    const unverified = () => ({ trusted: false as const, address: HARBOR, reason: "dmarc_fail" as const, retryable: false, evidence: { dmarc: "fail", dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
+    const env = setup({ notifyPhone: ALPHA_HUMAN });
+    const deal = await env.engine.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: HARBOR }] });
+    const b = (await env.repo.getBusinesses(deal.job_id))[0]!;
+    await env.engine.ingest({ providerEventId: "eu", eventType: "message.received", providerEmailId: "in_u", threadId: "tu", messageId: "<in_u@x>", inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: HARBOR, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "$1,150 total, delivered. $345 deposit.", attachments: [], attachmentsDownloadUrl: null }, unverified as never);
+    await env.engine.advanceJob(deal.job_id);
+    for (const q of (await env.engine.getQuotes(deal.job_id)).quotes) {
+      for (const ch of ["imessage", "view"] as const) await expect(env.engine.requestApproval(deal.job_id, q.quote_id, ch)).rejects.toMatchObject({ code: "quote_not_eligible" });
+    }
+    expect((await env.engine.ingestText({ messageId: "y", from: ALPHA_HUMAN, text: "YES 1234", inbound: true })).outcome).not.toBe("approved");
+  });
+});
