@@ -144,7 +144,12 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   brain.useAliases((b) => engine.businessAliases(b));
   reconciler = reconcileOn
     ? new InboundReconciler({
-      engine, repo, log, jobMinIntervalMs: timings.reconcileJobMinIntervalMs, callGraceMs: timings.reconcileCallGraceMs,
+      engine, repo, jobMinIntervalMs: timings.reconcileJobMinIntervalMs, callGraceMs: timings.reconcileCallGraceMs,
+      // An item the sweep gave up on goes to operator review instead of being retried silently forever.
+      log: (event, data) => {
+        log(event, data);
+        if (event === "reconcile_gave_up") void engine.reportReconcileGaveUp({ key: String(data.key), attempts: 5, error: data.error }).catch((e) => backgroundFailed("operator_review_failed", e));
+      },
       sources: {
         mail: { api, buyerMailbox, senderTrust, identityAddresses },
         ...(smsPort ? { texts: { list: listTexts } } : {}),

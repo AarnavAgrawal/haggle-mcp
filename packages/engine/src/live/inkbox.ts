@@ -488,10 +488,11 @@ export function inkboxIMessage(identity: { sendIMessage(o: { to: string; text: s
 }
 
 /** An inbound SMS to the buyer's number (Inkbox text.received). */
-export function inkboxTextReceived(payload: { data: Record<string, unknown> }): { messageId: string; from: string; text: string; inbound: boolean } | null {
-  const m = (payload.data as { text_message?: { id?: string; direction?: string; remote_phone_number?: string | null; sender_phone_number?: string | null; text?: string | null } }).text_message;
+export function inkboxTextReceived(payload: { data: Record<string, unknown> }): { messageId: string; from: string; text: string; inbound: boolean; to?: string } | null {
+  const m = (payload.data as { text_message?: { id?: string; direction?: string; local_phone_number?: string | null; remote_phone_number?: string | null; sender_phone_number?: string | null; text?: string | null } }).text_message;
   if (!m?.id) return null;
-  return { messageId: m.id, from: (m.remote_phone_number ?? m.sender_phone_number ?? "").replace(/[\s().-]/g, ""), text: m.text ?? "", inbound: m.direction === "inbound" };
+  // `to`: Haggle's own line the text arrived on, so the engine routes per line (text_routes).
+  return { messageId: m.id, from: (m.remote_phone_number ?? m.sender_phone_number ?? "").replace(/[\s().-]/g, ""), text: m.text ?? "", inbound: m.direction === "inbound", ...(m.local_phone_number ? { to: m.local_phone_number } : {}) };
 }
 
 /** SMS from the buyer identity's own number. NOT wired unless HAGGLE_ENABLE_SMS=true (and the number is SMS-ready). */

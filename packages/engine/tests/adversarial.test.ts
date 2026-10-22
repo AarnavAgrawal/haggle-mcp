@@ -183,7 +183,7 @@ describe("forged bounces and opt-outs", () => {
     } finally { e.restore(); }
   });
 
-  it.fails("BUG: a genuine quote whose subject mentions a failed delivery and whose body has '$550' is taken for a hard bounce", async () => {
+  it("regression, formerly a bug: a genuine quote whose subject mentions a failed delivery and whose body has '$550' is taken for a hard bounce", async () => {
     // senderAuth.ts parseBounce: BOUNCE_SUBJECT alone (any From) makes it a DSN; the vendor's own
     // In-Reply-To names the RFQ, and '550' in '$550' reads as SMTP 550: the vendor is suppressed
     // everywhere and the quote is never read.
@@ -205,7 +205,7 @@ describe("forged bounces and opt-outs", () => {
     } finally { e.restore(); }
   });
 
-  it.fails("BUG: a complete quote whose signature footer says 'unsubscribe' is treated as an opt-out", async () => {
+  it("regression, formerly a bug: a complete quote whose signature footer says 'unsubscribe' is treated as an opt-out", async () => {
     // senderAuth.ts isOptOut: /\bunsubscribe\b/ anywhere in a short message (<= 400 chars), signature
     // included. The quote is never read and the vendor is suppressed for every workspace.
     const e = await env();
@@ -217,7 +217,7 @@ describe("forged bounces and opt-outs", () => {
     } finally { e.restore(); }
   });
 
-  it.fails("BUG: an unauthenticated STOP spoofed by a competitor (it knows the [HG-code] from its own RFQ) suppresses the vendor in every workspace", async () => {
+  it("regression, formerly a bug: an unauthenticated STOP spoofed by a competitor (it knows the [HG-code] from its own RFQ) suppresses the vendor in every workspace", async () => {
     // engine.ts ingest: isOptOut is honoured before identity is proven (From address match only), and
     // optOut() writes a GLOBAL suppression. Competing vendor W saw the job's [HG-code] in its own RFQ
     // subject; it spoofs From: V with no thread headers. Safe behaviour: an unverified STOP stops

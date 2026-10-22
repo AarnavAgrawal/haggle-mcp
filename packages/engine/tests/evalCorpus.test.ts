@@ -46,7 +46,7 @@ describe("corpus", () => {
     }
   });
 
-  it.fails("BUG (lane A): a bottom-posted reply ('On ... wrote:' first, own words below the quote) is passed raw, quoted RFQ and budget included", async () => {
+  it("regression, formerly a bug (lane A): a bottom-posted reply ('On ... wrote:' first, own words below the quote) is passed raw, quoted RFQ and budget included", async () => {
     // inbound/emailBody.ts cleanEmailBody stops at the first CUT_AT line, which is line 1 here, so the
     // cleaned text is empty and the fallback returns the whole raw body. The quoted RFQ's
     // "Could you quote the following?" then becomes a vendor question relayed to the human.
@@ -55,7 +55,7 @@ describe("corpus", () => {
     expect((await observeCase(byId("c08-bottom-post"))).questions).toEqual([]);
   });
 
-  it.fails("BUG (lane A, known): an Outlook desktop reply (From/Sent/To/Subject block, no '____') passes the whole quoted RFQ, budget included, to the reader", () => {
+  it("regression, formerly a bug (lane A, known): an Outlook desktop reply (From/Sent/To/Subject block, no '____') passes the whole quoted RFQ, budget included, to the reader", () => {
     // inbound/emailBody.ts CUT_AT has no rule for an Outlook header block; the original isn't '>'-prefixed.
     const cleaned = cleanEmailBody(layoutReply("outlook_header", "We can do $1,080 delivered.", RFQ.bodyText, META));
     expect(cleaned).not.toMatch(/Budget: up to \$1200\.00|Could you quote the following/);
@@ -79,20 +79,20 @@ describe("extraction eval (deterministic extractor, simulated corpus)", () => {
     for (const id of ["c19-no-word-total", "c20-dollars-word", "c34-pdf-only"]) expect((await observeCase(byId(id))).total_usd, id).toBeNull();
   });
 
-  it.fails("BUG (lane A): an Outlook header-block reply's quoted RFQ is read as the vendor's question and relayed to the human", async () => {
+  it("regression, formerly a bug (lane A): an Outlook header-block reply's quoted RFQ is read as the vendor's question and relayed to the human", async () => {
     // cleanEmailBody leaves "Could you quote the following?" in the text; heuristic.ts records every
     // '?' sentence as a blocking question, which surfaceQuestions texts to the human.
     const o = await observeCase(byId("c10-outlook-header-rfq"));
     expect(o.questions).toEqual([]);
   });
 
-  it.fails("BUG (lane A, fallback only): 'We can't do nut-free, but ... Total: $1,100' marks the vendor as declined", async () => {
+  it("regression, formerly a bug (lane A, fallback only): 'We can't do nut-free, but ... Total: $1,100' marks the vendor as declined", async () => {
     // parsing/heuristic.ts DECLINE matches "can't do" anywhere; the business is set to declined and never chased.
     const o = await observeCase(byId("c25-partial-cant"));
     expect(o.outcome).toBe("quote");
   });
 
-  it.fails("BUG (lane A, fallback only): 'Total: 1.150,00 USD' is stored as a $0 total", async () => {
+  it("regression, formerly a bug (lane A, fallback only): 'Total: 1.150,00 USD' is stored as a $0 total", async () => {
     // callSafety.ts findDollarAmounts reads "00 USD" as 0 dollars; amountNear takes it as the total.
     const o = await observeCase(byId("c37-euro-format"));
     expect(o.total_usd === null || o.total_usd === 1150).toBe(true);
@@ -122,7 +122,7 @@ describe("orchestration eval (scripted agent, fake clock)", { timeout: 60_000 },
     expect(r).toMatchObject({ outcome: "paid", winner: "Bay Catering", human_approvals: 1 });
   });
 
-  it.fails("BUG: a vendor whose quote ends with a newsletter 'unsubscribe' footer is dropped, so the cheapest compliant vendor loses (d5)", async () => {
+  it("regression, formerly a bug: a vendor whose quote ends with a newsletter 'unsubscribe' footer is dropped, so the cheapest compliant vendor loses (d5)", async () => {
     const r = await runCorpusDeal(CORPUS_DEALS.find((d) => d.id === "d5-optout-pdf")!, "oracle");
     expect(r.winner).toBe(r.expected_winner);
   });
