@@ -1,0 +1,42 @@
+{
+ "note": "MOCK vendors for the sprint-4 D call_back test: a phone vendor that quotes above a real, cheaper email quote (one callback is justified) and a vendor that never answers (collection stays open). DEMO data only.",
+ "personas": [
+  {
+   "name": "Mission Eats",
+   "phone": "+14155550104",
+   "replies": {
+    "call": {
+     "text": "remote: Hello\nhaggle (AI assistant): Hi, I'm an AI assistant calling for a customer about a catering quote.\nremote: For you it's $1,150 total all-in, delivery and tax included, $150 deposit.",
+     "extraction": {
+      "available": true, "price_per_head_usd": null, "headcount": null, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": true,
+      "tax_usd": null, "tax_included": true, "total_usd": 1150, "deposit_usd": 150, "menu_items": [], "dietary_coverage": [], "valid_until": null,
+      "questions": [], "payment_request": "none", "instructions_to_agent": false,
+      "sources": [{ "field": "total", "source": "call transcript", "excerpt": "$1,150 total all-in" }, { "field": "deposit", "source": "call transcript", "excerpt": "$150 deposit" }],
+      "missing_fields": [], "confidence": 0.9, "requirement_answers": [], "other_fees": [], "terms": { "deposit_terms": null, "cancellation": null, "exclusions": [] }, "preferred_contact": null
+     }
+    }
+   }
+  },
+  {
+   "name": "Harbor Table",
+   "email": "orders@harbor-table.sim.haggle.dev",
+   "replies": {
+    "rfq": {
+     "text": "Happy to help: $1,000 total, delivery and tax included. $200 deposit.",
+     "extraction": {
+      "available": true, "price_per_head_usd": null, "headcount": null, "subtotal_usd": null, "delivery_fee_usd": null, "delivery_included": true,
+      "tax_usd": null, "tax_included": true, "total_usd": 1000, "deposit_usd": 200, "menu_items": [], "dietary_coverage": [], "valid_until": null,
+      "questions": [], "payment_request": "none", "instructions_to_agent": false,
+      "sources": [{ "field": "total", "source": "email body", "excerpt": "$1,000 total" }, { "field": "deposit", "source": "email body", "excerpt": "$200 deposit" }],
+      "missing_fields": [], "confidence": 0.9, "requirement_answers": [], "other_fees": [], "terms": { "deposit_terms": null, "cancellation": null, "exclusions": [] }, "preferred_contact": null
+     }
+    }
+   }
+  },
+  {
+   "name": "Quiet Bistro",
+   "email": "hello@quiet-bistro.sim.haggle.dev",
+   "replies": {}
+  }
+ ]
+}
