@@ -5901,6 +5901,26 @@ export class HaggleEngine {
     return w;
   }
 
+  /** A workspace by id, or null (revoked ones included: callers check revoked_at). */
+  async workspaceById(id: string) {
+    return this.repo.getWorkspace(id);
+  }
+
+  /**
+   * Service onboarding (the web app's POST /internal/workspaces): create the workspace once, with its
+   * settings. Idempotent per id: an existing workspace is returned as is (created: false). Like
+   * workspace-create, an approver phone that already approves for another workspace is refused.
+   */
+  async provisionWorkspace(w: { id: string; name: string; tokenHash: string; connectorSecretHash: string; timezone?: string; settings: Partial<Omit<SettingsRow, "updated_at">> }) {
+    const existing = await this.repo.getWorkspace(w.id);
+    if (existing) return { workspace: existing, created: false };
+    const phone = w.settings.approver_phone;
+    if (phone && (await this.repo.listWorkspacesByApproverPhone(phone)).some((id) => id !== w.id)) {
+      throw new EngineError("approver_shared", "That phone number already approves for another workspace.", "Use a different approver phone, or ask the operator to share it (workspace-admin --allow-shared-approver).", "none");
+    }
+    return { workspace: await this.createWorkspace(w), created: true };
+  }
+
   /** Create a workspace (scripts/workspace-create.ts); credentials are stored only as hashes. */
   async createWorkspace(w: { id: string; name: string; tokenHash: string; connectorSecretHash: string; timezone?: string; settings?: Partial<Omit<SettingsRow, "updated_at">> }) {
     const row = await this.repo.insertWorkspace({ id: w.id, name: w.name, token_hash: w.tokenHash, connector_secret_hash: w.connectorSecretHash, timezone: w.timezone ?? "America/Los_Angeles" });
