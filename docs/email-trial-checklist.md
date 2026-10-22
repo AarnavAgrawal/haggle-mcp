@@ -1,163 +1,171 @@
-# Email trial checklist (real Gmail / Outlook replies)
+# Email trial checklist (real Gmail / Outlook replies, staging only)
 
-The first real-world email test: one clearly labelled TEST email from the Inkbox buyer mailbox to
-mailboxes **you own**, replied to from real mail clients, then collected and checked against the
-engine's real inbound pipeline. Nothing is bought, no business is contacted, no database is touched,
-and Claude is never called. Script: `apps/mcp/scripts/email-trial.ts` (logic in `email-trial-lib.ts`,
-offline replay in `email-trial-replay.ts`).
+The first real-world email test: one clearly labelled TEST email from a **staging** Inkbox buyer
+mailbox to mailboxes **you own**, replied to from real mail clients, then collected and checked
+against the engine's real inbound pipeline. Nothing is bought, no business is contacted, no database
+is touched, and Claude is never called. Script: `apps/mcp/scripts/email-trial.ts` (gates and report in
+`email-trial-lib.ts`, the send/collect flows in `email-trial-io.ts`, offline replay in
+`email-trial-replay.ts`).
 
-Run every command from `apps/mcp/`. Keep the run directory **outside the repository** (the script
-refuses one inside it): it will hold raw copies of real mail.
+Run every command from `apps/mcp/`. The two questions it answers: **is the Message-ID the engine
+records at send time the one real clients put in In-Reply-To/References** (Inkbox may rewrite it
+via SES), and **does the reply token survive** Gmail/Outlook/iOS replies.
 
 ## 0. Before you start
 
-- [ ] Pick the trial mailboxes: one Gmail and one Outlook/Hotmail address that you personally own
-      and can reply from on web, phone (Gmail app, Outlook app) and iOS Mail. Ask nobody else to
-      take part. A second address of yours is needed for the "forward" scenario.
-- [ ] Pick a run directory outside the repo, e.g. `~/haggle-trials/2026-10-23-gmail`. Use a new one
-      per send (the script refuses to send twice into the same run).
-- [ ] The buyer identity is `haggle` unless `INKBOX_IDENTITY` says otherwise.
+- [ ] A **staging Inkbox identity** with its own mailbox (not `haggle`, the production buyer: the
+      script refuses it). Note its handle.
+- [ ] A staging env file (e.g. `~/haggle-staging.env`, never committed) with `HAGGLE_ENV=staging`,
+      `INKBOX_API_KEY=<staging org key>`, `INKBOX_IDENTITY=<staging handle>`.
+- [ ] Trial mailboxes you personally own (at most 5, bare ASCII addresses, matched exactly: no
+      plus-tag or look-alike matching): one Gmail, one Outlook/Hotmail, a second address for the
+      "forward" scenario. Ask nobody else to take part.
+- [ ] A new run directory **outside the repository** per send, e.g. `~/haggle-trials/2026-10-23-gmail`.
+      The script creates it 0700 and refuses an existing one that others can read (`chmod 700`), one
+      inside the repo (also through a symlink), or one that already holds a run.
 
-## 1. Add `message.bounced` and `message.failed` to the buyer's webhook subscription
+## Gates (checked before any network call)
 
-The live subscription (inspected 2026-10-22) covers `message.received`, `call.ended`,
-`imessage.received` and `a2a.sent_task.updated` only, so Inkbox bounces never reach the server
-(the reconciler's outbound status sweep is the only safety net). Do this once, by hand.
+| Gate | send | collect | check-subscription |
+|---|---|---|---|
+| `HAGGLE_EMAIL_TRIAL=1` (prefix the one command; never in an env file) | yes | yes | yes |
+| `HAGGLE_ENV=staging` (`production` FAILs; unset BLOCKED) | yes | yes | yes |
+| `INKBOX_API_KEY` set | yes | yes | yes |
+| `INKBOX_IDENTITY` set, not `haggle` | yes | yes | yes |
+| `@inkbox/sdk` installed | yes | yes | yes |
+| `HAGGLE_EMAIL_TRIAL_MAILBOXES`: 1-5 plain addresses, none malformed | yes | yes | - |
+| `--i-own-this-mailbox` | yes | yes | - |
+| `--to` exactly one allowlisted address (not the buyer mailbox) | yes | - | - |
+| `--run` outside the repo, private; send: no `run.json` yet; collect: `run.json` whose recipient is still allowlisted | yes | yes | - |
 
-Check first (read-only; prints which required mail events are missing):
+`INKBOX_WEBHOOK_SECRET` is reported but not required (the replay signs with a local key; the staging
+*server* needs it). A failed gate prints `FAIL` (set but wrong/unsafe) or `BLOCKED` (missing) with a
+`fix:` line, and the command exits 1 having contacted nothing.
+
+## 1. Webhook subscription (`message.received`, `message.bounced`, `message.failed`)
 
 ```
-HAGGLE_EMAIL_TRIAL=1 node --env-file=.env scripts/email-trial.ts check-subscription
+HAGGLE_EMAIL_TRIAL=1 node --env-file=$HOME/haggle-staging.env scripts/email-trial.ts check-subscription
 ```
 
-It lists the buyer identity's subscriptions with `scope: "identity"`. The buyer's subscription is
-identity-owned and **mixed** (mail + call + iMessage + A2A events); in SDK 0.7.19 a plain
-`subscriptions.list()` leaves mixed rows out, which is why the check asks for the identity scope.
+Read-only. Lists the staging identity's subscriptions (`scope: "identity"`: the buyer's mixed
+subscription is left out of a plain `subscriptions.list()` in SDK 0.7.19) and the missing event
+types. Add missing ones in the Inkbox dashboard → identity → Webhooks → event types (keep the
+existing ones), or with `subscriptions.update(sub.id, { scope: "identity", eventTypes: [...all
+existing, "message.bounced", "message.failed"] })` (eventTypes replaces the list).
 
-**Dashboard:** Inkbox dashboard → the buyer identity (`haggle`) → Webhooks → its subscription →
-event types → add `message.bounced` and `message.failed` (optionally `message.delivered`). Keep
-every existing event type. Save. The signing key does not change.
-
-**SDK (instead of the dashboard), method names from the installed `@inkbox/sdk` 0.7.19; not run by
-any script here:**
-
-```ts
-const inkbox = new Inkbox({ apiKey });
-const me = await inkbox.getIdentity("haggle");
-const [sub] = await inkbox.webhooks.subscriptions.list({ agentIdentityId: me.id, scope: "identity" });
-// eventTypes REPLACES the stored list: pass every existing type plus the new ones.
-await inkbox.webhooks.subscriptions.update(sub.id, {
-  scope: "identity", // required for a mixed subscription
-  eventTypes: [...new Set([...sub.eventTypes, "message.bounced", "message.failed"])],
-});
-```
-
-- [ ] Re-run `check-subscription`: `"ok": true`, `missing_required: []`.
-- [ ] Same output, `buyer_mail_inbound_filter`: the buyer identity's inbound mail filter
-      (`AgentIdentity.mailInboundFilterMode`). `whitelist` means only allowed senders' mail is
-      delivered: add the trial mailboxes (and, later, every pilot vendor) to the identity's allow
-      list, or replies silently never arrive. `blacklist` accepts everyone not blocked.
-- [ ] Ask Inkbox (open question): is `message.bounced` permanent bounces only, or also soft ones?
-      The engine treats a bounce as permanent unless the business has replied from that address.
+- [ ] `"ok": true`, `has_message_received: true`.
+- [ ] `buyer_mail_inbound_filter`: `whitelist` means only allowed senders' mail arrives: add the trial
+      mailboxes to the identity's allow list, or replies silently never arrive.
 
 ## 2. Validate (no network, nothing written)
 
 ```
-HAGGLE_EMAIL_TRIAL_MAILBOXES=me@gmail.com,me@outlook.com \
-  node --env-file=.env scripts/email-trial.ts validate --run ~/haggle-trials/t1 --to me@gmail.com --i-own-this-mailbox
+HAGGLE_EMAIL_TRIAL=1 HAGGLE_EMAIL_TRIAL_MAILBOXES=me@gmail.com,me@outlook.com \
+  node --env-file=$HOME/haggle-staging.env scripts/email-trial.ts validate --run ~/haggle-trials/t1 --to me@gmail.com --i-own-this-mailbox
 ```
 
-It prints one line per check: `INKBOX_API_KEY` set (the value is never shown), `INKBOX_IDENTITY`,
-`HAGGLE_EMAIL_TRIAL`, the allowlist (and any malformed entries it ignored), whether `--to` is
-listed, the ownership flag, the run directory (outside the repo, writable, already used?) and the
-locally installed SDK version. Exit code 1 if anything blocking is wrong. Fix every `FAIL`.
+Checks every gate of the next command for that directory (send if it holds no run, else collect),
+one line each: `ok` / `FAIL` / `BLOCKED` / `info`, with `fix:` lines. Secret values are never shown.
+Expected: `send: all gates pass (nothing was contacted).` With no configuration it lists 7 problems
+and exits 1.
 
 ## 3. Dry run (no network, nothing written)
 
 ```
-node scripts/email-trial.ts dry-run --to me@gmail.com --run ~/haggle-trials/t1 --buyer <buyer mailbox>
+node scripts/email-trial.ts dry-run --to me@gmail.com --run ~/haggle-trials/t1 --buyer <staging mailbox>
 ```
 
-- [ ] Read the printed email: subject starts `[HAGGLE TEST] [HG-TRIAL]`, body says THIS IS A TEST,
-      lists the nine scenarios, and ends with `Reference: HGR-…`. (The token and run id shown are
-      illustrative; `send` makes fresh ones.)
-- [ ] The "Send gates" line shows what `send` still needs.
+- [ ] Prints which send gates still fail, then the exact email: subject `[HAGGLE TEST] [HG-TRIAL] …`,
+      body THIS IS A TEST, the nine scenarios, `Reference: HGR-…` (illustrative: send makes fresh ones).
 
 ## 4. Send (the only step that sends mail)
 
-All three gates are required, every time: `HAGGLE_EMAIL_TRIAL=1` for this one command, the
-recipient listed in `HAGGLE_EMAIL_TRIAL_MAILBOXES`, and `--i-own-this-mailbox`.
-
 ```
 HAGGLE_EMAIL_TRIAL=1 HAGGLE_EMAIL_TRIAL_MAILBOXES=me@gmail.com,me@outlook.com \
-  node --env-file=.env scripts/email-trial.ts send --to me@gmail.com --run ~/haggle-trials/t1 --i-own-this-mailbox
+  node --env-file=$HOME/haggle-staging.env scripts/email-trial.ts send --to me@gmail.com --run ~/haggle-trials/t1 --i-own-this-mailbox
 ```
 
-- [ ] `run.json` (mode 600) now holds the run id, the run-local token secret and the **send-time
-      Message-ID**. Don't share it.
+- [ ] `run.json` (0600) is created exclusively **before** the send call, then holds the run id, the
+      run-local token secret and the **send-time Message-ID**. Running send again into the same
+      directory refuses without contacting Inkbox. Don't share `run.json`.
+- [ ] If the send call errors, `run.json` records `sendState: "failed"`. Don't send again elsewhere:
+      run collect on this directory: it finds the email in the outbound mailbox by its subject if it
+      did go out (`send_recovered` in the report).
 - [ ] Repeat for the Outlook mailbox with a **new** `--run` directory.
 
 ## 5. Reply scenarios (from your own mail clients)
 
-Reply to the test email once per scenario. Use the quote text it suggests ("We can do it: $1,150
-total, delivered. $345 deposit.").
+Use the quote text it suggests ("We can do it: $1,150 total, delivered. $345 deposit.").
 
-| # | Scenario | Expected verdict | Expected pipeline outcome |
+| # | Scenario | Expected verdict | Expected engine match |
 |---|---|---|---|
-| 1 | Gmail web, normal Reply | `ok:external-reply-token` | `stored`, quote $1150 (not approvable: offline keyword reader) |
-| 2 | Edited subject | `ok` if the quote (with the reference) was kept, else `identity_unverified:token_missing` | same |
-| 3 | Quote deleted, subject kept | `ok` (token in the subject) | `stored`, quote |
-| 4 | Gmail app, Outlook app, iOS Mail | `ok` each; quoted history cut | `stored`, quote |
-| 5 | Forward to your 2nd address, reply from there | `identity_unverified:from_mismatch` | `quarantined:sender_mismatch` |
-| 6 | One-page PDF, one-line body | `ok`; attachment listed | `stored`; "attachment(s) not replayed offline" |
-| 7 | Same reply twice | two messages, both `ok` | both `stored` (each is its own message; dedupe is per provider id) |
-| 8 | New email (not Reply), token pasted | `identity_unverified:not_in_our_thread` | `quarantined:no_signal` (new subject, no deal tag) or `identity_unverified` (subject kept) |
-| 9 | Reply all | `ok` | `stored` (Haggle in To **or Cc** is accepted) |
+| 1 | Gmail web, normal Reply | `ok:external-reply-token` | `header+token` |
+| 2 | Edited subject | `ok` if the quote was kept (token in quoted text), else `token_missing` | `header+token` / `header` |
+| 3 | Quote deleted, subject kept | `ok` (token in subject) | `header+token` |
+| 4 | Gmail app, Outlook app, iOS Mail | `ok` each; quoted history cut | `header+token` |
+| 5 | Forward to your 2nd address, reply from there | `identity_unverified:from_mismatch` | `sender_mismatch` |
+| 6 | One-page PDF, one-line body | `ok`; attachment listed (not replayed offline) | `header+token` |
+| 7 | Same reply twice | two messages, both `ok` | `header+token` |
+| 8 | New email (not Reply), token pasted | `identity_unverified:not_in_our_thread` | `token` |
+| 9 | Reply all | `ok` (Haggle in To **or Cc**) | `header+token` |
 
-Optional, ask first: a bounce, to an address you own that rejects mail (or an SES mailbox-simulator
-address, if Inkbox allows it). Watch for `message.bounced` in the server log or Inkbox's delivery log.
+Optional, ask first: a bounce to an address you own that rejects mail; collect reads delivery
+notices only with `--include-bounces`.
 
 ## 6. Collect
 
 ```
 HAGGLE_EMAIL_TRIAL=1 HAGGLE_EMAIL_TRIAL_MAILBOXES=me@gmail.com,me@outlook.com \
-  node --env-file=.env scripts/email-trial.ts collect --run ~/haggle-trials/t1 --i-own-this-mailbox
+  node --env-file=$HOME/haggle-staging.env scripts/email-trial.ts collect --run ~/haggle-trials/t1 --i-own-this-mailbox
 ```
 
-It reads (never sends): the outbound test email as the mailbox stores it, every inbound reply since
-the run started from your trial addresses (and mailer-daemon), restoring each one's unread state.
-It writes `report.json`, `report.md` (redacted: shareable) and `raw/<id>.json` (unredacted: keep
-private). Each reply is evaluated twice: with the engine's pure inbound functions (the verdict
-columns) and through the **real pipeline** offline (signed webhook → `webhook.ts` → engine matching,
-reply-token verification, opt-out/bounce checks → parse): the `pipeline` column. That is the same
-code path the live server runs.
-
-Later, `dry-run --run <dir>` replays the saved captures through the pipeline again (e.g. after a fix).
+Reads, never sends. It opens **only** inbound mail from the allowlisted addresses (everything else is
+skipped unopened and counted), restores each opened message to unread unless it was already read,
+re-lists the outbound test email (stored and SES Message-IDs) and reads the webhook subscription.
+Writes `report.json`, `report.md` (redacted: shareable) and `raw/<id>.json` (unredacted: keep
+private), all 0600. Every reply is evaluated with the engine's pure inbound functions and replayed
+through the real pipeline offline (signed webhook → `webhook.ts` → matching, token verification →
+keyword reader). Later, `dry-run --run <dir>` repeats the replay and diagnosis offline (e.g. after a
+fix), using the ids and webhook facts collect saved in `report.json`.
 
 ## 7. Read the report
 
-1. **Message-ID at send time vs stored: check this first.**
-   - `OK: the Message-ID the engine stores at send time is the one replies reference` → good.
-   - `MISMATCH: …` → the id `messages.send()` returned is not the one recipients see (SES assigns
-     its own). Then **every** real reply fails `identity_unverified:not_in_our_thread` on the live
-     server. Look at the `(any id: …)` note in the verdict column: if replies pass when the stored or
-     SES id is known, the fix is to store that id after sending (re-list the outbound message, or
-     use `sesMessageId`). Do not run a pilot until this is fixed; report it to the coordinator.
-   - `outbound message not found when listing the mailbox` → re-run collect a minute later.
-2. **Summary:** `verified` should equal the replies from scenarios 1–4, 6, 7 and 9. Any other
-   `quarantined …` count tells you which scenario failed and why (see `quarantineReasons.ts`).
-3. **Per reply:** `token subj/body/own` shows where the token survived; `cut quotes = yes` means
-   Haggle's quoted email was removed before reading (it must be, or Haggle's own figures could be
-   read as the vendor's); `body = html` marks an HTML-only reply; `CHECK: body looks quoted but
-   nothing was cut` is a reader bug to report with the raw capture.
-4. **Pipeline vs verdict must agree** on every reply (stored ⇔ `ok:`). A disagreement is a bug.
-5. Save the redacted `report.md` with the sprint notes. Never commit `raw/` or `run.json`; turn a
-   capture into a fixture only after replacing addresses and tokens with placeholders
-   (`packages/engine/tests/fixtures-email/` shows the format).
+**Overall verdict (first line), from the replies sent by the trial recipient itself:**
+
+| Verdict | Meaning | Action |
+|---|---|---|
+| `READY: replies match by Message-ID` | Replies name the send-time id the engine records; held ones are listed with reasons | Check held replies are only the expected scenarios (2/3 stripped, 5, 8) |
+| `ID MISMATCH` | Replies name the stored or SES id, never the send-time one: every real reply would be quarantined `not_in_our_thread` | Engine fix before any pilot: record the id named in `engine_should_record`; tell the coordinator |
+| `TOKEN ONLY` | No Haggle id survives in headers, but the token does: quarantined `not_in_our_thread` | Inspect `raw/` In-Reply-To/References per client; report |
+| `NOT MATCHED` | Neither a Haggle id nor the token survives | Check the replies were made with Reply to the test email |
+| `NO REPLIES` | Nothing from the recipient yet | Wait a minute, re-run collect; check the inbound filter (section 1) |
+
+**Message-IDs section:** send-time vs stored (`OK` / `MISMATCH`), the SES id, how many replies named
+each id, and `the engine should record: …`.
+
+**Per reply:**
+- **Message-ID chain:** which of send-time / stored / SES appear in In-Reply-To and References, and
+  which id this reply proves the engine must record (Outlook often sends In-Reply-To only: fine).
+- **Reply token:** found in subject / own words / quoted text / not found, and the engine match:
+  `header+token` (accepted), `header` (token_missing), `token` (not_in_our_thread), `none`,
+  `sender_mismatch`.
+- **Webhook:** subscription has `message.received`; the read state before collect. *read* = something
+  fetched it via the API (the live webhook handler or reconciler, or the Inkbox console): probable,
+  not proof; *unread* = nothing fetched it, so the staging server did not process it; *unknown* = the
+  listing had no read flag. Confirm in the staging server log (`mail:<id>`).
+- **Held:** the quarantine reason in plain English and the next step.
+- **Extraction (keyword reading, offline heuristic, not Claude):** total, deposit, flags, approvable
+  (never approvable offline; the live server reads with Claude).
+
+Also: `CHECK: body looks quoted but nothing was cut` is a reader bug to report with the raw capture;
+the pipeline column must agree with the verdict (stored ⇔ `ok:`). Save the redacted `report.md` with
+the sprint notes. Never commit `raw/` or `run.json`; turn a capture into a fixture only after
+replacing addresses and tokens with placeholders (`packages/engine/tests/fixtures-email/`).
 
 ## 8. Afterwards
 
-- [ ] Delete the trial messages from your own mailboxes if you like; the buyer mailbox keeps them.
+- [ ] Delete the trial messages from your own mailboxes if you like; the staging mailbox keeps them.
 - [ ] If anything held real vendor mail in quarantine during a pilot, review it with
       `scripts/quarantine.ts list` / `show` and release only after verifying with the business on a
       number you already know (`release --verified-by … --how …`).

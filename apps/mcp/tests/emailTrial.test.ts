@@ -4,25 +4,28 @@
 import { describe, expect, it } from "vitest";
 import type { InkboxMessageDetail } from "@haggle/engine";
 import {
-  buildReport, checkSubscriptions, compareMessageIds, evaluateReply, newRun, planTrial, redact, redactUrl, renderMarkdown, SCENARIOS, TRIAL_FLAG, trialEmail, type TrialRun,
+  buildReport, checkSubscriptions, compareMessageIds, EMPTY_FS, evaluateReply, newRun, planTrial, redact, redactUrl, renderMarkdown, SCENARIOS, TRIAL_FLAG, trialEmail, type TrialRun,
 } from "../scripts/email-trial-lib.ts";
 
 const REPO = "/repo/haggle";
 const ME = "tester@gmail.example";
 const OTHER = "tester2@outlook.example";
 const BUYER = "haggle@inkboxmail.test";
-const env = { HAGGLE_EMAIL_TRIAL: "1", HAGGLE_EMAIL_TRIAL_MAILBOXES: `${ME}, ${OTHER.toUpperCase()}` };
+const env = { HAGGLE_EMAIL_TRIAL: "1", HAGGLE_EMAIL_TRIAL_MAILBOXES: `${ME}, ${OTHER.toUpperCase()}`, HAGGLE_ENV: "staging", INKBOX_API_KEY: "ik_test_key_value", INKBOX_IDENTITY: "haggle-staging" };
+/** A run directory that holds a sent run (collect's gate reads run.json). */
+const sentRunFs = (dir: string, run: Partial<TrialRun>) => ({ ...EMPTY_FS, exists: (p: string) => p === dir || p === `${dir}/run.json`, mode: () => 0o700, read: (p: string) => (p === `${dir}/run.json` ? JSON.stringify(run) : null) });
 
 describe("planTrial: disabled unless every gate is passed", () => {
   const send = ["send", "--to", ME, "--run", "/tmp/trials/t1", TRIAL_FLAG];
   it("needs HAGGLE_EMAIL_TRIAL=1 for anything, even the read-only subscription check", () => {
     expect(planTrial(send, { ...env, HAGGLE_EMAIL_TRIAL: undefined }, REPO)).toMatchObject({ ok: false, error: expect.stringMatching(/disabled/) });
     expect(planTrial(["check-subscription"], {}, REPO)).toMatchObject({ ok: false });
-    expect(planTrial(["check-subscription"], { HAGGLE_EMAIL_TRIAL: "1" }, REPO)).toEqual({ ok: true, cmd: { kind: "check-subscription" } });
+    expect(planTrial(["check-subscription"], { HAGGLE_EMAIL_TRIAL: "1" }, REPO)).toMatchObject({ ok: false, error: expect.stringMatching(/HAGGLE_ENV/) });
+    expect(planTrial(["check-subscription"], { HAGGLE_EMAIL_TRIAL: "1", HAGGLE_ENV: "staging", INKBOX_API_KEY: "k".repeat(12), INKBOX_IDENTITY: "haggle-staging" }, REPO)).toEqual({ ok: true, cmd: { kind: "check-subscription" } });
   });
   it("send and collect need the ownership flag, a listed mailbox, and a run directory outside the repository", () => {
     expect(planTrial(send.filter((a) => a !== TRIAL_FLAG), env, REPO)).toMatchObject({ ok: false, error: expect.stringContaining(TRIAL_FLAG) });
-    expect(planTrial(["send", "--to", "stranger@example.com", "--run", "/tmp/t", TRIAL_FLAG], env, REPO)).toMatchObject({ ok: false, error: expect.stringMatching(/not in HAGGLE_EMAIL_TRIAL_MAILBOXES/) });
+    expect(planTrial(["send", "--to", "stranger@example.com", "--run", "/tmp/t", TRIAL_FLAG], env, REPO)).toMatchObject({ ok: false, error: expect.stringMatching(/not an exact entry of HAGGLE_EMAIL_TRIAL_MAILBOXES/) });
     expect(planTrial(send, { ...env, HAGGLE_EMAIL_TRIAL_MAILBOXES: "" }, REPO)).toMatchObject({ ok: false, error: expect.stringMatching(/empty/) });
     expect(planTrial(["send", "--to", ME, "--run", `${REPO}/tmp/t1`, TRIAL_FLAG], env, REPO)).toMatchObject({ ok: false, error: expect.stringMatching(/outside the repository/) });
     expect(planTrial(["collect", "--run", REPO, TRIAL_FLAG], env, REPO)).toMatchObject({ ok: false });
@@ -32,7 +35,8 @@ describe("planTrial: disabled unless every gate is passed", () => {
   it("accepts a fully gated send and collect (addresses compared case-insensitively)", () => {
     expect(planTrial(send, env, REPO)).toEqual({ ok: true, cmd: { kind: "send", to: ME, runDir: "/tmp/trials/t1" } });
     expect(planTrial(["send", "--to", OTHER, "--run", "/tmp/t2", TRIAL_FLAG], env, REPO)).toMatchObject({ ok: true });
-    expect(planTrial(["collect", "--run", "/tmp/trials/t1", TRIAL_FLAG], env, REPO)).toEqual({ ok: true, cmd: { kind: "collect", runDir: "/tmp/trials/t1" } });
+    const fs = sentRunFs("/tmp/trials/t1", sentRun());
+    expect(planTrial(["collect", "--run", "/tmp/trials/t1", TRIAL_FLAG], env, REPO, { fs })).toEqual({ ok: true, cmd: { kind: "collect", runDir: "/tmp/trials/t1", includeBounces: false } });
   });
 });
 
