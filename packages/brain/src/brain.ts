@@ -66,21 +66,32 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
     });
   }
 
-  const ready = (async () => {
+  const seed = async () => {
     if (!options.seed) return;
     if ((await store.list()).length > 0) return;
     for (const r of seedReplies as { business_id: string; parsed: ParsedReply; meta: ReplyMeta }[]) {
       await learnFromReply(r.business_id, r.parsed, r.meta);
     }
-  })();
+  };
+  const ready = seed();
+  // A failed start-up (e.g. a store blip) is retried on the next call, not kept until restart.
+  let seeding = ready;
+  async function seeded(): Promise<void> {
+    try {
+      await seeding;
+    } catch {
+      seeding = seed();
+      await seeding;
+    }
+  }
 
   async function profiles(): Promise<Profile[]> {
-    await ready;
+    await seeded();
     return store.list();
   }
 
   async function getProfile(business: string): Promise<Profile | null> {
-    await ready;
+    await seeded();
     const direct = await store.get(business);
     if (direct) return direct;
     const key = slug(business);
@@ -95,7 +106,8 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
 
     const out: Estimate[] = [];
     for (const p of await profiles()) {
-      if (p.category !== category || !p.per_unit_usd || p.n_quotes === 0) continue;
+      // per_unit_usd.typical <= 0: a profile learned before $0 totals were treated as unknown.
+      if (p.category !== category || !p.per_unit_usd || p.per_unit_usd.typical <= 0 || p.n_quotes === 0) continue;
       if (area && p.area && p.area !== area) continue;
       if (p.flags_seen.some((f) => SAFETY_FLAGS.has(f))) continue;
 
@@ -163,7 +175,7 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
     const where = `${quantity ? `${quantity} ${unit === "person" ? "people" : "units"}` : category} in ${areaLabel(area)}`;
     if (perUnit === undefined || typical === undefined) {
       return {
-        verdict: "typical",
+        verdict: "unknown",
         sample_size: samples.length,
         summary:
           typical === undefined

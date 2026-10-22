@@ -30,7 +30,7 @@ function EstimatesList({ data }: { data: Estimates }) {
   const title = capitalize(
     [r.quantity ? `${r.what}, ${r.quantity} people` : r.what, r.date && formatDate(r.date), r.area].filter(Boolean).join(", "),
   );
-  const started = deal.data?.structuredContent as { job_id?: string } | undefined;
+  const started = deal.data?.structuredContent as { job_id?: string; contacted?: unknown[] } | undefined;
 
   const getRealQuotes = async () => {
     if (!r.quantity || !r.date) {
@@ -93,7 +93,10 @@ function EstimatesList({ data }: { data: Estimates }) {
 
       <footer className="es-foot">
         {started?.job_id ? (
-          <p className="es-started">Deal {started.job_id} started. Haggle is contacting {data.estimates.length} businesses.</p>
+          // discover:true contacts every ready vendor for the request, not only the estimated ones: say how many really went out.
+          <p className="es-started">
+            Deal {started.job_id} started.{started.contacted ? ` Haggle is contacting ${started.contacted.length} business${started.contacted.length === 1 ? "" : "es"}.` : ""}
+          </p>
         ) : (
           data.estimates.length > 0 && (
             <button className="hg-btn hg-btn-primary" disabled={deal.isPending} onClick={() => void getRealQuotes()}>

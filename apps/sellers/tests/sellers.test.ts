@@ -2,12 +2,13 @@ import { PDFDocument } from "pdf-lib";
 import { describe, expect, it } from "vitest";
 import { createSellerApp, type SellerPorts } from "../src/app.ts";
 import { factChecks, templateReply } from "../src/compose.ts";
-import { detectCounter, parseRfq, planReply, quoteJson, type Plan } from "../src/logic.ts";
+import { detectCancel, detectConfirm, detectCounter, parseRfq, planReply, quoteJson, type Plan } from "../src/logic.ts";
 import { quotePdfBase64 } from "../src/pdf.ts";
 import { phoneInstructions } from "../src/phone.ts";
 import { personaByKey } from "../src/personas.ts";
 import { StateStore } from "../src/store.ts";
 import { baseTerms, drawTerms } from "../src/variation.ts";
+import { isSignedWebhook } from "../src/webhook.ts";
 
 /** Deterministic RNG for the variety tests (mulberry32). */
 function seeded(seed: number) {
@@ -65,6 +66,19 @@ describe("the six personas (PLAN §8)", () => {
 
     const booked = planReply(harbor, cited.state, "Great, please confirm the booking.");
     expect(booked.plan.kind).toBe("confirm");
+  });
+
+  it("reads Haggle's counter citing an unconfirmed estimate as a counter, not a booking", () => {
+    const harbor = persona("harbor_table");
+    const first = planReply(harbor, undefined, RFQ);
+    const counter =
+      "Thanks for your quote of $1,150.00. We've received another estimate of about $995.00 for the same order and requirements (not yet confirmed as firm). Are you able to match or beat that?";
+    expect(detectConfirm(counter)).toBe(false);
+    const r = planReply(harbor, first.state, counter);
+    expect(r.plan.kind).toBe("quote");
+    expect(r.state.stage).toBe("quoted");
+    expect(detectConfirm("Not approved yet, still comparing.")).toBe(false);
+    expect(detectConfirm("Confirmed, go ahead.")).toBe(true);
   });
 
   it("Golden Grill is cheapest but only makes 6 vegetarian meals", () => {
@@ -247,5 +261,22 @@ describe("seller app (webhook events → replies)", () => {
     await app.idle();
     expect(sent.map((s) => s.body.includes("$1,180"))).toEqual([false, true]);
     expect(sent[0]!.body).toContain("plates, cutlery and napkins");
+  });
+
+  it("doesn't answer Haggle's cancellation note with a fresh quote", async () => {
+    const { app, sent } = setup();
+    await app.handleEvent("harbor-table-sf", mail("m9"));
+    const cancel = "Hi Harbor Table,\n\nThank you for your quote. The customer has cancelled this request, so we won't be moving forward. Thanks for your time.";
+    expect(detectCancel(cancel)).toBe(true);
+    expect(await app.handleEvent("harbor-table-sf", mail("m10", { body: cancel }))).toEqual({ accepted: true, action: "cancellation noted" });
+    await app.idle();
+    expect(sent).toHaveLength(1);
+  });
+});
+
+describe("seller webhook signatures", () => {
+  it("refuses a signature of the wrong length instead of throwing (which would crash the server)", () => {
+    const headers = { "x-inkbox-signature": "sha256=abc", "x-inkbox-request-id": "r1", "x-inkbox-timestamp": "1700000000" };
+    expect(isSignedWebhook(Buffer.from("{}"), headers, "whsec_test")).toBe(false);
   });
 });

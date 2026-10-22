@@ -99,7 +99,14 @@ export function detectCounter(text: string): { isCounter: boolean; citesCompetin
 }
 
 export function detectConfirm(text: string): boolean {
-  return /\b(confirm(?:ed|ing)?|book it|go ahead|we'?re in|approved?|accept(?:ed)?|let'?s do it)\b/i.test(text);
+  // "not yet confirmed as firm" (Haggle's counter citing an estimate) is not a booking.
+  const affirmative = text.replace(/(?:\bnot|n't|\bnever)\s+(?:yet\s+|been\s+)*(?:confirm|approv|accept)\w*/gi, "");
+  return /\b(confirm(?:ed|ing)?|book it|go ahead|we'?re in|approved?|accept(?:ed)?|let'?s do it)\b/i.test(affirmative);
+}
+
+/** Haggle's note that the customer cancelled ("we won't be moving forward"). */
+export function detectCancel(text: string): boolean {
+  return /\b(cancel(?:l?ed|s)?\b|won'?t be moving forward|no longer need)/i.test(text);
 }
 
 /** Answer to "need plates?": explicit no wins; otherwise yes if they asked for them. */

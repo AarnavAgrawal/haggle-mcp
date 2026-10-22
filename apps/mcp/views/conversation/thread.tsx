@@ -90,16 +90,20 @@ export function Reply({ convo, onSent, compact }: { convo: Conversation; onSent:
     try {
       const res = await send.callTool({ job_id: convo.job_id, business_id: convo.business_id, text });
       const r = res.structuredContent as { sent?: boolean; channel?: string; scheduled_for?: string; next?: string };
-      onSent({
-        message_id: `local_${Date.now()}`,
-        direction: "out",
-        channel: (r.channel as ConversationEntry["channel"] | undefined) ?? convo.channel,
-        kind: "message",
-        at: new Date().toISOString(),
-        text,
-        attachments: [],
-      });
-      setDraft("");
+      // Only a message that really went out joins the thread; a scheduled one shows up when it's sent,
+      // and one that wasn't sent or scheduled keeps its draft for another try.
+      if (r.sent !== false) {
+        onSent({
+          message_id: `local_${Date.now()}`,
+          direction: "out",
+          channel: (r.channel as ConversationEntry["channel"] | undefined) ?? convo.channel,
+          kind: "message",
+          at: new Date().toISOString(),
+          text,
+          attachments: [],
+        });
+      }
+      if (r.sent !== false || r.scheduled_for) setDraft("");
       setNote(r.sent === false ? `Not sent yet${r.scheduled_for ? ` (scheduled ${relativeTime(r.scheduled_for)})` : ""}. ${r.next ?? ""}`.trim() : "Sent.");
     } catch (e) {
       setError(parseToolError(e));

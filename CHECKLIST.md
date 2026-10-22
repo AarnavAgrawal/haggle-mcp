@@ -104,6 +104,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-22 · Aarnav · Bug sweep (branch `aarnav-2026-10-22`): seller server no longer crashes on a bad signature; sellers don't take "not yet confirmed" counters as bookings or re-quote a cancellation; brain treats $0 totals as unknown, skips deposit > total, counts a re-delivered discount once, says "unknown" when it can't judge a price, retries a failed start-up; approval card can approve when drawn without a ticket; estimates card shows the real contacted count; unsent replies stay out of the thread. Engine/MCP-server findings handed to Yash.
+
 - 2026-10-18 07:25 · Aarnav · Decisions 46-49 on `merged-working-demo`: code-less vendor texts go to the deal waiting on that vendor; totals computed from stated parts trusted (no confirm ask); pay by text (YES, then PAY <code>, approver only, guarded pay); HAGGLE_DEMO_SPEED; faster reads (list_deals without per-deal boards, parallel board reads, read-index migration 104)
 - 2026-10-18 06:30 · Aarnav · Branch `merged-working-demo`: main (rc1) + feat/live-demo merged; every logic conflict decided by Aarnav (`docs/merge-decisions-working-demo.md`): soft requirements, approve then pay (+ agent-only confirm), main's board + live-demo conversation/negotiation line/choose any safe option, one live board, workspaces (auth open), main's roster + Places discovery, two-part extraction (live extract-eval 11/11), round cap 2. 711 tests + 491 Postgres, typecheck + build green. Not on main; needs Yash's review
 

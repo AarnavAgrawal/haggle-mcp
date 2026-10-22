@@ -94,12 +94,27 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
 
   // Only the human's tap on the button below calls this (never on render or from an effect). With a
   // view ticket, approve_in_view records the approval; nothing is charged until the human taps Pay
-  // (decision 2). Without one, the tap re-requests the approval (the human then approves by text/email/form).
+  // (decision 2). Without one (a card drawn by pay, or a dismissed form), the tap re-requests the
+  // approval; when that hands this card a ticket, the same tap records it, else the human approves by text/email/form.
   const onApprove = async () => {
-    if (!ticket) return run(() => approve.callTool({ job_id: card.job_id, quote_id: card.quote_id }));
     setError(null);
+    let t = ticket;
+    if (!t) {
+      try {
+        const res = await approve.callTool({ job_id: card.job_id, quote_id: card.quote_id });
+        t = viewTicket((res as { _meta?: Record<string, unknown> })._meta);
+        if (!t) {
+          if (res.structuredContent) setCard(res.structuredContent as Approval);
+          else setError(toolErrorText(res.content) ?? "Refused. Nothing was paid.");
+          return;
+        }
+      } catch (e) {
+        setError(toolErrorText(e) ?? "Something went wrong. Nothing was paid.");
+        return;
+      }
+    }
     try {
-      const res = await approveInView.callTool(ticket);
+      const res = await approveInView.callTool(t);
       // status "approved" = the human's decision is recorded; card = the refreshed approval card (approved, confirmed, …).
       const r = res.structuredContent as { status: string; outcome?: Approval["status"]; next?: string; reason?: string; card?: Approval } | undefined;
       if (!r) setError(toolErrorText(res.content) ?? "Approval failed.");

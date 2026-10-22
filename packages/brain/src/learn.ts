@@ -29,9 +29,11 @@ export function applyReply(
   const request = Request.parse(meta.request);
 
   const quantity = parsed.quantity ?? request.quantity;
+  // The engine reports "no total stated" as 0: unknown, never a $0 price.
+  const total = parsed.total_usd && parsed.total_usd > 0 ? parsed.total_usd : undefined;
   const perUnit =
-    parsed.per_unit_usd ??
-    (parsed.total_usd !== undefined && quantity ? round2(parsed.total_usd / quantity) : undefined);
+    (parsed.per_unit_usd && parsed.per_unit_usd > 0 ? parsed.per_unit_usd : undefined) ??
+    (total !== undefined && quantity ? round2(total / quantity) : undefined);
   const replyMinutes =
     meta.contacted_at !== undefined
       ? Math.max(0, (Date.parse(meta.received_at) - Date.parse(meta.contacted_at)) / 60_000)
@@ -42,7 +44,7 @@ export function applyReply(
     job_id: meta.job_id,
     channel: meta.channel,
     kind: parsed.kind,
-    total_usd: parsed.total_usd,
+    total_usd: total,
     per_unit_usd: perUnit,
     quantity,
     round: meta.round,
@@ -61,7 +63,7 @@ export function applyReply(
   const perUnits = quotes.map((h) => h.per_unit_usd).filter((n): n is number => n !== undefined);
   const typical = median(perUnits);
 
-  const discount = learnDiscount(prev, parsed, meta);
+  const discount = learnDiscount(prev, history, entry, meta);
 
   const profile = {
     business_id: businessId,
@@ -78,9 +80,10 @@ export function applyReply(
         : { low: round2(Math.min(...perUnits)), typical: round2(typical), high: round2(Math.max(...perUnits)) },
     minimum_order_usd: parsed.minimum_order_usd ?? prev?.minimum_order_usd,
     minimum_quantity: parsed.minimum_quantity ?? prev?.minimum_quantity,
+    // A deposit above the total is a misread figure (e.g. per-person price taken as the total).
     deposit_pct:
-      parsed.deposit_usd !== undefined && parsed.total_usd
-        ? round2(parsed.deposit_usd / parsed.total_usd)
+      parsed.deposit_usd !== undefined && total !== undefined && parsed.deposit_usd <= total
+        ? round2(parsed.deposit_usd / total)
         : prev?.deposit_pct,
     discount_pct: discount.pct,
     discount_needs_competing_quote: discount.needsCompetingQuote,
@@ -98,16 +101,15 @@ export function applyReply(
 /** Discount seen in negotiation rounds: 1 − revised / original. Averaged over all rounds seen. */
 function learnDiscount(
   prev: Profile | null,
-  parsed: ReturnType<typeof ParsedReply.parse>,
+  history: ProfileHistoryEntry[],
+  entry: ProfileHistoryEntry,
   meta: ReturnType<typeof ReplyMeta.parse>,
 ): { pct: number | undefined; needsCompetingQuote: boolean | undefined } {
-  const observed = negotiationDiscounts(prev?.history ?? []);
+  // From the deduped history (which already holds this reply), so a re-delivered reply counts once.
+  const observed = negotiationDiscounts(history);
   let needs = prev?.discount_needs_competing_quote;
-  if (meta.round >= 2 && parsed.kind === "quote" && parsed.total_usd !== undefined && meta.negotiated_from) {
-    const d = clamp(1 - parsed.total_usd / meta.negotiated_from, 0, 1);
-    observed.push(d);
-    if (d > 0.005 && meta.cited_competing_quote !== undefined) needs = meta.cited_competing_quote;
-  }
+  const [current] = negotiationDiscounts([entry]);
+  if (current !== undefined && current > 0.005 && meta.cited_competing_quote !== undefined) needs = meta.cited_competing_quote;
   const avg = mean(observed);
   return { pct: avg === undefined ? prev?.discount_pct : round2(avg), needsCompetingQuote: needs };
 }

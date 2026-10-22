@@ -52,6 +52,28 @@ describe("applyReply (business learning)", () => {
     expect(p.per_unit_usd).toEqual({ low: 25.88, typical: 27.32, high: 28.75 });
   });
 
+  it("does not double count a repeated negotiation reply in the discount", () => {
+    let p = applyReply(null, "b", { kind: "quote", total_usd: 1000 }, meta());
+    p = applyReply(p, "b", { kind: "quote", total_usd: 900 }, meta({ job_id: "job_2", round: 2, negotiated_from: 1000 }));
+    const counter = meta({ job_id: "job_3", round: 2, negotiated_from: 1000 });
+    p = applyReply(p, "b", { kind: "quote", total_usd: 1000 }, counter);
+    expect(p.discount_pct).toBe(0.05);
+    p = applyReply(p, "b", { kind: "quote", total_usd: 1000 }, counter);
+    expect(p.discount_pct).toBe(0.05);
+  });
+
+  it("treats a $0 total as unknown, not a price", () => {
+    const p = applyReply(null, "b", { kind: "quote", total_usd: 0 }, meta({ channel: "phone" }));
+    expect(p.per_unit_usd).toBeUndefined();
+    expect(p.history[0]!.total_usd).toBeUndefined();
+  });
+
+  it("keeps learning when a deposit exceeds the total (a misread figure)", () => {
+    const p = applyReply(null, "b", { kind: "quote", total_usd: 100, deposit_usd: 150 }, meta());
+    expect(p.n_quotes).toBe(1);
+    expect(p.deposit_pct).toBeUndefined();
+  });
+
   it("does not double count a reply reported twice", () => {
     const parsed = { kind: "quote" as const, total_usd: 1150 };
     const once = applyReply(null, "b", parsed, meta());

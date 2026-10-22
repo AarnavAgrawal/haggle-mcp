@@ -4,7 +4,7 @@
  * All I/O goes through `ports`, so tests run without Inkbox or Claude.
  */
 import type { Composer } from "./compose.ts";
-import { planReply, quoteJson, type Plan } from "./logic.ts";
+import { detectCancel, planReply, quoteJson, type Plan } from "./logic.ts";
 import { quotePdfBase64 } from "./pdf.ts";
 import { PERSONAS, type Persona } from "./personas.ts";
 import type { StateStore } from "./store.ts";
@@ -89,6 +89,7 @@ export function createSellerApp(opts: SellerAppOptions) {
     const body = !msg.body || msg.body_truncated ? await opts.ports.getEmailBody(p.handle, msg.id) : msg.body;
     const text = `${msg.subject ?? ""}\n${body}`;
     const key = `${p.handle}:mail:${msg.thread_id ?? msg.id}`;
+    if (opts.state.get(key) && detectCancel(text)) return { accepted: true, action: "cancellation noted" };
     const { plan, state, persona } = planReply(p, opts.state.get(key), text, findJsonPart(text), draw);
     opts.state.set(key, state);
 
@@ -108,6 +109,7 @@ export function createSellerApp(opts: SellerAppOptions) {
 
     const task = await opts.ports.getA2ATask(p.handle, taskId);
     const key = `${p.handle}:a2a:${task.contextId}`;
+    if (opts.state.get(key) && detectCancel(task.text)) return { accepted: true, action: "cancellation noted" };
     const { plan, state, persona } = planReply(p, opts.state.get(key), task.text, task.data, draw);
     opts.state.set(key, state);
 

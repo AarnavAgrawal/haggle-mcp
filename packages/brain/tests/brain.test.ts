@@ -58,6 +58,30 @@ describe("brain (seeded from fixtures/brain/seed-replies.json)", () => {
     expect(v).toMatchObject({ verdict: "high", sample_size: 0, typical_per_unit_usd: 26 });
     const noQty = await brain.checkPrice({ total_usd: 1300, area: "SF" });
     expect(noQty.summary).toMatch(/Pass quantity/);
+    expect(noQty.verdict).toBe("unknown"); // can't judge, so no price_check label on the quote
+  });
+
+  it("skips a profile learned with no usable price instead of failing the estimate", async () => {
+    const brain = createBrain({ store: new MemoryStore() });
+    await brain.learnFromReply("biz_x", { kind: "quote", total_usd: 0 }, { job_id: "j", business_name: "X", channel: "phone", received_at: "2026-10-17T12:00:00Z", request: { what: "lunch", quantity: 40, area: "SF" } });
+    const est = await brain.estimate({ what: "lunch", quantity: 40, area: "SF" });
+    expect(est.every((e) => Number.isFinite(e.confidence) && e.total_usd > 0)).toBe(true);
+  });
+
+  it("recovers from a store failure at start-up instead of failing every call until restart", async () => {
+    const store = new MemoryStore();
+    const list = store.list.bind(store);
+    let fail = true;
+    store.list = async () => {
+      if (fail) {
+        fail = false;
+        throw new Error("supabase blip");
+      }
+      return list();
+    };
+    const brain = createBrain({ store, seed: true });
+    await expect(brain.ready).rejects.toThrow("supabase blip");
+    expect((await brain.estimate({ what: "lunch", quantity: 40, area: "SF" })).length).toBeGreaterThan(0);
   });
 
   it("gives negotiation hints learned from past rounds", async () => {

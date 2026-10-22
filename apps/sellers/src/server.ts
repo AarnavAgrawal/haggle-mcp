@@ -6,13 +6,14 @@
  *   npm run dev -w @haggle/sellers     # SELLERS_FAST=1 for demo-speed replies
  */
 import { createServer, type IncomingMessage } from "node:http";
-import { Inkbox, verifyWebhook, type AgentIdentity } from "@inkbox/sdk";
+import { Inkbox, type AgentIdentity } from "@inkbox/sdk";
 import { createSellerApp, type SellerPorts } from "./app.ts";
 import { createClaudeComposer, templateReply, type Composer } from "./compose.ts";
 import { PERSONAS } from "./personas.ts";
 import { join } from "node:path";
 import { DATA_DIR, StateStore, loadRegistry } from "./store.ts";
 import { baseTerms } from "./variation.ts";
+import { isSignedWebhook } from "./webhook.ts";
 
 const PORT = Number(process.env.SELLERS_PORT ?? 8787);
 const ROUTE = /^\/webhooks\/inkbox\/([a-z0-9-]+)\/?$/;
@@ -82,9 +83,15 @@ const server = createServer(async (req, res) => {
     return;
   }
   const handle = match[1]!;
-  const raw = await readBody(req);
+  let raw: Buffer;
+  try {
+    raw = await readBody(req);
+  } catch {
+    if (!res.headersSent) res.writeHead(400).end(); // client aborted mid-body
+    return;
+  }
   const secret = registry[handle]?.signingKey;
-  const signed = secret ? verifyWebhook({ payload: raw, headers: req.headers, secret }) : allowUnsigned;
+  const signed = secret ? isSignedWebhook(raw, req.headers, secret) : allowUnsigned;
   if (!signed) {
     res.writeHead(401).end("bad or missing signature");
     return;
