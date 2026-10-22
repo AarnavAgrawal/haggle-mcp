@@ -4,6 +4,7 @@ import { newId } from "../ids.ts";
 import {
   DEFAULT_WORKSPACE_ID,
   type ApprovalRow,
+  type ReconcileChannel,
   type JobBusinessRow,
   type JobEventRow,
   type JobRow,
@@ -546,5 +547,15 @@ export class InMemoryRepository implements Repository {
   async getHandoffReceipt(handoffId: string) {
     const r = this.receipts.find((x) => x.handoff_id === handoffId);
     return r ? clone(r) : null;
+  }
+  // reconciler high-water marks (migration 117)
+  private cursors = new Map<string, string>();
+  async getReconcileCursor(scope: string, channel: ReconcileChannel) {
+    return this.cursors.get(`${scope}|${channel}`) ?? null;
+  }
+  async advanceReconcileCursor(scope: string, channel: ReconcileChannel, at: string) {
+    const k = `${scope}|${channel}`;
+    const cur = this.cursors.get(k);
+    if (!cur || Date.parse(at) > Date.parse(cur)) this.cursors.set(k, new Date(at).toISOString());
   }
 }

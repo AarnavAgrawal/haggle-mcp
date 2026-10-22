@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type ReconcileChannel,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -218,13 +218,13 @@ export class PostgresRepository implements Repository {
   async findBusinessCandidates(q: { shortCodes: string[]; threadId: string | null; messageIds: string[] }) {
     const ids = q.messageIds.map(norm);
     const codes = q.shortCodes.map((c) => c.toUpperCase());
+    // One indexed lookup per way of matching (an OR across the join scanned every job_businesses row; 117).
     return rows<JobBusinessRow & { short_code: string }>(await this.sql`
-      select b.*, j.short_code from job_businesses b join jobs j on j.id = b.job_id
-      where j.short_code = any(${codes})
-         or (${q.threadId}::text is not null and b.thread_id = ${q.threadId})
-         or lower(btrim(b.rfq_message_id, '<>')) = any(${ids})
-         or exists (select 1 from messages m where m.direction = 'out' and m.job_id = b.job_id and m.business_id = b.business_id
-                    and lower(btrim(m.rfc_message_id, '<>')) = any(${ids}))`);
+      select b.*, j.short_code from job_businesses b join jobs j on j.id = b.job_id where j.short_code = any(${codes})
+      union select b.*, (select short_code from jobs where id = b.job_id) from job_businesses b where b.thread_id = ${q.threadId}
+      union select b.*, (select short_code from jobs where id = b.job_id) from job_businesses b where lower(btrim(b.rfq_message_id, '<>')) = any(${ids})
+      union select b.*, (select short_code from jobs where id = b.job_id) from messages m join job_businesses b on b.job_id = m.job_id and b.business_id = m.business_id
+        where m.direction = 'out' and lower(btrim(m.rfc_message_id, '<>')) = any(${ids})`);
   }
 
   async insertMessage(m: NewMessage) {
@@ -526,5 +526,16 @@ export class PostgresRepository implements Repository {
   }
   async getHandoffReceipt(handoffId: string) {
     return row<HandoffReceiptRow>((await this.sql`select * from handoff_receipts where handoff_id = ${handoffId}`)[0]);
+  }
+  // reconciler high-water marks (migration 117)
+  async getReconcileCursor(scope: string, channel: ReconcileChannel) {
+    const r = await this.sql`select high_water from reconcile_cursors where scope = ${scope} and channel = ${channel}`;
+    const v = r[0]?.high_water as Date | string | undefined;
+    return v === undefined ? null : new Date(v).toISOString();
+  }
+  async advanceReconcileCursor(scope: string, channel: ReconcileChannel, at: string) {
+    await this.sql`
+      insert into reconcile_cursors (scope, channel, high_water) values (${scope}, ${channel}, ${at})
+      on conflict (scope, channel) do update set high_water = greatest(reconcile_cursors.high_water, excluded.high_water), updated_at = now()`;
   }
 }
