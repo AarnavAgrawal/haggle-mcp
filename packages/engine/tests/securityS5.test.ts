@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type EngineConfig } from "../src/index.ts";
 import { simulatedStripe } from "../src/payments/stripe.ts";
+import { ChannelSendError } from "../src/workflow/ports.ts";
 import { checkMessage, citesCompetingOffer } from "../src/negotiation/messageGuard.ts";
 
 const ALPHA_PHONE = "+14155550101";
@@ -28,14 +29,15 @@ const textExtractor = {
   },
 };
 
-async function setup(config: Partial<EngineConfig> = {}) {
+async function setup(config: Partial<EngineConfig> = {}, ports: { emailError?: (to: string) => Error | undefined } = {}) {
   const texts: { to: string; text: string }[] = [];
   const emails: { to: string; subject: string; bodyText: string }[] = [];
+  const calls: { toNumber: string }[] = [];
   const repo = new InMemoryRepository();
   const engine = new HaggleEngine({
     repo, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"), stripe: simulatedStripe(),
-    email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },
-    phone: { async placeCall() { return { callId: `call_${Math.random()}` }; } },
+    email: { async send(m) { const e = ports.emailError?.(m.to); if (e) throw e; emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },
+    phone: { async placeCall(c: { toNumber: string }) { calls.push(c); return { callId: `call_${calls.length}` }; } },
     sms: { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } },
     voice: { async setInstructions() {} },
     config: {
@@ -47,7 +49,7 @@ async function setup(config: Partial<EngineConfig> = {}) {
     await repo.insertWorkspace({ id, name: id, token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles" });
     await engine.updateSettings({ approver_phone: phone, spending_cap_cents: 150_000 }, id); // the operator
   }
-  return { engine, repo, texts, emails };
+  return { engine, repo, texts, emails, calls };
 }
 
 /** A deal in `ws` with one firm quote ($1,150 total, $345 deposit). */
@@ -179,5 +181,37 @@ describe("S5-D F9: an @domain allowlist entry authorizes email addresses only", 
     expect(env.engine.canContact({ a2a_card_url: "https://attacker.example/c.json?x=@vendor.com" })).toBe(false);
     expect(env.engine.canContact({ email: "x@attacker.example" })).toBe(false);
     expect(await env.engine.mayContact({ a2a_card_url: "https://attacker.example/@vendor.com" }, "ws_alpha")).toBe(false);
+  });
+});
+
+describe("S5-D F10: a business that asked not to be contacted is never contacted again on any channel", () => {
+  const VENDOR_PHONE = "+14155550444";
+  async function stopped(verified: boolean) {
+    const env = await setup({}, {});
+    const agent = env.engine.forWorkspace("ws_alpha");
+    const email = `stop-${verified ? "v" : "u"}@inkboxmail.test`;
+    const deal = await agent.deal({ request, budget_usd, businesses: [{ name: "Stop Grill", email, phone: VENDOR_PHONE }] });
+    const b = (await env.repo.getBusinesses(deal.job_id))[0]!;
+    const untrusted = () => ({ trusted: false as const, retryable: false as const, reason: "unverified-external-sender" as const, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
+    const r = await env.engine.ingest({ providerEventId: `stop-${email}`, eventType: "message.received", providerEmailId: `stop-${email}`, threadId: "ts", messageId: `<stop-${email}>`, inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: email, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "Please stop emailing us.", attachments: [], attachmentsDownloadUrl: null }, verified ? trusted : untrusted);
+    expect(r.outcome).toBe("opted_out");
+    return { env, agent, jobId: deal.job_id, businessId: b.business_id };
+  }
+  for (const verified of [true, false]) {
+    it(`after a ${verified ? "verified" : "unverified"} email STOP, send_message is refused on email, text and phone`, async () => {
+      const { env, agent, jobId, businessId } = await stopped(verified);
+      const before = { e: env.emails.length, t: env.texts.length, c: env.calls.length };
+      for (const channel of ["email", "imessage", "phone"] as const) {
+        await expect(agent.sendMessage(jobId, businessId, { text: "Is delivery included?", channel })).rejects.toMatchObject({ code: "business_opted_out" });
+      }
+      expect({ e: env.emails.length, t: env.texts.length, c: env.calls.length }).toEqual(before);
+    });
+  }
+
+  it("an email refused because the recipient opted out is never escalated to a Voice AI call", async () => {
+    const env = await setup({ escalateEmailToCallAfterMs: 60_000 }, { emailError: (to) => (to === "optout-esc@inkboxmail.test" ? new ChannelSendError("opted_out", false, 0, "recipient opted out") : undefined) });
+    const deal = await env.engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "Esc Grill", email: "optout-esc@inkboxmail.test", phone: VENDOR_PHONE }] });
+    await env.engine.advanceJob(deal.job_id);
+    expect(env.calls.filter((c) => c.toNumber === VENDOR_PHONE)).toHaveLength(0);
   });
 });

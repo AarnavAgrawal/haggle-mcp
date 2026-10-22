@@ -1312,6 +1312,13 @@ export class HaggleEngine {
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${what} to ${b.name} delayed (${f.reason.replace(/_/g, " ")}); retrying` });
       return;
     }
+    if (f?.reason === "opted_out") {
+      // Asked not to be contacted (our suppression list or the provider's): declined here, and never
+      // escalated to a call or a text instead (S5-D F10).
+      await this.repo.updateBusiness(job.id, b.business_id, { status: "declined", next_attempt_at: null });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, opt_out: "send_refused_opted_out", summary: `${what} to ${b.name} not sent: it asked not to be contacted; Haggle won't contact it on this deal` });
+      return;
+    }
     await this.repo.updateBusiness(job.id, b.business_id, { status: "bounced", next_attempt_at: null });
     await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${what} to ${b.name} failed: ${f?.reason.replace(/_/g, " ") ?? (err as Error).name}` });
     if (b.channel === "email" && b.phone && this.d.phone && this.d.config.escalateEmailToCallAfterMs !== undefined) await this.placeRfqCall(job, { ...b, status: "bounced" }, { escalation: true });
@@ -5913,6 +5920,7 @@ export class HaggleEngine {
     const text = answer.trim().slice(0, 2000);
     if (!text) throw new EngineError("empty_answer", "Answer is empty.", "Pass the answer text.", "answer_business");
     const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id)!;
+    await this.refuseIfOptedOut(job, b);
     // The answer goes on the channel the business was first contacted on (and asked on).
     if (!this.canReach(b)) throw new EngineError("no_contact_method", `${b.name} can't be reached by ${b.channel} here any more.`, "Send the answer with send_message and an explicit channel the business has (see get_quotes).", "send_message");
     const textSuffix = ` Could you send your full total and deposit? Ref HG-${job.short_code}`;
@@ -5961,6 +5969,18 @@ export class HaggleEngine {
   }
 
   /**
+   * A business that asked not to be contacted (a STOP on this deal, verified or not, or an opt-out
+   * suppression of any of its contacts) gets no agent-written message on any channel: an email STOP
+   * suppresses only the address, never permission to call or text instead (S5-D F10).
+   */
+  private async refuseIfOptedOut(job: JobRow, b: JobBusinessRow) {
+    const onJob = (await this.repo.listEvents(job.id)).some((e) => e.data.business_id === b.business_id && e.data.opt_out !== undefined);
+    const contacts = [b.email ? normalizeAddress(b.email) : null, b.phone, b.a2a_card_url?.toLowerCase() ?? null].filter((c): c is string => !!c);
+    const suppressed = contacts.length ? (await this.repo.findSuppressions(contacts)).some((s) => s.reason === "opt_out") : false;
+    if (onJob || suppressed) throw new EngineError("business_opted_out", `${b.name} asked not to be contacted; Haggle won't message it on any channel.`, "Choose among the other businesses (get_quotes).", "get_quotes");
+  }
+
+  /**
    * The message guard for agent-written text (answer_business, send_message): amounts must come from
    * this request or a stored quote, other businesses are never named, no commitment phrases, and
    * the channel's length limit. Throws an EngineError with the guard's code.
@@ -5996,6 +6016,7 @@ export class HaggleEngine {
     const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === businessId);
     if (!b) throw new EngineError("business_not_found", "No such business on this deal.", "Use a business_id from get_quotes.", "get_quotes");
     if (!opts.text === !opts.askMissing) throw new EngineError("bad_message", "Pass exactly one of text or ask_missing.", "Send free text, or ask_missing=true to ask for what the quote lacks.", "send_message");
+    await this.refuseIfOptedOut(job, b);
     // Default: the channel it was first contacted on. Another channel only when the agent asks for it.
     const channel: Channel = opts.channel ?? b.channel;
     const reachable = channel === "email" ? !!b.email : channel === "phone" ? !!(b.phone && this.d.phone) : channel === "imessage" ? !!(b.phone && (this.d.imessage || this.d.sms)) : !!(this.d.a2a && b.a2a_card_url && b.thread_id);
