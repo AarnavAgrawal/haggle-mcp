@@ -15,6 +15,10 @@ import {
   type Repository,
   type SettingsRow,
   type WorkspaceRow,
+  type OutboxRow,
+  type SuppressionRow,
+  type WorkspaceVendorRow,
+  type PaymentHandoffRow,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -54,7 +58,87 @@ export class InMemoryRepository implements Repository {
   async findWorkspaceBySecretHash(hash: string) {
     const w = [...this.workspaces.values()].find((x) => x.connector_secret_hash !== null && x.connector_secret_hash === hash && !x.revoked_at);
     return w ? clone(w) : null;
-  }  async setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }) {
+  }  private leases = new Map<string, { owner: string; expires: number }>();
+  private outbox = new Map<string, OutboxRow>();
+  private suppressions = new Map<string, SuppressionRow>();
+  private vendors: WorkspaceVendorRow[] = [];
+  private handoffs: PaymentHandoffRow[] = [];
+
+  async acquireJobLease(jobId: string, owner: string, now: string, ttlMs: number) {
+    const cur = this.leases.get(jobId);
+    const t = Date.parse(now);
+    if (cur && cur.owner !== owner && cur.expires > t) return false;
+    this.leases.set(jobId, { owner, expires: t + ttlMs });
+    return true;
+  }
+  async releaseJobLease(jobId: string, owner: string) {
+    if (this.leases.get(jobId)?.owner === owner) this.leases.delete(jobId);
+  }
+  async claimOutbox(o: { key: string; job_id: string | null; kind: OutboxRow["kind"] }, now: string) {
+    const cur = this.outbox.get(o.key);
+    if (cur) return { fresh: false, row: clone(cur) };
+    const row: OutboxRow = { ...o, status: "pending", provider_ref: null, attempts: 1, created_at: now, updated_at: now };
+    this.outbox.set(o.key, row);
+    return { fresh: true, row: clone(row) };
+  }
+  async reclaimOutbox(key: string, fromStatuses: OutboxRow["status"][], now: string) {
+    const cur = this.outbox.get(key);
+    if (!cur || !fromStatuses.includes(cur.status)) return null;
+    // The database refuses re-attempting a call that may have gone out (106 haggle_outbox_transition).
+    if (cur.kind === "call" && cur.status !== "not_sent") return null;
+    const next = { ...cur, status: "pending" as const, attempts: cur.attempts + 1, updated_at: now };
+    this.outbox.set(key, next);
+    return clone(next);
+  }
+  async finishOutbox(key: string, status: Exclude<OutboxRow["status"], "pending">, providerRef: string | null, now: string) {
+    const cur = this.outbox.get(key);
+    if (!cur || cur.status === "sent") return;
+    this.outbox.set(key, { ...cur, status, provider_ref: providerRef ?? cur.provider_ref, updated_at: now });
+  }
+  async getOutbox(key: string) {
+    const r = this.outbox.get(key);
+    return r ? clone(r) : null;
+  }
+  async addSuppression(s: Omit<SuppressionRow, "created_at">) {
+    if (!this.suppressions.has(s.contact)) this.suppressions.set(s.contact, { ...s, created_at: now() });
+  }
+  async findSuppressions(contacts: string[]) {
+    return contacts.map((c) => this.suppressions.get(c.toLowerCase())).filter((x): x is SuppressionRow => !!x).map(clone);
+  }
+  async addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">) {
+    if (!this.workspaces.has(v.workspace_id)) throw new Error("unknown workspace_id");
+    this.vendors = this.vendors.filter((x) => !(x.workspace_id === v.workspace_id && x.contact === v.contact));
+    const row = { ...v, created_at: now() };
+    this.vendors.push(row);
+    return clone(row);
+  }
+  async removeWorkspaceVendor(workspaceId: string, contact: string) {
+    const before = this.vendors.length;
+    this.vendors = this.vendors.filter((x) => !(x.workspace_id === workspaceId && x.contact === contact));
+    return this.vendors.length < before;
+  }
+  async listWorkspaceVendors(workspaceId: string) {
+    return this.vendors.filter((x) => x.workspace_id === workspaceId).map(clone);
+  }
+  async insertHandoff(h: Omit<PaymentHandoffRow, "created_at" | "updated_at">) {
+    if (this.handoffs.some((x) => x.approval_id === h.approval_id)) return null;
+    const a = this.approvals.find((x) => x.id === h.approval_id);
+    if (!a || a.job_id !== h.job_id || a.business_id !== h.business_id || a.payment_cents !== h.amount_cents || a.action === "confirm" || !["approved", "used"].includes(a.status)) throw new Error("handoff must match a human-approved paying approval");
+    const row = { ...h, created_at: now(), updated_at: now() };
+    this.handoffs.push(row);
+    return clone(row);
+  }
+  async getHandoffByApproval(approvalId: string) {
+    const h = this.handoffs.find((x) => x.approval_id === approvalId);
+    return h ? clone(h) : null;
+  }
+  async updateHandoff(id: string, fromStatuses: PaymentHandoffRow["status"][], patch: Partial<Pick<PaymentHandoffRow, "status" | "instructions_text" | "instructions_message_id" | "confirmed_by" | "confirmed_at">>) {
+    const i = this.handoffs.findIndex((x) => x.id === id);
+    if (i < 0 || !fromStatuses.includes(this.handoffs[i]!.status) || ["human_confirmed", "cancelled"].includes(this.handoffs[i]!.status)) return null;
+    this.handoffs[i] = { ...this.handoffs[i]!, ...patch, updated_at: now() };
+    return clone(this.handoffs[i]!);
+  }
+  async setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }) {
     const w = this.workspaces.get(id);
     if (!w) return null;
     const next = { ...w, ...(c.token_hash !== undefined ? { token_hash: c.token_hash } : {}), ...(c.connector_secret_hash !== undefined ? { connector_secret_hash: c.connector_secret_hash } : {}), revoked_at: c.revoked ? now() : null };

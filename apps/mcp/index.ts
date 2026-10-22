@@ -379,7 +379,7 @@ export const deal = server.tool(
         businesses = businesses.filter((b, j) => businesses.findIndex((x) => x.name === b.name && x.email === b.email && x.phone === b.phone && x.a2a_card_url === b.a2a_card_url) === j);
         preview = [
           ...sel.selected.filter((x, j) => sel.selected.findIndex((y) => y.business_ref === x.business_ref) === j).map((x) => ({ name: x.name, business_ref: x.business_ref, ...(x.send ? { channel: x.send.channel } : {}), contact_state: x.status.state, ready: !!x.send, ...(x.send ? {} : { reason: x.status.summary }) })),
-          ...given.filter(hasContact).map((b) => { const allowed = engine.canContact({ ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}) }); return { name: b.name, channel: b.channel ?? (b.a2a_card_url ? "a2a" : b.email ? "email" : "phone"), contact_state: allowed ? "authorized" : "contact_found", ready: allowed, ...(allowed ? {} : { reason: "this contact isn't on the server's recipient allowlist" }) }; }),
+          ...(await Promise.all(given.filter(hasContact).map(async (b) => ({ b, allowed: await engine.mayContact({ ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}) }) })))).map(({ b, allowed }) => { return { name: b.name, channel: b.channel ?? (b.a2a_card_url ? "a2a" : b.email ? "email" : "phone"), contact_state: allowed ? "authorized" : "contact_found", ready: allowed, ...(allowed ? {} : { reason: "this contact isn't authorized for this workspace (ask the operator: workspace-admin add-vendor), or it opted out or bounced" }) }; }),
         ];
       }
       if (input.dry_run) {
@@ -626,6 +626,11 @@ async function afterApproval(engine: WorkspaceEngine, job_id: string, quote_id: 
   const job = await engine.loadJob(job_id);
   if (job.state === "confirmed") return { status: "confirmed", words: "confirmed (the business was told to go ahead; nothing is paid)", next: "Done: the order is confirmed with the business and nothing is paid. get_quotes shows the deal." };
   const p = (await engine.getQuotes(job_id)).payment;
+  if (p?.rail === "manual") {
+    // Manual handoff: Haggle moves no money; only the human's PAID <code> text completes it.
+    if (job.state === "paid" || p.status === "settled") return { status: "paid", words: `approved; the human reported paying${p.amount_usd ? ` ${usd(p.amount_usd)}` : ""} to the business directly`, next: "Done: the business was told the customer reports having paid. get_quotes shows the deal." };
+    return { status: "approved", words: "approved by the human; they pay the business directly", reason: p.reason ?? "manual payment handoff", next: "Nothing is charged by Haggle. Tell the human to pay the business directly (instructions appear on the deal board) and then reply PAID <code> to Haggle's text. Don't ask them for the code." };
+  }
   if (job.state === "paid" || p?.status === "settled") return { status: "paid", words: `approved and paid${p?.amount_usd ? ` ${usd(p.amount_usd)}` : ""}${p?.simulated ? " (simulated, DEMO)" : " (Stripe test mode)"}`, next: "Done: get_quotes shows the receipt." };
   if (p && ["failed", "rejected", "expired"].includes(p.status)) return { status: "refused", words: `approved, but the payment ${p.status}`, reason: `payment ${p.status}${p.reason ? `: ${p.reason}` : ""}`, next: "The charge didn't go through (see reason). Call pay(job_id, quote_id) to retry, pick another quote, or ask the human what to do." };
   if (p?.status === "charging") return { status: "approved", words: "approved; the payment is in progress", next: "Call wait_for_update until the payment settles." };
@@ -905,6 +910,11 @@ export const pay = server.tool(
   async ({ job_id, quote_id }, ctx) =>
     run(ctx, async ({ engine, mode }) => {
       const payment = await engine.pay(job_id, quote_id);
+      if (payment.rail === "manual") {
+        const d = await afterApproval(engine, job_id, quote_id);
+        const v = await approvalView(engine, mode, job_id, quote_id, d.status, { next: d.next, ...(d.reason ? { reason: d.reason } : {}) });
+        return ok(v, `Payment handoff: ${d.words}. Nothing was charged by Haggle. next: ${d.next}`);
+      }
       const status = payment.status === "settled" ? "paid" : payment.status === "awaiting_approval" ? "pending_human" : ["rejected", "failed", "expired"].includes(payment.status) ? "refused" : "approved";
       const v = await approvalView(engine, mode, job_id, quote_id, status, {
         ...(payment.reason ? { reason: payment.reason } : {}), ...(payment.simulated ? { demo: "DEMO MODE: simulated payment; no real funds" } : {}),

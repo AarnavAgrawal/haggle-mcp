@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -98,6 +98,66 @@ export class PostgresRepository implements Repository {
   }
   async findWorkspaceBySecretHash(hash: string) {
     return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at from workspaces where connector_secret_hash = ${hash} and revoked_at is null`)[0]);
+  }
+  async acquireJobLease(jobId: string, owner: string, now: string, ttlMs: number) {
+    const until = new Date(Date.parse(now) + ttlMs).toISOString();
+    const r = await this.sql`
+      insert into job_leases (job_id, owner, expires_at) values (${jobId}, ${owner}, ${until})
+      on conflict (job_id) do update set owner = excluded.owner, expires_at = excluded.expires_at
+      where job_leases.expires_at < ${now} or job_leases.owner = excluded.owner
+      returning job_id`;
+    return r.length > 0;
+  }
+  async releaseJobLease(jobId: string, owner: string) {
+    await this.sql`delete from job_leases where job_id = ${jobId} and owner = ${owner}`;
+  }
+  async claimOutbox(o: { key: string; job_id: string | null; kind: OutboxRow["kind"] }, now: string) {
+    const ins = await this.sql`insert into outbox (key, job_id, kind, status, created_at, updated_at) values (${o.key}, ${o.job_id}, ${o.kind}, 'pending', ${now}, ${now}) on conflict (key) do nothing returning *`;
+    if (ins.length) return { fresh: true, row: row<OutboxRow>(ins[0])! };
+    return { fresh: false, row: row<OutboxRow>((await this.sql`select * from outbox where key = ${o.key}`)[0])! };
+  }
+  async reclaimOutbox(key: string, fromStatuses: OutboxRow["status"][], now: string) {
+    const r = await this.sql`
+      update outbox set status = 'pending', attempts = attempts + 1, updated_at = ${now}
+      where key = ${key} and status = any(${fromStatuses}) and (kind <> 'call' or status = 'not_sent') returning *`;
+    return row<OutboxRow>(r[0]);
+  }
+  async finishOutbox(key: string, status: Exclude<OutboxRow["status"], "pending">, providerRef: string | null, now: string) {
+    await this.sql`update outbox set status = ${status}, provider_ref = coalesce(${providerRef}, provider_ref), updated_at = ${now} where key = ${key} and status <> 'sent'`;
+  }
+  async getOutbox(key: string) {
+    return row<OutboxRow>((await this.sql`select * from outbox where key = ${key}`)[0]);
+  }
+  async addSuppression(s: Omit<SuppressionRow, "created_at">) {
+    await this.sql`insert into vendor_suppressions ${this.sql(this.vals(s as never))} on conflict (contact) do nothing`;
+  }
+  async findSuppressions(contacts: string[]) {
+    if (!contacts.length) return [];
+    return rows<SuppressionRow>(await this.sql`select * from vendor_suppressions where contact = any(${contacts.map((c) => c.toLowerCase())})`);
+  }
+  async addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">) {
+    const r = await this.sql`
+      insert into workspace_vendors ${this.sql(this.vals(v as never))}
+      on conflict (workspace_id, contact) do update set name = excluded.name, consent = excluded.consent, added_by = excluded.added_by
+      returning *`;
+    return row<WorkspaceVendorRow>(r[0])!;
+  }
+  async removeWorkspaceVendor(workspaceId: string, contact: string) {
+    return (await this.sql`delete from workspace_vendors where workspace_id = ${workspaceId} and contact = ${contact} returning contact`).length > 0;
+  }
+  async listWorkspaceVendors(workspaceId: string) {
+    return rows<WorkspaceVendorRow>(await this.sql`select * from workspace_vendors where workspace_id = ${workspaceId} order by created_at`);
+  }
+  async insertHandoff(h: Omit<PaymentHandoffRow, "created_at" | "updated_at">) {
+    const r = await this.sql`insert into payment_handoffs ${this.sql(this.vals(h as never))} on conflict (approval_id) do nothing returning *`;
+    return row<PaymentHandoffRow>(r[0]);
+  }
+  async getHandoffByApproval(approvalId: string) {
+    return row<PaymentHandoffRow>((await this.sql`select * from payment_handoffs where approval_id = ${approvalId}`)[0]);
+  }
+  async updateHandoff(id: string, fromStatuses: PaymentHandoffRow["status"][], patch: Partial<Pick<PaymentHandoffRow, "status" | "instructions_text" | "instructions_message_id" | "confirmed_by" | "confirmed_at">>) {
+    const r = await this.sql`update payment_handoffs set ${this.sql(this.vals({ ...patch, updated_at: new Date().toISOString() } as never))} where id = ${id} and status = any(${fromStatuses}) returning *`;
+    return row<PaymentHandoffRow>(r[0]);
   }
   async setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }) {
     const r = await this.sql`

@@ -211,6 +211,26 @@ export interface EngineConfig {
    * never in the answering instructions.
    */
   voiceWorkspaceId?: string;
+  /**
+   * Replies from mailboxes Inkbox can't authenticate (Gmail, Outlook, a vendor's own domain).
+   * "off" (default): never trusted. "reply_token": trusted only from the pinned address, in Haggle's
+   * own thread, quoting the business's reply token (inbound/senderAuth.ts), with no failing
+   * authentication evidence. Needs replyTokenSecret.
+   */
+  externalSenders?: "off" | "reply_token";
+  /** Server secret (>= 16 chars) for reply tokens. Required with externalSenders "reply_token". */
+  replyTokenSecret?: string;
+  /** This process's name in job leases (default: one random id per process). */
+  instanceId?: string;
+  /** How long a job lease lasts without release (default 5 min). */
+  leaseTtlMs?: number;
+  /**
+   * Manual payment handoff: no money moves through Haggle. After the human's approval the business
+   * is asked how it takes payment; its instructions are recorded (untrusted text, never followed);
+   * the human pays it directly and texts PAID <code>. Only then is the business told the customer
+   * reports having paid. Takes precedence over Stripe.
+   */
+  manualPaymentHandoff?: boolean;
   /** Wrong approval codes before an approval locks. Default 5. */
   maxApprovalAttempts?: number;
   /**

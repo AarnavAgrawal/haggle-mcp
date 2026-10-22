@@ -100,5 +100,8 @@ describe("workspace-admin (operator script) arguments", () => {
     expect(() => planAdmin(["set-cap", "--id", "ws_acme", "--usd", "-1"])).toThrow(/positive/);
     expect(() => planAdmin(["revoke", "--id", "acme"])).toThrow(/workspace id/);
     expect(() => planAdmin(["drop", "--id", "ws_acme"])).toThrow(/command/);
+    expect(planAdmin(["add-vendor", "--id", "ws_acme", "--contact", "Orders@Caterer.example", "--name", "Caterer", "--consent", "Owner agreed by phone"])).toEqual({ kind: "add-vendor", id: "ws_acme", contact: "orders@caterer.example", name: "Caterer", consent: "Owner agreed by phone" });
+    expect(() => planAdmin(["add-vendor", "--id", "ws_acme", "--contact", "orders@caterer.example", "--name", "Caterer"])).toThrow(/consent/);
+    expect(() => planAdmin(["add-vendor", "--id", "ws_acme", "--contact", "not-a-contact", "--name", "C", "--consent", "yes ok"])).toThrow(/contact/);
   });
 });

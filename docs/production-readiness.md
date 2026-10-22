@@ -73,6 +73,66 @@ Each new engine test was run and seen failing before its fix.
 3. Skip learning from `meta.simulated` and keyword-fallback quotes.
 4. Optionally add `unreliable_extraction` to `QUOTE_FLAGS` / view schemas in `packages/core`, so views can show it as a flag rather than only as the approval block reason.
 
+### Pass 2: toward a real-vendor pilot (2026-10-21)
+
+Branch `yashnil`, on top of pass 1 (`338ff69`). Committed, **not pushed or deployed**; migration 106 is applied only to throwaway test databases. No real vendor was contacted and no payment rail was called.
+
+Verified locally:
+- typecheck: clean
+- unit tests: 789 passed
+- Postgres 17 tests: 548 passed, including three two-connection "two instance" tests
+- migrations 100-106 apply; SQL assertions pass (new `engine_pilot_assertions.sql`)
+
+New suite: `packages/engine/tests/pilotSafety.test.ts` (in-memory plus Postgres). Its cases were run and seen failing before the fixes; the Postgres variant was added alongside.
+
+**This is not production readiness.** All channel and payment evidence is from fakes and test databases. Nothing here has been exercised against real Gmail/Outlook mail, real Inkbox webhooks, or a live database.
+
+| Area | Before | After (verified by) |
+| --- | --- | --- |
+| Real external email (Gmail, Outlook) | Never trusted; or, if anyone loosened it, From + thread would have been the only signal | `HAGGLE_EXTERNAL_SENDERS=reply_token` (off by default; needs `HAGGLE_REPLY_TOKEN_SECRET`, refuses to start without it). Every email to a business carries an HMAC reply token in its subject and body. A reply counts only with all four: From = the pinned address; In-Reply-To/References name Haggle's own outbound Message-ID; the token quoted back; no failing auth evidence. Anything else is quarantined as `identity_unverified` and never read. An aligned DMARC/DKIM pass would stand in for the token, but see the blocker below |
+| Duplicate processing across instances | In-process lock only | Postgres `job_leases`: one advancing instance per job; a crashed holder's lease expires (5 min) |
+| Duplicate sends after crashes | Idempotency key checked after sending | `outbox` claimed before every email, text (to a business or the human) and call. A fresh claim held by another instance → retry later. A stale claim is resent under the same provider key (email/text) |
+| Voice retries | Pass 1 event markers | Outbox: a call that may have gone out (`pending`/`unknown`/`sent`) is never claimed again; the database trigger refuses it too. Only a definite "not placed" is retried |
+| Payment | Stripe self-charge, or nothing; the vendor was told "payment sent" | `HAGGLE_PAYMENTS=manual` handoff, below |
+| Resumed payments | A resumed `charging` row skipped the guard | Re-runs the full guard (approval, quote revision, amount, job, server and current workspace caps) before any resumed Stripe call or handoff confirmation |
+| Opt-outs and bounces | Only synchronous provider errors | Opt-outs (email, or STOP by text) and hard bounces are recorded in global `vendor_suppressions`. Every send path and `deal()` refuse suppressed contacts. A bounce counts only if it names Haggle's own Message-ID, so a forged bounce is ignored. False-positive phrases are tested |
+| Vendor authorization | One server-wide allowlist; `HAGGLE_ALLOW_ANY_RECIPIENT` | Per-workspace `workspace_vendors` with recorded consent, operator-added via `workspace-admin.ts add-vendor`; the agent can't add them. Workspace B can't contact A's vendor. Allow-any is ignored in live |
+
+**The manual payment handoff:**
+1. After the human approves, the business is asked how it takes payment. The message explicitly says Haggle never moves money.
+2. `pay` returns the handoff state (rail `manual`) and charges nothing.
+3. The business's reply is stored as untrusted instruction text: never parsed as a quote, never followed. If it contains a link, the human is warned.
+4. Only the workspace approver's `PAID <code>` text completes it, after revalidation. The handoff becomes `human_confirmed` (final, enforced by a database trigger) and the job moves to `paid`.
+5. The business is then told "the customer has told us they have paid … please check you received it". It is never told "payment sent".
+
+**Blockers and remaining risks after pass 2:**
+- **BLOCKED on Inkbox: provider-level sender authentication.**
+  - Inkbox's SDK and webhooks expose no SPF/DKIM/DMARC results for mail from outside Inkbox (checked in `@inkbox/sdk` types: `MessageDetail`, `MailWebhookMessage`, `sender_access`).
+  - The reply token proves possession of the email Haggle sent, the same strength as an email-verification link. It does not prove the sending server: someone with access to that mailbox, or a forwarded copy, could reply.
+  - Ask Inkbox for Authentication-Results on inbound mail. `verifyExternalReply` already consumes them through the existing `AuthEvidence` shape.
+- **Not live-verified:**
+  - Whether real Gmail and Outlook replies keep the token (subject "Re:" keeps it; most clients quote the body).
+  - Whether Inkbox's inbound `bodyText` includes quoted history.
+  - Whether DSNs arrive at the buyer mailbox in the parsed shape.
+  - These need one consenting real mailbox test before the pilot.
+- **Manual handoff limits:**
+  - Haggle records that the human reports paying; it never verifies money arrived.
+  - No cancellation or refund flow for a handoff.
+  - Vendor instructions are shown as text; the human must verify them independently.
+- **Still open from pass 1, Yash's lane:**
+  - One shared Inkbox identity and phone.
+  - In-memory `lastSms` reply routing and held texts. Notify dedupe is now durable through the outbox.
+  - `call_back` still trusts a board or form authorization.
+  - Named lookup of workspace vendors: the agent must pass the vendor's contact; name-only resolution still uses the server roster.
+- **Still open, Aarnav's lane:** the brain tenancy and simulated-learning items listed under pass 1.
+
+**Changes needing Aarnav or a shared-contract decision:**
+1. The views should show the handoff. The board's `payment` line already carries rail `manual` and statuses `awaiting_invoice` / `invoice_received` / `settled`, plus a reason. Useful additions: a "pay the business directly, then reply PAID <code>" state, and the business's instructions shown as untrusted text, with links not clickable.
+2. Optional, in `packages/core`, both need to agree:
+   - an approval status for the handoff (`awaiting_human_payment`), since today it maps to `approved`;
+   - payment rail `manual` in the shared payment types;
+   - `identity_unverified` as a visible quarantine reason.
+
 ## 1. Production infrastructure
 - [ ] Finalize and verify the shared TypeScript contracts between the deal engine and the business brain.
 - [ ] Apply all Supabase migrations; verify schemas, indexes, constraints and relationships.

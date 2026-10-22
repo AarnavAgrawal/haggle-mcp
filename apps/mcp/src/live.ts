@@ -50,7 +50,10 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   if (env.HAGGLE_ENABLE_SMS === "true" && !smsPort) console.error(JSON.stringify({ level: "warn", event: "sms_unavailable", reason: "the buyer identity has no SMS-ready phone number" }));
   const notifyPhone = env.HAGGLE_NOTIFY_PHONE?.replace(/[\s().-]/g, "");
   // Never contact arbitrary businesses: only the simulated fleet and explicitly allowed recipients.
-  const allowAny = env.HAGGLE_ALLOW_ANY_RECIPIENT === "true";
+  // Live outreach is always allowlisted: the operator's list plus each workspace's authorized vendors
+  // (workspace-admin add-vendor). HAGGLE_ALLOW_ANY_RECIPIENT is ignored here (a warning is logged).
+  if (env.HAGGLE_ALLOW_ANY_RECIPIENT === "true") console.warn(JSON.stringify({ level: "warn", event: "allow_any_recipient_ignored", reason: "live outreach needs per-workspace vendor authorization" }));
+  const allowAny = false;
   // The demo vendor roster: configuring a vendor's contact is the operator authorizing it as a recipient.
   const vendorConfig = parseVendorConfig(env.HAGGLE_DEMO_VENDORS);
   const contacts: Record<string, VendorContact> = { ...vendorConfig.contacts };
@@ -116,6 +119,10 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       emailApprovalByCode: emailApprovalByCode(env),
       // Live: only the approver's own coded reply approves (never a tool call, form or card button).
       outOfBandApprovalsOnly: true,
+      // Pilot: no money moves through Haggle (the human pays the business; HAGGLE_PAYMENTS=manual).
+      ...(env.HAGGLE_PAYMENTS === "manual" ? { manualPaymentHandoff: true } : {}),
+      // Replies from real mailboxes (Gmail, Outlook): only with the reply token (HAGGLE_EXTERNAL_SENDERS=reply_token).
+      ...(env.HAGGLE_EXTERNAL_SENDERS === "reply_token" ? { externalSenders: "reply_token" as const, replyTokenSecret: env.HAGGLE_REPLY_TOKEN_SECRET ?? "" } : {}),
       ...(env.HAGGLE_VOICE_WORKSPACE?.trim() ? { voiceWorkspaceId: env.HAGGLE_VOICE_WORKSPACE.trim() } : {}),
       identity: { name: identityInfo.displayName || "Haggle", phone: identityInfo.phoneNumber },
     },
@@ -151,7 +158,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   }, TICK_MS).unref();
   // Anything that arrived while this server was down or restarting.
   setTimeout(() => void sweep(), 5_000).unref();
-  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: stripe ? "stripe-test" : "disabled", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false }));
+  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: env.HAGGLE_PAYMENTS === "manual" ? "manual-handoff" : stripe ? "stripe-test" : "disabled", external_senders: env.HAGGLE_EXTERNAL_SENDERS === "reply_token" ? "reply_token" : "off", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false }));
   // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
   let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };
   const channels = async (): Promise<ChannelStatus> => {

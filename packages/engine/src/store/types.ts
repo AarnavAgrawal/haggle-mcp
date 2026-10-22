@@ -238,6 +238,58 @@ export interface SettingsRow {
   updated_at: string;
 }
 
+/** One outbound action, claimed before the provider is called (migration 106). */
+export interface OutboxRow {
+  key: string;
+  job_id: string | null;
+  /** "call" has no provider idempotency: once claimed it is never claimed again unless known not placed. */
+  kind: "email" | "text" | "call" | "a2a";
+  status: "pending" | "sent" | "not_sent" | "unknown";
+  provider_ref: string | null;
+  attempts: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** An address or number Haggle never contacts again (an opt-out, or a hard bounce). */
+export interface SuppressionRow {
+  contact: string;
+  reason: "opt_out" | "bounce";
+  job_id: string | null;
+  evidence: string | null;
+  created_at: string;
+}
+
+/** A vendor the operator authorized for one workspace, and the consent that rests on. */
+export interface WorkspaceVendorRow {
+  workspace_id: string;
+  contact: string;
+  name: string;
+  consent: string;
+  added_by: string;
+  created_at: string;
+}
+
+/**
+ * Manual payment handoff: the human pays the business directly (no money moves through Haggle).
+ * Haggle records the business's payment instructions (untrusted text, never followed) and the
+ * human's own confirmation that they paid; only then does the business hear that payment was sent.
+ */
+export interface PaymentHandoffRow {
+  id: string;
+  job_id: string;
+  approval_id: string;
+  business_id: string;
+  amount_cents: number;
+  status: "instructions_requested" | "instructions_received" | "human_confirmed" | "cancelled";
+  instructions_text: string | null;
+  instructions_message_id: string | null;
+  confirmed_by: string | null;
+  confirmed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Persistence port. InMemoryRepository for tests/mock mode; PostgresRepository for live. */
 export interface Repository {
   // workspaces (tenancy)
@@ -247,6 +299,33 @@ export interface Repository {
   findWorkspaceBySecretHash(hash: string): Promise<WorkspaceRow | null>;
   /** Revoke (credentials stop resolving) or rotate (new hashes, revocation cleared) a workspace's credentials. */
   setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }): Promise<WorkspaceRow | null>;
+
+  // job leases (one advancing instance per job, across processes)
+  /** Take or renew the lease when it is free, expired or already ours. False: another instance holds it. */
+  acquireJobLease(jobId: string, owner: string, now: string, ttlMs: number): Promise<boolean>;
+  releaseJobLease(jobId: string, owner: string): Promise<void>;
+
+  // outbox
+  /** Insert a pending claim; `fresh` false = the key was already claimed (row is the existing one). */
+  claimOutbox(o: { key: string; job_id: string | null; kind: OutboxRow["kind"] }, now: string): Promise<{ fresh: boolean; row: OutboxRow }>;
+  /** Re-claim a stale idempotent action (same provider key) or one known not sent. Null if refused. */
+  reclaimOutbox(key: string, fromStatuses: OutboxRow["status"][], now: string): Promise<OutboxRow | null>;
+  finishOutbox(key: string, status: Exclude<OutboxRow["status"], "pending">, providerRef: string | null, now: string): Promise<void>;
+  getOutbox(key: string): Promise<OutboxRow | null>;
+
+  // suppressions (global: one buyer identity contacts every vendor)
+  addSuppression(s: Omit<SuppressionRow, "created_at">): Promise<void>;
+  findSuppressions(contacts: string[]): Promise<SuppressionRow[]>;
+
+  // per-workspace vendor authorization
+  addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">): Promise<WorkspaceVendorRow>;
+  removeWorkspaceVendor(workspaceId: string, contact: string): Promise<boolean>;
+  listWorkspaceVendors(workspaceId: string): Promise<WorkspaceVendorRow[]>;
+
+  // manual payment handoff
+  insertHandoff(h: Omit<PaymentHandoffRow, "created_at" | "updated_at">): Promise<PaymentHandoffRow | null>;
+  getHandoffByApproval(approvalId: string): Promise<PaymentHandoffRow | null>;
+  updateHandoff(id: string, fromStatuses: PaymentHandoffRow["status"][], patch: Partial<Pick<PaymentHandoffRow, "status" | "instructions_text" | "instructions_message_id" | "confirmed_by" | "confirmed_at">>): Promise<PaymentHandoffRow | null>;
 
   // jobs
   insertJob(job: JobRow): Promise<JobRow>;
