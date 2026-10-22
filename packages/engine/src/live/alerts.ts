@@ -2,7 +2,7 @@
 // a human should look at (stalled jobs, AI budget reached, repeated background failures). Every alert
 // is also a log line. Alerts are redacted, deduplicated per key and rate limited overall, and an
 // alert never throws into (or waits on) the caller's work.
-import { redactText, type Logger } from "./log.ts";
+import { redactText, type EngineLog, type Logger } from "./log.ts";
 
 export type AlertSeverity = "info" | "warn" | "critical";
 export interface Alert {
@@ -87,5 +87,44 @@ export function createAlerter(opts: AlerterOptions = {}): Alerter {
         return false;
       }
     },
+  };
+}
+
+type Fields = Record<string, unknown>;
+const str = (v: unknown) => (typeof v === "string" ? v : v === null || v === undefined ? "" : String(v));
+const pick = (d: Fields, ...keys: string[]) => Object.fromEntries(keys.filter((k) => d[k] !== undefined).map((k) => [k, typeof d[k] === "number" || typeof d[k] === "boolean" ? d[k] as number | boolean : str(d[k]).slice(0, 200)]));
+
+/**
+ * Engine and reconciler log events a person must see, mapped to alerts. The dedupe key decides how
+ * often the same thing pages: once per review, per job and reason, or per kind of failure.
+ */
+export const ALERT_EVENTS: Record<string, (d: Fields) => Alert> = {
+  operator_review: (d) => ({ key: `review:${str(d.review_id)}`, severity: d.kind === "payment" || d.kind === "confirmation" ? "critical" : "warn", summary: `Operator review opened (${str(d.kind)}): ${str(d.reason)}`, details: pick(d, "review_id", "kind", "job_id") }),
+  operator_attention: (d) => ({ key: `attention:${str(d.job_id)}:${str(d.reason)}`, severity: "warn", summary: `Job ${str(d.job_id)} needs a person: ${str(d.reason).replace(/_/g, " ")}`, details: pick(d, "job_id", "reason") }),
+  lease_lost: (d) => ({ key: `lease_lost:${str(d.job_id)}`, severity: "warn", summary: `An advance lost job ${str(d.job_id)}'s lease mid-run (a slow advance or a database stall); it was fenced, nothing sent twice`, details: pick(d, "job_id") }),
+  send_record_failed: (d) => ({ key: "send_record_failed", severity: "warn", summary: "A message was sent but couldn't be recorded (database unavailable); it is re-recorded under the same provider key", details: pick(d, "job_id") }),
+  recovery_failed: (d) => ({ key: "recovery_failed", severity: "warn", summary: "The stuck-job sweep failed for a job", details: pick(d, "job_id", "error") }),
+  reconcile_gave_up: (d) => ({ key: `reconcile_gave_up:${str(d.key)}`, severity: "warn", summary: "An inbound item couldn't be ingested after repeated tries; it is in operator review", details: pick(d, "key", "kind") }),
+  reconcile_gap: (d) => ({ key: `reconcile_gap:${str(d.channel)}`, severity: "critical", summary: `The ${str(d.channel)} reconciler was down longer than it catches up; older items must be checked by hand`, details: pick(d, "channel", "mark", "swept_from") }),
+  reconcile_window_truncated: (d) => ({ key: `reconcile_truncated:${str(d.channel)}`, severity: "warn", summary: `The ${str(d.channel)} catch-up can't page past a burst of items; check the reconciler`, details: pick(d, "channel", "at") }),
+  reconcile_catch_up_failed: (d) => ({ key: `reconcile_catch_up:${str(d.channel)}`, severity: "warn", summary: `The ${str(d.channel)} catch-up after an outage keeps failing`, details: pick(d, "channel", "at") }),
+  webhook_failed: (d) => ({ key: `webhook_failed:${str(d.status)}`, severity: "warn", summary: `Inkbox webhook deliveries are failing (HTTP ${str(d.status)}); the reconciler recovers them`, details: pick(d, "status", "path") }),
+  operator_closed: (d) => ({ key: `closed:${str(d.job_id)}`, severity: "info", summary: `Job ${str(d.job_id)} was closed by an operator (fail-safe close)`, details: pick(d, "job_id") }),
+};
+
+/**
+ * The engine's log port, also alerting on the events in ALERT_EVENTS (deduped and rate limited by
+ * the alerter). Live wiring: `log: alertingLog(logger.engine, alerts)`. Never throws, never waits.
+ */
+export function alertingLog(log: EngineLog, alerter: Pick<Alerter, "alert">, events: Record<string, (d: Fields) => Alert> = ALERT_EVENTS): EngineLog {
+  return (event, data) => {
+    log(event, data);
+    const make = events[event];
+    if (!make) return;
+    try {
+      void alerter.alert(make(data ?? {})).catch(() => false);
+    } catch {
+      /* an alert never breaks the caller */
+    }
   };
 }

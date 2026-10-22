@@ -19,11 +19,37 @@ export interface Logger {
   engine: EngineLog;
 }
 
-const SECRET_KEY = /(secret|token|password|passwd|api[_-]?key|authorization|cookie|signature|private[_-]?key|credential|connector[_-]?url|db[_-]?url|database[_-]?url)/i;
+const SECRET_KEY = /(secret|token|password|passwd|api[_-]?key|authorization|cookie|signature|private[_-]?key|credential|connector[_-]?url|db[_-]?url|database[_-]?url|card[_-]?number|account[_-]?number|routing[_-]?number|iban|cvc|cvv)/i;
 /** Field names whose values are contact details: always masked whatever they look like. */
 const CONTACT_KEY = /^(email|phone|to|from|to_number|from_number|approver_(email|phone)|notify_phone|recipient|sender|contact)$/i;
+/** Personal details by field name (a postal address, a person's name): always masked. */
+const PERSONAL_KEY = /^(address|street|street_address|postal_address|home_address|full_name|first_name|last_name|customer_name|date_of_birth|dob|ssn)$/i;
+/**
+ * Field names that carry a message's content (an email body, a text, a call transcript, payment
+ * instructions, an attachment): never written, only their length. Business messages and the
+ * human's texts hold personal details and payment details that no pattern catches reliably.
+ */
+const BODY_KEY = /^(body|body_text|bodytext|body_html|bodyhtml|html|text|raw|raw_body|transcript|instructions|instructions_text|reply_text|message_body|content|content_base64|contentbase64|attachment|attachments)$/i;
 
-const PATTERNS: [RegExp, string][] = [
+/** Luhn check: a 13-19 digit run that passes is a payment card number. */
+function luhn(digits: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+const PATTERNS: [RegExp, string | ((m: string, ...a: string[]) => string)][] = [
+  // Payment details (a business's payment instructions, a human's text): card numbers (Luhn-valid
+  // 13-19 digits, spaced or dashed), IBANs, and account / routing / sort-code numbers after their label.
+  [/\b(?:\d[ -]?){12,18}\d\b/g, (m) => (luhn(m.replace(/\D/g, "")) ? "[card]" : m)],
+  [/\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b/g, "[iban]"],
+  [/\b(account|acct|a\/c|routing|aba|sort[ -]?code|bsb|iban)(\s*(?:number|no\.?|num|#|code))?(\s*[:#=-]?\s*)(?=[A-Z0-9 -]{0,34}?(?:\d[ -]?){4})[A-Z0-9][A-Z0-9 -]{3,32}[A-Z0-9]\b/gi, "$1$2$3[redacted]"],
+  // US social security numbers.
+  [/\b\d{3}-\d{2}-\d{4}\b/g, "[ssn]"],
   // Connection strings with credentials: keep the scheme and host, drop user and password.
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, "$1[redacted]@"],
   [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]"],
@@ -45,13 +71,18 @@ const PATTERNS: [RegExp, string][] = [
 /** Redact emails, phone numbers, keys and tokens from free text. */
 export function redactText(s: string): string {
   let out = s;
-  for (const [re, rep] of PATTERNS) out = out.replace(re, rep);
+  for (const [re, rep] of PATTERNS) out = out.replace(re, rep as never);
   return out;
 }
 
 /** Deep redaction of a value: strings scrubbed, secret-named fields masked, depth and size bounded. */
 export function redact(value: unknown, depth = 0, key = ""): unknown {
   if (key && SECRET_KEY.test(key)) return value === undefined || value === null || value === "" ? value : "[redacted]";
+  if (key && PERSONAL_KEY.test(key) && value !== undefined && value !== null && value !== "") return "[redacted]";
+  if (key && BODY_KEY.test(key) && value !== undefined && value !== null && value !== "") {
+    const n = typeof value === "string" ? value.length : Array.isArray(value) ? value.length : null;
+    return n === null ? "[omitted]" : `[omitted: ${n} ${typeof value === "string" ? "chars" : "items"}]`;
+  }
   if (key && CONTACT_KEY.test(key) && typeof value === "string" && value) return /@/.test(value) ? "[email]" : /\d{6}/.test(value) ? "[phone]" : redactText(value);
   if (typeof value === "string") return redactText(value.length > 2000 ? `${value.slice(0, 2000)}…` : value);
   if (value === null || typeof value !== "object") return value;

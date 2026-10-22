@@ -4,6 +4,7 @@ import { newId } from "../ids.ts";
 import {
   DEFAULT_WORKSPACE_ID,
   type ApprovalRow,
+  type ReconcileChannel,
   type JobBusinessRow,
   type JobEventRow,
   type JobRow,
@@ -575,5 +576,15 @@ export class InMemoryRepository implements Repository {
   async listQuarantinedMessages(q: { jobId?: string; limit?: number }) {
     return this.messages.filter((m) => m.direction === "in" && (m.kind === "quarantine" || (m.kind === "reply" && m.sender_trusted !== true)) && (q.jobId === undefined || m.job_id === q.jobId))
       .slice(-(q.limit ?? 100)).reverse().map(clone);
+  }
+  // reconciler high-water marks (migration 117)
+  private cursors = new Map<string, string>();
+  async getReconcileCursor(scope: string, channel: ReconcileChannel) {
+    return this.cursors.get(`${scope}|${channel}`) ?? null;
+  }
+  async advanceReconcileCursor(scope: string, channel: ReconcileChannel, at: string) {
+    const k = `${scope}|${channel}`;
+    const cur = this.cursors.get(k);
+    if (!cur || Date.parse(at) > Date.parse(cur)) this.cursors.set(k, new Date(at).toISOString());
   }
 }

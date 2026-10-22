@@ -85,6 +85,10 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `HAGGLE_AI_DAILY_TOKEN_BUDGET` | Claude tokens per UTC day per process; over it, replies wait for a human |  | server | – | optional | recommended | recommended | integer > 0; **error** |  |
 | `HAGGLE_STALL_CHECK_EVERY_S` | Stalled-job check interval in seconds (0 = off) |  | server | – | optional | optional | optional | integer ≥ 0; **error** | `300` |
 | `HAGGLE_DB_POOL_MAX` | Postgres connections per process (Supabase's session pooler allows 15 clients in total) |  | server | – | optional | optional | optional | integer 1–10; **error** | `4` |
+| `HAGGLE_MCP_MAX_BODY_BYTES` | Largest MCP request body accepted (bytes); larger gets 413 |  | server | optional | optional | optional | optional | integer 1024–16777216; warning | `262144` |
+| `HAGGLE_WEBHOOK_MAX_BODY_BYTES` | Largest Inkbox webhook body accepted (bytes); larger gets 413 |  | server | – | optional | optional | optional | integer 1024–33554432; warning | `2097152` |
+| `HAGGLE_RATE_TOOL_CALLS_PER_MIN` | Tool calls per minute per credential (token bucket); 0 = off. Default 120 in live mode, off in mock |  | server | optional | optional | optional | optional | integer 0–100000; warning |  |
+| `HAGGLE_RATE_TOOL_CALLS_BURST` | Burst size of the per-credential tool-call rate limit |  | server | optional | optional | optional | optional | integer 1–10000; warning | `30` |
 | `HAGGLE_DB_QUEUE_TIMEOUT_MS` | How long a query waits for a free pool connection before failing as transient (ms) |  | server | – | optional | optional | optional | integer 100–60000; **error** | `5000` |
 | `HAGGLE_DB_SCHEMA` | Schema the migrations were applied to, when not public |  | server, brain, script | – | optional | optional | optional | a lower-case schema name ([a-z_][a-z0-9_]*); **error** |  |
 | `HAGGLE_PAYMENTS` | manual: approved deals end in a payment handoff to the vendor (no money moves through Haggle) |  | server | – | optional | recommended | recommended | `manual`; **error** |  |

@@ -12,6 +12,7 @@ import { ApprovalOut, BusinessProfile, Conversation, dealStartedBoard, DealBoard
 import { blockerLines, businessRef, findVendors, rosterBusinessId, workspaceVendorList, type ChannelStatus, type RosterEntry } from "./src/vendors.ts";
 import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, historyEvidence, learningFor, listingEvidence, requestCategory, resolveSelection, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered, type Selected } from "./src/businesses.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
+import { limitsMiddleware } from "./src/limits.ts";
 import { ConfigError } from "./src/config.ts";
 import { cachedReadiness } from "./src/health.ts";
 import { authRequired, CONNECTOR_HEADER, isHandshakeOnly, resolveWorkspace } from "./src/workspace.ts";
@@ -56,6 +57,7 @@ const server = new MCPServer<never, AppEnv>({
 // credential; otherwise (mock) requests without credentials use the default workspace. A wrong or
 // revoked credential is always refused.
 
+server.use("*", limitsMiddleware({ basePath: server.basePath })); // body size + tool-call rate limits first (src/limits.ts)
 server.use("*", async (c, next) => {
   if (c.req.path === server.basePath && c.req.method !== "OPTIONS") {
     let rt: Runtime;

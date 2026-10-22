@@ -3,12 +3,14 @@
 // engine's backup tick acts on it (HaggleEngine.recoverStuck); scripts/job-ops.ts list-stuck only
 // prints it. An advance is always safe to try (every send is keyed, every state change a CAS);
 // what it can't fix within REVIEW_AFTER_MS goes to operator review instead of waiting forever.
-import type { ApprovalRow, JobBusinessRow, JobRow, OutboxRow, PaymentRow } from "../store/types.ts";
+import type { ApprovalRow, BookingRow, JobBusinessRow, JobRow, OutboxRow, PaymentHandoffRow, PaymentRow } from "../store/types.ts";
 import { isObligationKey, OUTBOX_MAX_ATTEMPTS } from "./deadLetter.ts";
 
 export type StuckIssue =
   | "created_stalled" | "contacting_unsent" | "collection_overdue" | "approval_overdue" | "charge_stale"
-  | "outbox_stale" | "call_claim_stale" | "outbox_unknown" | "outbox_exhausted" | "confirmation_not_sent" | "late_reply";
+  | "outbox_stale" | "call_claim_stale" | "outbox_unknown" | "outbox_exhausted" | "confirmation_not_sent" | "late_reply"
+  // Waiting on a person who doesn't know it, or on a business that went quiet after approval.
+  | "approval_undelivered" | "booking_unconfirmed" | "handoff_instructions_overdue";
 
 export interface StuckFinding {
   job_id: string;
@@ -29,6 +31,9 @@ export interface RecoverySnapshot {
   outbox: OutboxRow[];
   /** Inbound messages stored but not read (parse_status pending). */
   pendingMessages: number;
+  /** The latest approval's booking and payment handoff (manual rail), when there are any. */
+  booking?: Pick<BookingRow, "status" | "stalled_at"> | null;
+  handoff?: Pick<PaymentHandoffRow, "status" | "stalled_at"> | null;
 }
 
 export const RECOVERY = {
@@ -87,6 +92,20 @@ export function planRecovery(s: RecoverySnapshot, nowMs: number, p = RECOVERY): 
     if (!sent && late >= 0 && !s.outbox.some((o) => o.key === key && o.status === "pending")) {
       out.push({ job_id: job.id, issue: "confirmation_not_sent", action: "review", detail: "the deal closed but the business was never told to go ahead (its confirmation failed); not re-sent automatically", subject: key, overdue_ms: late });
     }
+  }
+  if (job.state === "awaiting_approval" && s.approval?.status === "pending") {
+    // Every text or email asking the human for this approval failed: they can't approve what they never saw.
+    const asks = s.outbox.filter((o) => o.key.endsWith(`approval:${s.approval!.id}`));
+    const last = asks.reduce((m, o) => Math.max(m, Date.parse(o.updated_at)), 0);
+    if (asks.length && asks.every((o) => o.status === "not_sent" || o.status === "unknown") && nowMs - last >= p.stuckAfterMs) {
+      out.push({ job_id: job.id, issue: "approval_undelivered", action: "review", detail: "the approval request never reached the human (every text or email for it failed); they can't approve it. Check the approver's number, then ask them directly or resend", subject: asks[0]!.key, overdue_ms: nowMs - last });
+    }
+  }
+  if (job.state === "paying" && s.booking?.status === "awaiting_vendor_confirmation" && s.booking.stalled_at) {
+    out.push({ job_id: job.id, issue: "booking_unconfirmed", action: "review", detail: "the business hasn't confirmed the approved booking (reminded once, the human told); a person should call it or pick another option", overdue_ms: since(s.booking.stalled_at) });
+  }
+  if (job.state === "paying" && s.handoff?.status === "instructions_requested" && s.handoff.stalled_at) {
+    out.push({ job_id: job.id, issue: "handoff_instructions_overdue", action: "review", detail: "the business never sent payment instructions (reminded once, the human told); a person should ask it directly", overdue_ms: since(s.handoff.stalled_at) });
   }
   if (TERMINAL.has(job.state) && s.pendingMessages > 0) out.push({ job_id: job.id, issue: "late_reply", action: "advance", detail: `${s.pendingMessages} repl${s.pendingMessages === 1 ? "y" : "ies"} arrived after the deal closed`, overdue_ms: 0 });
   return out;

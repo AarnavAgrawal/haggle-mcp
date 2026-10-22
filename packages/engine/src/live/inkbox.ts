@@ -332,6 +332,9 @@ export function mapInkboxError(e: unknown): ChannelSendError {
   if (code && RETRY_CODES[code]) return new ChannelSendError(RETRY_CODES[code]![0], true, RETRY_CODES[code]![1], `${code}: ${msg}`);
   if (code && HARD_CODES[code]) return new ChannelSendError(HARD_CODES[code]!, false, 0, `${code}: ${msg}`);
   if (status === 429) return new ChannelSendError("rate_limited", true, 120_000, msg);
+  // An idempotency-key conflict: an earlier attempt under this key may have been accepted, so the
+  // send is ambiguous (recorded unknown, reviewed, never re-sent), not a bad address.
+  if (status === 409 || /idempotenc/.test(code)) return new ChannelSendError("provider_error", false, 0, msg, true);
   if (status !== undefined && status >= 500) return new ChannelSendError("provider_error", true, 30_000, msg);
   if (status === 400 || status === 404 || status === 422) return new ChannelSendError("invalid_address", false, 0, msg);
   return new ChannelSendError("provider_error", false, 0, msg);

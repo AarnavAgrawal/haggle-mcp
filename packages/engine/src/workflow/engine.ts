@@ -65,7 +65,7 @@ import { ChannelSendError, type EngineDeps, type PhoneCallRequest } from "./port
 import { buildVoiceInstructions, isWithinCallHours, nextCallHoursStart } from "./callPolicy.ts";
 import { decideTextScope, inTextScope, jobCodeIn, lastRoute, withoutJobCode, type TextScope } from "./textRouting.ts";
 import { CALL_TEXT, CALLBACK_AUTH_TTL_MS, callbackCodeHash, callbackConsent, codeMatches, MAX_CALLBACK_CODE_ATTEMPTS, newCallbackCode, pendingCallbackAuths, type CallbackConsent } from "./callbackAuth.ts";
-import { decideChargeResume, decideClaim, redactError } from "./deadLetter.ts";
+import { closeSubject, decideChargeResume, decideClaim, holdSubject, redactError } from "./deadLetter.ts";
 import { planRecovery, type StuckFinding } from "./recovery.ts";
 import type { OperatorReviewRow, OutboxRow } from "../store/types.ts";
 import { DEFAULT_CONTACT_TIMEZONE, decideFirstContact, decideFollowUp, localLabel } from "./contactWindow.ts";
@@ -1066,19 +1066,29 @@ export class HaggleEngine {
     try {
       out = await this.d.email.send({ from: job.inbox, to, subject: msg.subject, bodyText: msg.bodyText, idempotencyKey: key, ...(thread ? { thread } : {}), ...(msg.attachments ? { attachments: msg.attachments } : {}) });
     } catch (err) {
-      // Email carries the provider idempotency key, so a later retry under the same key is safe.
-      await this.outboxFailed(key, job.id, "email", "not_sent", err);
+      // Email carries the provider idempotency key, so a later retry under the same key is safe;
+      // unless the provider says it may have acted (an idempotency conflict): never re-sent then.
+      await this.outboxFailed(key, job.id, "email", err instanceof ChannelSendError && err.ambiguous ? "unknown" : "not_sent", err);
       throw err;
     }
-    const row = await this.repo.insertMessage({
-      job_id: job.id, business_id: b?.business_id ?? null, approval_id: msg.approvalId ?? null, direction: "out", kind,
-      provider_email_id: out.providerId, idempotency_key: key, rfc_message_id: out.messageId, thread_id: b?.thread_id ?? null,
-      from_address: job.inbox, to_address: to, subject: msg.subject, body_text: msg.bodyText,
-      attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, content_type: a.contentType, size_bytes: a.content.byteLength, tar_path: null })),
-      attachments_download_url: null, sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null,
-      round: msg.round ?? null, simulated: job.mode === "mock",
-    });
-    await this.repo.finishOutbox(key, "sent", out.providerId, this.now().toISOString());
+    let row: MessageRow | null;
+    try {
+      row = await this.repo.insertMessage({
+        job_id: job.id, business_id: b?.business_id ?? null, approval_id: msg.approvalId ?? null, direction: "out", kind,
+        provider_email_id: out.providerId, idempotency_key: key, rfc_message_id: out.messageId, thread_id: b?.thread_id ?? null,
+        from_address: job.inbox, to_address: to, subject: msg.subject, body_text: msg.bodyText,
+        attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, content_type: a.contentType, size_bytes: a.content.byteLength, tar_path: null })),
+        attachments_download_url: null, sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null,
+        round: msg.round ?? null, simulated: job.mode === "mock",
+      });
+      await this.repo.finishOutbox(key, "sent", out.providerId, this.now().toISOString());
+    } catch (err) {
+      // Sent, but the database couldn't record it (an outage): never a bounce. The claim stays
+      // pending; once stale it is re-sent under the same provider key, which replays the original
+      // send instead of delivering it twice, and recorded then.
+      this.log("send_record_failed", { job_id: job.id, key, error: redactError(err) });
+      throw new ChannelSendError("provider_error", true, OUTBOX_STALE_MS, "sent, but not recorded (database unavailable); re-recorded under the same provider key");
+    }
     return row ?? (await this.repo.findMessageByIdempotencyKey(key));
   }
 
@@ -1281,7 +1291,16 @@ export class HaggleEngine {
    */
   private async onSendFailure(job: JobRow, b: JobBusinessRow, err: unknown, what: string) {
     const f = err instanceof ChannelSendError ? err : null;
+    // Fenced out: another instance owns the job now; this stale holder writes nothing more for it.
+    if (err instanceof LeaseLostError) return;
     this.log("send_failed", { job_id: job.id, business_id: b.business_id, what, reason: f?.reason ?? "error", error: (err as Error).message });
+    if (f?.ambiguous) {
+      // The business may have it (an outcome the provider can't confirm, or an action under operator
+      // review): contacted, never bounced and never escalated to a call (that would contact it twice).
+      await this.repo.updateBusiness(job.id, b.business_id, { status: "contacted", contacted_at: b.contacted_at ?? this.now().toISOString(), next_attempt_at: null }, { ifStatus: ["pending"] });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${what} to ${b.name}: outcome unknown; not re-sent (an operator reviews it)` });
+      return;
+    }
     if (f?.retryable && b.send_attempts + 1 < MAX_SEND_ATTEMPTS) {
       const at = new Date(this.now().getTime() + Math.max(f.retryAfterMs, 1_000)).toISOString();
       await this.repo.updateBusiness(job.id, b.business_id, { send_attempts: b.send_attempts + 1, next_attempt_at: at });
@@ -1337,7 +1356,7 @@ export class HaggleEngine {
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `RFQ sent to ${b.name} (A2A task)`, channel: "a2a" });
     } catch (err) {
       // Claimed by another instance right now (or a retryable outage): tried again later, not given up.
-      if (err instanceof ChannelSendError && err.retryable) return this.onSendFailure(job, b, err, "A2A task");
+      if (err instanceof ChannelSendError && (err.retryable || err.ambiguous)) return this.onSendFailure(job, b, err, "A2A task");
       await this.repo.updateBusiness(job.id, b.business_id, { status: "bounced" });
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `A2A task to ${b.name} failed: ${(err as Error).name}` });
       this.log("a2a_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
@@ -1482,12 +1501,14 @@ export class HaggleEngine {
     }
     // iMessage when it's on; otherwise SMS from the buyer's own number (same text channel).
     const viaSms = !this.d.imessage;
+    let delivered = false;
     try {
       const body = fitText(text, viaSms ? SMS_LIMIT : 159);
       const sent = await (viaSms ? this.d.sms!.send({ to: b.phone, text: body, idempotencyKey: key }) : this.d.imessage!.send({ to: b.phone, text: body, idempotencyKey: key })).catch(async (e: unknown) => {
-        await this.outboxFailed(key, job.id, "text", "not_sent", e);
+        await this.outboxFailed(key, job.id, "text", e instanceof ChannelSendError && e.ambiguous ? "unknown" : "not_sent", e);
         throw e;
       });
+      delivered = true;
       await this.repo.finishOutbox(key, "sent", sent.messageId, this.now().toISOString());
       if (viaSms) await this.noteTextRoute(job, b.phone, "business", { businessId: b.business_id });
       const row = await this.repo.insertMessage({
@@ -1501,6 +1522,18 @@ export class HaggleEngine {
       }
       return row;
     } catch (err) {
+      // Delivered but not recorded (a database outage): never a bounce. The claim stays pending and
+      // is re-sent under the same provider key once stale (the provider replays the original send).
+      if (delivered) {
+        this.log("send_record_failed", { job_id: job.id, key, error: redactError(err) });
+        if (kind !== "rfq") throw err;
+        return null;
+      }
+      if (kind === "rfq" && err instanceof ChannelSendError && err.ambiguous) {
+        await this.repo.updateBusiness(job.id, b.business_id, { status: "contacted", contacted_at: this.now().toISOString() }, { ifStatus: ["pending"] });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Text to ${b.name}: outcome unknown; not re-sent (an operator reviews it)`, channel: "imessage" });
+        return null;
+      }
       if (kind === "rfq") {
         await this.repo.updateBusiness(job.id, b.business_id, { status: "bounced" });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: viaSms ? `Text to ${b.name} failed` : `Couldn't text ${b.name}: ${imessageFailureReason((err as Error).message, job.inbox.split("@")[0]!)}`, channel: "imessage" });
@@ -3446,6 +3479,7 @@ export class HaggleEngine {
       await this.repo.updateBusiness(job.id, b.business_id, { status: "ringing", next_attempt_at: null, ...(opts.escalation ? { escalated_at: this.now().toISOString() } : { contacted_at: this.now().toISOString() }) });
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} (Voice AI${opts.escalation ? ", email unanswered" : ""})`, channel: "phone" });
     } catch (err) {
+      if (err instanceof LeaseLostError) return; // another instance owns the job now
       const f = err instanceof ChannelSendError ? err : null;
       if (f?.ambiguous) {
         // It may be ringing: treat the business as contacted (its call.ended still lands by number), never redial.
@@ -4200,14 +4234,15 @@ export class HaggleEngine {
    * advance (a tool call) aren't leased; the outbox claim alone keeps them single.
    */
   private async fence(jobId: string | null) {
-    if (jobId && !(await this.stillLeased(jobId))) throw new ChannelSendError("provider_error", true, OUTBOX_STALE_MS, "this instance lost the job's lease (another instance is advancing it); not sent from here");
+    if (jobId && !(await this.stillLeased(jobId))) throw new LeaseLostError();
   }
 
   private async stillLeased(jobId: string): Promise<boolean> {
     if (!ADVANCE_CTX.getStore()?.has(jobId)) return true;
     const held = this.leases.get(jobId);
     if (!held) return true;
-    if (!held.lost && (await this.repo.renewJobLease(jobId, held.owner, this.now().toISOString(), this.d.config.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS))) return true;
+    // A renewal that times out or errors (the database stalled) can't prove the lease: fenced, never sent on a guess.
+    if (!held.lost && (await this.repo.renewJobLease(jobId, held.owner, this.now().toISOString(), this.d.config.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS).catch(() => false))) return true;
     this.leaseLost(jobId, held);
     return false;
   }
@@ -4308,8 +4343,11 @@ export class HaggleEngine {
     try {
       t = await this.d.a2a!.send(req);
     } catch (err) {
-      await this.outboxFailed(key, jobId, "a2a", "not_sent", err);
-      throw err;
+      // Only a definite refusal is "not sent". A timeout or 5xx may come after the business's agent
+      // took the task, and its messageId dedupe is unverified: unknown, reviewed, never re-sent.
+      const definite = err instanceof ChannelSendError && !err.retryable && !err.ambiguous;
+      await this.outboxFailed(key, jobId, "a2a", definite ? "not_sent" : "unknown", err);
+      throw definite ? err : new ChannelSendError("provider_error", false, 0, `A2A task outcome unknown: ${(err as Error).message}`, true);
     }
     await this.repo.finishOutbox(key, "sent", `a2a-task:${t.taskId}`, this.now().toISOString());
     return t;
@@ -4429,11 +4467,64 @@ export class HaggleEngine {
     }
   }
 
+  /**
+   * An operator's fail-safe close (job-ops fail-safe-close, deadLetter.planFailSafeClose), run by the
+   * lease holder: the job ends `failed` (closed by the operator), a pending or unpaid approval
+   * expires, an unpaid booking or handoff is withdrawn on Haggle's side, and the human is texted
+   * exactly that. No business is contacted. While money may be moving it waits; after the customer
+   * reported paying it is refused (resolved with the reason). True: this advance stops here.
+   */
+  private async runOperatorClose(job: JobRow, req: OperatorReviewRow): Promise<boolean> {
+    const at = this.now().toISOString();
+    const done = (resolution: string) => this.repo.resolveReview(req.id, { resolution, resolved_by: "haggle-server" }, at);
+    const pay = await this.repo.getPaymentForJob(job.id);
+    if (pay && ["charging", "signed", "sent"].includes(pay.status)) {
+      this.log("operator_close_deferred", { job_id: job.id, payment_status: pay.status });
+      return true;
+    }
+    const a = await this.repo.getLatestApproval(job.id);
+    const h = a ? await this.repo.getHandoffByApproval(a.id) : null;
+    if (h?.status === "human_confirmed" || pay?.status === "settled") {
+      await done("refused by the server: money already moved (the customer reported paying, or a charge settled); handle it with the customer");
+      await this.repo.appendEvent(job.id, "operator_attention", { reason: "close_refused_money_moved", review_id: req.id });
+      return true;
+    }
+    const events = await this.repo.listEvents(job.id);
+    const ask = events.filter((e) => e.type === "operator_close_requested").at(-1)?.data ?? {};
+    const reason = clip(typeof ask.reason === "string" ? ask.reason : "closed by the operator", 80);
+    const closed = await this.repo.casJob(job.id, job.version, { state: "failed", failure_reason: "operator_closed", ready: false });
+    if (!closed) return true; // changed meanwhile: the next advance decides again
+    await this.repo.appendEvent(job.id, "state", { from: job.state, to: "failed", cause: "operator_close", reason: "operator_closed" });
+    let booking: "confirmed" | "requested" | null = null;
+    if (a && (a.status === "pending" || a.status === "approved")) {
+      await this.repo.transitionApproval(a.id, a.status, { status: "expired", decided_at: at });
+      const bk = await this.repo.getBookingByApproval(a.id);
+      if (bk && (await this.repo.updateBooking(bk.id, ["awaiting_vendor_confirmation", "confirmed", "not_in_writing"], { status: "cancelled", cancel_reason: "closed by the operator" }))) booking = bk.status === "awaiting_vendor_confirmation" ? "requested" : "confirmed";
+      if (h) await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "cancelled" });
+    }
+    const businesses = await this.repo.getBusinesses(job.id);
+    const winner = a && booking ? clip(businesses.find((b) => b.business_id === a.business_id)?.name ?? "The business", 30) : null;
+    const replied = businesses.filter((b) => ["replied", "quoted", "question"].includes(b.status) && b.business_id !== a?.business_id).map((b) => clip(b.name, 24));
+    const who = booking === "confirmed" ? ` ${winner} had confirmed the booking and wasn't told it's off: contact them directly.`
+      : booking === "requested" ? ` ${winner} was asked to confirm a booking and wasn't told it's off: let them know.`
+      : replied.length ? ` Businesses that replied (${replied.slice(0, 3).join(", ")}${replied.length > 3 ? ", ..." : ""}) weren't told.` : "";
+    const text = `an operator closed this deal (${reason}). Haggle won't contact any business about it again, and nothing was paid through Haggle.${who}`;
+    await this.repo.appendEvent(job.id, "operator_closed", { by: typeof ask.by === "string" ? ask.by : null, reason, booking, businesses_told: false, at });
+    await this.repo.appendEvent(job.id, "reply", { business_id: "", summary: `Closed by the operator (${reason}); no business was contacted` });
+    await this.notifyHuman(closed, "operator-closed", text);
+    await done("closed by the server: job failed (operator_closed), the human texted, no business contacted");
+    const hold = await this.repo.findOpenReview("stuck_job", holdSubject(job.id));
+    if (hold) await this.repo.resolveReview(hold.id, { resolution: "job closed by the operator", resolved_by: "haggle-server" }, at);
+    this.log("operator_closed", { job_id: job.id, booking });
+    return true;
+  }
+
   private async recoverySnapshot(job: JobRow) {
     const [businesses, approval, payment, outbox, pending] = await Promise.all([
       this.repo.getBusinesses(job.id), this.repo.getLatestApproval(job.id), this.repo.getPaymentForJob(job.id), this.repo.listOutbox({ jobId: job.id }), this.repo.getPendingMessages(job.id),
     ]);
-    return { job, businesses, approval, payment, outbox, pendingMessages: pending.length };
+    const [booking, handoff] = approval && job.state === "paying" ? await Promise.all([this.repo.getBookingByApproval(approval.id), this.repo.getHandoffByApproval(approval.id)]) : [null, null];
+    return { job, businesses, approval, payment, outbox, pendingMessages: pending.length, booking, handoff };
   }
 
   /**
@@ -4450,6 +4541,8 @@ export class HaggleEngine {
     let reviewed = 0;
     for (const job of [...open, ...closed]) {
       try {
+        // On an operator hold: the operator is already looking; nothing is advanced or re-reviewed.
+        if (!TERMINAL.has(job.state) && (await this.repo.findOpenReview("stuck_job", holdSubject(job.id)))) continue;
         let f = planRecovery(await this.recoverySnapshot(job), now);
         if (f.some((x) => x.action === "advance") && (opts.advanceOpen !== false || TERMINAL.has(job.state))) {
           await this.advanceJob(job.id);
@@ -4484,6 +4577,15 @@ export class HaggleEngine {
       // deal), and an operator's re-send of a failed confirmation runs.
       await this.surfaceLateReplies(first);
       await this.runOperatorRetries(first);
+      return;
+    }
+    // Operator actions (job-ops): a requested fail-safe close runs first; a hold stops everything else.
+    // One read for both (this runs on every advance): the job's open stuck_job reviews.
+    const operator = (await this.repo.listReviews({ status: "open", jobId, limit: 1000 })).filter((r) => r.kind === "stuck_job");
+    const closeReq = operator.find((r) => r.subject === closeSubject(jobId));
+    if (closeReq && (await this.runOperatorClose(first, closeReq))) return;
+    if (operator.some((r) => r.subject === holdSubject(jobId))) {
+      this.log("advance_held", { job_id: jobId });
       return;
     }
     if (first.state === "created") {
@@ -6734,6 +6836,14 @@ export class HaggleEngine {
 
 export class RetryLater extends Error {
   override name = "RetryLater";
+}
+
+/** A send refused because this instance lost the job's lease (fence): another instance owns the job; nothing is recorded from here. */
+export class LeaseLostError extends ChannelSendError {
+  override name = "LeaseLostError";
+  constructor() {
+    super("provider_error", true, OUTBOX_STALE_MS, "this instance lost the job's lease (another instance is advancing it); not sent from here");
+  }
 }
 
 /**

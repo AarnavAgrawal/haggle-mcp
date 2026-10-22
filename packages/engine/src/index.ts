@@ -74,3 +74,6 @@ export * from "./inbound/trustStrength.ts";
 // Sprint 4 B: why each quote was selected or rejected.
 export * from "./ranking/selection.ts";
 export * from "./store/poolGate.ts";
+// Workstream F (sprint 4): reconciler catch-up, the operator report.
+export * from "./live/reconcileWindow.ts";
+export * from "./ops/report.ts";

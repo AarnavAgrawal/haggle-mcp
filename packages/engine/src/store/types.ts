@@ -573,6 +573,11 @@ export interface Repository {
   listQuarantineResolutions(q: { messageId?: string; jobId?: string; limit?: number }): Promise<QuarantineResolutionRow[]>;
   /** Inbound email held for review, newest first: kind 'quarantine', or a reply stored untrusted. */
   listQuarantinedMessages(q: { jobId?: string; limit?: number }): Promise<MessageRow[]>;
+  // inbound reconciler high-water marks (migration 117), appended; optional so a reconciler can run without them
+  /** The time up to which the reconciler has seen every item of one channel for one buyer identity (null: never). */
+  getReconcileCursor?(scope: string, channel: ReconcileChannel): Promise<string | null>;
+  /** Move the mark forward (never back). */
+  advanceReconcileCursor?(scope: string, channel: ReconcileChannel, at: string): Promise<void>;
 }
 
 /** An operator's decision on a quarantined inbound message (migration 112; append-only, one per message). */
@@ -590,3 +595,6 @@ export interface QuarantineResolutionRow {
   released_trust_reason: "operator_verified" | null;
   resolved_at: string;
 }
+
+/** The reconciler's sources, each with its own high-water mark (migration 117). */
+export type ReconcileChannel = "email" | "email_status" | "text" | "call";

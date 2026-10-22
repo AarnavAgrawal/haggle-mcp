@@ -7,7 +7,7 @@
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
   businessIdForContact, MAX_ROUNDS, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
-  withHeuristicFallback, AiUsageMeter, aiLimitsFromEnv, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv,
+  withHeuristicFallback, AiUsageMeter, aiLimitsFromEnv, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
 } from "@haggle/engine";
 import { haggleEnv } from "./config.ts";
 import { makeBrain } from "./brain.ts";
@@ -84,7 +84,8 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     return name && (c.email || c.phone) ? [{ business_id: businessIdForContact({ email: c.email ?? null, phone: c.phone ?? null, a2a_card_url: c.a2a_card_url ?? null }, name), name, ...(c.email ? { email: c.email } : {}), ...(c.phone ? { phone: c.phone } : {}), simulated: true }] : [];
   });
   const brain = makeBrain([...fleet.map((b) => ({ business_id: b.business_id, name: b.name, email: b.email, simulated: b.simulated })), ...vendorIdentities], env, { observed: true });
-  const log = logger.engine;
+  // Engine and reconciler events that need a person (operator review, lease lost, send not recorded…) also alert.
+  const log = alertingLog(logger.engine, alerts);
   // AI usage controls (HAGGLE_AI_MAX_CALLS_PER_JOB, HAGGLE_AI_DAILY_TOKEN_BUDGET): every Claude call is
   // metered; over a limit it is refused and the reply waits for a human (never a keyword quote).
   const ai = new AiUsageMeter({
@@ -184,7 +185,10 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const previousRepo = g.__haggleRepo;
   g.__haggleRepo = repo;
   if (previousRepo && previousRepo !== repo) void previousRepo.close().catch(() => {});
+  // Stuck-job recovery (workflow/recovery.ts) every ~2 minutes: overdue work advanced, the rest to operator review.
+  const recoverEvery = Math.max(1, Math.round(120_000 / TICK_MS));
   g.__haggleTick = setInterval(() => {
+    if (ticks % recoverEvery === 0) void engine.recoverStuck({ advanceOpen: false }).catch((e) => backgroundFailed("recovery_failed", e));
     // Every sweepEvery-th tick, recover lost inbound first so this tick's advance reads it.
     // Each advance runs in its job's AI scope, so the strategist and question answers count toward it.
     void (ticks++ % sweepEvery === 0 ? sweep() : Promise.resolve()).then(() => repo.listOpenJobs()).then((jobs) => Promise.all(jobs.map((j) => ai.run({ jobId: j.id, workspaceId: j.workspace_id }, () => engine.advanceJob(j.id))))).catch((e) => backgroundFailed("tick_failed", e));
