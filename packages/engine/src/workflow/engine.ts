@@ -65,6 +65,9 @@ import { decideTextScope, inTextScope, jobCodeIn, lastRoute, type TextScope } fr
 import { decideChargeResume, decideClaim, redactError } from "./deadLetter.ts";
 import { planRecovery, type StuckFinding } from "./recovery.ts";
 import type { OperatorReviewRow, OutboxRow } from "../store/types.ts";
+import { DEFAULT_CONTACT_TIMEZONE, decideFirstContact, decideFollowUp, localLabel } from "./contactWindow.ts";
+import { contactStatusOf, type BusinessContactStatus } from "../inbound/contactStatus.ts";
+import { listQuarantine, rejectQuarantined, releaseQuarantined } from "../inbound/quarantineReview.ts";
 
 /** Board text for a reply Haggle couldn't read (never the provider's raw error). */
 export const UNREADABLE_REPLY = "Reply received; Haggle couldn't read a price";
@@ -1023,15 +1026,15 @@ export class HaggleEngine {
   }
 
   /** Send once per idempotency key; record the outbound message. */
-  private async sendRecorded(job: JobRow, b: JobBusinessRow | null, kind: MessageRow["kind"], key: string, raw: { to: string | null; subject: string; bodyText: string; attachments?: OutboundAttachment[]; inThread?: boolean; round?: number; approvalId?: string }) {
+  private async sendRecorded(job: JobRow, b: JobBusinessRow | null, kind: MessageRow["kind"], key: string, raw: { to: string | null; subject: string; bodyText: string; attachments?: OutboundAttachment[]; inThread?: boolean; round?: number; approvalId?: string; threadOn?: string | null }) {
     const prior = await this.repo.findMessageByIdempotencyKey(key);
     if (prior) return prior;
     if (!raw.to) throw new EngineError("no_email", `${b?.name ?? "This recipient"} has no email address.`, "Reach this business on its own channel.", "get_quotes");
     const to = raw.to;
     if (b) await this.refuseSuppressed(to);
-    const msg = b ? this.withReplyToken(job, b, raw) : raw;
+    const msg = this.withoutForeignTokens(job, b && normalizeAddress(to) === normalizeAddress(b.email ?? "") ? this.withReplyToken(job, b, raw) : raw, b);
     await this.claimSend(key, job.id, "email");
-    const thread = msg.inThread && b?.last_inbound_message_id ? { inReplyTo: b.last_inbound_message_id, references: b.references.slice(-10) } : undefined;
+    const thread = msg.inThread && b?.last_inbound_message_id ? { inReplyTo: b.last_inbound_message_id, references: b.references.slice(-10) } : raw.threadOn ? { inReplyTo: raw.threadOn, references: [raw.threadOn] } : undefined;
     let out;
     try {
       out = await this.d.email.send({ from: job.inbox, to, subject: msg.subject, bodyText: msg.bodyText, idempotencyKey: key, ...(thread ? { thread } : {}), ...(msg.attachments ? { attachments: msg.attachments } : {}) });
@@ -1094,6 +1097,18 @@ export class HaggleEngine {
     };
   }
 
+  /**
+   * A reply token is a bearer secret for one conversation (job + business): it may appear only in
+   * mail to that business's own address. Any other token in an outgoing email (a vendor's quoted
+   * text passed on, a forwarded snippet) is masked, so mail never hands one business's token to
+   * another recipient.
+   */
+  private withoutForeignTokens<T extends { subject: string; bodyText: string }>(job: JobRow, msg: T, b: JobBusinessRow | null): T {
+    const own = b && this.d.config.externalSenders === "reply_token" && this.d.config.replyTokenSecret ? replyToken(this.d.config.replyTokenSecret, job.id, b.business_id) : null;
+    const mask = (s: string) => s.replace(/HGR-[A-HJ-NP-Z2-9]{10}/gi, (t) => (own && t.toUpperCase() === own && msg.subject.includes(own) ? t : "HGR-…"));
+    return { ...msg, subject: mask(msg.subject), bodyText: mask(msg.bodyText) };
+  }
+
   private async sendRfqs(job: JobRow) {
     for (const b of await this.repo.getBusinesses(job.id)) {
       if (b.status !== "pending") continue;
@@ -1107,6 +1122,7 @@ export class HaggleEngine {
         await this.placeRfqCall(job, b);
         continue;
       }
+      if (await this.deferFirstContact(job, b)) continue;
       if (b.channel === "imessage") {
         await this.sendIMessageToBusiness(job, b, "rfq", `imsg-rfq:${job.id}:${b.business_id}`, HaggleEngine.rfqIMessageText(b.name, job, this.customer(job)), 1);
         continue;
@@ -1120,8 +1136,78 @@ export class HaggleEngine {
     await this.fire(job.id, { type: "rfqs_sent" });
   }
 
+  /** The timezone contact hours are counted in: the configured one, else the workspace's. */
+  private async contactTimezone(job: JobRow): Promise<string> {
+    return this.d.config.contactWindow?.timezone ?? (await this.repo.getWorkspace(job.workspace_id))?.timezone ?? DEFAULT_CONTACT_TIMEZONE;
+  }
+
+  /**
+   * Outside contact hours (config.contactWindow) a first email or iMessage to a business waits for
+   * the next opening (next_attempt_at; runDueContacts sends it), unless that would leave it too little
+   * time before the reply-by: then it goes now and the reason is recorded. True = deferred.
+   */
+  private async deferFirstContact(job: JobRow, b: JobBusinessRow): Promise<boolean> {
+    const cfg = this.d.config.contactWindow;
+    if (!cfg || (b.channel !== "email" && b.channel !== "imessage")) return false;
+    const tz = await this.contactTimezone(job);
+    const d = decideFirstContact(this.now(), new Date(job.collect_until), cfg, tz);
+    if (d.send) {
+      if (d.reason === "deadline") {
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, contact_window: "sent_outside_window", why: d.note, summary: `RFQ to ${b.name} sent outside contact hours: the reply-by doesn't leave time to wait` });
+        this.log("contact_outside_window", { job_id: job.id, business_id: b.business_id, why: d.note });
+      }
+      return false;
+    }
+    const at = d.until.toISOString();
+    if (b.next_attempt_at !== at) {
+      await this.repo.updateBusiness(job.id, b.business_id, { next_attempt_at: at }, { ifStatus: ["pending"] });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, contact_window: "deferred", at, summary: `RFQ to ${b.name} scheduled for ${localLabel(d.until, tz)} (outside contact hours)` });
+    }
+    return true;
+  }
+
+  /**
+   * Reminders to an email business that hasn't answered the RFQ (config.contactWindow): inside
+   * contact hours, the first no sooner than its business-hours spacing after the last email, at most
+   * `maxFollowUps`, and never after anything came back from it (even a held reply), a bounce, a
+   * failure, an opt-out or the reply-by. Threaded on the RFQ, carrying its reply token.
+   */
+  private async sendDueReminders(job: JobRow) {
+    const cfg = this.d.config.contactWindow;
+    if (!cfg || job.state !== "collecting") return;
+    const tz = await this.contactTimezone(job);
+    const msgs = await this.repo.listMessages(job.id);
+    const events = await this.repo.listEvents(job.id);
+    for (const b of await this.repo.getBusinesses(job.id)) {
+      if (b.channel !== "email" || !b.email || b.status !== "contacted" || b.last_reply_at || !b.contacted_at) continue;
+      const mine = msgs.filter((m) => m.business_id === b.business_id);
+      const outs = mine.filter((m) => m.direction === "out" && m.channel === "email");
+      const rfq = outs.find((m) => m.kind === "rfq");
+      if (!rfq || mine.some((m) => m.direction === "in") || outs.some((m) => m.delivery_status)) continue;
+      const prefix = `reminder:${job.id}:${b.business_id}:`;
+      const sent = outs.filter((m) => m.idempotency_key?.startsWith(prefix)).length;
+      // Spacing on the engine's clock: the RFQ's contacted_at, then each reminder's sent_at.
+      const last = Math.max(Date.parse(b.contacted_at), ...events.filter((e) => e.data.contact_window === "reminder" && e.data.business_id === b.business_id).map((e) => Date.parse(String(e.data.sent_at))).filter(Number.isFinite));
+      const [sup] = await this.repo.findSuppressions([normalizeAddress(b.email)]);
+      const d = decideFollowUp({ now: this.now(), lastSentAt: new Date(last), followUpsSent: sent, suppressed: sup?.reason === "bounce", optedOut: sup?.reason === "opt_out", jobOpen: !TERMINAL.has(job.state), replied: false, deadline: new Date(job.collect_until) }, cfg, tz);
+      if (!d.send) continue;
+      const qty = quantityText(job.request.quantity, job.request.unit);
+      const what = `${job.request.what}${qty ? ` for ${qty}` : ""}${job.request.date ? ` on ${eventWhen(job.request.date, job.request.time, job.request.date_until)}` : ""}`;
+      try {
+        await this.sendRecorded(job, b, "followup", `${prefix}${sent + 1}`, {
+          to: b.email, subject: rfq.subject ?? `[HG-${job.short_code}] Quote request: ${job.request.what}`, threadOn: rfq.rfc_message_id,
+          bodyText: `Hi ${b.name},\n\nJust following up on the request below for ${what}. If you can quote it, please reply to this email by ${localLabel(new Date(job.collect_until), tz)}. If you can't take it on, a quick "no thanks" helps too. If you'd rather not get requests like this, reply STOP and we won't contact you again.\n\n${this.signOff(job)}`,
+        });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, contact_window: "reminder", sent_at: this.now().toISOString(), summary: `Reminder ${sent + 1} of ${cfg.maxFollowUps} sent to ${b.name} (no reply yet)` });
+      } catch (err) {
+        this.log("reminder_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+      }
+    }
+  }
+
   /** First contact on the business's routed channel (also used for retries that come due). */
   private async contactBusiness(job: JobRow, b: JobBusinessRow) {
+    if (await this.deferFirstContact(job, b)) return;
     if (b.channel === "phone") await this.placeRfqCall(job, b);
     else if (b.channel === "imessage") await this.sendIMessageToBusiness(job, b, "rfq", `imsg-rfq:${job.id}:${b.business_id}`, HaggleEngine.rfqIMessageText(b.name, job, this.customer(job)), 1);
     else if (b.channel === "a2a") await this.sendA2aRfq(job, b);
@@ -3052,6 +3138,7 @@ export class HaggleEngine {
       if (b.status !== "pending") continue;
       if (b.next_attempt_at ? Date.parse(b.next_attempt_at) <= now : stalled) await this.contactBusiness(job, b);
     }
+    await this.sendDueReminders(job);
   }
 
   /** A job the process died on before it started (`created`, never committed to contacting): start it now. */
@@ -3581,7 +3668,41 @@ export class HaggleEngine {
 
   /** Inkbox message.bounced / message.failed (or the reconciler's outbound status sweep) for one of our own emails. See inbound/deliveryStatus.ts. */
   ingestDeliveryStatus(s: DeliveryStatusInput): Promise<{ jobId: string | null; outcome: string }> {
-    return applyDeliveryStatus(this.repo, s, (event, data) => this.log(event, data));
+    return applyDeliveryStatus(this.repo, { ...s, at: s.at ?? this.now() }, (event, data) => this.log(event, data));
+  }
+
+  /**
+   * Where Haggle stands with each business on this deal (inbound/contactStatus.ts): bounced, failed,
+   * opted out, a held (quarantined) reply, replied, awaiting a reply, scheduled. The deal board's
+   * fixed `status` enum can't say all of this; `line` is meant for its `last_event`.
+   */
+  async contactStatuses(jobId: string): Promise<BusinessContactStatus[]> {
+    const [businesses, messages, events] = await Promise.all([this.repo.getBusinesses(jobId), this.repo.listMessages(jobId), this.repo.listEvents(jobId)]);
+    const contacts = businesses.flatMap((b) => [b.email ? normalizeAddress(b.email) : null, b.phone].filter((c): c is string => !!c));
+    const suppressions = contacts.length ? await this.repo.findSuppressions(contacts) : [];
+    return businesses.map((business) => contactStatusOf({ business, messages, suppressions, events }));
+  }
+
+  /** Held inbound email for operator review (inbound/quarantineReview.ts). */
+  quarantined(q: { jobId?: string; limit?: number; includeResolved?: boolean } = {}) {
+    return listQuarantine(this.repo, q);
+  }
+
+  /**
+   * An operator releases a held email after verifying it with the business on an independent channel:
+   * it is read as that business's reply (trust "operator_verified": a quote at most, never approval,
+   * payment, a payee or a booking confirmation). Recorded append-only with the original reason.
+   */
+  async releaseQuarantined(i: { messageId: string; verifiedBy: string; how: string; jobId?: string; businessId?: string }) {
+    const r = await releaseQuarantined(this.repo, { ...i, now: this.now() });
+    if (r.ok) this.log("quarantine_released", { job_id: r.jobId, business_id: r.businessId, message_id: r.messageId, original_reason: r.resolution.original_reason });
+    return r;
+  }
+
+  async rejectQuarantined(i: { messageId: string; by: string; why: string }) {
+    const r = await rejectQuarantined(this.repo, i);
+    if (r.ok) this.log("quarantine_rejected", { job_id: r.jobId, message_id: r.messageId });
+    return r;
   }
 
   /** The reply-token check for mail from outside Inkbox (inbound/senderAuth.ts verifyExternalReply). */

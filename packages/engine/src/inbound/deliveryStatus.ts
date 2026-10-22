@@ -10,6 +10,9 @@
 // then applies, if configured); after a real reply from that address it is recorded only, since the
 // address demonstrably works. `failed` (Haggle/Inkbox couldn't send it) is recorded, never
 // suppressed. Idempotent: the effects are idempotent and the job event is appended once per message.
+// The outbound message row carries the status (messages.delivery_status, migration 112), which is
+// what the business's contact status reads (inbound/contactStatus.ts). The outbox row stays "sent":
+// the provider did accept the send; a bounce is a later delivery fact, not a send failure.
 import { normalizeAddress } from "./matching.ts";
 import type { MessageRow, Repository } from "../store/types.ts";
 
@@ -23,11 +26,13 @@ export interface DeliveryStatusInput {
   status: DeliveryStatus;
   /** "webhook" (message.bounced / message.failed) or "reconcile" (outbound status sweep). */
   source: "webhook" | "reconcile";
+  /** When it was observed (the engine clock). */
+  at?: Date;
 }
 
 export type DeliveryStatusOutcome = "bounced" | "bounce_recorded" | "delivery_failed" | "duplicate" | "unmatched";
 
-type Repo = Pick<Repository, "findMessageByProviderId" | "findOutboundByRfcIds" | "getBusinesses" | "addSuppression" | "updateBusiness" | "appendEvent" | "recordInboundEvent" | "touchJob">;
+type Repo = Pick<Repository, "findMessageByProviderId" | "findOutboundByRfcIds" | "getBusinesses" | "addSuppression" | "updateBusiness" | "appendEvent" | "recordInboundEvent" | "touchJob"> & Partial<Pick<Repository, "updateMessage">>;
 
 const EVIDENCE = "inkbox message.bounced; bounce type not exposed";
 
@@ -43,6 +48,8 @@ export async function applyDeliveryStatus(repo: Repo, s: DeliveryStatusInput, lo
   const key = `delivery:${s.status}:${row.provider_email_id ?? row.id}`;
   const b = row.business_id ? (await repo.getBusinesses(jobId)).find((x) => x.business_id === row.business_id) ?? null : null;
   const who = b?.name ?? "the approver";
+  // The row's own delivery status: set once; a bounce outranks an earlier "failed" (it was sent after all).
+  if (repo.updateMessage && (!row.delivery_status || (row.delivery_status === "failed" && s.status === "bounced"))) await repo.updateMessage(row.id, { delivery_status: s.status, delivery_status_at: (s.at ?? new Date()).toISOString() });
   if (s.status === "failed") {
     if (!(await repo.recordInboundEvent(key))) return { jobId, outcome: "duplicate" };
     await repo.appendEvent(jobId, "reply", { ...(b ? { business_id: b.business_id } : {}), summary: `An email to ${who} (${row.kind}) failed to send (Inkbox status "failed"); it was not delivered`, delivery_status: "failed", message_id: row.id });

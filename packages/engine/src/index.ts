@@ -65,3 +65,8 @@ export * from "./ranking/compliance.ts";
 export * from "./ranking/validity.ts";
 export * from "./approvals/bookingReply.ts";
 export * from "./workflow/requestNormalize.ts";
+// Sprint 4 workstream A: contact hours, per-business contact status, operator review of held mail, continuity vs identity.
+export * from "./workflow/contactWindow.ts";
+export * from "./inbound/contactStatus.ts";
+export * from "./inbound/quarantineReview.ts";
+export * from "./inbound/trustStrength.ts";
