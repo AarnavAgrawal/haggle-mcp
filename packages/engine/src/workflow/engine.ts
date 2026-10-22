@@ -20,8 +20,11 @@ import type {
 } from "../contract.ts";
 import { businessIdForContact, newApprovalCode, newId, newShortCode, normalizeBusinessName, slugify } from "../ids.ts";
 import { cleanEmailBody } from "../inbound/emailBody.ts";
+import { applyDeliveryStatus, type DeliveryStatusInput } from "../inbound/deliveryStatus.ts";
+import { CONTINUITY_ONLY_REASONS, CONTINUITY_ONLY_WARNING, provesSenderIdentity } from "../inbound/trustStrength.ts";
+import { explainQuarantine, quarantineEventData } from "../inbound/quarantineReasons.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
-import { isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
+import { isDsnSender, isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers, type PlannedCounter } from "../negotiation/counteroffer.ts";
@@ -36,6 +39,7 @@ import { answeredSomething, dropAgentOnlyAmounts } from "../parsing/callSafety.t
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
 import { dropUnstatedDietaryRefusals, dropUnsupportedRequirementAnswers, validateQuote } from "../parsing/validate.ts";
 import { APPROXIMATE_FLAG, confirmsFirm, isApproximateTotal } from "../parsing/approximate.ts";
+import { pdfBodyTotalConflict } from "../parsing/pdfBody.ts";
 import { isTransientParseError, MAX_PARSE_RETRIES, parseErrorKind, parseRetryDelayMs } from "../parsing/parseErrors.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
 import { groundedAnswer } from "../parsing/answerQuestion.ts";
@@ -3007,7 +3011,8 @@ export class HaggleEngine {
    */
   async ingest(msg: InboundMessage, trustFor: (expected: string) => TrustVerdict, opts: { simulated?: boolean; inlineAttachments?: { filename: string; contentType: string; data: Uint8Array }[] } = {}): Promise<{ jobId: string | null; outcome: string }> {
     const bounce = parseBounce(msg);
-    if (bounce) return this.ingestBounce(msg, bounce);
+    // A bounce-looking message from a business's own address in its thread is that business writing, not a DSN.
+    if (bounce && (isDsnSender(msg.from) || !(await this.fromPinnedBusiness(msg)))) return this.ingestBounce(msg, bounce);
     const codes = [...new Set([...msg.to.map((a) => jobInboxCode(a, this.d.config.inboxDomain)), subjectShortCode(msg.subject)].filter((c): c is string => c !== null))];
     const messageIds = [...msg.inReplyTo, ...msg.references];
     const lookup = { shortCodes: codes, threadId: msg.threadId, messageIds };
@@ -3031,9 +3036,11 @@ export class HaggleEngine {
     if (match.kind === "unmatched" || match.kind === "quarantine" || !msg.from) {
       const reason = !msg.from ? "from_unparseable" : match.kind === "quarantine" || match.kind === "unmatched" ? match.reason : "unexpected";
       const jobId = match.kind === "quarantine" ? match.jobId : null;
-      await this.repo.insertMessage({ ...base, job_id: jobId, business_id: match.kind === "quarantine" ? match.businessId : null, kind: "quarantine", sender_trusted: false, trust_reason: null, matched_via: match.kind === "quarantine" ? match.via : null, parse_status: "none", quarantine_reason: reason });
-      if (jobId) await this.repo.appendEvent(jobId, "flag", { business_id: match.kind === "quarantine" ? match.businessId : "", flag: "unverified_sender", summary: "message in a business thread from another address was quarantined" });
-      this.log("inbound_quarantined", { reason, job_id: jobId });
+      const q = await this.repo.insertMessage({ ...base, job_id: jobId, business_id: match.kind === "quarantine" ? match.businessId : null, kind: "quarantine", sender_trusted: false, trust_reason: null, matched_via: match.kind === "quarantine" ? match.via : null, parse_status: "none", quarantine_reason: reason });
+      if (!q) return { jobId, outcome: "duplicate" }; // a webhook replay or the sweep: one flag per message
+      const why = explainQuarantine(reason);
+      if (jobId) await this.repo.appendEvent(jobId, "flag", { business_id: match.kind === "quarantine" ? match.businessId : "", flag: "unverified_sender", summary: `A message in a business thread was quarantined, not read: ${why.explanation} ${why.action}`, ...quarantineEventData(why, q.id) });
+      this.log("inbound_quarantined", { reason, job_id: jobId, explanation: why.explanation });
       return { jobId, outcome: `quarantined:${reason}` };
     }
 
@@ -3075,25 +3082,26 @@ export class HaggleEngine {
     const b = bizRows.find((x) => x.job_id === match.jobId && x.business_id === match.businessId)!;
     let trust = trustFor(b.email!);
     if (!trust.trusted && trust.retryable) throw new RetryLater("sender authentication temporarily unavailable");
-    // An opt-out from the business's own address is honoured even before its identity is proven:
-    // never contacting someone who may have asked us to stop is the safe side.
+    // Mail from outside Inkbox: a From address and a thread are never proof (inbound/senderAuth.ts).
+    const external = !trust.trusted && this.d.config.externalSenders === "reply_token" ? await this.verifyExternal(b, msg, trust) : null;
+    // An opt-out from the business's own address is honoured on this job even before its identity is
+    // proven (never contacting someone who may have asked us to stop is the safe side), but only a
+    // verified one suppresses the address everywhere: an unverified STOP may be a competitor's spoof.
     if (isOptOut(msg.bodyText) && normalizeAddress(msg.from) === normalizeAddress(b.email!)) {
-      const stored = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "reply", sender_trusted: trust.trusted, trust_reason: trust.reason, matched_via: match.via, parse_status: "none", quarantine_reason: null });
+      const verified = trust.trusted || external?.ok === true;
+      const stored = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "reply", sender_trusted: verified, trust_reason: trust.trusted ? trust.reason : external?.ok ? external.reason : trust.reason, matched_via: match.via, parse_status: "none", quarantine_reason: null });
       if (!stored) return { jobId: b.job_id, outcome: "duplicate" };
-      await this.optOut(b.job_id, b, b.email!, (msg.bodyText ?? "").slice(0, 200));
+      if (verified) await this.optOut(b.job_id, b, b.email!, (msg.bodyText ?? "").slice(0, 200));
+      else await this.optOutThisJob(b.job_id, b, (msg.bodyText ?? "").slice(0, 200));
       return { jobId: b.job_id, outcome: "opted_out" };
     }
-    // Mail from outside Inkbox: a From address and a thread are never proof (inbound/senderAuth.ts).
-    if (!trust.trusted && this.d.config.externalSenders === "reply_token") {
-      const ours = (await this.repo.listMessages(b.job_id)).filter((m) => m.direction === "out" && m.business_id === b.business_id).map((m) => m.rfc_message_id);
-      const v = verifyExternalReply({
-        from: msg.from, pinned: b.email!, inReplyTo: msg.inReplyTo, references: msg.references, ourMessageIds: [b.rfq_message_id, ...ours],
-        subject: msg.subject, bodyText: msg.bodyText, token: replyToken(this.d.config.replyTokenSecret!, b.job_id, b.business_id), evidence: trust.evidence,
-      });
+    if (external) {
+      const v = external;
       if (!v.ok) {
         const q = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "quarantine", sender_trusted: false, trust_reason: trust.reason, matched_via: match.via, parse_status: "none", quarantine_reason: `${v.reason}:${v.detail}` });
         if (!q) return { jobId: b.job_id, outcome: "duplicate" };
-        await this.repo.appendEvent(b.job_id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `An email claiming to be ${b.name} couldn't be verified (${v.detail.replace(/_/g, " ")}); it was quarantined, not read` });
+        const why = explainQuarantine(`${v.reason}:${v.detail}`);
+        await this.repo.appendEvent(b.job_id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `An email claiming to be ${b.name} couldn't be verified (${v.detail.replace(/_/g, " ")}); it was quarantined, not read. ${why.action}`, ...quarantineEventData(why, q.id) });
         this.log("inbound_quarantined", { reason: v.reason, detail: v.detail, job_id: b.job_id });
         return { jobId: b.job_id, outcome: `quarantined:${v.reason}` };
       }
@@ -3149,6 +3157,38 @@ export class HaggleEngine {
     return { jobId: hit.job_id, outcome: "bounced" };
   }
 
+  /** Inkbox message.bounced / message.failed (or the reconciler's outbound status sweep) for one of our own emails. See inbound/deliveryStatus.ts. */
+  ingestDeliveryStatus(s: DeliveryStatusInput): Promise<{ jobId: string | null; outcome: string }> {
+    return applyDeliveryStatus(this.repo, s, (event, data) => this.log(event, data));
+  }
+
+  /** The reply-token check for mail from outside Inkbox (inbound/senderAuth.ts verifyExternalReply). */
+  private async verifyExternal(b: JobBusinessRow, msg: InboundMessage, trust: TrustVerdict) {
+    const ours = (await this.repo.listMessages(b.job_id)).filter((m) => m.direction === "out" && m.business_id === b.business_id).map((m) => m.rfc_message_id);
+    return verifyExternalReply({
+      from: msg.from ?? "", pinned: b.email!, inReplyTo: msg.inReplyTo, references: msg.references, ourMessageIds: [b.rfq_message_id, ...ours],
+      subject: msg.subject, bodyText: msg.bodyText, token: replyToken(this.d.config.replyTokenSecret!, b.job_id, b.business_id), evidence: trust.evidence,
+    });
+  }
+
+  /** Is this message from the pinned address of a business it threads to (by job code, thread or our Message-IDs)? */
+  private async fromPinnedBusiness(msg: InboundMessage): Promise<boolean> {
+    if (!msg.from) return false;
+    const codes = [...new Set([...msg.to.map((a) => jobInboxCode(a, this.d.config.inboxDomain)), subjectShortCode(msg.subject)].filter((c): c is string => c !== null))];
+    const rows = await this.repo.findBusinessCandidates({ shortCodes: codes, threadId: msg.threadId, messageIds: [...msg.inReplyTo, ...msg.references] });
+    return rows.some((r) => r.email && normalizeAddress(r.email) === normalizeAddress(msg.from!));
+  }
+
+  /**
+   * An opt-out Haggle couldn't verify came from the business (no provider authentication, no reply
+   * token): this job stops contacting it, recorded as `opt_out_unverified`; no global suppression.
+   */
+  private async optOutThisJob(jobId: string, b: Pick<JobBusinessRow, "business_id" | "name">, evidence: string) {
+    await this.repo.updateBusiness(jobId, b.business_id, { status: "declined", next_attempt_at: null });
+    await this.repo.appendEvent(jobId, "reply", { business_id: b.business_id, opt_out: "opt_out_unverified", evidence, summary: `${b.name} appears to have asked not to be contacted (sender not verified); Haggle stops contacting them on this deal only` });
+    await this.repo.touchJob(jobId);
+  }
+
   /** The business asked not to be contacted: suppressed for every workspace and deal, and marked declined here. */
   private async optOut(jobId: string, b: Pick<JobBusinessRow, "business_id" | "name">, contact: string, evidence: string) {
     await this.repo.addSuppression({ contact: contact.toLowerCase(), reason: "opt_out", job_id: jobId, evidence });
@@ -3169,8 +3209,11 @@ export class HaggleEngine {
     const text = cleanEmailBody(msg.bodyText ?? "").slice(0, 4000);
     await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "instructions_received", instructions_text: text, instructions_message_id: stored.id });
     const link = /https?:\/\/|www\./i.test(text);
-    await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(link ? { warning: "contains a link: verify it with the business independently; Haggle never opens it" } : {}) });
-    await this.notifyHuman(job, `instructions:${stored.id}`, `${clip(b.name, 30)} sent payment instructions (see the deal board${link ? "; it has a link, so check it with them before paying" : ""}). Pay them directly; then reply PAID ${a.code}.`);
+    // Thread continuity (the reply token) isn't sender identity: payment details from such a reply are a BEC risk (inbound/trustStrength.ts).
+    const weak = CONTINUITY_ONLY_REASONS.has(trustReason);
+    const warning = [link ? "contains a link: verify it with the business independently; Haggle never opens it" : null, weak ? CONTINUITY_ONLY_WARNING : null].filter(Boolean).join("; ");
+    await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(warning ? { warning } : {}), ...(weak ? { sender_identity: "thread_only" } : {}) });
+    await this.notifyHuman(job, `instructions:${stored.id}`, `${clip(b.name, 30)} sent payment instructions (see the deal board${link ? "; it has a link, so check it with them before paying" : ""}${weak ? "; its email can't be fully verified, so confirm the details with them by phone" : ""}). Pay them directly; then reply PAID ${a.code}.`);
     return { jobId: job.id, outcome: "payment_instructions" };
   }
 
@@ -3740,7 +3783,8 @@ export class HaggleEngine {
       // download, no quote, question or payment step can come from it.
       if (msg.sender_trusted !== true) {
         await this.repo.updateMessage(msg.id, { parse_status: "done" });
-        await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `ignored an unauthenticated email claiming to be ${b.name}` });
+        const why = explainQuarantine(msg.trust_reason);
+        await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `ignored an unauthenticated email claiming to be ${b.name}${why.known ? `. ${why.action}` : ""}`, ...(why.known ? quarantineEventData(why, msg.id) : {}) });
         await this.repo.touchJob(job.id);
         continue;
       }
@@ -3859,6 +3903,8 @@ export class HaggleEngine {
     if (!opts.structured && fresh.total_cents !== null && isApproximateTotal({ totalCents: fresh.total_cents, excerpts: [(fresh.sources.total?.excerpt ?? "").split(" + ")[0]!], text: msg.body_text ?? "", channel: msg.channel })) {
       fresh = { ...fresh, flags: [...fresh.flags, APPROXIMATE_FLAG] };
     }
+    // The attached PDF's total and the total the email itself states disagree: the human must see it.
+    if (msg.channel === "email" && !fresh.flags.includes("conflicting_numbers") && pdfBodyTotalConflict(x, ownText)) fresh = { ...fresh, flags: [...fresh.flags, "conflicting_numbers"] };
     let record = mergeCarryOver(fresh, priorRecord);
     // An answer to "can you confirm X?" ("yes, 45 vegetarian", "$250 extra for delivery") carries no
     // price: it revises the business's current quote with what it now states, keeping that quote's own
@@ -4234,7 +4280,7 @@ export class HaggleEngine {
       if (pay.status !== "awaiting_invoice" && pay.status !== "expired") return; // duplicate or late challenge: stored, not paid
       const updated = await this.repo.transitionPayment(pay.id, ["awaiting_invoice", "expired"], {
         status: "invoice_received", challenge_json: Buffer.from(data).toString("utf8"), challenge_step_id: parsed.parsed.stepId, challenge_message_id: msg.id,
-        challenge_trusted: msg.sender_trusted === true, challenge_thread_matched: threadMatched, pay_to: parsed.parsed.payTo,
+        challenge_trusted: provesSenderIdentity(msg), challenge_thread_matched: threadMatched, pay_to: parsed.parsed.payTo, // a thread-only (reply token) sender never names a payee
       });
       if (updated) await this.repo.appendEvent(job.id, "payment", { status: "invoice_received" });
       return;
@@ -4243,7 +4289,7 @@ export class HaggleEngine {
       // NOT VERIFIED against a live receipt: accept only a trusted, in-thread receipt for our step with a tx hash.
       const p = envelope.payload ?? {};
       const tx = typeof p.settle_tx === "string" ? p.settle_tx : typeof p.transaction === "string" ? p.transaction : null;
-      const ok = msg.sender_trusted === true && threadMatched && pay.status === "sent" && tx !== null && p.status !== "rejected";
+      const ok = provesSenderIdentity(msg) && threadMatched && pay.status === "sent" && tx !== null && p.status !== "rejected";
       if (ok) {
         const done = await this.repo.transitionPayment(pay.id, ["sent"], { status: "settled", settle_tx: tx, simulated: pay.simulated || msg.simulated });
         if (done) await this.repo.appendEvent(job.id, "payment", { status: "settled", settle_tx: tx, simulated: done.simulated });
@@ -4616,7 +4662,7 @@ export class HaggleEngine {
       const bid = typeof e.data.business_id === "string" ? e.data.business_id : null;
       if (!bid) continue;
       const summary = e.type === "quote" ? (e.data.total_usd == null ? "Replied without a total" : `Quoted $${Number(e.data.total_usd).toLocaleString("en-US")} (round ${e.data.round})`)
-        : e.type === "question" ? `Asked: ${String(e.data.text).slice(0, 120)}` : e.type === "flag" ? `Flagged: ${String(e.data.flag).replace(/_/g, " ")}`
+        : e.type === "question" ? `Asked: ${String(e.data.text).slice(0, 120)}` : e.type === "flag" ? (typeof e.data.board_line === "string" ? e.data.board_line : `Flagged: ${String(e.data.flag).replace(/_/g, " ")}`)
         : e.type === "reply" ? String(e.data.summary ?? "") : null;
       if (summary) lastEvent.set(bid, summary);
       if (typeof e.data.transcript_snippet === "string" && e.data.transcript_snippet) transcripts.set(bid, e.data.transcript_snippet);

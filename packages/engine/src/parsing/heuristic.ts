@@ -75,7 +75,8 @@ export function heuristicExtract(input: { request: ExtractionRequest; bodyText: 
   if (perHead) sources.push({ field: "price_per_head", source: src, excerpt: perHead.excerpt });
   if (delivery) sources.push({ field: "delivery_fee", source: src, excerpt: delivery.excerpt });
   return {
-    available: !DECLINE.test(text),
+    // "We can't do nut-free, but … Total: $1,100" is a partial no with a price, not a decline.
+    available: !DECLINE.test(text) || total !== null,
     price_per_head_usd: perHead?.usd ?? null,
     headcount: null,
     subtotal_usd: null,
