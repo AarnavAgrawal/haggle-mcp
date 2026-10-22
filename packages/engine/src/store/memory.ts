@@ -19,6 +19,7 @@ import {
   type SuppressionRow,
   type WorkspaceVendorRow,
   type PaymentHandoffRow,
+  type OperatorReviewRow,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -86,6 +87,9 @@ export class InMemoryRepository implements Repository {
     if (!cur || !fromStatuses.includes(cur.status)) return null;
     // The database refuses re-attempting a call that may have gone out (106 haggle_outbox_transition).
     if (cur.kind === "call" && cur.status !== "not_sent") return null;
+    // 109 haggle_outbox_reliability / 106 attempts check.
+    if (cur.status !== "pending" && this.openReviewFor("outbox", key)) throw new Error(`outbox action ${key} is under operator review`);
+    if (cur.attempts + 1 > 20) throw new Error("outbox attempts check violated");
     const next = { ...cur, status: "pending" as const, attempts: cur.attempts + 1, updated_at: now };
     this.outbox.set(key, next);
     return clone(next);
@@ -93,6 +97,7 @@ export class InMemoryRepository implements Repository {
   async finishOutbox(key: string, status: Exclude<OutboxRow["status"], "pending">, providerRef: string | null, now: string) {
     const cur = this.outbox.get(key);
     if (!cur || cur.status === "sent") return;
+    if (cur.kind === "call" && cur.status === "unknown" && status === "not_sent") throw new Error("a call whose outcome is unknown is never marked not sent");
     this.outbox.set(key, { ...cur, status, provider_ref: providerRef ?? cur.provider_ref, updated_at: now });
   }
   async getOutbox(key: string) {
@@ -387,5 +392,61 @@ export class InMemoryRepository implements Repository {
     const row = { ...clone(s), updated_at: now() };
     this.settings.set(workspaceId, row);
     return clone(row);
+  }
+
+  // reliability (migration 109)
+  private reviews: OperatorReviewRow[] = [];
+  private openReviewFor(kind: OperatorReviewRow["kind"], subject: string) {
+    return this.reviews.find((r) => r.kind === kind && r.subject === subject && r.status === "open");
+  }
+  async renewJobLease(jobId: string, owner: string, now: string, ttlMs: number) {
+    const cur = this.leases.get(jobId);
+    if (cur?.owner !== owner) return false;
+    this.leases.set(jobId, { owner, expires: Date.parse(now) + ttlMs });
+    return true;
+  }
+  async listOutbox(q: { jobId?: string; statuses?: OutboxRow["status"][]; updatedBefore?: string; limit?: number }) {
+    return [...this.outbox.values()]
+      .filter((o) => (q.jobId === undefined || o.job_id === q.jobId) && (!q.statuses || q.statuses.includes(o.status)) && (!q.updatedBefore || o.updated_at < q.updatedBefore))
+      .sort((a, b) => a.created_at.localeCompare(b.created_at)).slice(0, q.limit ?? 500).map(clone);
+  }
+  async findOutboxByProviderRef(ref: string) {
+    const r = [...this.outbox.values()].find((o) => o.provider_ref === ref);
+    return r ? clone(r) : null;
+  }
+  async rearmOutbox(key: string, at: string) {
+    const cur = this.outbox.get(key);
+    if (!cur || cur.status === "sent" || (cur.kind === "call" && cur.status !== "not_sent")) return null;
+    const next = { ...cur, status: "not_sent" as const, attempts: 1, updated_at: at };
+    this.outbox.set(key, next);
+    return clone(next);
+  }
+  async openReview(r: Pick<OperatorReviewRow, "id" | "job_id" | "kind" | "subject" | "reason" | "attempts" | "last_error">, at: string) {
+    const cur = this.openReviewFor(r.kind, r.subject);
+    if (cur) {
+      Object.assign(cur, { reason: r.reason, attempts: Math.max(cur.attempts, r.attempts), last_error: r.last_error ?? cur.last_error, updated_at: at });
+      return { row: clone(cur), created: false };
+    }
+    const row: OperatorReviewRow = { ...r, status: "open", resolution: null, resolved_by: null, resolved_at: null, created_at: at, updated_at: at };
+    this.reviews.push(row);
+    return { row: clone(row), created: true };
+  }
+  async findOpenReview(kind: OperatorReviewRow["kind"], subject: string) {
+    const r = this.openReviewFor(kind, subject);
+    return r ? clone(r) : null;
+  }
+  async getReview(id: string) {
+    const r = this.reviews.find((x) => x.id === id);
+    return r ? clone(r) : null;
+  }
+  async listReviews(q: { status?: OperatorReviewRow["status"]; jobId?: string; limit?: number }) {
+    return this.reviews.filter((r) => (!q.status || r.status === q.status) && (q.jobId === undefined || r.job_id === q.jobId))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, q.limit ?? 100).map(clone);
+  }
+  async resolveReview(id: string, r: { resolution: string; resolved_by: string }, at: string) {
+    const cur = this.reviews.find((x) => x.id === id);
+    if (!cur || cur.status !== "open") return null;
+    Object.assign(cur, { status: "resolved", resolution: r.resolution, resolved_by: r.resolved_by, resolved_at: at, updated_at: at });
+    return clone(cur);
   }
 }

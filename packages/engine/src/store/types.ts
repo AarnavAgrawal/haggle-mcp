@@ -290,6 +290,28 @@ export interface PaymentHandoffRow {
   updated_at: string;
 }
 
+/**
+ * The operator's dead-letter queue (migration 109): something Haggle stopped retrying (or must
+ * never retry on its own) and a person has to look at. One open row per (kind, subject).
+ */
+export interface OperatorReviewRow {
+  id: string;
+  job_id: string | null;
+  kind: "outbox" | "payment" | "reconcile" | "parse" | "stuck_job" | "late_reply" | "confirmation";
+  /** What it is about: an outbox key, a payment id, a message id, a job id. */
+  subject: string;
+  reason: string;
+  attempts: number;
+  /** Redacted (workflow/deadLetter.ts redactError). */
+  last_error: string | null;
+  status: "open" | "resolved";
+  resolution: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Persistence port. InMemoryRepository for tests/mock mode; PostgresRepository for live. */
 export interface Repository {
   // workspaces (tenancy)
@@ -413,4 +435,23 @@ export interface Repository {
   listRecentJobs(limit: number, workspaceId?: string): Promise<JobRow[]>;
   getSettings(workspaceId?: string): Promise<SettingsRow | null>;
   saveSettings(s: Omit<SettingsRow, "updated_at">, workspaceId?: string): Promise<SettingsRow>;
+
+  // reliability (migration 109): lease fencing, outbox inspection, operator review (dead letters)
+  /** Extend the lease only while this exact owner still holds it (the fence). False: it was lost. */
+  renewJobLease(jobId: string, owner: string, now: string, ttlMs: number): Promise<boolean>;
+  listOutbox(q: { jobId?: string; statuses?: OutboxRow["status"][]; updatedBefore?: string; limit?: number }): Promise<OutboxRow[]>;
+  findOutboxByProviderRef(ref: string): Promise<OutboxRow | null>;
+  /**
+   * Operator retry: back to not_sent with a fresh attempt count, so the engine's next natural attempt
+   * may claim it. Refused (null) for a sent action, and for a call unless it is known not placed.
+   */
+  rearmOutbox(key: string, now: string): Promise<OutboxRow | null>;
+  /** Open a review, or update the open one for the same kind and subject (attempts, reason, last error). */
+  openReview(r: Pick<OperatorReviewRow, "id" | "job_id" | "kind" | "subject" | "reason" | "attempts" | "last_error">, now: string): Promise<{ row: OperatorReviewRow; created: boolean }>;
+  findOpenReview(kind: OperatorReviewRow["kind"], subject: string): Promise<OperatorReviewRow | null>;
+  getReview(id: string): Promise<OperatorReviewRow | null>;
+  /** Newest first. */
+  listReviews(q: { status?: OperatorReviewRow["status"]; jobId?: string; limit?: number }): Promise<OperatorReviewRow[]>;
+  /** CAS open -> resolved; null if it isn't open. */
+  resolveReview(id: string, r: { resolution: string; resolved_by: string }, now: string): Promise<OperatorReviewRow | null>;
 }
