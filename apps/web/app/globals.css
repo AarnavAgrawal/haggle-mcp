@@ -187,3 +187,13 @@ button:focus-visible {
   background: var(--warn-soft);
   color: var(--warn);
 }
+
+.navlink {
+  color: var(--ink-2);
+  text-decoration: none;
+  font-weight: 600;
+}
+.navlink[aria-current="page"] {
+  color: var(--ink);
+  border-bottom: 2px solid var(--win);
+}
