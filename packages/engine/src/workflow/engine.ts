@@ -39,6 +39,7 @@ import { answeredSomething, dropAgentOnlyAmounts } from "../parsing/callSafety.t
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
 import { dropUnstatedDietaryRefusals, dropUnsupportedRequirementAnswers, validateQuote } from "../parsing/validate.ts";
 import { APPROXIMATE_FLAG, confirmsFirm, isApproximateTotal } from "../parsing/approximate.ts";
+import { pdfBodyTotalConflict } from "../parsing/pdfBody.ts";
 import { isTransientParseError, MAX_PARSE_RETRIES, parseErrorKind, parseRetryDelayMs } from "../parsing/parseErrors.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
 import { groundedAnswer } from "../parsing/answerQuestion.ts";
@@ -3451,6 +3452,8 @@ export class HaggleEngine {
     if (!opts.structured && fresh.total_cents !== null && isApproximateTotal({ totalCents: fresh.total_cents, excerpts: [(fresh.sources.total?.excerpt ?? "").split(" + ")[0]!], text: msg.body_text ?? "", channel: msg.channel })) {
       fresh = { ...fresh, flags: [...fresh.flags, APPROXIMATE_FLAG] };
     }
+    // The attached PDF's total and the total the email itself states disagree: the human must see it.
+    if (msg.channel === "email" && !fresh.flags.includes("conflicting_numbers") && pdfBodyTotalConflict(x, ownText)) fresh = { ...fresh, flags: [...fresh.flags, "conflicting_numbers"] };
     let record = mergeCarryOver(fresh, priorRecord);
     // An answer to "can you confirm X?" ("yes, 45 vegetarian", "$250 extra for delivery") carries no
     // price: it revises the business's current quote with what it now states, keeping that quote's own

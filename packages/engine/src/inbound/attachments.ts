@@ -42,6 +42,34 @@ export interface ExtractedFile {
 export type PdfFile = ExtractedFile & { kind: "pdf" };
 export type ImageFile = ExtractedFile & { kind: "image"; contentType: string };
 
+/**
+ * What the bytes really are (magic numbers), whatever the name or declared type says: a PDF
+ * ("%PDF-" within the first 1 KiB, as the spec allows), or a PNG/JPEG/GIF/WebP image. Null for
+ * anything else. Sending Claude a "PDF" that isn't one fails the whole reply's read.
+ */
+export function sniffAttachment(data: Uint8Array): { kind: "pdf" } | { kind: "image"; contentType: string } | null {
+  const b = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  if (b.subarray(0, 1024).includes("%PDF-")) return { kind: "pdf" };
+  if (b.length >= 8 && b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return { kind: "image", contentType: "image/png" };
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return { kind: "image", contentType: "image/jpeg" };
+  if (b.length >= 6 && /^GIF8[79]a$/.test(b.subarray(0, 6).toString("latin1"))) return { kind: "image", contentType: "image/gif" };
+  if (b.length >= 12 && b.subarray(0, 4).toString("latin1") === "RIFF" && b.subarray(8, 12).toString("latin1") === "WEBP") return { kind: "image", contentType: "image/webp" };
+  return null;
+}
+
+/**
+ * The kind to read a downloaded attachment as, from its bytes: a PDF or image by magic number
+ * (a JPEG named quote.pdf is read as the image it is); a JSON part only if it is declared JSON and
+ * looks like JSON. Null: don't send it to the parser.
+ */
+export function verifiedKind(declared: AttachmentKind, data: Uint8Array): { kind: AttachmentKind; contentType?: string } | null {
+  if (declared === "json") {
+    const first = Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8", 0, Math.min(data.byteLength, 64)).replace(/^﻿/, "").trimStart()[0];
+    return first === "{" || first === "[" ? { kind: "json" } : null;
+  }
+  return sniffAttachment(data);
+}
+
 export function attachmentKind(a: WantedAttachment): AttachmentKind | null {
   const ct = a.contentType.toLowerCase().split(";")[0]!.trim();
   const name = (a.filename ?? a.tarPath).toLowerCase();
