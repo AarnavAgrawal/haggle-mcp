@@ -207,6 +207,25 @@ Verified on the fully merged tree:
 - Sprint-4 push blocked pending your decision (GitHub push protection on synthetic test secrets).
 - Views and `packages/core` don't show the new stages yet; brain tenancy is still open (Aarnav).
 
+### Pass 5: sprint 5, release candidate (2026-10-22)
+
+Branch `yashnil`, pushed (fast-forward) to draft PR #1; not merged, not deployed. Migrations 118, 119, 121 and 122 are applied only to throwaway databases. No real email, text, call or payment was sent. Full write-up: `docs/sprint-5-report.md`; prerequisites: `docs/pilot-launch-checklist.md`; manual steps: `docs/manual-actions.md`.
+
+Verified on the integrated tree: typecheck and build clean; unit 1,561 passed / 31 skipped; Postgres 1,025 passed / 1 skipped plus 6 apps/mcp Postgres tests; `verify-migrations`, `migration-compat` (seeded 102 upgrade and every checkpoint), `smoke-local`, secret scan and env-manifest check all OK.
+
+**Still not production readiness:** every result is simulated.
+
+| Area | After pass 5 (verified by) |
+| --- | --- |
+| Booking | Booking needs the vendor's written confirmation or the approver's `BOOKED <code>`, enforced in the database (118); no dead ends after approval; stale/withdrawn approvals ignored; other-day replies and unconfirmed must-haves never book (`purchaseBypass`, `purchaseExits`, `purchaseScenarios.e2e`) |
+| Agent experience | 9 agent tool calls (was 12) and 5 human steps in the simulated acceptance flow; `list_deals` resumes with the purchase stage; plain "not compared" reasons; local-calendar dates (`acceptancePilot`, `purchaseFlow.e2e`, `purchaseComparison`, `purchaseDates`) |
+| Operator control | Audited operator log (119); suspend/resume; approver verification; audited roster; operator callback and held-text release by CLI; `pilot-preflight` PASS/WARN/FAIL/BLOCKED (`lifecycleControls`, `operatorActions`, `pilotPreflight`) |
+| Release | `build_sha`/`version` on `/health` and `/ready`; staging release script (plan/execute/deploy); migration compatibility from 102; guard enumeration across all scripts; smoke can't contact anyone; launch gate requires bounce events; CI runs every gate (`release`, `releaseStaging`, `smokeSafety`, `scriptsDbGuard`, `ciRelease`) |
+| Security review | 14 fixes plus H9 from an independent adversarial review: stale approver, cross-workspace texts, code guessing, message guard, invented offers, opt-outs across channels, unauthorized phone sends, payment-instruction swaps, approval immutability (121), tenant menu leak (`securityS5`) |
+| Metrics | Database-only metrics with a tested simulated-vs-real rule; per-job AI usage (122) and approximate cost; seeded pilot benchmark (`metrics`, `benchmark`) |
+
+**Blockers after pass 5:** real-mail evidence; staging and live migrations 103–122; Inkbox bounce events; decisions H1–H3; brain tenancy and view stages (Aarnav).
+
 ## 1. Production infrastructure
 - [ ] Finalize and verify the shared TypeScript contracts between the deal engine and the business brain.
 - [ ] Apply all Supabase migrations; verify schemas, indexes, constraints and relationships.
