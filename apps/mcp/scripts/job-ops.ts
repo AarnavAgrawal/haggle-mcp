@@ -158,7 +158,7 @@ export async function contactCheck(repo: Repository, job: { id: string; workspac
   if (job.workspace_id === DEFAULT_WORKSPACE_ID) return { suppressed: hit?.reason ?? null, authorized: null };
   const vendors = new Set((await repo.listWorkspaceVendors(job.workspace_id)).map((v) => v.contact.toLowerCase()));
   const allow = (env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-  const ok = (c: string) => vendors.has(c) || allow.some((x) => x === c || (x.startsWith("@") && c.endsWith(x)));
+  const ok = (c: string) => vendors.has(c) || allow.some((x) => x === c || (x.startsWith("@") && /^[^@\s/:?#]+@[^@\s/:?#]+$/.test(c) && c.endsWith(x))); // @domain: email addresses only (S5-D F9)
   return { suppressed: hit?.reason ?? null, authorized: contacts.length > 0 && contacts.every(ok) };
 }
 
