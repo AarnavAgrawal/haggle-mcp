@@ -115,6 +115,30 @@ describe.each(["imessage", "sms"] as const)("a text vendor confirms its booking 
   });
 });
 
+describe("re-confirmation of a stale quote by text", () => {
+  it("a text vendor's expired quote is re-confirmed by text; its texted 'confirmed' sends the approval to the human", async () => {
+    const env = setup();
+    const { engine, clock, texts } = env;
+    const deal = await engine.deal({ request: REQUEST, budget_usd: 2500, businesses: [{ name: "Sunset Kitchen", phone: TEXT_VENDOR, channel: "imessage" }] });
+    const jobId = deal.job_id;
+    clock.advance(5 * 60_000);
+    await vendorText(env, "sms", TEXT_VENDOR, "$1,900 total incl tax, 14 vegetarian, delivered by 11:00, $400 deposit. Valid until 2026-10-24.");
+    clock.advance(31 * 60_000);
+    await engine.advanceJob(jobId);
+    clock.advance(3 * 24 * 3_600_000);
+    const q = (await engine.getQuotes(jobId)).quotes[0]!;
+    expect(q.selection).toMatchObject({ status: "not_selectable", reason: expect.stringMatching(/^stale/) });
+    const before = texts.filter((x) => x.to === APPROVER).length;
+    await expect(engine.requestApproval(jobId, q.quote_id, "imessage")).rejects.toMatchObject({ code: "quote_reconfirming" });
+    expect(texts.filter((x) => x.to === TEXT_VENDOR).at(-1)!.text).toMatch(/does your \$1,900 quote .* still stand\? Reply "confirmed"/);
+    expect(texts.filter((x) => x.to === APPROVER)).toHaveLength(before);
+    clock.advance(30 * 60_000);
+    expect((await vendorText(env, "sms", TEXT_VENDOR, "Confirmed, still good.")).outcome).toBe("quote_reconfirmed");
+    await engine.advanceJob(jobId);
+    expect(texts.filter((x) => x.to === APPROVER).at(-1)!.text).toMatch(/Approve \$400 deposit to Sunset Kitchen .*Reply YES \d{4}/);
+  });
+});
+
 describe("confirm-only approvals on the manual rail need the vendor's written confirmation", () => {
   it("YES to a confirm-only approval asks the vendor; the job is confirmed only after its written yes", async () => {
     const env = setup();
