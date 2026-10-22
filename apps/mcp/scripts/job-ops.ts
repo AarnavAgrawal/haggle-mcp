@@ -11,6 +11,14 @@
 //   node --env-file=.env scripts/job-ops.ts review-job --job job_... --note "<why>" --by "<your name>"
 //   node --env-file=.env scripts/job-ops.ts resume --job job_... --note "<what you fixed>" --by "<your name>"
 //   node --env-file=.env scripts/job-ops.ts fail-safe-close --job job_... --reason "<short, the human reads it>" --by "<your name>" --confirm
+//   node --env-file=.env scripts/job-ops.ts cancel --job job_... --reason "<short>" --by "<your name>" --confirm     (= fail-safe-close)
+//   node --env-file=.env scripts/job-ops.ts callback --job job_... --business biz_... --by "<your name>" --reason "<what you reviewed>"
+//
+// callback asks the running server to call one business back once (Voice AI, the engine's
+// operatorCallback): the request is recorded as an open review; on the job's next advance the engine
+// performs it only if its own checks pass (an evidence-based callback proposal, a round left, the
+// callee's recorded consent, not suppressed) and closes the review with the outcome (inspect shows
+// it). It never approves or pays. Every change here is also recorded in the operator log (migration 119).
 //
 // The script never calls Inkbox or Stripe. A retry only re-arms the action in the database; the
 // running server's next advance performs it through every normal check (suppressions, vendor
@@ -31,7 +39,7 @@
 // Needs SUPABASE_DB_URL (the engine database, migrations through 109 applied).
 import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
 import { randomBytes } from "node:crypto";
-import { closeSubject, DEFAULT_WORKSPACE_ID, holdSubject, planChargeRelease, planFailSafeClose, planJobHold, planOutboxRetry, planRecovery, planResume, PostgresRepository, redactError, TERMINAL, type ContactCheck, type Repository, type RetryPlan, type RetryStep, type StuckFinding } from "@haggle/engine";
+import { closeSubject, DEFAULT_WORKSPACE_ID, holdSubject, recordOperatorAction, requestOperatorCallback, type OperatorAction, planChargeRelease, planFailSafeClose, planJobHold, planOutboxRetry, planRecovery, planResume, PostgresRepository, redactError, TERMINAL, type ContactCheck, type Repository, type RetryPlan, type RetryStep, type StuckFinding } from "@haggle/engine";
 
 export type OpsCommand =
   | { kind: "list-stuck"; limit: number }
@@ -42,7 +50,8 @@ export type OpsCommand =
   | { kind: "fail-safe-close"; jobId: string; reason: string; by: string }
   | { kind: "retry-key"; key: string; override: boolean; by: string }
   | { kind: "retry-payment"; paymentId: string; override: boolean; by: string }
-  | { kind: "resolve"; id: string; note: string; by: string };
+  | { kind: "resolve"; id: string; note: string; by: string }
+  | { kind: "callback"; jobId: string; businessId: string; reason: string; by: string };
 
 function arg(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -102,15 +111,24 @@ export function planOps(argv: string[]): OpsCommand {
     if (note.length < 3) throw new Error(`--note is required: ${kind === "resume" ? "what you checked or fixed" : "why the job is held"}`);
     return { kind, jobId: job, note: note.slice(0, 400), by: by(argv) };
   }
-  if (kind === "fail-safe-close") {
+  if (kind === "callback") {
+    const job = arg(argv, "job") ?? "";
+    if (!ID.test(job)) throw new Error("--job must be a job id like job_...");
+    const biz = arg(argv, "business") ?? "";
+    if (!ID.test(biz)) throw new Error("--business must be a business id like biz_... (see inspect)");
+    const reason = (arg(argv, "reason") ?? "").trim();
+    if (reason.length < 10 || reason.length > 400) throw new Error("--reason is required (10-400 characters): what you reviewed and why one callback is right");
+    return { kind, jobId: job, businessId: biz, reason, by: by(argv) };
+  }
+  if (kind === "fail-safe-close" || kind === "cancel") {
     const job = arg(argv, "job") ?? "";
     if (!ID.test(job)) throw new Error("--job must be a job id like job_...");
     const reason = (arg(argv, "reason") ?? "").trim();
     if (reason.length < 3 || reason.length > 80) throw new Error("--reason is required (3-80 characters): the human reads it in the text Haggle sends");
     if (!flag(argv, "confirm")) throw new Error("fail-safe-close ends the deal for good: add --confirm once you've read docs/operator-recovery.md §fail-safe close");
-    return { kind, jobId: job, reason, by: by(argv) };
+    return { kind: "fail-safe-close", jobId: job, reason, by: by(argv) };
   }
-  throw new Error("command must be one of: list-stuck, list-review, inspect, retry, resolve, review-job, resume, fail-safe-close");
+  throw new Error("command must be one of: list-stuck, list-review, inspect, retry, resolve, review-job, resume, fail-safe-close (or cancel), callback");
 }
 
 /** Job-level actions (hold, resume, fail-safe close), planned from what the database holds. */
@@ -187,6 +205,27 @@ export async function applySteps(repo: Repository, steps: RetryStep[], now: stri
   return done;
 }
 
+/** The operator-log entry for a change job-ops made (migration 119). */
+export async function logJobAction(repo: Repository, cmd: OpsCommand, detail: Record<string, unknown> = {}): Promise<void> {
+  const map: Partial<Record<OpsCommand["kind"], OperatorAction>> = { "review-job": "job_held", resume: "job_resumed", "fail-safe-close": "job_close_requested", "retry-key": "retry_requested", "retry-payment": "retry_requested", resolve: "review_resolved" };
+  const action = map[cmd.kind];
+  if (!action || !("by" in cmd)) return;
+  const jobId = "jobId" in cmd ? cmd.jobId : typeof detail.job_id === "string" ? detail.job_id : null;
+  const job = jobId ? await repo.getJob(jobId) : null;
+  const reason = "note" in cmd ? cmd.note : "reason" in cmd ? cmd.reason : cmd.kind === "retry-key" ? `retry ${cmd.key}${cmd.override ? " (override)" : ""}` : cmd.kind === "retry-payment" ? `retry ${cmd.paymentId}${cmd.override ? " (override)" : ""}` : "operator action";
+  await recordOperatorAction(repo, { action, operator: cmd.by, reason, workspaceId: job?.workspace_id ?? null, jobId: job?.id ?? null, detail: { ...detail, ...("key" in cmd ? { key: cmd.key } : {}), ...("paymentId" in cmd ? { payment_id: cmd.paymentId } : {}), ...("id" in cmd ? { review_id: cmd.id } : {}) } });
+}
+
+/** Record in the operator log; the change already happened, so a failure is a warning (exit 1), not a rollback. */
+async function logOrWarn(repo: Repository, cmd: OpsCommand, detail: Record<string, unknown> = {}) {
+  try {
+    await logJobAction(repo, cmd, detail);
+  } catch (e) {
+    console.error(`WARNING: done, but not recorded in the operator log (${(e as Error).message})`);
+    process.exitCode = 1;
+  }
+}
+
 export const formatFinding = (f: StuckFinding) =>
   `${f.job_id}  ${f.issue.padEnd(22)} ${f.action.padEnd(12)} ${Math.round(f.overdue_ms / 60_000)}m  ${f.subject ? `[${f.subject}] ` : ""}${f.detail}`;
 
@@ -242,16 +281,24 @@ async function main(argv = process.argv.slice(2)) {
       const r = await repo.resolveReview(cmd.id, { resolution: cmd.note, resolved_by: cmd.by }, now.toISOString());
       if (!r) throw new Error(`review ${cmd.id} isn't open`);
       if (r.job_id) await repo.appendEvent(r.job_id, "operator_resolved", { review_id: r.id, kind: r.kind, by: cmd.by });
+      await logOrWarn(repo, cmd, { job_id: r.job_id });
       console.log(`Resolved ${r.id} (${r.kind} [${r.subject}]): ${cmd.note}. Nothing was re-sent.`);
+    } else if (cmd.kind === "callback") {
+      const r = await requestOperatorCallback(repo, { jobId: cmd.jobId, businessId: cmd.businessId, by: cmd.by, reason: cmd.reason, now: now.toISOString() });
+      if (!r.ok) throw new Error(`refused: ${r.reason}`);
+      console.log(`Callback requested (review ${r.reviewId}). On the job's next advance the server places it only if the engine's checks pass (a justified proposal, a round left, the callee's recorded consent); job-ops inspect --job ${cmd.jobId} shows the outcome. Nothing is approved or paid.`);
     } else if (cmd.kind === "review-job" || cmd.kind === "resume" || cmd.kind === "fail-safe-close") {
       const plan = await planJobAction(repo, cmd);
       if (!plan.ok) throw new Error(`refused: ${plan.reason}`);
       await applySteps(repo, plan.steps, now.toISOString());
+      await logOrWarn(repo, cmd);
       console.log(`Done (${plan.steps.map((s) => s.op).join(", ")}): ${plan.note}.`);
     } else {
       const plan = await planRetry(repo, cmd, now.getTime());
       if (!plan.ok) throw new Error(`refused: ${plan.reason}`);
       await applySteps(repo, plan.steps, now.toISOString());
+      const jobOf = plan.steps.find((x): x is Extract<RetryStep, { jobId: string }> => "jobId" in x);
+      await logOrWarn(repo, cmd, jobOf ? { job_id: jobOf.jobId } : {});
       console.log(`Done (${plan.steps.map((s) => s.op).join(", ")}): ${plan.note}.`);
     }
   } finally {

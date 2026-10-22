@@ -16,6 +16,7 @@ import { limitsMiddleware } from "./src/limits.ts";
 import { ConfigError } from "./src/config.ts";
 import { cachedReadiness } from "./src/health.ts";
 import { authRequired, CONNECTOR_HEADER, isHandshakeOnly, resolveWorkspace } from "./src/workspace.ts";
+import { suspensionRefusal } from "./src/operatorGate.ts";
 import "./src/live.ts";
 
 // Haggle buyer MCP server (v5): lets any agent buy from businesses by email (Inkbox), with phone
@@ -82,6 +83,9 @@ server.use("*", async (c, next) => {
       }
       return c.json({ error: { code: "UNAUTHORIZED", message: r.reason === "unknown_credentials" ? "Unknown workspace token." : "This server needs a workspace token.", fix: "Connect with Authorization: Bearer <workspace token>, or use the workspace's connector URL (/c/<secret>/mcp)." } }, 401);
     }
+    // An operator-suspended workspace (src/operatorGate.ts): everything but the handshake is refused.
+    const suspended = await suspensionRefusal(rt, r.workspaceId);
+    if (suspended && !isHandshakeOnly(c.req.method, c.req.method === "POST" ? await c.req.raw.clone().json().catch(() => null) : null)) return c.json(suspended.body, suspended.status);
     c.set("workspaceId", r.workspaceId);
   }
   await next();

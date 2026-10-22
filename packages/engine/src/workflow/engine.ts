@@ -73,6 +73,7 @@ import { contactStatusOf, type BusinessContactStatus } from "../inbound/contactS
 /** Contact states the board lists per business (the rest are implied by its status). */
 const NOTABLE_CONTACT = new Set<BusinessContactStatus["contact_status"]>(["bounced", "failed", "opted_out", "quarantined_reply", "scheduled"]);
 import { listQuarantine, rejectQuarantined, releaseQuarantined } from "../inbound/quarantineReview.ts";
+import { runOperatorRequests, workspaceSuspension } from "../ops/operator.ts";
 
 /** Board text for a reply Haggle couldn't read (never the provider's raw error). */
 export const UNREADABLE_REPLY = "Reply received; Haggle couldn't read a price";
@@ -4468,6 +4469,24 @@ export class HaggleEngine {
   }
 
   /**
+   * Operator gate on every open job's advance (ops/operator.ts): a suspended workspace's deal doesn't
+   * advance at all (true: stop here), even without its hold; otherwise the operator's reviewed
+   * requests (job-ops callback, quarantine release-text) run through the engine's own checks.
+   */
+  private async operatorGate(job: JobRow, open: OperatorReviewRow[]): Promise<boolean> {
+    if (await workspaceSuspension(this.repo, job.workspace_id)) {
+      this.log("advance_suspended", { job_id: job.id });
+      return true;
+    }
+    await runOperatorRequests({
+      repo: this.repo, now: () => this.now(), log: (e, d) => this.log(e, d),
+      callback: (j, b, op) => this.operatorCallback(j, b, op), releaseText: (m, j, op) => this.releaseHeldText(m, j, op),
+      isRefusal: (e): e is EngineError => e instanceof EngineError,
+    }, job, open);
+    return false;
+  }
+
+  /**
    * An operator's fail-safe close (job-ops fail-safe-close, deadLetter.planFailSafeClose), run by the
    * lease holder: the job ends `failed` (closed by the operator), a pending or unpaid approval
    * expires, an unpaid booking or handoff is withdrawn on Haggle's side, and the human is texted
@@ -4588,6 +4607,7 @@ export class HaggleEngine {
       this.log("advance_held", { job_id: jobId });
       return;
     }
+    if (await this.operatorGate(first, operator)) return;
     if (first.state === "created") {
       await this.recoverCreated(first);
       first = (await this.repo.getJob(jobId)) ?? first;
@@ -5499,6 +5519,11 @@ export class HaggleEngine {
     const w = await this.repo.setWorkspaceCredentials(id, { revoked: true });
     if (!w) throw new EngineError("workspace_not_found", `No workspace ${id}.`, "Check the workspace id.", "none");
     return w;
+  }
+
+  /** A workspace's suspension (scripts/workspace-admin.ts suspend; ops/operator.ts), or null: the MCP endpoint refuses tools while it is set. */
+  async workspaceSuspension(id: string) {
+    return workspaceSuspension(this.repo, id);
   }
 
   /** Operator only: new credential hashes for a workspace (clears a revocation). */

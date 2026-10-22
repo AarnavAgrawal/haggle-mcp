@@ -8,6 +8,13 @@
 //       --how "<how you verified it independently, e.g. phoned the vendor at the number on its website>" \
 //       [--job job_... --business biz_...]      (only for a message that matched no deal)
 //   node --env-file=.env scripts/quarantine.ts reject --message msg_... --by "<your name>" --why "<what you checked>"
+//   node --env-file=.env scripts/quarantine.ts release-text --message msg_... --job job_... --by "<your name>" --why "<what you checked>"
+//
+// release-text: a text held because its number is on deals in several workspaces (reason
+// ambiguous_workspace) is routed to one open deal by the running server (the engine's
+// releaseHeldText) on that deal's next advance. The engine re-checks that the number is that deal's
+// approver or a business Haggle contacted on it, and never attributes a YES / NO / PAY / PAID / CALL
+// reply: the human resends those with the deal code. Recorded in the operator log (migration 119).
 //
 // What a release does (inbound/quarantineReview.ts): records who, how and when next to the original
 // quarantine reason (append-only, one decision per message; migration 112), and turns the message
@@ -19,13 +26,14 @@
 //
 // Needs SUPABASE_DB_URL (the engine database, migrations through 112 applied).
 import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=production (src/config.ts)
-import { heldReason, listQuarantine, PostgresRepository, quarantineEntry, rejectQuarantined, releaseQuarantined, type QuarantineEntry, type Repository } from "@haggle/engine";
+import { heldReason, listQuarantine, PostgresRepository, quarantineEntry, rejectQuarantined, releaseQuarantined, requestTextRelease, type QuarantineEntry, type Repository } from "@haggle/engine";
 
 export type QuarantineCommand =
   | { kind: "list"; jobId?: string; all: boolean; limit: number }
   | { kind: "show"; messageId: string }
   | { kind: "release"; messageId: string; verifiedBy: string; how: string; jobId?: string; businessId?: string }
-  | { kind: "reject"; messageId: string; by: string; why: string };
+  | { kind: "reject"; messageId: string; by: string; why: string }
+  | { kind: "release-text"; messageId: string; jobId: string; by: string; why: string };
 
 function arg(argv: string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
@@ -60,6 +68,13 @@ export function planQuarantine(argv: string[]): QuarantineCommand {
     if ((jobId === undefined) !== (businessId === undefined)) throw new Error("--job and --business go together (only for a message that matched no deal)");
     return { kind, messageId: id(argv, "message", "a message id like msg_... (see list)")!, verifiedBy, how, ...(jobId ? { jobId, businessId } : {}) };
   }
+  if (kind === "release-text") {
+    const by = (arg(argv, "by") ?? "").trim();
+    const why = (arg(argv, "why") ?? "").trim();
+    if (by.length < 2 || by.length > 80) throw new Error("--by is required: who decided (it is recorded)");
+    if (why.length < 10 || why.length > 400) throw new Error("--why is required (10-400 characters): how you know which deal the text answers");
+    return { kind, messageId: id(argv, "message", "a message id like msg_... (see list)")!, jobId: id(argv, "job", "the job id of the open deal the text answers")!, by, why };
+  }
   if (kind === "reject") {
     const by = (arg(argv, "by") ?? "").trim();
     const why = (arg(argv, "why") ?? "").trim();
@@ -67,14 +82,19 @@ export function planQuarantine(argv: string[]): QuarantineCommand {
     if (why.length < 10 || why.length > 500) throw new Error("--why is required (10-500 characters): what you checked");
     return { kind, messageId: id(argv, "message", "a message id like msg_... (see list)")!, by, why };
   }
-  throw new Error("command must be one of: list, show, release, reject");
+  throw new Error("command must be one of: list, show, release, reject, release-text");
 }
 
 export const formatEntry = (e: QuarantineEntry) =>
   `${e.message_id}  ${e.received_at.slice(0, 16)}  job ${e.job_id ?? "-"}  ${e.business_id ?? "-"}  ${e.from}\n    reason: ${e.reason}${e.decision ? ` · decided: ${e.decision}` : ""}\n    ${e.explanation}`;
 
 /** Run one command against a repository; returns the text to print. */
-export async function runQuarantine(repo: Repository, cmd: QuarantineCommand): Promise<string> {
+export async function runQuarantine(repo: Repository, cmd: QuarantineCommand, now: () => Date = () => new Date()): Promise<string> {
+  if (cmd.kind === "release-text") {
+    const r = await requestTextRelease(repo, { messageId: cmd.messageId, jobId: cmd.jobId, by: cmd.by, reason: cmd.why, now: now().toISOString() });
+    if (!r.ok) throw new Error(`refused: ${r.reason}`);
+    return `Release requested (review ${r.reviewId}): on ${cmd.jobId}'s next advance the server routes ${cmd.messageId} to it if the engine's checks pass (the number belongs to the deal; not an approval, payment or callback reply). job-ops inspect --job ${cmd.jobId} shows the outcome.`;
+  }
   if (cmd.kind === "list") {
     const list = await listQuarantine(repo, { ...(cmd.jobId ? { jobId: cmd.jobId } : {}), limit: cmd.limit, includeResolved: cmd.all });
     return list.length ? list.map(formatEntry).join("\n") : "No held email.";
@@ -88,7 +108,7 @@ export async function runQuarantine(repo: Repository, cmd: QuarantineCommand): P
       formatEntry(e),
       `    subject: ${e.subject || "(none)"}`,
       `    attachments: ${e.attachments ? m.attachments.map((a) => `${a.filename ?? "?"} (${a.content_type})`).join(", ") : "none"}`,
-      `    what to do: ${e.action}`,
+      `    what to do: ${m.quarantine_reason === "ambiguous_workspace" ? `a text from a number on deals in several workspaces: if you know which open deal it answers, quarantine release-text --message ${m.id} --job job_... --by <you> --why <how you know>; approval, payment and callback replies are never released (the human resends them with the deal code)` : e.action}`,
       `    now stored as: ${m.kind}${m.sender_trusted ? ` (trusted: ${m.trust_reason})` : " (not read)"}; held for: ${heldReason(m)}`,
       ...(res ? [`    decision: ${res.decision} by ${res.resolved_by} at ${res.resolved_at}: ${res.verification}`] : []),
       "",
