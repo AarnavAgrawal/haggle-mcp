@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type EngineConfig } from "../src/index.ts";
 import { simulatedStripe } from "../src/payments/stripe.ts";
 import { ChannelSendError } from "../src/workflow/ports.ts";
+import { DEFAULT_CONTACT_WINDOW } from "../src/workflow/contactWindow.ts";
 import { checkMessage, citesCompetingOffer } from "../src/negotiation/messageGuard.ts";
 
 const ALPHA_PHONE = "+14155550101";
@@ -263,5 +264,21 @@ describe("S5-D F12: payment instructions are never silently replaced", () => {
     expect(h!.instructions_text).toMatch(/card on pickup/);
     expect((await env.repo.listEvents(jobId)).some((e) => e.type === "payment" && e.data.status === "instructions_changed")).toBe(true);
     expect(env.texts.filter((t) => t.to === ALPHA_PHONE).at(-1)!.text).toMatch(/different payment instructions.*(phone|call)/i);
+  });
+});
+
+describe("S5-D F13: a deferred first contact re-checks the vendor's authorization", () => {
+  it("a vendor the operator removes while its RFQ waits for contact hours is never contacted", async () => {
+    const env = await setup({ recipientAllowlist: [], contactWindow: DEFAULT_CONTACT_WINDOW, collectionWindowMs: 7 * 24 * 3_600_000 });
+    env.clock.advance(11 * 3_600_000); // Tuesday 23:00 Pacific: outside contact hours
+    const email = "deferred-vendor@inkboxmail.test";
+    await env.engine.addWorkspaceVendor({ workspace_id: "ws_alpha", contact: email, name: "Deferred Grill", consent: "agreed by phone 2026-10-01", added_by: "ops-alice" });
+    const deal = await env.engine.forWorkspace("ws_alpha").deal({ request: { ...request, date: "2026-11-14" }, budget_usd, businesses: [{ name: "Deferred Grill", email }] });
+    expect(env.emails.filter((m) => m.to === email)).toHaveLength(0);
+    expect((await env.repo.getBusinesses(deal.job_id))[0]!.next_attempt_at).not.toBeNull();
+    await env.engine.removeWorkspaceVendor("ws_alpha", email); // consent withdrawn overnight
+    env.clock.advance(10 * 3_600_000); // Wednesday 09:00 Pacific
+    await env.engine.advanceJob(deal.job_id);
+    expect(env.emails.filter((m) => m.to === email)).toHaveLength(0);
   });
 });

@@ -1249,6 +1249,17 @@ export class HaggleEngine {
 
   /** First contact on the business's routed channel (also used for retries that come due). */
   private async contactBusiness(job: JobRow, b: JobBusinessRow) {
+    // Authorization is re-checked at the moment of first contact, not only at deal(): a vendor the
+    // operator removed (consent withdrawn) while its RFQ waited for contact hours is never contacted (S5-D F13).
+    if (!b.contacted_at && !b.simulated) {
+      const ws = new Set((await this.repo.listWorkspaceVendors(job.workspace_id)).map((v) => v.contact.toLowerCase()));
+      const blocked = [b.email ? normalizeAddress(b.email) : null, b.phone, b.a2a_card_url].find((c) => !!c && !this.allowedRecipient(c) && !ws.has(c.toLowerCase()));
+      if (blocked) {
+        await this.repo.updateBusiness(job.id, b.business_id, { status: "unavailable", next_attempt_at: null }, { ifStatus: ["pending"] });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `${b.name} wasn't contacted: it is no longer authorized for this workspace` });
+        return;
+      }
+    }
     if (await this.deferFirstContact(job, b)) return;
     if (b.channel === "phone") await this.placeRfqCall(job, b);
     else if (b.channel === "imessage") await this.sendIMessageToBusiness(job, b, "rfq", `imsg-rfq:${job.id}:${b.business_id}`, HaggleEngine.rfqIMessageText(b.name, job, this.customer(job)), 1);
