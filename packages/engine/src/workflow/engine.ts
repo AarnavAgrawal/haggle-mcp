@@ -22,6 +22,7 @@ import { businessIdForContact, newApprovalCode, newId, newShortCode, normalizeBu
 import { cleanEmailBody } from "../inbound/emailBody.ts";
 import { applyDeliveryStatus, type DeliveryStatusInput } from "../inbound/deliveryStatus.ts";
 import { CONTINUITY_ONLY_REASONS, CONTINUITY_ONLY_WARNING, provesSenderIdentity } from "../inbound/trustStrength.ts";
+import { explainQuarantine, quarantineEventData } from "../inbound/quarantineReasons.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
 import { isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
@@ -2882,9 +2883,11 @@ export class HaggleEngine {
     if (match.kind === "unmatched" || match.kind === "quarantine" || !msg.from) {
       const reason = !msg.from ? "from_unparseable" : match.kind === "quarantine" || match.kind === "unmatched" ? match.reason : "unexpected";
       const jobId = match.kind === "quarantine" ? match.jobId : null;
-      await this.repo.insertMessage({ ...base, job_id: jobId, business_id: match.kind === "quarantine" ? match.businessId : null, kind: "quarantine", sender_trusted: false, trust_reason: null, matched_via: match.kind === "quarantine" ? match.via : null, parse_status: "none", quarantine_reason: reason });
-      if (jobId) await this.repo.appendEvent(jobId, "flag", { business_id: match.kind === "quarantine" ? match.businessId : "", flag: "unverified_sender", summary: "message in a business thread from another address was quarantined" });
-      this.log("inbound_quarantined", { reason, job_id: jobId });
+      const q = await this.repo.insertMessage({ ...base, job_id: jobId, business_id: match.kind === "quarantine" ? match.businessId : null, kind: "quarantine", sender_trusted: false, trust_reason: null, matched_via: match.kind === "quarantine" ? match.via : null, parse_status: "none", quarantine_reason: reason });
+      if (!q) return { jobId, outcome: "duplicate" }; // a webhook replay or the sweep: one flag per message
+      const why = explainQuarantine(reason);
+      if (jobId) await this.repo.appendEvent(jobId, "flag", { business_id: match.kind === "quarantine" ? match.businessId : "", flag: "unverified_sender", summary: `A message in a business thread was quarantined, not read: ${why.explanation} ${why.action}`, ...quarantineEventData(why, q.id) });
+      this.log("inbound_quarantined", { reason, job_id: jobId, explanation: why.explanation });
       return { jobId, outcome: `quarantined:${reason}` };
     }
 
@@ -2944,7 +2947,8 @@ export class HaggleEngine {
       if (!v.ok) {
         const q = await this.repo.insertMessage({ ...base, job_id: b.job_id, business_id: b.business_id, kind: "quarantine", sender_trusted: false, trust_reason: trust.reason, matched_via: match.via, parse_status: "none", quarantine_reason: `${v.reason}:${v.detail}` });
         if (!q) return { jobId: b.job_id, outcome: "duplicate" };
-        await this.repo.appendEvent(b.job_id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `An email claiming to be ${b.name} couldn't be verified (${v.detail.replace(/_/g, " ")}); it was quarantined, not read` });
+        const why = explainQuarantine(`${v.reason}:${v.detail}`);
+        await this.repo.appendEvent(b.job_id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `An email claiming to be ${b.name} couldn't be verified (${v.detail.replace(/_/g, " ")}); it was quarantined, not read. ${why.action}`, ...quarantineEventData(why, q.id) });
         this.log("inbound_quarantined", { reason: v.reason, detail: v.detail, job_id: b.job_id });
         return { jobId: b.job_id, outcome: `quarantined:${v.reason}` };
       }
@@ -3328,7 +3332,8 @@ export class HaggleEngine {
       // download, no quote, question or payment step can come from it.
       if (msg.sender_trusted !== true) {
         await this.repo.updateMessage(msg.id, { parse_status: "done" });
-        await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `ignored an unauthenticated email claiming to be ${b.name}` });
+        const why = explainQuarantine(msg.trust_reason);
+        await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "unverified_sender", summary: `ignored an unauthenticated email claiming to be ${b.name}${why.known ? `. ${why.action}` : ""}`, ...(why.known ? quarantineEventData(why, msg.id) : {}) });
         await this.repo.touchJob(job.id);
         continue;
       }
@@ -4189,7 +4194,7 @@ export class HaggleEngine {
       const bid = typeof e.data.business_id === "string" ? e.data.business_id : null;
       if (!bid) continue;
       const summary = e.type === "quote" ? (e.data.total_usd == null ? "Replied without a total" : `Quoted $${Number(e.data.total_usd).toLocaleString("en-US")} (round ${e.data.round})`)
-        : e.type === "question" ? `Asked: ${String(e.data.text).slice(0, 120)}` : e.type === "flag" ? `Flagged: ${String(e.data.flag).replace(/_/g, " ")}`
+        : e.type === "question" ? `Asked: ${String(e.data.text).slice(0, 120)}` : e.type === "flag" ? (typeof e.data.board_line === "string" ? e.data.board_line : `Flagged: ${String(e.data.flag).replace(/_/g, " ")}`)
         : e.type === "reply" ? String(e.data.summary ?? "") : null;
       if (summary) lastEvent.set(bid, summary);
       if (typeof e.data.transcript_snippet === "string" && e.data.transcript_snippet) transcripts.set(bid, e.data.transcript_snippet);
