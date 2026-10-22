@@ -24,7 +24,8 @@ export class TextBudget {
   private readonly unansweredBy = new Map<string, number>();
   private readonly seeded = new Set<string>();
   private readonly blocked = new Set<string>();
-  constructor(private readonly port: SmsPort) {}
+  private readonly port: SmsPort;
+  constructor(port: SmsPort) { this.port = port; }
 
   /** Texts sent to this number since it last replied (best effort). */
   async unanswered(to: string): Promise<number> {

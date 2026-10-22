@@ -72,7 +72,8 @@ export class InboundReconciler {
   private running: Promise<SweepResult> | null = null;
   private identities: { at: number; set: Set<string> } | null = null;
 
-  constructor(private readonly d: Deps) {}
+  private readonly d: Deps;
+  constructor(d: Deps) { this.d = d; }
 
   private now() {
     return (this.d.now ?? (() => new Date()))().getTime();

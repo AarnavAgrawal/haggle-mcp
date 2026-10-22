@@ -56,7 +56,9 @@ export interface Discovered extends FoundBusiness {
  */
 export class DiscoveryRegistry {
   private readonly items = new Map<string, { b: Discovered; at: number }>();
-  constructor(private readonly ttlMs = 30 * 60_000, private readonly now = () => Date.now()) {}
+  private readonly ttlMs: number;
+  private readonly now: () => number;
+  constructor(ttlMs = 30 * 60_000, now = () => Date.now()) { this.ttlMs = ttlMs; this.now = now; }
   remember(list: Discovered[]): void {
     for (const b of list) {
       const prev = this.items.get(b.business_ref)?.b;

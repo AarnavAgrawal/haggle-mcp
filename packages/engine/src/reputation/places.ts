@@ -203,7 +203,8 @@ const slugifyName = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, "-").r
 /** Why public discovery returned nothing, in terms an agent can act on. */
 export type PlacesFailure = "not_configured" | "key_rejected" | "rate_limited" | "unavailable";
 export class PlacesError extends Error {
-  constructor(readonly code: PlacesFailure, message: string) { super(message); }
+  readonly code: PlacesFailure;
+  constructor(code: PlacesFailure, message: string) { super(message); this.code = code; }
 }
 
 function failure(status: number): PlacesError {
