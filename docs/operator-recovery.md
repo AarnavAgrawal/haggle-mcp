@@ -19,20 +19,26 @@ Account-level actions (suspend, revoke, the vendor roster) are in `scripts/works
 ## 2. Daily check
 
 ```
-node --env-file=.env scripts/ops-report.ts             # every workspace, plain text
-node --env-file=.env scripts/ops-report.ts --json      # for a dashboard or a ticket
+node --env-file=.env scripts/ops-report.ts --brief     # one screen: what needs a person right now, with the next command
+node --env-file=.env scripts/ops-report.ts             # every workspace, every section, ending with the next commands
+node --env-file=.env scripts/ops-report.ts --json      # everything, for a dashboard or a ticket (items under `attention`)
 node --env-file=.env scripts/ops-report.ts --workspace ws_acme --days 3
+node --env-file=.env scripts/ops-report.ts --brief --fail-on-attention   # cron / CI: exit 2 when anything needs a person
 ```
 
-| Section | What it means | Do |
+The first line is the status: `ALL CLEAR`, or `ATTENTION: N items`. With `--brief`, the second line counts items per category, then there is one line per item, oldest first: age, category, workspace, job, who it waits on (`[operator]`, `[approver]` or `[business]`), what, and `→` the command to run (from `apps/mcp`, with `node --env-file=.env`; fill in the `<placeholders>`). Exit codes: 0 printed (and ALL CLEAR with `--fail-on-attention`), 2 attention with `--fail-on-attention`, 1 bad arguments or no database. The report only reads; contacts are masked (`a•••@example.com`, `+1 ••• ••• 0123`); message bodies and approval, BOOKED, CALL and CANCEL codes are never shown.
+
+| Section (brief category) | What it means | Do |
 | --- | --- | --- |
-| Pending approvals | The human hasn't answered. EXPIRED means the server is about to clear it. | Nothing, or remind the human |
-| Operator reviews | Something Haggle stopped retrying, or must never retry on its own | §3 by kind |
-| Failed / bounced communications | `not_sent`: retried automatically until reviewed. `unknown`: never retried. `bounced`: the vendor was given up on. | §3 `outbox` |
-| Quarantined replies | Mail that Haggle wouldn't read as a quote | `quarantine.ts` (workstream A) |
-| Stalled jobs | Open longer than its state should take | `inspect`, then §4 |
-| Recovery findings | What the server's stuck-job sweep plans to do: `advance` it does itself; `review` needs you | Usually nothing for `advance` |
-| Handoffs awaiting action | The manual-rail booking or payment instructions are waiting on the business. STALLED means it was reminded once and the human was told. | Call the business, or §4 fail-safe close |
+| Pending approvals (`approval`) | The human hasn't answered. EXPIRED, still waiting: the code no longer works; the server clears it on the next advance. | `job-ops inspect`; remind the human, or nothing |
+| Operator reviews (`review`) | Something Haggle stopped retrying, or must never retry on its own | §3 by kind; a hold: `job-ops resume` |
+| Failed / bounced communications (`failed`) | `not_sent`: retried automatically until reviewed. `unknown`: never retried. `bounced`: the vendor was given up on. | §3 `outbox` |
+| Quarantined emails (`quarantine`) | Vendor mail Haggle wouldn't read, with the plain-English reason and what to check. Shown until someone decides (open deals, or received in the last `--days`). | `quarantine.ts release` only after verifying it on an independent channel; otherwise `quarantine.ts reject`. Not releasable (likely spoofed, or the deal is past approval): reject only |
+| Stalled jobs (`stalled`) | Open longer than its state should take. In the brief only when nothing more specific names the job (a booking waiting on the business keeps a job idle too). | `inspect`, then §4 |
+| Recovery findings | What the server's stuck-job sweep plans to do: `advance` it does itself; `review` needs you (it opens a review) | Usually nothing for `advance` |
+| Handoffs awaiting action (`booking`, `payment`) | `awaiting_vendor_confirmation`: the business hasn't confirmed the approved booking. `vendor_claimed_awaiting_booked`: it said "confirmed" on a channel that can't prove who it is (a text, a thread-only email); only the approver's `BOOKED <code>` books it. `not_in_writing_awaiting_attestation`: a phone/A2A business; the approver confirms directly and texts `BOOKED <code>`. `awaiting_payment_instructions` / `awaiting_customer_payment`: the manual payment handoff. `customer_paid_no_receipt`: the customer texted PAID and the business hasn't acknowledged it; in the brief only after 24 hours. STALLED: reminded once, the human was told. | Call the business or remind the approver; or §4 fail-safe close |
+| Pending CALL / CANCEL authorizations (`auth`) | A one-time code texted to the approver (a callback, or cancelling a booking the business confirmed) is unanswered. Codes expire after 30 minutes and then drop off. | Remind the approver; nobody else can answer it |
+| Held texts (`held text`, workspace `unscoped`) | A text from a number on deals in several workspaces (§8). "release requested": the server routes it on that deal's next advance. | `quarantine.ts release-text --job <the deal>` if you know which, or `quarantine.ts reject` |
 
 ## 3. Reviews, by kind
 
