@@ -10,6 +10,7 @@
 // - The round waited 15 minutes for a slow email business with the board only saying "Negotiating".
 import { describe, expect, it } from "vitest";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type SmsPort } from "../src/index.ts";
+import { ChannelSendError } from "../src/workflow/ports.ts";
 
 const textExtractor = {
   async extract(i: { bodyText: string }) {
@@ -49,7 +50,7 @@ function demoEngine(opts: { failCounterCalls?: number; config?: Record<string, u
     email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },
     phone: {
       async placeCall(r) {
-        if (r.idempotencyKey.startsWith("counter:") && failures > 0) { failures--; throw new Error("503 hosted_agent_at_capacity"); }
+        if (r.idempotencyKey.startsWith("counter:") && failures > 0) { failures--; throw new ChannelSendError("provider_error", true, 20_000, "503 hosted_agent_at_capacity"); } // what the Inkbox port raises
         calls.push(r);
         return { callId: `call_${calls.length}` };
       },

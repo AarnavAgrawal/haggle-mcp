@@ -4,7 +4,7 @@
 // the bare handshake is open. In-memory store, no network.
 import { describe, expect, it } from "vitest";
 import { createMockEngine, DEFAULT_WORKSPACE_ID, InMemoryRepository } from "@haggle/engine";
-import { bearerToken, hashSecret, isHandshakeOnly, newSecret, resolveWorkspace } from "../src/workspace.ts";
+import { authRequired, bearerToken, emailApprovalByCode, hashSecret, isHandshakeOnly, newSecret, outOfBandApprovals, resolveWorkspace } from "../src/workspace.ts";
 import { planWorkspace } from "../scripts/workspace-create.ts";
 import type { Runtime } from "../src/runtime.ts";
 
@@ -54,5 +54,51 @@ describe("workspace auth", () => {
     expect(isHandshakeOnly("POST", [{ method: "notifications/initialized" }, { method: "ping" }])).toBe(true);
     expect(isHandshakeOnly("POST", [{ method: "initialize" }, { method: "tools/call" }])).toBe(false);
     expect(isHandshakeOnly("GET", { method: "initialize" })).toBe(false);
+  });
+});
+
+describe("production policy (fail closed)", () => {
+  it("live mode always requires a credential, whatever HAGGLE_AUTH says", () => {
+    expect(authRequired({ HAGGLE_MODE: "live" })).toBe(true);
+    expect(authRequired({ HAGGLE_MODE: "live", HAGGLE_AUTH: "open" })).toBe(true);
+    expect(authRequired({ HAGGLE_MODE: "mock" })).toBe(false);
+    expect(authRequired({ HAGGLE_MODE: "mock", HAGGLE_AUTH: "required" })).toBe(true);
+  });
+
+  it("live mode only takes out-of-band approvals; email code approval is opt-in", () => {
+    expect(outOfBandApprovals({ HAGGLE_MODE: "live", HAGGLE_APPROVALS: "demo" })).toBe(true);
+    expect(outOfBandApprovals({ HAGGLE_MODE: "mock" })).toBe(false);
+    expect(outOfBandApprovals({ HAGGLE_MODE: "mock", HAGGLE_APPROVALS: "out_of_band" })).toBe(true);
+    expect(emailApprovalByCode({})).toBe(false); // was on by default
+    expect(emailApprovalByCode({ HAGGLE_EMAIL_APPROVAL_BY_CODE: "1" })).toBe(false);
+    expect(emailApprovalByCode({ HAGGLE_EMAIL_APPROVAL_BY_CODE: "true" })).toBe(true);
+  });
+
+  it("a revoked workspace's token and connector secret stop resolving; rotation restores access with new secrets only", async () => {
+    const { rt, plan } = await runtimeWith();
+    const engine = rt.engine;
+    expect(await resolveWorkspace(rt, { authorization: `Bearer ${plan.token}` }, true)).toMatchObject({ ok: true, workspaceId: plan.workspace.id });
+    await engine.revokeWorkspace(plan.workspace.id);
+    expect(await resolveWorkspace(rt, { authorization: `Bearer ${plan.token}` }, true)).toEqual({ ok: false, reason: "unknown_credentials" });
+    const secret = plan.connectorUrl.match(/\/c\/([^/]+)\/mcp/)![1]!;
+    expect(await resolveWorkspace(rt, { connectorSecret: secret }, true)).toEqual({ ok: false, reason: "unknown_credentials" });
+    const fresh = newSecret("hgw");
+    await engine.rotateWorkspaceCredentials(plan.workspace.id, hashSecret(fresh), hashSecret(newSecret("hgc")));
+    expect(await resolveWorkspace(rt, { authorization: `Bearer ${plan.token}` }, true)).toEqual({ ok: false, reason: "unknown_credentials" });
+    expect(await resolveWorkspace(rt, { authorization: `Bearer ${fresh}` }, true)).toMatchObject({ ok: true, workspaceId: plan.workspace.id });
+  });
+});
+
+describe("workspace-admin (operator script) arguments", () => {
+  it("validates commands; the approver and cap change only here", async () => {
+    const { planAdmin } = await import("../scripts/workspace-admin.ts");
+    expect(planAdmin(["revoke", "--id", "ws_acme"])).toEqual({ kind: "revoke", id: "ws_acme" });
+    expect(planAdmin(["set-approver", "--id", "ws_acme", "--phone", "+14155550123", "--email", "Ops@Acme.example"])).toEqual({ kind: "set-approver", id: "ws_acme", phone: "+14155550123", email: "ops@acme.example" });
+    expect(planAdmin(["set-approver", "--id", "ws_acme", "--email", "none"])).toEqual({ kind: "set-approver", id: "ws_acme", email: null });
+    expect(planAdmin(["set-cap", "--id", "ws_acme", "--usd", "1500"])).toEqual({ kind: "set-cap", id: "ws_acme", capCents: 150_000 });
+    expect(() => planAdmin(["set-approver", "--id", "ws_acme", "--phone", "4155550123"])).toThrow(/E\.164/);
+    expect(() => planAdmin(["set-cap", "--id", "ws_acme", "--usd", "-1"])).toThrow(/positive/);
+    expect(() => planAdmin(["revoke", "--id", "acme"])).toThrow(/workspace id/);
+    expect(() => planAdmin(["drop", "--id", "ws_acme"])).toThrow(/command/);
   });
 });

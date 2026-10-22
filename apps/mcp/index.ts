@@ -34,7 +34,7 @@ const server = new MCPServer<never, AppEnv>({
     "When the user wants to buy, cater, book, hire or get quotes (e.g. 'cater a hackathon for 200 next Saturday, budget under 5k'), call deal FIRST with the request and budget_usd (omit budget_usd if the user gave none): it contacts the configured, authorized vendors and opens one live deal board in the chat. Don't call ask, discover or business_profile first.",
     "If the user names vendors ('use Mission Eats only'), pass just their names: deal(businesses=['Mission Eats']); exactly those are contacted. Haggle already holds every configured vendor's contact details and channel; never ask the user for a phone number or email of a vendor Haggle knows. For anything that isn't a catering order (a repair, a rental, a service), pass request.ask[] (the answers you want back), compare_by and payable_field.",
     "Then: wait_for_update (repeat, pass the cursor) until quotes are final -> get_quotes to read them -> approve(job_id, quote_id) to ask the human -> pay(job_id, quote_id) once they approved. The board updates itself and the human can choose any safe option on it, so get_quotes and wait_for_update return data only and draw nothing; call open_haggle only when the user asks to see the board again.",
-    "Approval always comes from a human: the approval card or board, the client's form, or a coded reply to Haggle's text (YES <code>) or email (APPROVE <code>); never from this model, and never ask for the code. Approving charges nothing; pay charges the approved amount (the deposit, or the full total when none was stated). After a texted YES the human may also reply PAY <code> to charge it from their phone; one charge either way. approve(action='confirm') only confirms the order and pays nothing.",
+    "Approval always comes from a human, never from this model: on live servers only the workspace approver's coded reply to Haggle's text (YES <code>) counts; demo servers also take the approval card or the client's form. Never ask for the code, and never try to change the approver or raise the spending cap (only the operator can). Approving charges nothing; pay charges the approved amount (the deposit, or the full total when none was stated). After a texted YES the human may also reply PAY <code> to charge it from their phone; one charge either way. approve(action='confirm') only confirms the order and pays nothing.",
     "Along the way: answer_business for a business's question, send_message for anything else (guarded: real amounts only, no other business names, no commitments), negotiate for the counteroffer round if Haggle hasn't run it (2 rounds at most), call_back only for a callback get_quotes offers and the human authorizes, cancel_deal to stop.",
     "In a new conversation about an earlier purchase, call list_deals, then get_quotes(job_id) for the deal the user means; never show an earlier deal as the answer to a new request.",
     "ask is only for a rough price idea from quotes Haggle already collected (estimates are never quotes; nothing is ordered). If deal returns setup blockers, show them to the user verbatim; nothing was sent.",
@@ -48,8 +48,9 @@ const server = new MCPServer<never, AppEnv>({
 // Bearer token or connector secret on the MCP endpoint only (view assets under /mcp/_mcp-use/*
 // are fetched by host iframes without credentials). The bare protocol handshake may run without
 // credentials (hosting health checks call `initialize`); it reveals only the server's name and
-// instructions. With HAGGLE_AUTH=required everything else needs a workspace credential; otherwise
-// requests without credentials use the default workspace. A wrong credential is always refused.
+// instructions. In live mode (or with HAGGLE_AUTH=required) everything else needs a workspace
+// credential; otherwise (mock) requests without credentials use the default workspace. A wrong or
+// revoked credential is always refused.
 
 server.use("*", async (c, next) => {
   if (c.req.path === server.basePath && c.req.method !== "OPTIONS") {
@@ -57,7 +58,13 @@ server.use("*", async (c, next) => {
     try {
       rt = await getRuntime();
     } catch {
-      await next(); // tools report CONFIG_MISSING themselves
+      // Fail closed: with auth required (always in live mode) nothing but the handshake runs on a
+      // server whose configuration is incomplete. Mock/open servers let tools report CONFIG_MISSING.
+      if (authRequired()) {
+        const body = c.req.method === "POST" ? await c.req.raw.clone().json().catch(() => null) : null;
+        if (!isHandshakeOnly(c.req.method, body)) return c.json({ error: { code: "CONFIG_MISSING", message: "This server isn't fully configured.", fix: "The operator must set the missing environment variables (see /health)." } }, 503);
+      }
+      await next();
       return;
     }
     const r = await resolveWorkspace(rt, { authorization: c.req.header("authorization"), connectorSecret: c.req.header(CONNECTOR_HEADER) });
@@ -298,7 +305,7 @@ export const deal = server.tool(
         weights: z.object({ price: z.number().min(0).max(1), reputation: z.number().min(0).max(1), reliability: z.number().min(0).max(1), completeness: z.number().min(0).max(1), terms: z.number().min(0).max(1) }).partial().optional().describe("Advanced: explicit best-value weights (normalized)"),
       }).optional().describe("Buyer preferences for the best-value recommendation (quotes that meet the requirements and the budget rank first)"),
       deadline: z.string().datetime({ offset: true }).optional().describe("ISO time the businesses should reply by"),
-      approver_email: z.string().email().optional().describe("Gets the approval request by email (a reply APPROVE <code> records the human's approval; then pay charges it) and the receipt; defaults to the settings approver email"),
+      approver_email: z.string().email().optional().describe("Ignored: the approver is the workspace's human, set by the operator (an agent can't name its own approver)"),
       approver_phone: z.string().regex(/^\+[1-9]\d{6,14}$/).optional().describe("Ignored: the text approver is the human set in settings (an agent can't name its own approver)"),
       max_rounds: z.number().int().min(1).max(2).optional().describe("Quote rounds: 1 = first quotes only, 2 = plus one negotiation round (the default and the maximum)"),
       client_request_id: z.string().max(64).optional().describe("Reuse to get the same job back instead of contacting businesses again"),
@@ -395,7 +402,7 @@ export const deal = server.tool(
       // No budget from the user means none: a settings value is never presented to businesses as the
       // client's target (that would invent a negotiating claim). The spending cap still applies at approval.
       if (input.budget_usd === undefined) warnings.push(`No budget given, so none was assumed: Haggle compares on value and negotiates only with real competing quotes. Your ${usd(settings.spending_cap_cents / 100)} spending cap still applies when approving. Pass budget_usd if the user names one.`);
-      if (input.approver_phone) warnings.push("approver_phone ignored: the iMessage approver is the human set in settings (an agent can't name its own approver). They approve by iMessage, the approval card or the client's form.");
+      if (input.approver_phone || input.approver_email) warnings.push(`${input.approver_phone && input.approver_email ? "approver_phone and approver_email" : input.approver_phone ? "approver_phone" : "approver_email"} ignored: the approver is the workspace's human, set by the operator (an agent can't name its own approver).`);
       if (fromRoster && blockers.length) warnings.push(`${blockers.length} of ${roster.length} demo vendors not contacted (setup needed): ${blockers.map((x) => `${x.vendor} [${x.channel}]`).join(", ")}.`);
       const { requirements: _r, ...rest } = input.request;
       const request: DealInput["request"] = {
@@ -410,7 +417,6 @@ export const deal = server.tool(
         businesses,
         ...(input.budget_usd !== undefined ? { budget_usd: input.budget_usd } : {}),
         ...(input.deadline ? { reply_by: input.deadline } : {}),
-        ...(input.approver_email ?? settings.approver_email ? { approver_email: input.approver_email ?? settings.approver_email! } : {}),
         ...(input.max_rounds ? { max_rounds: input.max_rounds } : {}),
         ...(input.client_request_id ? { client_request_id: input.client_request_id } : {}),
       });
@@ -653,16 +659,23 @@ export const approve = server.tool(
   },
   async ({ job_id, quote_id, action }, ctx) =>
     run(ctx, async ({ engine, mode }) => {
-      const canForm = ctx.client.can("elicitation");
-      const canView = approveHasView && ctx.client.extension("io.modelcontextprotocol/ui") !== undefined;
+      // Out-of-band policy (always in live mode): the client's form and the card's button can't prove a
+      // human made the call, so only the approver's coded text (or email, when enabled) approves.
+      const strict = engine.outOfBandApprovalsOnly;
+      const canForm = !strict && ctx.client.can("elicitation");
+      const canView = !strict && approveHasView && ctx.client.extension("io.modelcontextprotocol/ui") !== undefined;
       await engine.loadJob(job_id); // job_not_found before anything else
       // Offer every channel the human can use; the first human decision wins. iMessage to the settings
       // approver when enabled; else a text by SMS ("Reply YES <code>") to the notify number / settings
       // approver; an email ("APPROVE <code>") to the approver email; plus the client's form or card.
       const canIMessage = engine.imessageEnabled && Boolean((await engine.getSettings()).approver_phone);
-      const reach = mode === "live" ? await engine.approvalReach(job_id) : { text: false, email: false };
-      const channel = canForm ? "elicitation" : canIMessage ? "imessage" : canView ? "view" : mode === "mock" ? "simulated" : reach.text ? "imessage" : reach.email ? "email" : null;
-      if (!channel) return fail(mode, "NO_HUMAN_CHANNEL", "No way to reach a human approver: this client shows neither an approval card nor an approval form, and there's no approver phone or email to text or mail.", "Set the approver email (and/or phone, with SMS on) via settings.update, or approve from a client that shows forms (e.g. Claude Code) or the approval card.", "settings");
+      const reach = mode === "live" || strict ? await engine.approvalReach(job_id) : { text: false, email: false };
+      const channel = canForm ? "elicitation" : canIMessage ? "imessage" : canView ? "view" : mode === "mock" && !strict ? "simulated" : reach.text ? "imessage" : reach.email ? "email" : null;
+      if (!channel) {
+        return strict
+          ? fail(mode, "NO_HUMAN_CHANNEL", "No way to reach this workspace's approver: on this server only the approver's own coded reply (a text from their phone) approves, and none can be sent.", "Ask the operator to set the workspace approver phone (scripts/workspace-admin.ts set-approver) and enable SMS or iMessage. Nothing was approved.", "none")
+          : fail(mode, "NO_HUMAN_CHANNEL", "No way to reach a human approver: this client shows neither an approval card nor an approval form, and there's no approver phone or email to text or mail.", "Approve from a client that shows forms (e.g. Claude Code) or the approval card, or ask the operator to set the workspace approver.", "settings");
+      }
       const approval = await engine.requestApproval(job_id, quote_id, channel, action, { text: reach.text && !canIMessage, email: reach.email });
       // How the human can answer (the code is only in their text/email/card, never in this response).
       const offered = await engine.approvalOffers(approval.id);
@@ -859,6 +872,16 @@ export const chooseInView = server.tool(
   },
   async ({ job_id, quote_id, action }, ctx) =>
     run(ctx, async ({ engine, mode }) => {
+      if (engine.outOfBandApprovalsOnly) {
+        // Anyone can call this tool, so it never hands out a code: the choice is texted to the
+        // workspace approver, whose coded reply is the only approval.
+        const canIMessage = engine.imessageEnabled && Boolean((await engine.getSettings()).approver_phone);
+        const reach = await engine.approvalReach(job_id);
+        if (!canIMessage && !reach.text) return fail(mode, "NO_HUMAN_CHANNEL", "No way to reach this workspace's approver by text.", "Ask the operator to set the workspace approver phone and enable SMS or iMessage. Nothing was approved.", "none");
+        const a = await engine.requestApproval(job_id, quote_id, "imessage", action, { text: reach.text && !canIMessage, email: false });
+        const next = a.status === "pending" ? "Sent to the approver's phone: they approve by replying YES <code> to Haggle's text." : `Approval is ${a.status}.`;
+        return ok({ ok: true, mode, approval_id: a.id, status: a.status, action: a.action === "confirm" ? "confirm" : "pay", amount_usd: a.payment_cents / 100, next }, `Approval ${a.status}: sent to the approver's phone.`);
+      }
       const a = await engine.requestApproval(job_id, quote_id, "view", action, { text: false, email: false });
       const next = a.status === "pending" ? "Waiting for the human's confirm click on the board (approve_in_view)." : `Approval is ${a.status}.`;
       // The code goes only to the board (_meta), never to model-visible content.
@@ -1175,9 +1198,9 @@ async function scoped(ctx: unknown) {
 
 server.settings({
   fields: {
-    spending_cap_usd: { schema: z.number().positive().max(1_000_000), title: "Spending cap (USD)", description: "Your ceiling for one deal's order total: a quote above it is shown to the human as a caveat when approving. Never sent to businesses as a budget (a deal without budget_usd has none). Payments also need a human approval." },
-    approver_email: { schema: z.string().max(200), title: "Approver email", description: "Gets each approval request by email: a reply APPROVE <code> from this address records the approval (the agent then calls pay). Also gets a receipt when a deal is confirmed or paid (empty = none)." },
-    approver_phone: { schema: z.string().max(20), title: "Approver phone (text)", description: "E.164, e.g. +14155550123 (empty = none). Approvals and updates are texted here (SMS, or iMessage when enabled) unless the server has a notify number: reply YES <code> to approve, then PAY <code> to charge it (or the agent's pay). For iMessage the approver must first text connect @<buyer handle>." },
+    spending_cap_usd: { schema: z.number().positive().max(1_000_000), title: "Spending cap (USD)", description: "The most Haggle may charge in one payment for this workspace (enforced), and the order total above which approvals carry a caveat. Can be lowered here; only the operator can raise it. Never sent to businesses as a budget." },
+    approver_email: { schema: z.string().max(200), title: "Approver email", description: "Read-only here: set by the operator. Gets approval requests and receipts by email (a coded email reply approves only when the operator enabled it)." },
+    approver_phone: { schema: z.string().max(20), title: "Approver phone (text)", description: "Read-only here: set by the operator (an agent must never choose who approves). Approvals and updates are texted here: reply YES <code> to approve, then PAY <code> to charge it. For iMessage the approver must first text connect @<buyer handle>." },
     default_area: { schema: z.string().max(200), title: "Default area", description: "City or address used when a request has no area (empty = none)." },
   },
   layout: [{ kind: "group", title: "Spending and approval", items: [{ kind: "property", property: "spending_cap_usd" }, { kind: "property", property: "approver_email" }, { kind: "property", property: "approver_phone" }, { kind: "property", property: "default_area" }] }],
@@ -1243,7 +1266,7 @@ server.get("/health", async (c) => {
   const missing = missingLiveConfig();
   try {
     const rt = await getRuntime();
-    return c.json({ ok: true, service: "haggle-mcp", version: "0.6.0", build: process.env.HAGGLE_BUILD_SHA ?? null, mode: rt.mode, auth: authRequired() ? "required" : "open", phone: rt.engine.phoneEnabled, a2a: rt.engine.a2aEnabled, imessage: rt.engine.imessageEnabled, payments: rt.engine.paymentsEnabled ? "enabled" : "disabled", brain: rt.engine.brainIsStub ? "stub" : "connected" });
+    return c.json({ ok: true, service: "haggle-mcp", version: "0.6.0", build: process.env.HAGGLE_BUILD_SHA ?? null, mode: rt.mode, auth: authRequired() ? "required" : "open", approvals: rt.engine.outOfBandApprovalsOnly ? "out_of_band" : "demo", phone: rt.engine.phoneEnabled, a2a: rt.engine.a2aEnabled, imessage: rt.engine.imessageEnabled, payments: rt.engine.paymentsEnabled ? "enabled" : "disabled", brain: rt.engine.brainIsStub ? "stub" : "connected" });
   } catch (e) {
     return c.json({ ok: false, service: "haggle-mcp", error: (e as Error).message, missing }, 503);
   }

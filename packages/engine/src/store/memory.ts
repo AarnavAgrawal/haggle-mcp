@@ -48,13 +48,20 @@ export class InMemoryRepository implements Repository {
     return w ? clone(w) : null;
   }
   async findWorkspaceByTokenHash(hash: string) {
-    const w = [...this.workspaces.values()].find((x) => x.token_hash !== null && x.token_hash === hash);
+    const w = [...this.workspaces.values()].find((x) => x.token_hash !== null && x.token_hash === hash && !x.revoked_at);
     return w ? clone(w) : null;
   }
   async findWorkspaceBySecretHash(hash: string) {
-    const w = [...this.workspaces.values()].find((x) => x.connector_secret_hash !== null && x.connector_secret_hash === hash);
+    const w = [...this.workspaces.values()].find((x) => x.connector_secret_hash !== null && x.connector_secret_hash === hash && !x.revoked_at);
     return w ? clone(w) : null;
+  }  async setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }) {
+    const w = this.workspaces.get(id);
+    if (!w) return null;
+    const next = { ...w, ...(c.token_hash !== undefined ? { token_hash: c.token_hash } : {}), ...(c.connector_secret_hash !== undefined ? { connector_secret_hash: c.connector_secret_hash } : {}), revoked_at: c.revoked ? now() : null };
+    this.workspaces.set(id, next);
+    return clone(next);
   }
+
 
   async insertJob(job: JobRow) {
     if (this.jobs.has(job.id)) throw new Error("duplicate job id");

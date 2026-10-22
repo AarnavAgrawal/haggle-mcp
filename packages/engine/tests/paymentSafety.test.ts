@@ -43,7 +43,7 @@ async function approved(e: HaggleEngine) {
   await e.advanceJob(deal.job_id);
   const q = (await e.getQuotes(deal.job_id)).quotes[0]!;
   const a = await e.requestApproval(deal.job_id, q.quote_id, "view");
-  await e.decideApproval(a.id, "approve", "view", "human");
+  await e.decideApproval(a.id, "approve", "imessage", "human");
   return { deal, q, a };
 }
 

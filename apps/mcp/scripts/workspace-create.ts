@@ -80,7 +80,7 @@ async function main(argv = process.argv.slice(2)) {
     `  Claude Code:    claude mcp add --transport http haggle ${plan.mcpUrl} --header "Authorization: Bearer ${plan.token}"`,
     "  Claude/ChatGPT: add the connector URL as a custom connector.",
     "",
-    "Set HAGGLE_AUTH=required on the server so requests without a workspace credential are refused.",
+    "Live servers always refuse requests without a workspace credential (mock: set HAGGLE_AUTH=required). Change the approver or cap, revoke or rotate with scripts/workspace-admin.ts.",
     ...(plan.settings.approver_phone ? ["For iMessage approvals the approver texts `connect @haggle` to Inkbox's router number once."] : []),
   ].join("\n"));
 }

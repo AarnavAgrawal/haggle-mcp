@@ -49,7 +49,7 @@ import { DEFAULT_WORKSPACE_ID, type ApprovalRow, type Channel, type JobBusinessR
 import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
 import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
-import { ChannelSendError, type EngineDeps } from "./ports.ts";
+import { ChannelSendError, type EngineDeps, type PhoneCallRequest } from "./ports.ts";
 import { buildVoiceInstructions, isWithinCallHours, nextCallHoursStart } from "./callPolicy.ts";
 
 /** Board text for a reply Haggle couldn't read (never the provider's raw error). */
@@ -131,6 +131,15 @@ const PLEASANTRY_TEXT = /^\s*(hi+|hey+|hello+|yo|ok(ay)?|k|thanks?( you)?|thx|ty
 /** Business questions wait at most this long for others to be batched into one text to the human. */
 const DEFAULT_QUESTION_BATCH_MS = 45_000;
 const DEFAULT_MAX_APPROVAL_ATTEMPTS = 5;
+/** True when a quote's figures come from the keyword fallback (heuristic.ts labels its sources "(heuristic)"). */
+const heuristicReading = (r: QuoteRow["record"]) => Object.values(r.sources ?? {}).some((x) => /\(heuristic\)/.test(x?.source ?? ""));
+/** How long a job may sit in `created` / with unsent first contacts before an advance treats it as a crashed send. */
+const STUCK_AFTER_MS = 2 * 60_000;
+
+/** Approval channels a tool call can claim (form, card button, simulated human): not proof of a human. */
+const IN_BAND_CHANNELS = new Set<ApprovalRow["channel"]>(["elicitation", "view", "simulated"]);
+const needsHumanChannel = () => new EngineError("approval_needs_human_channel", "On this server only the approver's own reply approves: a coded text (YES <code>) from the workspace approver's phone.", "Ask the human to reply to Haggle's approval text; never ask them for the code.", "wait_for_update");
+const approverChangeRefused = () => new EngineError("approver_change_requires_operator", "The approver can only be changed by the operator, never through a tool call.", "Ask the operator to change it (scripts/workspace-admin.ts set-approver).", "settings");
 /** A placed call with no call-ended result after this long no longer blocks new calls. */
 const CALL_IN_PROGRESS_MS = 15 * 60_000;
 /** A read (get_quotes, a wait poll) reuses an advance this recent when nothing changed since (advanceForRead). */
@@ -553,9 +562,9 @@ export class HaggleEngine {
     const replyBy = input.reply_by ? new Date(input.reply_by) : new Date(this.now().getTime() + this.d.config.collectionWindowMs);
     if (Number.isNaN(replyBy.getTime()) || replyBy <= this.now()) throw new EngineError("bad_deadline", "reply_by must be a future ISO time.", "Pass a future reply_by or omit it.", "deal");
 
-    // The per-job payment cap is the operator's per-payment ceiling. The settings spending cap and
-    // the budget are the human's preferences: shown as caveats on the approval, never a refusal.
-    const paymentCapCents = this.d.config.globalPaymentCapCents;
+    // The per-job payment cap: what Haggle may charge at most, the lower of the operator's per-payment
+    // ceiling and the workspace spending cap. The budget stays a preference (a caveat, never a refusal).
+    const paymentCapCents = Math.min(this.d.config.globalPaymentCapCents, (await this.getSettings(ws)).spending_cap_cents);
     let job: JobRow | null = null;
     for (let i = 0; i < 5 && !job; i++) {
       const code = newShortCode();
@@ -758,6 +767,8 @@ export class HaggleEngine {
       : nonMoneyCompare(job.request) && (q.record.fields?.[job.request.compare_by!.field] ?? null) === null ? "missing_info"
       // ...and every approval, of any request and confirm-only too, needs a firm, positive, all-in total
       // (decisions 19, 34).
+      // A reading by the keyword fallback (Claude couldn't read the reply) is shown, never approved.
+      : heuristicReading(q.record) ? "unreliable_extraction"
       : q.total_cents === null ? "no_total"
       // A $0 total is never an amount to approve or charge (approvals require > 0).
       : q.total_cents <= 0 ? "zero_total"
@@ -825,10 +836,11 @@ export class HaggleEngine {
     const TEXT: Record<string, string> = {
       not_current: "Superseded by a newer quote.", unavailable: `${name} declined.`, unverified_sender: "The sender couldn't be verified.",
       external_payment_link: "It asked for payment through an external link (blocked).", prompt_injection: "It contained instructions aimed at the agent (ignored).",
+      unreliable_extraction: "Haggle couldn't read this reply reliably (the figures are a keyword reading); ask the business to confirm its total.",
       no_total: "No total yet.", zero_total: "The stated total is $0; nothing to approve.", all_in_unknown: "The all-in total (delivery, tax or fees) isn't confirmed yet.",
       missing_info: `${name} hasn't answered ${job.request.compare_by ? `"${job.request.compare_by.field}"` : "a required question"} yet.`,
     };
-    return { code: hard === "no_total" || hard === "zero_total" || hard === "missing_info" ? hard : "quote_not_eligible", reason: TEXT[hard] ?? hard };
+    return { code: hard === "no_total" || hard === "zero_total" || hard === "missing_info" || hard === "unreliable_extraction" ? hard : "quote_not_eligible", reason: TEXT[hard] ?? hard };
   }
 
   private async context(job: JobRow, event?: JobEvent) {
@@ -862,7 +874,8 @@ export class HaggleEngine {
     return planCounteroffers(
       // A business's negotiation round is how far it has been countered (1 = not yet), never how many
       // replies it sent: a confirm-once revision (a firm total, a confirmed requirement) is still round 1.
-      rankable.map((r) => ({
+      // A keyword-fallback reading is neither cited to other businesses nor countered: its figures aren't reliable.
+      rankable.filter((r) => { const row = rows.get(r.quoteId); return !row || !heuristicReading(row.record); }).map((r) => ({
         ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: Math.max(1, byId.get(r.businessId)?.countered_round ?? 0),
         deliveryFeeCents: rows.get(r.quoteId)?.record.delivery_fee_cents ?? null, depositCents: rows.get(r.quoteId)?.deposit_cents ?? null, approximate: isApproximate(rows.get(r.quoteId)?.record),
       })),
@@ -1265,7 +1278,7 @@ export class HaggleEngine {
       }
       return { placed: null, scheduledFor: at };
     }
-    const { callId } = await this.d.phone.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason: c.reason, idempotencyKey: c.key });
+    const { callId } = await this.placeCallOnce(job.id, { jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason: c.reason, idempotencyKey: c.key });
     const row = await this.repo.insertMessage({
       job_id: job.id, business_id: b.business_id, approval_id: c.approvalId ?? null, direction: "out", kind: c.kind, channel: "phone", provider_email_id: callId, idempotency_key: c.key,
       rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: c.body, attachments: [], attachments_download_url: null,
@@ -1580,10 +1593,16 @@ export class HaggleEngine {
     return false;
   }
 
-  /** Who gets update texts for this job: the operator's notify number, else the settings approver. */
+  /**
+   * Who gets update texts (and whose coded replies decide) for this job: the workspace's own
+   * approver. The operator's notify number stands in only for the default workspace (single-tenant
+   * servers); it never receives, or decides, another workspace's approvals.
+   */
   private async notifyTarget(job: JobRow): Promise<string | null> {
     if (!this.d.sms) return null;
-    return this.d.config.notifyPhone?.trim() || (await this.getSettings(job.workspace_id)).approver_phone || null;
+    const approver = (await this.getSettings(job.workspace_id)).approver_phone;
+    if (job.workspace_id !== DEFAULT_WORKSPACE_ID) return approver || null;
+    return this.d.config.notifyPhone?.trim() || approver || null;
   }
 
   /**
@@ -2055,7 +2074,7 @@ export class HaggleEngine {
     const reqs = job.request.requirements.filter((r) => r.hard).map((r) => r.text);
     const mine = await this.repo.getQuote(proposal.their_quote_id);
     const reason = HaggleEngine.callBrief(b.name, job, reqs, { competingTotalUsd: proposal.basis_total_usd, competingApproximate: proposal.basis_approximate === true, followUpOnQuoteUsd: proposal.their_total_usd, followUpApproximate: isApproximate(mine?.record), customer: this.customer(job) });
-    const { callId } = await this.d.phone!.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone!, reason, idempotencyKey: key });
+    const { callId } = await this.placeCallOnce(job.id, { jobId: job.id, businessId: b.business_id, toNumber: b.phone!, reason, idempotencyKey: key });
     await this.repo.insertMessage({
       job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind: "call", channel: "phone", provider_email_id: callId, idempotency_key: key,
       rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: reason, attachments: [], attachments_download_url: null,
@@ -2177,6 +2196,27 @@ export class HaggleEngine {
    * another call to the number or within the cooldown it is deferred (next_attempt_at) and placed
    * by a later advance (dueCalls).
    */
+  /**
+   * Every Voice AI call goes through here: at most one dial per idempotency key, ever. The attempt is
+   * recorded before dialing; a definite "not placed" refusal is recorded after it. An attempt with
+   * neither a recorded call nor a refusal (a crash after dialing, or an ambiguous provider error)
+   * is never dialed again: a second ring to a business is worse than a missed call.
+   */
+  private async placeCallOnce(jobId: string, req: PhoneCallRequest): Promise<{ callId: string }> {
+    const events = (await this.repo.listEvents(jobId)).filter((e) => e.data.key === req.idempotencyKey);
+    const attempts = events.filter((e) => e.type === "call_attempt").length;
+    const refusals = events.filter((e) => e.type === "call_not_placed").length;
+    if (attempts > refusals) throw new ChannelSendError("provider_error", false, 0, "an earlier attempt of this call may have gone out (outcome unknown); not dialed again", true);
+    await this.repo.appendEvent(jobId, "call_attempt", { business_id: req.businessId, key: req.idempotencyKey });
+    try {
+      return await this.d.phone!.placeCall(req);
+    } catch (err) {
+      const f = err instanceof ChannelSendError ? err : new ChannelSendError("provider_error", false, 0, (err as Error).message, true);
+      if (!f.ambiguous) await this.repo.appendEvent(jobId, "call_not_placed", { business_id: req.businessId, key: req.idempotencyKey, reason: f.reason });
+      throw f;
+    }
+  }
+
   private async placeRfqCall(job: JobRow, b: JobBusinessRow, opts: { escalation?: boolean } = {}) {
     const key = `call:${job.id}:${b.business_id}`;
     if (!this.d.phone || !b.phone) {
@@ -2198,7 +2238,7 @@ export class HaggleEngine {
     // Citing a competing price is a counter round (automatic) or a human-authorized callback (placeCallback).
     const reason = HaggleEngine.callBrief(b.name, job, reqs, { escalation: opts.escalation, customer: this.customer(job) });
     try {
-      const { callId } = await this.d.phone.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason, idempotencyKey: key });
+      const { callId } = await this.placeCallOnce(job.id, { jobId: job.id, businessId: b.business_id, toNumber: b.phone, reason, idempotencyKey: key });
       await this.repo.insertMessage({
         job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind: "call", channel: "phone", provider_email_id: callId, idempotency_key: key,
         rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: reason, attachments: [], attachments_download_url: null,
@@ -2208,6 +2248,13 @@ export class HaggleEngine {
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Calling ${b.name} (Voice AI${opts.escalation ? ", email unanswered" : ""})`, channel: "phone" });
     } catch (err) {
       const f = err instanceof ChannelSendError ? err : null;
+      if (f?.ambiguous) {
+        // It may be ringing: treat the business as contacted (its call.ended still lands by number), never redial.
+        await this.repo.updateBusiness(job.id, b.business_id, { next_attempt_at: null, ...(opts.escalation ? { escalated_at: this.now().toISOString() } : { status: "contacted" as const, contacted_at: this.now().toISOString() }) });
+        await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call to ${b.name}: outcome unknown (the provider failed after dialing may have started); not redialed` });
+        this.log("call_outcome_unknown", { job_id: job.id, business_id: b.business_id, error: f.message });
+        return;
+      }
       if (f?.retryable && b.send_attempts + 1 < MAX_SEND_ATTEMPTS) {
         await this.repo.updateBusiness(job.id, b.business_id, { send_attempts: b.send_attempts + 1, next_attempt_at: new Date(this.now().getTime() + Math.max(f.retryAfterMs, 1_000)).toISOString() });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Call to ${b.name} delayed (${f.reason.replace(/_/g, " ")}); retrying` });
@@ -2223,9 +2270,22 @@ export class HaggleEngine {
   private async runDueContacts(job: JobRow) {
     if (!["contacting", "collecting", "negotiating"].includes(job.state)) return;
     const now = this.now().getTime();
+    // A first contact that never happened (the process died part-way through sending the RFQs) is
+    // made once the job has sat still for STUCK_AFTER_MS; idempotency keys keep anything already sent from going twice.
+    const stalled = job.state === "contacting" && now - Date.parse(job.updated_at) >= STUCK_AFTER_MS;
     for (const b of await this.repo.getBusinesses(job.id)) {
-      if (b.status === "pending" && b.next_attempt_at && Date.parse(b.next_attempt_at) <= now) await this.contactBusiness(job, b);
+      if (b.status !== "pending") continue;
+      if (b.next_attempt_at ? Date.parse(b.next_attempt_at) <= now : stalled) await this.contactBusiness(job, b);
     }
+  }
+
+  /** A job the process died on before it started (`created`, never committed to contacting): start it now. */
+  private async recoverCreated(job: JobRow) {
+    if (job.state !== "created" || this.now().getTime() - Date.parse(job.created_at) < STUCK_AFTER_MS) return;
+    const started = start(this.machine(job));
+    if (!started.ok) return;
+    await this.repo.appendEvent(job.id, "recovered", { from: "created" });
+    await this.commit(job, started.next, started.effects, "recovered");
   }
 
   /**
@@ -2721,8 +2781,12 @@ export class HaggleEngine {
   }
 
   private async advanceJobOnce(jobId: string): Promise<void> {
-    const first = await this.repo.getJob(jobId);
+    let first = await this.repo.getJob(jobId);
     if (!first || TERMINAL.has(first.state)) return;
+    if (first.state === "created") {
+      await this.recoverCreated(first);
+      first = (await this.repo.getJob(jobId)) ?? first;
+    }
     await this.pollA2a(first);
     await this.dueCalls(first);
     await this.dueScheduledCalls(first);
@@ -2964,7 +3028,8 @@ export class HaggleEngine {
         }
         // The extractor only knows email wording ("email body"); figures from a call or a text say so.
         const channelSource = msg.channel === "a2a" ? "a2a task" : msg.channel === "phone" ? "call transcript" : msg.channel === "imessage" ? "iMessage text" : null;
-        if (channelSource) for (const src of extraction.sources) if (msg.channel === "a2a" || !/^pdf\b/i.test(src.source)) src.source = channelSource;
+        // A keyword-fallback reading keeps its "(heuristic)" label (it is what makes the quote non-approvable).
+        if (channelSource) for (const src of extraction.sources) if (msg.channel === "a2a" || !/^pdf\b/i.test(src.source)) src.source = /\(heuristic\)/.test(src.source) ? `${channelSource} (heuristic)` : channelSource;
         phase = "store"; // from here a retry could store twice: errors are final
         await this.storeExtraction(job, b, msg, extraction, channelSource ?? (qj ? "quote.json" : files.some((f) => f.kind === "pdf") ? "pdf" : images.length ? "image" : "email body"), { structured: structuredQuote });
         await this.repo.updateMessage(msg.id, { parse_status: "done" });
@@ -3454,7 +3519,7 @@ export class HaggleEngine {
       job: { id: job.id, state: job.state },
       approval: approval ? { id: approval.id, job_id: approval.job_id, quote_id: approval.quote_id, business_id: approval.business_id, quote_total_cents: approval.quote_total_cents, payment_cents: approval.payment_cents, status: approval.status, expires_at: approval.expires_at } : null,
       quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
-      knownPayTo: null, existingPayment: null, spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents), now: this.now(),
+      knownPayTo: null, existingPayment: null, spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, (await this.getSettings(job.workspace_id)).spending_cap_cents), now: this.now(),
       challengeEmail: { business_id: pay.business_id, sender_trusted: pay.challenge_trusted, thread_matched: pay.challenge_thread_matched },
     });
     if (!prepared.ok) {
@@ -3502,7 +3567,8 @@ export class HaggleEngine {
         quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
         payee: b && quote ? { business_id: b.business_id, on_job: true, quoted_from_trusted_sender: quote.sender_trusted && quote.business_id === b.business_id } : null,
         existingPayment: null,
-        spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, approval.cap_cents),
+        // The workspace cap as it is now: lowering it after an approval still stops the charge.
+        spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, approval.cap_cents, (await this.getSettings(job.workspace_id)).spending_cap_cents),
         now: this.now(),
       });
       if (!verdict.ok) {
@@ -3578,6 +3644,20 @@ export class HaggleEngine {
   /** The workspace a credential belongs to, by SHA-256 hash of a bearer token or connector secret; null if unknown. */
   async workspaceByCredential(kind: "token" | "connector_secret", hash: string) {
     return kind === "token" ? this.repo.findWorkspaceByTokenHash(hash) : this.repo.findWorkspaceBySecretHash(hash);
+  }
+
+  /** Operator only (scripts/workspace-admin.ts): revoke a workspace, so its token and connector URL stop working. */
+  async revokeWorkspace(id: string) {
+    const w = await this.repo.setWorkspaceCredentials(id, { revoked: true });
+    if (!w) throw new EngineError("workspace_not_found", `No workspace ${id}.`, "Check the workspace id.", "none");
+    return w;
+  }
+
+  /** Operator only: new credential hashes for a workspace (clears a revocation). */
+  async rotateWorkspaceCredentials(id: string, tokenHash: string, connectorSecretHash: string) {
+    const w = await this.repo.setWorkspaceCredentials(id, { token_hash: tokenHash, connector_secret_hash: connectorSecretHash, revoked: false });
+    if (!w) throw new EngineError("workspace_not_found", `No workspace ${id}.`, "Check the workspace id.", "none");
+    return w;
   }
 
   /** Create a workspace (scripts/workspace-create.ts); credentials are stored only as hashes. */
@@ -4050,7 +4130,7 @@ export class HaggleEngine {
     } else {
       const blocked = await this.callBlockedUntil(job, b.phone!);
       if (blocked) return { ok: true, mode: job.mode, business_id: b.business_id, channel, sent: false, scheduled_for: blocked.toISOString(), next: `Calls to ${b.name} are paused until ${blocked.toISOString()} (call hours or a recent call). Try again then, or email if it has an address.` };
-      const { callId } = await this.d.phone!.placeCall({ jobId: job.id, businessId: b.business_id, toNumber: b.phone!, reason: this.taskBrief(job, b, opts.askMissing ? "followup" : "message", text), idempotencyKey: key });
+      const { callId } = await this.placeCallOnce(job.id, { jobId: job.id, businessId: b.business_id, toNumber: b.phone!, reason: this.taskBrief(job, b, opts.askMissing ? "followup" : "message", text), idempotencyKey: key });
       messageId = (await this.repo.insertMessage({
         job_id: job.id, business_id: b.business_id, approval_id: null, direction: "out", kind: "call", channel: "phone", provider_email_id: callId, idempotency_key: key,
         rfc_message_id: null, thread_id: null, from_address: job.inbox, to_address: b.phone, subject: null, body_text: text, attachments: [], attachments_download_url: null,
@@ -4141,7 +4221,9 @@ export class HaggleEngine {
   syncVoiceContext() {
     if (!this.d.voice) return;
     void (async () => {
-      const jobs = (await this.repo.listOpenJobs()).slice(-20).reverse();
+      // One shared voice line: only the voice workspace's requests, never another tenant's.
+      const voiceWs = this.d.config.voiceWorkspaceId ?? DEFAULT_WORKSPACE_ID;
+      const jobs = (await this.repo.listOpenJobs()).filter((j) => j.workspace_id === voiceWs).slice(-20).reverse();
       const voiceJobs = await Promise.all(jobs.map(async (j) => ({ shortCode: j.short_code, request: j.request, businesses: (await this.repo.getBusinesses(j.id)).map((b) => ({ name: b.name, phone: b.phone })) })));
       await this.d.voice!.setInstructions(buildVoiceInstructions(customerOf({}, this.d.config.customerName), voiceJobs));
     })().catch((err) => this.log("voice_sync_failed", { error: (err as Error).message }));
@@ -4218,11 +4300,17 @@ export class HaggleEngine {
     }
     if (pays && !payNow) throw new EngineError("no_deposit", "This quote has no amount to pay now.", "Ask the business for its price first, or approve with action 'confirm' (no payment).", "get_quotes");
     const payment = pays ? payNow! : 0;
-    // The operator's per-payment ceiling is the one hard money limit (CLAUDE.md §7: amount ≤ approved ≤ cap).
-    const cap = this.d.config.globalPaymentCapCents;
-    if (payment > cap) throw new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this server's $${centsToUsd(cap).toFixed(2)} per-payment safety ceiling.`, "Ask the business for a smaller deposit, or ask the operator to raise HAGGLE_GLOBAL_PAYMENT_CAP_CENTS.", "get_quotes");
-    // Every human channel can be offered at once (form/card + text + email); the first human decision wins.
+    // Hard money limits (CLAUDE.md §7: amount ≤ approved ≤ cap): the operator's per-payment ceiling and
+    // the workspace spending cap, whichever is lower.
     const settings = await this.getSettings(job.workspace_id);
+    const ceiling = this.d.config.globalPaymentCapCents;
+    const cap = Math.min(ceiling, settings.spending_cap_cents);
+    if (payment > cap) {
+      throw cap < ceiling
+        ? new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this workspace's $${centsToUsd(cap).toFixed(2)} spending cap.`, "Ask the business for a smaller deposit, or ask the operator to raise the workspace spending cap.", "get_quotes")
+        : new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this server's $${centsToUsd(cap).toFixed(2)} per-payment safety ceiling.`, "Ask the business for a smaller deposit, or ask the operator to raise HAGGLE_GLOBAL_PAYMENT_CAP_CENTS.", "get_quotes");
+    }
+    // Every human channel can be offered at once (form/card + text + email); the first human decision wins.
     const approverEmail = job.approver_email ?? (settings.approver_email ? normalizeAddress(settings.approver_email) : null);
     const iMessageApprover = Boolean(this.d.imessage && settings.approver_phone);
     const textTo = await this.notifyTarget(job);
@@ -4335,7 +4423,9 @@ export class HaggleEngine {
   async approvalReach(jobId: string): Promise<{ text: boolean; email: boolean }> {
     const job = await this.loadJob(jobId);
     const settings = await this.getSettings(job.workspace_id);
-    return { text: Boolean(await this.notifyTarget(job)), email: Boolean(job.approver_email ?? settings.approver_email) };
+    // Under the out-of-band policy an emailed code from an unauthenticated mailbox approves only when the operator enabled it.
+    const emailCounts = !this.outOfBandApprovalsOnly || this.d.config.emailApprovalByCode === true;
+    return { text: Boolean(await this.notifyTarget(job)), email: emailCounts && Boolean(job.approver_email ?? settings.approver_email) };
   }
 
   /**
@@ -4450,6 +4540,7 @@ export class HaggleEngine {
     const a = await this.repo.getApproval(approvalId);
     if (!a) return false;
     if (channel === "simulated" && this.d.config.mode !== "mock") throw new EngineError("simulation_disabled", "Simulated approval is only available in mock mode.", "Approve through the form or by email.", "approve");
+    if (decision === "approve" && this.outOfBandApprovalsOnly && IN_BAND_CHANNELS.has(channel)) throw needsHumanChannel();
     if (this.now().getTime() > Date.parse(a.expires_at)) {
       await this.repo.transitionApproval(a.id, "pending", { status: "expired", decided_at: this.now().toISOString() });
       await this.advanceJob(a.job_id);
@@ -4580,6 +4671,14 @@ export class HaggleEngine {
     return this.d.stripe !== undefined || !this.d.payer.disabledReason;
   }
 
+  /**
+   * Only out-of-band human answers approve (EngineConfig.outOfBandApprovalsOnly; on in live mode): a
+   * tool call (the client's form, the card's button) can't prove a human made it, so it never approves.
+   */
+  get outOfBandApprovalsOnly(): boolean {
+    return this.d.config.outOfBandApprovalsOnly ?? this.d.config.mode === "live";
+  }
+
   get brainIsStub(): boolean {
     return (this.d.brain as { stub?: boolean }).stub === true;
   }
@@ -4700,9 +4799,17 @@ export class HaggleEngine {
   }
 
   /** Settings change only through this call (settings tools / native settings UI), never from business mail. */
-  async updateSettings(patch: Partial<Omit<SettingsRow, "updated_at">>, workspaceId: string = DEFAULT_WORKSPACE_ID): Promise<SettingsRow> {
+  async updateSettings(patch: Partial<Omit<SettingsRow, "updated_at">>, workspaceId: string = DEFAULT_WORKSPACE_ID, by: "operator" | "agent" = "operator"): Promise<SettingsRow> {
     const cur = await this.getSettings(workspaceId);
     const next = { ...cur, ...patch };
+    if (by === "agent") {
+      // Who approves and how much may be spent are the operator's (workspace-create / workspace-admin),
+      // never a tool call's: a model that could set them could approve its own purchases.
+      const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? null) === (b ?? null);
+      if (patch.approver_phone !== undefined && !same(patch.approver_phone, cur.approver_phone)) throw approverChangeRefused();
+      if (patch.approver_email !== undefined && !same(patch.approver_email ? normalizeAddress(patch.approver_email) : null, cur.approver_email)) throw approverChangeRefused();
+      if (next.spending_cap_cents > cur.spending_cap_cents) throw new EngineError("cap_increase_requires_operator", "The spending cap can only be raised by the operator.", "Ask the operator to raise it (scripts/workspace-admin.ts); lowering it is allowed here.", "settings");
+    }
     const ceiling = this.d.config.spendingCapCeilingCents ?? 500_000;
     if (!Number.isInteger(next.spending_cap_cents) || next.spending_cap_cents <= 0) throw new EngineError("bad_cap", "The spending cap must be a positive amount.", "Pass a positive spending cap.", "settings");
     if (next.spending_cap_cents > ceiling) throw new EngineError("cap_above_ceiling", `The spending cap can't exceed $${centsToUsd(ceiling).toFixed(2)} on this server.`, "Pick a lower cap; the operator sets the ceiling.", "settings");
@@ -4721,6 +4828,8 @@ export class HaggleEngine {
     const a = await this.repo.getApproval(approvalId);
     // The approval card works for card approvals and as the fallback for iMessage approvals.
     if (!a || (a.channel !== "view" && a.channel !== "imessage")) throw new EngineError("approval_not_found", "No approval waiting on the approval view.", "Call approve(job_id, quote_id) to start one.", "approve");
+    // A code the card sends back proves nothing in live mode: any client can make this call.
+    if (this.outOfBandApprovalsOnly) throw needsHumanChannel();
     if (a.status !== "pending") return { status: a.status, approval: a };
     const okCode = code.length === a.code.length && timingSafeEqual(Buffer.from(code), Buffer.from(a.code));
     if (!okCode) {
@@ -4782,9 +4891,15 @@ export class WorkspaceEngine {
   get a2aEnabled() { return this.engine.a2aEnabled; }
   get phoneEnabled() { return this.engine.phoneEnabled; }
   get paymentsEnabled() { return this.engine.paymentsEnabled; }
+  get outOfBandApprovalsOnly() { return this.engine.outOfBandApprovalsOnly; }
   get brainIsStub() { return this.engine.brainIsStub; }
 
-  deal(input: DealInput) { return this.engine.deal({ ...input, workspace_id: this.workspaceId }); }
+  /** The approver comes from the workspace settings (the operator's), never from the agent's input. */
+  async deal(input: DealInput) {
+    const { approver_email: _ignored, ...rest } = input;
+    const approver = (await this.engine.getSettings(this.workspaceId)).approver_email;
+    return this.engine.deal({ ...rest, ...(approver ? { approver_email: approver } : {}), workspace_id: this.workspaceId });
+  }
   async loadJob(jobId: string) { return this.own(jobId); }
   async waitForUpdate(jobId: string, cursor: number, timeoutMs: number, signal?: AbortSignal, until?: WaitUntil) { await this.own(jobId); return this.engine.waitForUpdate(jobId, cursor, timeoutMs, signal, until); }
   async getQuotes(jobId: string) { await this.own(jobId); return this.engine.getQuotes(jobId); }
@@ -4796,7 +4911,8 @@ export class WorkspaceEngine {
   async requestApproval(jobId: string, quoteId: string, channel: ApprovalRow["channel"], action?: ApprovalAction, offer?: ApprovalOffer) { await this.own(jobId); return this.engine.requestApproval(jobId, quoteId, channel, action, offer); }
   async approvalReach(jobId: string) { await this.own(jobId); return this.engine.approvalReach(jobId); }
   async approvalOffers(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalOffers(approvalId); }
-  async decideApproval(approvalId: string, decision: "approve" | "decline", channel: ApprovalRow["channel"], approver: string | null) { await this.ownApproval(approvalId); return this.engine.decideApproval(approvalId, decision, channel, approver); }
+  /** Tool paths can only claim the in-band channels (a coded text or email is decided by ingest, never by a tool). */
+  async decideApproval(approvalId: string, decision: "approve" | "decline", channel: "elicitation" | "view" | "simulated", approver: string | null) { await this.ownApproval(approvalId); return this.engine.decideApproval(approvalId, decision, channel, approver); }
   async approveWithViewCode(approvalId: string, code: string) { await this.ownApproval(approvalId); return this.engine.approveWithViewCode(approvalId, code); }
   async approvalIMessageSent(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalIMessageSent(approvalId); }
   async pay(jobId: string, quoteId: string) { await this.own(jobId); return this.engine.pay(jobId, quoteId); }
@@ -4806,7 +4922,7 @@ export class WorkspaceEngine {
   canContact(b: Parameters<HaggleEngine["canContact"]>[0]) { return this.engine.canContact(b); }
   latestJob() { return this.engine.latestJob(this.workspaceId); }
   getSettings() { return this.engine.getSettings(this.workspaceId); }
-  updateSettings(patch: Parameters<HaggleEngine["updateSettings"]>[0]) { return this.engine.updateSettings(patch, this.workspaceId); }
+  updateSettings(patch: Parameters<HaggleEngine["updateSettings"]>[0]) { return this.engine.updateSettings(patch, this.workspaceId, "agent"); }
   knownBusinesses(query: string, limit?: number) { return this.engine.knownBusinesses(query, limit, this.workspaceId); }
   businessProfile(ref: string) { return this.engine.businessProfile(ref, this.workspaceId); }
   identity() { return this.engine.identity(this.workspaceId); }

@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: the witnessed Claude.ai purchase on calm-spark (real-world discovery release) (routes READY, Stripe test mode on); waiting for Yash + Aarnav to say ready · Aarnav: branch `merged-working-demo` (main + feat/live-demo merged; decisions in `docs/merge-decisions-working-demo.md`; needs Yash's review before it reaches main)
+**Now working on:** Yash: production-security pass 1 on `yashnil` (approval/payment authorization, auth + workspace isolation, crash recovery, extraction safety; see `docs/production-readiness.md`) · Aarnav: branch `merged-working-demo` (main + feat/live-demo merged; decisions in `docs/merge-decisions-working-demo.md`; needs Yash's review before it reaches main)
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -104,6 +104,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-21 · Yash · Production-security pass 1 (branch `yashnil`, not deployed): live approvals only by the approver's coded text (card/form/simulated refused; no codes to clients); agent can't set the approver or raise the cap (operator `workspace-admin.ts`); workspace cap enforced at approval + pay; email-code approval off by default; live auth always required, revocation (migration 105); texts, PAY and the voice line scoped per workspace; stuck `created`/`contacting` recovery; one dial per call key; Claude timeouts, no keyword quote is approvable. 771 unit + 527 Postgres tests, migrations OK
 - 2026-10-18 07:25 · Aarnav · Decisions 46-49 on `merged-working-demo`: code-less vendor texts go to the deal waiting on that vendor; totals computed from stated parts trusted (no confirm ask); pay by text (YES, then PAY <code>, approver only, guarded pay); HAGGLE_DEMO_SPEED; faster reads (list_deals without per-deal boards, parallel board reads, read-index migration 104)
 - 2026-10-18 06:30 · Aarnav · Branch `merged-working-demo`: main (rc1) + feat/live-demo merged; every logic conflict decided by Aarnav (`docs/merge-decisions-working-demo.md`): soft requirements, approve then pay (+ agent-only confirm), main's board + live-demo conversation/negotiation line/choose any safe option, one live board, workspaces (auth open), main's roster + Places discovery, two-part extraction (live extract-eval 11/11), round cap 2. 711 tests + 491 Postgres, typecheck + build green. Not on main; needs Yash's review
 

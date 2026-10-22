@@ -413,7 +413,7 @@ describe("approval by text (SMS)", () => {
 
   // Live 2026-10-18: the card approved first; "YES 3845" arrived 12 s later and was sent to Sunset Kitchen as an answer.
   it("YES <code> after the card already approved is never sent to a business; the human is told it's done", async () => {
-    const { engine, repo, texts, emails, jobId, quoteId } = await quoted();
+    const { engine, repo, texts, emails, jobId, quoteId } = await quoted({ config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const sunset = (await repo.getBusinesses(jobId)).find((b) => b.name === "Sunset Kitchen")!;
     await engine.ingest({ providerEventId: "eq", eventType: "message.received", providerEmailId: "in_q", threadId: "tq", messageId: "<in_q@x>", inReplyTo: [sunset.rfq_message_id!], references: [sunset.rfq_message_id!], from: sunset.email!, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "Do you need plates, cutlery and napkins, or just the food?", attachments: [], attachmentsDownloadUrl: null }, trusted);
     await engine.advanceJob(jobId);
@@ -459,7 +459,7 @@ describe("approval by text (SMS)", () => {
   // "nothing more to do", and the job sat in paying until the model called pay at 6:46:35.
   it("approving on the card records the approval; after pay, a late YES <code> is told it's paid", async () => {
     const stripe = simulatedStripe();
-    const { engine, repo, texts, emails, jobId, quoteId } = await quoted({ stripe });
+    const { engine, repo, texts, emails, jobId, quoteId } = await quoted({ stripe, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     expect((await engine.approveWithViewCode(a.id, a.code)).status).toBe("approved");
     expect(stripe.charges).toHaveLength(0); // approval alone charges nothing (decision 2)
@@ -482,7 +482,7 @@ describe("approval by text (SMS)", () => {
     const charges: { amountCents: number; idempotencyKey: string }[] = [];
     const script = [{ ok: false as const, reason: "stripe_unreachable", retryable: true }, { ok: false as const, reason: "stripe_http_503", retryable: true }];
     const flaky: StripePort = { simulated: true, async charge(r) { charges.push(r); return script.shift() ?? { ok: true, paymentIntentId: "pi_DEMOlate" }; } };
-    const { engine, repo, texts, jobId, quoteId } = await quoted({ stripe: flaky });
+    const { engine, repo, texts, jobId, quoteId } = await quoted({ stripe: flaky, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     await engine.approveWithViewCode(a.id, a.code);
     expect(charges).toHaveLength(0); // approval alone charges nothing (decision 2)
@@ -503,7 +503,7 @@ describe("approval by text (SMS)", () => {
 
   it("a declined charge after approval is told to the human, never 'nothing to do'", async () => {
     const stripe = simulatedStripe({ decline: "card_declined" });
-    const { engine, texts, jobId, quoteId } = await quoted({ stripe });
+    const { engine, texts, jobId, quoteId } = await quoted({ stripe, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     await engine.approveWithViewCode(a.id, a.code);
     await engine.pay(jobId, quoteId).catch(() => undefined);
@@ -515,7 +515,7 @@ describe("approval by text (SMS)", () => {
 
   it("a revised quote while the human is deciding voids the approval: a late tap or YES charges nothing", async () => {
     const stripe = simulatedStripe();
-    const { engine, repo, jobId, quoteId } = await quoted({ stripe });
+    const { engine, repo, jobId, quoteId } = await quoted({ stripe, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     await emailReply(engine, repo, jobId, 2, "Correction: $1,250 total, 12 vegetarian, delivered. $375 deposit.");
     expect((await repo.getApproval(a.id))!.status).toBe("expired");
@@ -562,7 +562,8 @@ describe("approval by email", () => {
   async function emailed(config: Partial<EngineConfig>) {
     const env = await quoted({ config });
     await env.engine.updateSettings({ approver_email: "boss@gmail.test" });
-    expect(await env.engine.approvalReach(env.jobId)).toEqual({ text: true, email: true });
+    // Live: an emailed code from an unauthenticated mailbox counts as a way to approve only when the operator enabled it.
+    expect(await env.engine.approvalReach(env.jobId)).toEqual({ text: true, email: config.emailApprovalByCode === true });
     const a = await env.engine.requestApproval(env.jobId, env.quoteId, "view", undefined, { email: true });
     const outId = (await env.repo.getApproval(a.id))!.outbound_message_id!;
     const reply = (n: number, from: string, bodyText: string) => env.engine.ingest({ providerEventId: `ea${n}`, eventType: "message.received", providerEmailId: `ain_${n}`, threadId: "ta", messageId: `<ain_${n}@x>`, inReplyTo: [outId], references: [outId], from, to: ["haggle@inkboxmail.test"], subject: "Re: approve", bodyText, attachments: [], attachmentsDownloadUrl: null }, untrusted);
@@ -659,7 +660,7 @@ describe("all quotes are in: the texted recommendation, approvable by reply, nev
 
   it("choosing another quote on the board replaces the suggestion (one pending approval); a late YES for the old code pays nothing", async () => {
     const stripe = simulatedStripe();
-    const { engine, repo, texts, jobId, by } = await finalQuotes({ stripe });
+    const { engine, repo, texts, jobId, by } = await finalQuotes({ stripe, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const suggested = (await repo.getLatestApproval(jobId))!;
     const chosen = await engine.requestApproval(jobId, by("Harbor Table").quote_id, "view", undefined, { text: false, email: false }); // choose_in_view
     expect(chosen).toMatchObject({ status: "pending", quote_id: by("Harbor Table").quote_id });

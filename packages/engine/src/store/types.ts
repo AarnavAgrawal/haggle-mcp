@@ -27,6 +27,8 @@ export interface WorkspaceRow {
   connector_secret_hash: string | null;
   /** IANA timezone for call hours, e.g. "America/Los_Angeles". */
   timezone: string;
+  /** Set when the operator revoked the workspace: its credentials no longer resolve (migration 105). */
+  revoked_at?: string | null;
   created_at: string;
 }
 
@@ -243,6 +245,8 @@ export interface Repository {
   getWorkspace(id: string): Promise<WorkspaceRow | null>;
   findWorkspaceByTokenHash(hash: string): Promise<WorkspaceRow | null>;
   findWorkspaceBySecretHash(hash: string): Promise<WorkspaceRow | null>;
+  /** Revoke (credentials stop resolving) or rotate (new hashes, revocation cleared) a workspace's credentials. */
+  setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }): Promise<WorkspaceRow | null>;
 
   // jobs
   insertJob(job: JobRow): Promise<JobRow>;

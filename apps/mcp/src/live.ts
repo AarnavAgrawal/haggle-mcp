@@ -12,6 +12,7 @@ import {
 import { makeBrain } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
 import { liveTimings } from "./timings.ts";
+import { emailApprovalByCode } from "./workspace.ts";
 import { buildRoster, DEMO_VENDORS, parseVendorConfig, rosterRecipients, type ChannelStatus, type VendorContact } from "./vendors.ts";
 
 registerLiveFactory(async (env): Promise<Runtime> => {
@@ -110,9 +111,12 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       ...(notifyPhone && /^\+\d{8,15}$/.test(notifyPhone) ? { notifyPhone } : {}),
       // Who the AI assistant acts for in messages to businesses (a request's "Customer" detail wins; default "a customer").
       ...(env.HAGGLE_CUSTOMER_NAME?.trim() ? { customerName: env.HAGGLE_CUSTOMER_NAME.trim().slice(0, 40) } : {}),
-      // Approval by email from an outside address (Inkbox only authenticates Inkbox senders): the reply
-      // must come from the approver's address with the one-time code. HAGGLE_EMAIL_APPROVAL_BY_CODE=false: off.
-      emailApprovalByCode: env.HAGGLE_EMAIL_APPROVAL_BY_CODE !== "false",
+      // Approval by email from an outside address (Inkbox only authenticates Inkbox senders) rests on a
+      // spoofable From: off unless the operator sets HAGGLE_EMAIL_APPROVAL_BY_CODE=true.
+      emailApprovalByCode: emailApprovalByCode(env),
+      // Live: only the approver's own coded reply approves (never a tool call, form or card button).
+      outOfBandApprovalsOnly: true,
+      ...(env.HAGGLE_VOICE_WORKSPACE?.trim() ? { voiceWorkspaceId: env.HAGGLE_VOICE_WORKSPACE.trim() } : {}),
       identity: { name: identityInfo.displayName || "Haggle", phone: identityInfo.phoneNumber },
     },
     log,
@@ -147,7 +151,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   }, TICK_MS).unref();
   // Anything that arrived while this server was down or restarting.
   setTimeout(() => void sweep(), 5_000).unref();
-  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: env.HAGGLE_EMAIL_APPROVAL_BY_CODE !== "false" ? "code" : "verified-senders-only", payments: stripe ? "stripe-test" : "disabled", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false }));
+  console.log(JSON.stringify({ level: "info", event: "live_ready", buyer: buyerMailbox, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: stripe ? "stripe-test" : "disabled", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false }));
   // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
   let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };
   const channels = async (): Promise<ChannelStatus> => {

@@ -6,6 +6,7 @@ import { makeBrain } from "./brain.ts";
 import { fixtureFetchers, type PlacesFetch, type WebFetch } from "./fixtures.ts";
 import { mockDemoConfig } from "./timings.ts";
 import { buildRoster, type ChannelStatus, type RosterEntry } from "./vendors.ts";
+import { hashSecret, outOfBandApprovals } from "./workspace.ts";
 
 export type Runtime = {
   mode: "mock" | "live";
@@ -79,7 +80,7 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
     delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain, ...(personas ? { personas } : {}),
     ...(env.HAGGLE_MOCK_DATABASE_URL ? { repo: new PostgresRepository(env.HAGGLE_MOCK_DATABASE_URL) } : {}),
     // HAGGLE_DEMO_SPEED=true: the same shorter windows as live (decision 49).
-    config: { ...mockDemoConfig(env), ...(allow ? { recipientAllowlist: allow } : {}) },
+    config: { ...mockDemoConfig(env), ...(allow ? { recipientAllowlist: allow } : {}), outOfBandApprovalsOnly: outOfBandApprovals(env) },
   });
   // Mock: the simulated fleet plays all six demo vendors; every one is reachable (DEMO).
   // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board).
@@ -89,11 +90,28 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   }));
   brain.useAliases((b) => m.engine.businessAliases(b));
   const channels = async (): Promise<ChannelStatus> => ({ email: true, imessage: false, sms: false, phone: true, a2a: m.engine.a2aEnabled, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false });
-  runtime = Promise.resolve({
-    mode: "mock", engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster, channels,
+  runtime = mockWorkspaces(m.engine, env.HAGGLE_MOCK_WORKSPACES).then(() => ({
+    mode: "mock" as const, engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster, channels,
     ...(fx ? { placesKey: "fixture", placesFetch: fx.places, webFetch: { fetch: fx.web, resolve: fx.resolve } } : {}),
-  });
+  }));
   return runtime;
+}
+
+/**
+ * HAGGLE_MOCK_WORKSPACES (mock only, DEMO): JSON [{ id, name, token, connector_secret?, revoked?,
+ * approver_phone?, spending_cap_usd? }] so tests and rehearsals exercise authentication and
+ * workspace isolation over HTTP. Only hashes are kept, as in live.
+ */
+async function mockWorkspaces(engine: HaggleEngine, json: string | undefined) {
+  if (!json?.trim()) return;
+  const list = JSON.parse(json) as { id: string; name: string; token: string; connector_secret?: string; revoked?: boolean; approver_phone?: string; spending_cap_usd?: number }[];
+  for (const w of list) {
+    await engine.createWorkspace({
+      id: w.id, name: w.name, tokenHash: hashSecret(w.token), connectorSecretHash: hashSecret(w.connector_secret ?? `${w.token}:connector`),
+      settings: { ...(w.approver_phone ? { approver_phone: w.approver_phone } : {}), ...(w.spending_cap_usd ? { spending_cap_cents: Math.round(w.spending_cap_usd * 100) } : {}) },
+    });
+    if (w.revoked) await engine.revokeWorkspace(w.id);
+  }
 }
 
 interface PersonaFile { personas: { name: string; email?: string; phone?: string; replies: Record<string, { text: string; extraction: QuoteExtraction }> }[] }

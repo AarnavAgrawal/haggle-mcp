@@ -51,6 +51,15 @@ export function inkboxMailApi(inkbox: Inkbox): InkboxMailApi {
 
 const retryable = (e: unknown) => e instanceof InkboxConnectionError || (e instanceof InkboxAPIError && (e.statusCode === 429 || e.statusCode >= 500));
 
+/** Inkbox refused the call before dialing (capacity or rate limit): safe to try again. */
+const NOT_PLACED_CODES = new Set(["hosted_agent_at_capacity", "hosted_agent_unavailable", "call_capacity_busy", "concurrent_calls_limit"]);
+function callNotPlaced(e: unknown): boolean {
+  if (!(e instanceof InkboxAPIError)) return false;
+  if (e.statusCode === 429) return true;
+  const raw = e.detail && typeof e.detail === "object" ? ((e.detail as { error?: unknown; code?: unknown }).error ?? (e.detail as { code?: unknown }).code) : e.detail;
+  return typeof raw === "string" && [...NOT_PLACED_CODES].some((c) => raw.toLowerCase().includes(c));
+}
+
 /** Bounded retries (3 attempts) with the SAME idempotency key, so a retry can never double-send. */
 async function withRetry<T>(fn: () => Promise<T>, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))): Promise<T> {
   for (let attempt = 0; ; attempt++) {
@@ -313,14 +322,27 @@ export type CallOriginChoice = "dedicated_number" | "shared_imessage_number";
 export function inkboxPhone(identity: { placeCall(o: { toNumber: string; origination?: CallOrigin; mode?: CallMode; reason?: string }): Promise<{ id: string }> }, origin: CallOriginChoice = "dedicated_number", sleep?: (ms: number) => Promise<void>): PhonePort {
   return {
     async placeCall(req: PhoneCallRequest) {
-      try {
-        const call = await withRetry(() => identity.placeCall({
-          toNumber: req.toNumber, origination: origin === "shared_imessage_number" ? CallOrigin.SHARED_IMESSAGE_NUMBER : CallOrigin.DEDICATED_NUMBER,
-          mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000),
-        }), sleep);
-        return { callId: call.id };
-      } catch (e) {
-        throw mapInkboxError(e);
+      // placeCall takes no idempotency key, so a failure after Inkbox may have dialed (any 5xx, a lost
+      // connection) is ambiguous: never retried here, never re-placed by the engine (no second ring).
+      // Only an explicit "not placed" refusal (capacity, rate limit) is retried.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const call = await identity.placeCall({
+            toNumber: req.toNumber, origination: origin === "shared_imessage_number" ? CallOrigin.SHARED_IMESSAGE_NUMBER : CallOrigin.DEDICATED_NUMBER,
+            mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000),
+          });
+          return { callId: call.id };
+        } catch (e) {
+          const notPlaced = callNotPlaced(e);
+          if (notPlaced && attempt < 2) {
+            await (sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms))))(250 * 2 ** attempt);
+            continue;
+          }
+          const mapped = mapInkboxError(e);
+          const ambiguous = !notPlaced && (e instanceof InkboxConnectionError || (e instanceof InkboxAPIError && e.statusCode >= 500) || /^(send_outcome_ambiguous|idempotency_in_progress):/.test(mapped.message));
+          if (!ambiguous) throw mapped;
+          throw new ChannelSendError(mapped.reason, false, 0, `call outcome unknown: ${mapped.message}`, true);
+        }
       }
     },
   };

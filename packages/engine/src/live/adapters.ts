@@ -9,6 +9,7 @@ import { extractAttachments, type ExtractedFile } from "../inbound/attachments.t
 import { sendEmail, type SenderClient } from "../outbound/primitiveSender.ts";
 import { answerFromRequest } from "../parsing/answerQuestion.ts";
 import { heuristicExtract } from "../parsing/heuristic.ts";
+import { isTransientParseError } from "../parsing/parseErrors.ts";
 import { createAnthropicClient, parseReply } from "../parsing/parseReply.ts";
 import type { PayerClient } from "../payments/x402Challenge.ts";
 import type { MessageRow } from "../store/types.ts";
@@ -40,8 +41,10 @@ export const heuristicExtractor: ExtractorPort = {
 };
 
 /**
- * Claude first; when it fails (refusal, outage, rate limit) the reply is read by the keyword
- * fallback instead of being dropped. Its quotes carry low confidence, so they're flagged.
+ * Claude first. A busy or unreachable Claude (429/5xx/timeouts) is rethrown, so the engine reads the
+ * reply again later (bounded, then an explicit "couldn't read" on the board). Only when Claude
+ * can't read it at all (a refusal, no structured output) does the keyword fallback read it; its
+ * figures are labelled "(heuristic)" and such a quote is never approvable or cited.
  */
 export function withHeuristicFallback(primary: ExtractorPort, log?: (event: string, data: Record<string, unknown>) => void): ExtractorPort {
   return {
@@ -49,6 +52,7 @@ export function withHeuristicFallback(primary: ExtractorPort, log?: (event: stri
       try {
         return await primary.extract(input);
       } catch (err) {
+        if (isTransientParseError(err)) throw err;
         log?.("extractor_fallback", { error: (err as Error).message.slice(0, 200) });
         return heuristicExtract({ request: input.request, bodyText: input.bodyText });
       }

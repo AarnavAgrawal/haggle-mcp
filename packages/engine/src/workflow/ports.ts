@@ -28,11 +28,14 @@ export class ChannelSendError extends Error {
   readonly reason: SendFailureReason;
   readonly retryable: boolean;
   readonly retryAfterMs: number;
-  constructor(reason: SendFailureReason, retryable: boolean, retryAfterMs: number, message: string) {
+  /** The provider may have acted (e.g. a call may be ringing): never retried, never re-sent. */
+  readonly ambiguous: boolean;
+  constructor(reason: SendFailureReason, retryable: boolean, retryAfterMs: number, message: string, ambiguous = false) {
     super(message);
     this.reason = reason;
-    this.retryable = retryable;
+    this.retryable = retryable && !ambiguous;
     this.retryAfterMs = retryAfterMs;
+    this.ambiguous = ambiguous;
   }
 }
 
@@ -195,6 +198,19 @@ export interface EngineConfig {
    * a deal that failed. Their reply answers the open question. Falls back to the settings approver.
    */
   notifyPhone?: string;
+  /**
+   * Only an out-of-band human answer approves: a coded reply from the workspace approver's phone
+   * (or, with emailApprovalByCode, email). The MCP client's form, the approval card's button and
+   * the simulated human are refused, because a tool call can't prove a human made it. Default:
+   * on in live mode, off in mock mode (DEMO).
+   */
+  outOfBandApprovalsOnly?: boolean;
+  /**
+   * The workspace whose open requests the shared Voice AI line may describe to callers (every
+   * workspace shares one buyer identity). Default DEFAULT_WORKSPACE_ID; other workspaces' jobs are
+   * never in the answering instructions.
+   */
+  voiceWorkspaceId?: string;
   /** Wrong approval codes before an approval locks. Default 5. */
   maxApprovalAttempts?: number;
   /**

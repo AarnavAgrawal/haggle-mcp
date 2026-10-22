@@ -91,13 +91,20 @@ export class PostgresRepository implements Repository {
     return row<WorkspaceRow>(r[0])!;
   }
   async getWorkspace(id: string) {
-    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, created_at from workspaces where id = ${id}`)[0]);
+    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at from workspaces where id = ${id}`)[0]);
   }
   async findWorkspaceByTokenHash(hash: string) {
-    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, created_at from workspaces where token_hash = ${hash}`)[0]);
+    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at from workspaces where token_hash = ${hash} and revoked_at is null`)[0]);
   }
   async findWorkspaceBySecretHash(hash: string) {
-    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, created_at from workspaces where connector_secret_hash = ${hash}`)[0]);
+    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at from workspaces where connector_secret_hash = ${hash} and revoked_at is null`)[0]);
+  }
+  async setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }) {
+    const r = await this.sql`
+      update workspaces set token_hash = ${c.token_hash === undefined ? this.sql`token_hash` : c.token_hash}, connector_secret_hash = ${c.connector_secret_hash === undefined ? this.sql`connector_secret_hash` : c.connector_secret_hash},
+        revoked_at = ${c.revoked ? this.sql`now()` : null}
+      where id = ${id} returning id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at`;
+    return row<WorkspaceRow>(r[0]);
   }
 
   async insertJob(job: JobRow) {

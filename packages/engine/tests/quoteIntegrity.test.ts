@@ -75,7 +75,7 @@ describe("quote revisions and approvals", () => {
     expect(board.recommended_quote_id).toBe(v2.quote_id);
     const a = await e.requestApproval(deal.job_id, v2.quote_id, "view");
     expect(a).toMatchObject({ quote_total_cents: 475_000, payment_cents: 100_000 });
-    expect(await e.decideApproval(a.id, "approve", "view", "human")).toBe(true);
+    expect(await e.decideApproval(a.id, "approve", "imessage", "human")).toBe(true);
 
     // After approval the business changes its price: that approval is void, the job reopens, nothing is charged on it.
     await text(e, "im_3", "Correction: $4.9k total, $1k deposit, 40 veg, delivery included");
@@ -89,7 +89,7 @@ describe("quote revisions and approvals", () => {
     expect(stripe.charges).toHaveLength(0);
     // Fresh, explicit consent to the current version pays exactly its deposit, once.
     const a3 = await e.requestApproval(deal.job_id, v3.quote_id, "view");
-    await e.decideApproval(a3.id, "approve", "view", "human");
+    await e.decideApproval(a3.id, "approve", "imessage", "human");
     expect(await e.pay(deal.job_id, v3.quote_id)).toMatchObject({ status: "settled", amount_usd: 1000 });
     expect(await e.pay(deal.job_id, v3.quote_id)).toMatchObject({ status: "settled", amount_usd: 1000 }); // replay: same payment
     expect(stripe.charges).toEqual([expect.objectContaining({ amountCents: 100_000, metadata: expect.objectContaining({ quote_id: v3.quote_id, approval_id: a3.id }) })]);
@@ -144,7 +144,7 @@ describe("quote revisions and approvals", () => {
     await e.advanceJob(deal.job_id);
     const q = (await e.getQuotes(deal.job_id)).quotes[0]!;
     const a = await e.requestApproval(deal.job_id, q.quote_id, "view");
-    await e.decideApproval(a.id, "approve", "view", "human");
+    await e.decideApproval(a.id, "approve", "imessage", "human");
     expect(await e.revokeApproval(deal.job_id, a.id, "recorded total omitted the $250 delivery the business disclosed")).toBe(true);
     const board = await e.getQuotes(deal.job_id);
     expect(board.approval).toMatchObject({ status: "expired" });
@@ -161,7 +161,7 @@ describe("quote revisions and approvals", () => {
     await e.advanceJob(deal.job_id);
     const v1 = (await e.getQuotes(deal.job_id)).quotes[0]!;
     const a = await e.requestApproval(deal.job_id, v1.quote_id, "view");
-    await e.decideApproval(a.id, "approve", "view", "human");
+    await e.decideApproval(a.id, "approve", "imessage", "human");
     await text(e, "im_f2", "One thing: $300 staffing, not included");
     await e.advanceJob(deal.job_id);
     const board = await e.getQuotes(deal.job_id);
