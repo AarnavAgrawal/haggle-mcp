@@ -157,8 +157,86 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   warnings: z.array(z.string()).optional(),
   /** Demo vendors this server can't contact yet, with the exact fix. Shown before and during a deal. */
   setup: z.object({ ready: z.number().int(), total: z.number().int(), blockers: z.array(Blocker) }).optional(),
+  /**
+   * Integration slot (sprint 4, workstream A: vendor comms): per business_id, where Haggle's contact
+   * with the vendor stands (e.g. delivered, bounced, opted_out, outside_contact_window, awaiting_reply)
+   * in one line. Copied from the engine read model's `vendor_contact` when present.
+   */
+  vendor_contact: z.record(z.string(), z.looseObject({ status: z.string(), detail: z.string().optional() })).optional(),
+  /**
+   * Integration slot (sprint 4, workstream B: purchasing): per quote_id, why the quote was selected or
+   * not, in one line. Copied from the engine read model's `selection` when present.
+   */
+  selection: z.record(z.string(), z.looseObject({ outcome: z.string(), reason: z.string() })).optional(),
+  /** True when this is the compact board (the default); get_quotes(detail: true) returns every ranking factor and contact statistic. */
+  compact: z.boolean().optional(),
 });
 export type DealBoardPlus = z.infer<typeof DealBoardPlus>;
+
+/** get_quotes budget: a six-quote board's structuredContent stays under this many characters (about 2,200 tokens at ~4 chars/token). */
+export const BOARD_CHAR_BUDGET = 9_000;
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
+
+/**
+ * The compact board every tool returns by default (the agent reads it on each poll). It keeps every
+ * field the deal-board view renders and every decision-critical fact (totals, deposits, flags,
+ * approvability and its reason, non-compliance and assumptions, confidence, fees and exclusions),
+ * and drops what is redundant or never shown:
+ * - value.ranked: only the recommended quote (the only one whose factors the board shows); every
+ *   other quote's score and why-not stay in value.explanation.others;
+ * - contact_learning: only businesses with history from more than one job or a stated preference;
+ * - compliance: only quotes that aren't plainly compliant (absent = compliant, nothing assumed);
+ * - stages: current_total_usd only when negotiation changed it, no quote_version;
+ * - quotes: no message_id (get_conversation reads the thread), status only when not current,
+ *   excluded_reason only when `rejected` doesn't already say it;
+ * - businesses: the vendor's words and last event clipped to one line (`simulated` always kept: a
+ *   real business can appear in a mock-mode deal).
+ */
+export function compactBoard(b: DealBoardPlus): DealBoardPlus {
+  const rec = b.value?.recommendedQuoteId ?? b.recommended_quote_id ?? null;
+  const rejected = new Set((b.rejected ?? []).map((r) => r.quote_id));
+  const out: DealBoardPlus = {
+    ...b,
+    compact: true,
+    businesses: b.businesses.map((x) => ({ ...x, last_event: clip(x.last_event, 120), ...(x.transcript_snippet ? { transcript_snippet: clip(x.transcript_snippet, 120) } : {}) })),
+    quotes: b.quotes.map((q) => {
+      const { message_id: _m, status, excluded_reason, ...rest } = q;
+      return { ...rest, ...(status && status !== "current" ? { status } : {}), ...(excluded_reason && !rejected.has(q.quote_id) ? { excluded_reason } : {}) };
+    }),
+  };
+  if (b.value) {
+    out.value = {
+      method: b.value.method, weights: b.value.weights, recommendedQuoteId: b.value.recommendedQuoteId,
+      ranked: b.value.ranked.filter((r) => r.quoteId === rec).map((r) => ({ quoteId: r.quoteId, business: r.business, score: r.score, confidence: r.confidence, factors: r.factors.filter((f) => f.weight > 0).map((f) => ({ name: f.name, score: f.score, weight: f.weight, neutral: f.neutral, note: f.note })) })),
+      // "Harbor Table: $1,008 (…), value 0.73 vs 0.77; <reason>" → "Harbor Table (value 0.73): <reason>":
+      // the board shows only the reason, and the total is on the quote row.
+      explanation: b.value.explanation && {
+        winner: b.value.explanation.winner,
+        others: b.value.explanation.others.map((o) => {
+          const m = o.text.match(/^([^:]+):\s*\$[\d,.]+(?:\s*\([^)]*\))?,\s*value ([\d.]+) vs [\d.]+;\s*(.*)$/s);
+          return m ? { quote_id: o.quote_id, text: `${m[1]} (value ${m[2]}): ${m[3]}` } : o;
+        }),
+      },
+    };
+  }
+  if (b.contact_learning) {
+    const kept = Object.entries(b.contact_learning).flatMap(([id, l]) => {
+      const channels = Object.fromEntries(Object.entries(l.channels).filter(([, c]) => c.contacted_jobs > 1));
+      return Object.keys(channels).length || l.stated_preference ? [[id, { channels, ...(l.stated_preference ? { stated_preference: l.stated_preference } : {}) }] as const] : [];
+    });
+    if (kept.length) out.contact_learning = Object.fromEntries(kept);
+    else delete out.contact_learning;
+  }
+  if (b.compliance) out.compliance = Object.fromEntries(Object.entries(b.compliance).filter(([, c]) => c.status !== "compliant" || c.issues.length || c.assumed.length));
+  if (b.stages) {
+    out.stages = Object.fromEntries(Object.entries(b.stages).map(([id, s]) => {
+      const { quote_version: _v, current_total_usd, ...rest } = s;
+      return [id, { ...rest, ...(current_total_usd !== undefined && current_total_usd !== s.first_total_usd ? { current_total_usd } : {}) }];
+    }));
+  }
+  for (const k of ["freshness", "terms"] as const) if (out[k] && !Object.keys(out[k]!).length) delete out[k];
+  return out;
+}
 
 export function requestDetails(b: { job: Pick<DealBoardData["job"], "request" | "budget_usd"> }, budgetSource?: "request" | "settings_default"): NonNullable<DealBoardPlus["request_details"]> {
   const r = b.job.request;
@@ -169,9 +247,21 @@ export function requestDetails(b: { job: Pick<DealBoardData["job"], "request" | 
   };
 }
 
-/** Board + request details + payment ceiling (+ setup blockers when given). */
-export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus> = {}): DealBoardPlus {
+/** Board + request details + payment ceiling (+ setup blockers when given). Compact unless `detail` (see compactBoard). */
+export function toDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus> = {}, opts: { detail?: boolean } = {}): DealBoardPlus {
+  const full = fullDealBoardPlus(b, mode, extra);
+  return opts.detail ? full : compactBoard(full);
+}
+
+/** Workstream A/B integration slots, read from the engine read model when it carries them. */
+function integrationSlots(b: DealBoardData): Partial<DealBoardPlus> {
+  const x = b as DealBoardData & { vendor_contact?: DealBoardPlus["vendor_contact"]; selection?: DealBoardPlus["selection"] };
+  return { ...(x.vendor_contact && Object.keys(x.vendor_contact).length ? { vendor_contact: x.vendor_contact } : {}), ...(x.selection && Object.keys(x.selection).length ? { selection: x.selection } : {}) };
+}
+
+function fullDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoardPlus>): DealBoardPlus {
   return DealBoardPlus.parse({
+    ...integrationSlots(b),
     ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...(b.stages ? { stages: b.stages } : {}), ...(b.terms && Object.keys(b.terms).length ? { terms: b.terms } : {}), ...(b.contact_learning ? { contact_learning: b.contact_learning } : {}),
     quote_status: Object.fromEntries(b.quotes.filter((q) => q.total_usd !== null).map((q) => [q.quote_id, { approvable: q.approvable, ...(q.total_approximate ? { approximate: true } : {}), ...(q.approval_block ? { block: q.approval_block } : {}) }])),
     ...(b.best_value_quote_id ? { best_value_quote_id: b.best_value_quote_id } : {}), ...(b.recommendation_note ? { recommendation_note: b.recommendation_note } : {}),

@@ -459,6 +459,9 @@ export const deal = server.tool(
     }, { message: "Haggle couldn't start this deal (server error). No deal was created and nothing was sent.", fix: "Retry deal once with the same request. If it fails again, tell the user Haggle hit a server error; don't open or describe any other deal in its place.", next: "deal" }),
 );
 
+/** wait_for_update returns at most this many updates (the newest); updates_omitted counts the rest. */
+const WAIT_UPDATES_MAX = 12;
+
 export const waitForUpdate = server.tool(
   {
     name: "wait_for_update",
@@ -485,7 +488,9 @@ export const waitForUpdate = server.tool(
       const lines = w.updates.slice(-12).map((u) =>
         u.type === "quote" ? `quote ${u.quote_id} from ${names.get(u.business_id) ?? "a business"}: ${usd(u.total_usd)} (round ${u.round})` : u.type === "question" ? `question ${u.question_id}: "${u.text.slice(0, 120)}"` : u.type === "state" ? `state ${u.from} -> ${u.to}` : u.type === "flag" ? `flag ${u.flag}` : u.type === "reply" ? u.summary : `payment ${u.status}`);
       const head = w.timed_out ? `No ${until === "any_change" ? "change" : `"${until}"`} in ${timeout_s}s (${w.state}).` : `${w.updates.length} update(s), state ${w.state}:`;
-      return ok(w, [head, ...lines, `cursor=${w.cursor} · next: ${w.next}`].join("\n"));
+      // Compact: the newest updates only (the cursor still covers everything; get_quotes has the full state).
+      const omitted = Math.max(0, w.updates.length - WAIT_UPDATES_MAX);
+      return ok(omitted ? { ...w, updates: w.updates.slice(-WAIT_UPDATES_MAX), updates_omitted: omitted } : w, [head, ...lines, `cursor=${w.cursor} · next: ${w.next}`].join("\n"));
     }),
 );
 
@@ -499,12 +504,15 @@ export const getQuotes = server.tool(
       "Data only: it draws no new board (the one deal opened is already in the chat and updates itself; the human can choose any safe option on it). " +
       "Use after wait_for_update says quotes are final, or to compare quotes for the user. Don't use it to show the board (open_haggle, only if the user asks to see it again). Without job_id it lists recent deals instead of guessing. " +
       "Read-only. Next: approve(job_id, quote_id) for the quote the user chooses (recommended_quote_id unless they pick another), then pay once the human approved.",
-    inputSchema: z.object({ job_id: jobId.optional().describe("job_id from deal or list_deals (required: without it Haggle lists recent deals instead of guessing)") }),
+    inputSchema: z.object({
+      job_id: jobId.optional().describe("job_id from deal or list_deals (required: without it Haggle lists recent deals instead of guessing)"),
+      detail: z.boolean().optional().describe("true: also every ranking factor of every quote and full per-channel contact history (larger). Default: the compact board, which already has every total, deposit, flag, approvability reason, non-compliance and assumption"),
+    }),
     outputSchema: DealBoardPlus,
     annotations: { readOnlyHint: true, openWorldHint: false, idempotentHint: true },
     // No view: the board that deal rendered polls this tool to refresh itself; a model call must not draw a second board.
   },
-  async ({ job_id }, ctx) => run(ctx, async ({ engine, mode }) => {
+  async ({ job_id, detail }, ctx) => run(ctx, async ({ engine, mode }) => {
     // Never guess which deal: an earlier deal shown as if it answered a new request misleads the
     // user (and offers its approval). Without a job_id, list the recent deals and ask.
     if (!job_id) {
@@ -515,7 +523,7 @@ export const getQuotes = server.tool(
     }
     const id = job_id;
     const b = await engine.getQuotes(id);
-    return ok(toDealBoardPlus(b, mode), boardText(b));
+    return ok(toDealBoardPlus(b, mode, {}, { detail: detail === true }), boardText(b));
   }),
 );
 
