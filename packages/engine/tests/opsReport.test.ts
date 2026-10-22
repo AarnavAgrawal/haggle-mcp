@@ -125,6 +125,14 @@ describe.each(repos)("ops report (%s)", (name, open) => {
       expect(w.reviews.some((v) => v.subject === holdSubject(d.job_id))).toBe(true);
       expect(w.quarantined_replies).toBe(1);
       expect(r.totals).toMatchObject({ workspaces: 1, pending_approvals: 1, quarantined_replies: 1 });
+      // The new reads (quarantine list + decisions, job events, receipts): the held reply needs a decision,
+      // shown with a masked sender, a plain-English reason and the command to run; nothing else's mail leaks in.
+      expect(w.quarantined_emails).toEqual([expect.objectContaining({ job_id: b.job_id, from: "s•••@else.example", reason: "sender_not_verified" })]);
+      expect(w.quarantined_emails[0]!.explanation.length).toBeGreaterThan(10);
+      expect(r.attention.status).toBe("ATTENTION");
+      expect(r.attention.items.find((i) => i.category === "quarantined_email")!.command).toMatch(/^scripts\/quarantine\.ts (release|reject) --message msg_/);
+      expect(r.attention.by_category).toMatchObject({ pending_approval: 1, quarantined_email: 1 });
+      expect(JSON.stringify(r)).not.toContain("spoof@else.example");
     } finally {
       await close();
     }
