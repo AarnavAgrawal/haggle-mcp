@@ -903,7 +903,9 @@ describe.skipIf(!PG_URL)("pay by text on Postgres", { timeout: 60_000 }, () => {
     const pg = new PostgresRepository(PG_URL!);
     try {
       const run = Math.random().toString(36).slice(2, 10);
-      const GRILL = "+14085550177";
+      // A number of its own: other suites share this database in parallel, and a fleet number on open
+      // deals in several workspaces is (correctly) held as ambiguous rather than routed here.
+      const GRILL = `+14087${String(Math.floor(Math.random() * 1e6)).padStart(6, "0")}`;
       const stripe = simulatedStripe();
       const { engine, repo, texts } = demoEngine({ stripe, repo: pg });
       const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: GRILL, channel: "imessage" }] });
