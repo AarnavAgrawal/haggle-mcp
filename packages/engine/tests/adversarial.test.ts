@@ -334,7 +334,11 @@ describe("tenant isolation (two workspaces, same vendor)", () => {
       const ap = await e.engine.forWorkspace("ws_a").requestApproval(a.jobId, q!.id, "imessage");
       await e.engine.ingestText({ messageId: "b-yes", from: "+14155550222", text: `YES ${ap.code}`, inbound: true });
       expect((await e.repo.getApproval(ap.id))!.status).toBe("pending");
-      expect([...new Set(e.texts.filter((t) => t.text.includes(ap.code)).map((t) => t.to))]).toEqual(["+14155550111"]);
+      // B's approver only hears back about the code they typed themselves, never A's deal or terms.
+      const aCode = (await e.repo.getJob(a.jobId))!.short_code;
+      const toB = e.texts.filter((t) => t.to === "+14155550222");
+      expect(toB.every((t) => !t.text.includes(aCode) && !/\$1,?000/.test(t.text))).toBe(true);
+      expect(e.texts.filter((t) => t.text.includes(ap.code) && t.to !== "+14155550222").every((t) => t.to === "+14155550111")).toBe(true);
     } finally { e.restore(); }
   });
 
