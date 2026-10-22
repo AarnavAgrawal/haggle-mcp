@@ -526,6 +526,26 @@ export function inkboxSms(
   };
 }
 
+/**
+ * The slice of Inkbox the operator's email trial (apps/mcp/scripts/email-trial.ts) uses: the buyer
+ * mailbox's send/list/get, markUnread (get marks inbound mail read), and the webhook subscriptions
+ * (read-only). Not used by the server.
+ */
+export async function connectInkboxTrial(opts: { apiKey: string; handle: string }) {
+  const inkbox = new Inkbox({ apiKey: opts.apiKey });
+  const identity = await inkbox.getIdentity(opts.handle);
+  const buyerMailbox = identity.emailAddress?.toLowerCase();
+  if (!buyerMailbox) throw new Error(`Inkbox identity "${identity.agentHandle}" has no mailbox`);
+  return {
+    buyerMailbox, identityId: (identity as { id?: string }).id ?? null,
+    send: (o: { to: string[]; subject: string; bodyText: string; idempotencyKey: string }) => inkbox.messages.send(buyerMailbox, o as never) as unknown as Promise<{ id: string; messageId: string; status: string; threadId?: string | null }>,
+    list: (o: { direction: "inbound" | "outbound"; startDatetime: string; pageSize?: number }) => inkbox.messages.list(buyerMailbox, o as never) as unknown as AsyncIterable<InkboxListedMessage & { isRead?: boolean }>,
+    get: (id: string) => inkbox.messages.get(buyerMailbox, id) as unknown as Promise<InkboxMessageDetail>,
+    markUnread: (id: string) => inkbox.messages.markUnread(buyerMailbox, id).then(() => undefined),
+    listSubscriptions: () => inkbox.webhooks.subscriptions.list() as unknown as Promise<{ id: string; url: string; eventTypes: string[]; status?: string; agentIdentityId?: string | null; ownerIdentityId?: string | null }[]>,
+  };
+}
+
 /** Connect the buyer identity (default handle `haggle`). Its mailbox address comes from Inkbox, never derived. */
 export async function connectInkboxBuyer(opts: { apiKey: string; handle: string }) {
   const inkbox = new Inkbox({ apiKey: opts.apiKey });
