@@ -21,6 +21,7 @@ import type {
 import { businessIdForContact, newApprovalCode, newId, newShortCode, normalizeBusinessName, slugify } from "../ids.ts";
 import { cleanEmailBody } from "../inbound/emailBody.ts";
 import { applyDeliveryStatus, type DeliveryStatusInput } from "../inbound/deliveryStatus.ts";
+import { CONTINUITY_ONLY_REASONS, CONTINUITY_ONLY_WARNING, provesSenderIdentity } from "../inbound/trustStrength.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
 import { isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
@@ -3024,8 +3025,11 @@ export class HaggleEngine {
     const text = cleanEmailBody(msg.bodyText ?? "").slice(0, 4000);
     await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "instructions_received", instructions_text: text, instructions_message_id: stored.id });
     const link = /https?:\/\/|www\./i.test(text);
-    await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(link ? { warning: "contains a link: verify it with the business independently; Haggle never opens it" } : {}) });
-    await this.notifyHuman(job, `instructions:${stored.id}`, `${clip(b.name, 30)} sent payment instructions (see the deal board${link ? "; it has a link, so check it with them before paying" : ""}). Pay them directly; then reply PAID ${a.code}.`);
+    // Thread continuity (the reply token) isn't sender identity: payment details from such a reply are a BEC risk (inbound/trustStrength.ts).
+    const weak = CONTINUITY_ONLY_REASONS.has(trustReason);
+    const warning = [link ? "contains a link: verify it with the business independently; Haggle never opens it" : null, weak ? CONTINUITY_ONLY_WARNING : null].filter(Boolean).join("; ");
+    await this.repo.appendEvent(job.id, "payment", { status: "instructions_received", rail: "manual", business_id: b.business_id, ...(warning ? { warning } : {}), ...(weak ? { sender_identity: "thread_only" } : {}) });
+    await this.notifyHuman(job, `instructions:${stored.id}`, `${clip(b.name, 30)} sent payment instructions (see the deal board${link ? "; it has a link, so check it with them before paying" : ""}${weak ? "; its email can't be fully verified, so confirm the details with them by phone" : ""}). Pay them directly; then reply PAID ${a.code}.`);
     return { jobId: job.id, outcome: "payment_instructions" };
   }
 
@@ -3817,7 +3821,7 @@ export class HaggleEngine {
       if (pay.status !== "awaiting_invoice" && pay.status !== "expired") return; // duplicate or late challenge: stored, not paid
       const updated = await this.repo.transitionPayment(pay.id, ["awaiting_invoice", "expired"], {
         status: "invoice_received", challenge_json: Buffer.from(data).toString("utf8"), challenge_step_id: parsed.parsed.stepId, challenge_message_id: msg.id,
-        challenge_trusted: msg.sender_trusted === true, challenge_thread_matched: threadMatched, pay_to: parsed.parsed.payTo,
+        challenge_trusted: provesSenderIdentity(msg), challenge_thread_matched: threadMatched, pay_to: parsed.parsed.payTo, // a thread-only (reply token) sender never names a payee
       });
       if (updated) await this.repo.appendEvent(job.id, "payment", { status: "invoice_received" });
       return;
@@ -3826,7 +3830,7 @@ export class HaggleEngine {
       // NOT VERIFIED against a live receipt: accept only a trusted, in-thread receipt for our step with a tx hash.
       const p = envelope.payload ?? {};
       const tx = typeof p.settle_tx === "string" ? p.settle_tx : typeof p.transaction === "string" ? p.transaction : null;
-      const ok = msg.sender_trusted === true && threadMatched && pay.status === "sent" && tx !== null && p.status !== "rejected";
+      const ok = provesSenderIdentity(msg) && threadMatched && pay.status === "sent" && tx !== null && p.status !== "rejected";
       if (ok) {
         const done = await this.repo.transitionPayment(pay.id, ["sent"], { status: "settled", settle_tx: tx, simulated: pay.simulated || msg.simulated });
         if (done) await this.repo.appendEvent(job.id, "payment", { status: "settled", settle_tx: tx, simulated: done.simulated });
