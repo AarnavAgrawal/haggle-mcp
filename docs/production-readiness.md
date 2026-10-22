@@ -133,6 +133,44 @@ New suite: `packages/engine/tests/pilotSafety.test.ts` (in-memory plus Postgres)
    - payment rail `manual` in the shared payment types;
    - `identity_unverified` as a visible quarantine reason.
 
+### Pass 3: overnight sprint (2026-10-22)
+
+Branch `yashnil`. Committed locally, **not pushed or deployed**. Migrations 108–111 are applied only to throwaway test databases. No real email, text, call or payment was sent. Full write-up: `docs/overnight-sprint-report.md`.
+
+Verified on the fully merged tree:
+- typecheck: clean
+- unit tests: 1,059 passed (14 Postgres-gated skips)
+- Postgres 17: 762 engine tests passed, plus 3 ledger tests
+- migrations 100–106 and 108–111 apply, every SQL assertion passes, and 111 re-applies idempotently
+
+**Observed on the live Inkbox account (read-only):**
+- Mail goes out through Amazon SES, and the stored Message-IDs are the SES ids that replies reference.
+- No message or webhook field carries SPF/DKIM/DMARC results; the only extra is `sender_access`.
+- Bounces arrive only as `message.bounced`, and the live subscription doesn't include it.
+- The mailbox holds no Gmail or Outlook mail yet.
+
+**This is still not production readiness:** every channel result below comes from fakes, simulated reply layouts and test databases.
+
+| Area | After pass 3 (verified by) |
+| --- | --- |
+| Real client reply layouts | Gmail (including wrapped attributions), Outlook header blocks with or without the separator, Outlook mobile, iOS/Apple Mail, bottom-posted replies and forwards are cut to the vendor's own words; vendor prose containing "From:" is kept (`realClientReplies`, `emailBody`; eval corpus leak 1 → 0) |
+| Bounces | `message.bounced` / `message.failed` webhook handling plus a reconciler sweep of outbound status (`deliveryStatus`, `webhookDelivery`). **The live subscription still needs both events added** |
+| HTML-only mail, attachments | Safe HTML-to-text; attachments capped while streaming and identified by magic bytes; 5xx downloads retried; a PDF total that contradicts the body is flagged (`htmlText`, `attachmentReliability`) |
+| Continuity vs identity | A reply proven only by the token can quote but never approve, pay, name a payee or settle; payment instructions from it carry a confirm-by-phone warning (`continuityVsIdentity`) |
+| Opt-outs and bounces | Footers and "$550" no longer trigger them; an unverified STOP is job-local (WS-F regressions) |
+| Tenancy | Durable, workspace-scoped text routing (108); ambiguous texts held; wrong-code and `business_profile` leaks fixed; vendors resolved by name per workspace (`tenancy`, `workspaceVendors`, `security.e2e`) |
+| Reliability | Lease renewal plus a fence before every side effect; A2A, approval iMessage and `textHuman` claimed in the outbox; `operator_reviews` (109); stuck-job recovery; stale Stripe `charging` rows held; `job-ops.ts` (`reliability`, `jobOps`) |
+| Purchasing | Compliance-gated recommendation; quote validity and re-confirmation; the vendor confirms the booking before the handoff (110); `human_reported_paid` vs `settled_verified`; honest cancellation; the PAID-after-30-min bug fixed (`purchaseFlow`, `e2ePurchase`, `purchaseOutput`) |
+| Operations | CI workflow (actionlint clean, not yet run on GitHub); fail-closed `HAGGLE_ENV` config; production-DB guard on operator scripts; ledger (111); `/ready`; redacted logs; alert webhook; AI usage limits; `smoke.ts` (`config`, `health`, `aiUsage`, `smoke.e2e`, `migrationsLedger.pg`) |
+| Evaluation | 49-case simulated corpus, 23 adversarial tests, `docs/eval-report.md`. Claude extraction is not measured |
+
+**Blockers after pass 3:**
+- No real Gmail or Outlook reply has been ingested. Run `apps/mcp/scripts/email-trial.ts` with a consenting mailbox. Its first check: does the Message-ID returned at send time equal the SES id that replies reference? If not, every external reply fails `not_in_our_thread`.
+- Inkbox exposes no Authentication-Results. Ask for them, per message; `AuthEvidence` already consumes them.
+- The live webhook subscription lacks `message.bounced` and `message.failed`.
+- No staging environment. Live migrations 103–111 aren't applied, and the CI workflow has never run on GitHub.
+- The views and `packages/core` don't show the booking/handoff stages yet (Aarnav, §11 of the sprint report). Brain tenancy is still open.
+
 ## 1. Production infrastructure
 - [ ] Finalize and verify the shared TypeScript contracts between the deal engine and the business brain.
 - [ ] Apply all Supabase migrations; verify schemas, indexes, constraints and relationships.

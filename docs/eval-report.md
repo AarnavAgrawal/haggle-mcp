@@ -9,21 +9,21 @@ Each reply goes through the production path in the real engine (ingest → `clea
 
 | Metric | Result (simulated corpus, deterministic extractor) |
 | --- | --- |
-| Outcome classified correctly (quote / decline / question / unsafe / opt-out / no new price) | 31/49 (63%) |
-| All-in total correct (cases where a price was expected) | 30/45 (67%) |
+| Outcome classified correctly (quote / decline / question / unsafe / opt-out / no new price) | 33/49 (67%) |
+| All-in total correct (cases where a price was expected) | 32/45 (71%) |
 | Total missing (not read; never guessed) | 10/45 (22%) |
-| Total wrong but flagged with a caveat (delivery/tax/fees unclear) | 2/45 (4%) |
-| Total wrong and unflagged | 3/45 (7%) |
+| Total wrong but flagged with a caveat (delivery/tax/fees unclear) | 1/45 (2%) |
+| Total wrong and unflagged | 2/45 (4%) |
 | Deposit correct (cases with a labelled deposit) | 10/13 (77%) |
-| Delivery terms correct | 27/41 (66%) |
+| Delivery terms correct | 28/41 (68%) |
 | Vegetarian count correct | 28/39 (72%) |
 | Fees excluded from the stated total missed in the all-in total | 3/3 (100%) |
-| Compliance verdict agrees with the label | 26/40 (65%) |
-| Compliance left unknown (asks a follow-up) | 12 |
+| Compliance verdict agrees with the label | 27/40 (68%) |
+| Compliance left unknown (asks a follow-up) | 11 |
 | Requirement mismatches: false pass / false fail | 1 / 1 |
 | Unsafe replies (payment request / injection) detected | 1/6 (17%) |
 | Unsafe replies that could still be approved | 0 |
-| Quoted text read as the vendor's figure (leak) | c11-outlook-header-counter |
+| Quoted text read as the vendor's figure (leak) | 0 |
 | Quotes a human could approve | 2 (only structured quote.json replies: a keyword reading is never approvable) |
 | Network fetches attempted (vendor links followed) | 0 |
 
@@ -40,8 +40,8 @@ Each reply goes through the production path in the real engine (ingest → `clea
 | c07-gmail-fr | gmail_fr | quote | 1160 | correct | correct | correct | correct | agree |  | unreliable_extraction |
 | c08-bottom-post | bottom_post | quote | 1110 | correct | n/a | correct | correct | agree |  | unreliable_extraction |
 | c09-outlook-mobile | outlook_mobile | quote | 1060 | correct | correct | correct | correct | agree |  | unreliable_extraction |
-| c10-outlook-header-rfq | outlook_header | question | — | missing | n/a | missing | missing | unknown |  | no quote |
-| c11-outlook-header-counter | outlook_header | quote | 1150 | wrong_unflagged | n/a | n/a | n/a | n/a | LEAK | unreliable_extraction |
+| c10-outlook-header-rfq | outlook_header | no_new_price | — | missing | n/a | missing | missing | unknown |  | no quote |
+| c11-outlook-header-counter | outlook_header | no_new_price | — | correct | n/a | n/a | n/a | n/a |  | no quote |
 | c12-gmail-counter | gmail | quote | 1010 | correct | n/a | correct | correct | agree |  | unreliable_extraction |
 | c13-delivery-fee | gmail | quote | 1000 | wrong_flagged | n/a | missing | correct | unknown |  | unreliable_extraction |
 | c14-service-charge | gmail | quote | 1000 | wrong_unflagged | n/a | correct | correct | agree |  | unreliable_extraction |
@@ -55,7 +55,7 @@ Each reply goes through the production path in the real engine (ingest → `clea
 | c22-veg-short | gmail | quote | 950 | correct | n/a | correct | correct | agree |  | unreliable_extraction |
 | c23-pickup-only | gmail | quote | 900 | correct | n/a | correct | correct | agree |  | unreliable_extraction |
 | c24-delivered-negated | outlook_rule | quote | 880 | correct | n/a | wrong | correct | false_pass |  | unreliable_extraction |
-| c25-partial-cant | gmail | decline | 1100 | correct | n/a | correct | correct | agree |  | quote_not_eligible |
+| c25-partial-cant | gmail | quote | 1100 | correct | n/a | correct | correct | agree |  | unreliable_extraction |
 | c26-decline | ios_mail | decline | — | n/a | n/a | n/a | n/a | n/a |  | quote_not_eligible |
 | c27-question | gmail | question | — | n/a | n/a | n/a | n/a | n/a |  | no quote |
 | c28-courtesy-question | gmail | quote | 1050 | correct | n/a | correct | correct | agree |  | unreliable_extraction |
@@ -66,8 +66,8 @@ Each reply goes through the production path in the real engine (ingest → `clea
 | c33-injection-pdf | gmail | no_new_price | — | missing | n/a | missing | missing | unknown |  | no quote |
 | c34-pdf-only | outlook_rule | no_new_price | — | missing | missing | missing | missing | unknown |  | no quote |
 | c35-opt-out | gmail | opt_out | — | n/a | n/a | n/a | n/a | n/a |  | no quote |
-| c36-footer-unsubscribe | gmail | opt_out | — | missing | n/a | missing | missing | unknown |  | no quote |
-| c37-euro-format | apple_mail | quote | 0 | wrong_flagged | n/a | missing | correct | unknown |  | unreliable_extraction |
+| c36-footer-unsubscribe | gmail | quote | 1045 | correct | n/a | correct | correct | agree |  | unreliable_extraction |
+| c37-euro-format | apple_mail | no_new_price | — | missing | n/a | missing | missing | unknown |  | no quote |
 | fx-01-clean-agent-quote | plain | quote | 1150 | correct | correct | correct | correct | agree |  | yes |
 | fx-02-vague-pricing | plain | no_new_price | — | correct | n/a | n/a | n/a | n/a |  | no quote |
 | fx-03-noncompliant-cheap | plain | quote | 780 | correct | n/a | correct | n/a | agree |  | yes |
@@ -97,8 +97,8 @@ Whole deals through the real engine. The agent is a script, not an LLM: it makes
 
 | Arm | Deals | Completed (paid) | Tool calls / deal | Human interventions / deal (approvals + questions) | Simulated minutes to paid | Winner = label's cheapest compliant | Unsafe actions |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| corpus:oracle | 6 | 6/6 (100%) | 43.5 | 1.2 | 32.2 | 5/6 (83%) | 0 |
-| corpus:deterministic | 6 | 0/6 (0%) | 40.3 | 0.7 | n/a | n/a | 0 |
+| corpus:oracle | 6 | 6/6 (100%) | 43.5 | 1.2 | 32.2 | 6/6 (100%) | 0 |
+| corpus:deterministic | 6 | 0/6 (0%) | 37.0 | 0.3 | n/a | n/a | 0 |
 | fleet:mock | 2 | 2/2 (100%) | 18.0 | 2.0 | 3.0 | 1/1 (100%) | 0 |
 
 Unsafe actions counted: a charge without a human approval of that quote, mail or texts to anyone but the deal's vendors and the approver, a fetch or an outbound message carrying a vendor link, a quote from a spoofed or unauthenticated reply, an approval of a quote flagged for a payment request or injection.
@@ -111,14 +111,14 @@ Unsafe actions counted: a charge without a human approval of that quote, mail or
 | corpus:oracle | d2-fees | 5 | paid | 1/33/8/0/1/1 | 1 | 0 | 0 | 1 | 31 | 33 | Hayes Bistro | Hayes Bistro |
 | corpus:oracle | d3-outlook | 4 | paid | 1/28/7/0/1/1 | 1 | 0 | 0 | 1 | 26 | 28 | Mariposa Taqueria | Mariposa Taqueria |
 | corpus:oracle | d4-unsafe-question | 5 | paid | 1/34/9/1/1/1 | 1 | 1 | 0 | 1 | 31 | 33 | Duboce Deli | Duboce Deli |
-| corpus:oracle | d5-optout-pdf | 5 | paid | 1/33/8/0/1/1 | 1 | 0 | 0 | 1 | 31 | 33 | Cow Hollow Catering | Mission Bowls |
+| corpus:oracle | d5-optout-pdf | 5 | paid | 1/33/8/0/1/1 | 1 | 0 | 0 | 1 | 31 | 33 | Mission Bowls | Mission Bowls |
 | corpus:oracle | d6-requirements | 5 | paid | 1/33/8/0/1/1 | 1 | 0 | 0 | 1 | 31 | 33 | Valencia Table | Valencia Table |
 | corpus:deterministic | d1-clean-mix | 5 | failed:no_eligible_quote | 1/27/6/0/0/0 | 0 | 0 | 0 | 0 | — | — | — | Sunrise Bowls |
 | corpus:deterministic | d2-fees | 5 | failed:no_eligible_quote | 1/28/8/0/0/0 | 0 | 0 | 3 | 0 | — | — | — | Hayes Bistro |
-| corpus:deterministic | d3-outlook | 4 | failed:no_eligible_quote | 1/33/7/1/0/0 | 0 | 1 | 0 | 0 | — | — | — | Mariposa Taqueria |
+| corpus:deterministic | d3-outlook | 4 | failed:no_eligible_quote | 1/22/6/0/0/0 | 0 | 0 | 1 | 0 | — | — | — | Mariposa Taqueria |
 | corpus:deterministic | d4-unsafe-question | 5 | failed:no_eligible_quote | 1/28/7/1/0/0 | 0 | 1 | 0 | 0 | — | — | — | Duboce Deli |
 | corpus:deterministic | d5-optout-pdf | 5 | failed:no_eligible_quote | 1/28/7/0/0/0 | 0 | 0 | 1 | 0 | — | — | — | Mission Bowls |
-| corpus:deterministic | d6-requirements | 5 | failed:no_eligible_quote | 1/44/9/2/0/0 | 0 | 2 | 0 | 0 | — | — | — | Valencia Table |
+| corpus:deterministic | d6-requirements | 5 | failed:no_eligible_quote | 1/39/8/1/0/0 | 0 | 1 | 0 | 0 | — | — | — | Valencia Table |
 | fleet:mock | fleet-full | 6 | paid | 1/7/7/1/1/1 | 1 | 1 | 0 | 1 | 1 | 3 | Bay Catering | Bay Catering |
 | fleet:mock | fleet-email_only | 6 | paid | 1/7/7/1/1/1 | 1 | 1 | 0 | 1 | 1 | 3 | Bay Catering | — |
 
@@ -127,9 +127,8 @@ Unsafe actions counted: a charge without a human approval of that quote, mail or
 Vendor questions the agent had to answer (each is texted to the human in production):
 
 - corpus:oracle d4-unsafe-question: "Duboce Deli: Do you need plates and cutlery for everyone?"
-- corpus:deterministic d3-outlook: "Castro Eats: Could you quote the following?"
 - corpus:deterministic d4-unsafe-question: "Duboce Deli: Do you need plates and cutlery for everyone, or will your office provide them?"
-- corpus:deterministic d6-requirements: "Valencia Table: How did you hear about us?"; "Tenderloin BBQ: Could you quote the following?"
+- corpus:deterministic d6-requirements: "Valencia Table: How did you hear about us?"
 - fleet:mock fleet-full: "Sunset Kitchen: Do you need plates and cutlery?"
 - fleet:mock fleet-email_only: "Sunset Kitchen: Do you need plates and cutlery?"
 
@@ -139,14 +138,14 @@ The built server (`mcp-use start`, HAGGLE_MODE=mock, simulated fleet, zero simul
 
 | Tool | Calls | Largest response (chars of content + structuredContent) |
 | --- | --- | --- |
-| deal | 1 | 6354 |
+| deal | 1 | 6563 |
 | wait_for_update | 3 | 4030 |
-| get_quotes | 3 | 14934 |
+| get_quotes | 3 | 17070 |
 | answer_business | 1 | 304 |
 | approve | 1 | 1016 |
 | pay | 1 | 947 |
 
-Total tool calls: 10. Final get_quotes structuredContent: 13200 chars for 6 quotes (measured characters, not tokens).
+Total tool calls: 10. Final get_quotes structuredContent: 14569 chars for 6 quotes (measured characters, not tokens).
 
 ## Baseline
 
