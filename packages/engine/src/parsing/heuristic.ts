@@ -56,6 +56,14 @@ export function heuristicExtract(input: { request: ExtractionRequest; bodyText: 
   const perHead = amountNear(text, "per person") ?? amountNear(text, "per head");
   const deliveryIncluded = /delivery (?:is )?(?:included|free)|free delivery|\bdelivered\b/i.test(text) ? true : /no delivery|pick[- ]?up only/i.test(text) ? false : null;
   const delivery = deliveryIncluded ? null : amountNear(text, "delivery");
+  // "Total: $1,050 … plus 8.625% sales tax": the total excludes tax (validate flags tax_excluded; the
+  // rate is deliberately not applied by a keyword reading). "tax included" says the opposite.
+  const taxOnTop = /\b(?:plus|\+|excluding|excludes|before|not including|doesn'?t include|does not include)\s+(?:[\d.]+\s*%\s*)?(?:(?:sales|local|state)\s+)?tax\b|\btax(?:es)?\s+(?:is\s+|are\s+)?(?:extra|additional|not included|on top)\b/i.test(text);
+  const taxIncluded = !taxOnTop && /\btax(?:es)?\s+(?:is\s+|are\s+)?included\b|\b(?:incl\.?|including|includes)\s+(?:sales\s+)?tax\b/i.test(text);
+  // A gratuity / service charge added on top: its relation to the total is unclear to a keyword
+  // reading, so it is recorded as an unclear fee (validate flags fees_unclear), never dropped.
+  const gratuity = text.match(/\b(\d{1,2}(?:\.\d+)?\s*%\s*)?(gratuity|service charge|service fee|staffing fee|setup fee)\b[^.!?\n]{0,60}/i);
+  const fee = gratuity && /\b(?:added|add|plus|on top|additional|extra|applies|apply|charged)\b/i.test(gratuity[0]) ? gratuity : null;
   const dietary = input.request.dietary.flatMap((d) => {
     // "veg" / "veggie" in texts and calls mean vegetarian.
     const word = /^vegetarian$/i.test(d.need) ? String.raw`(?:vegetarian|veggie|veg)\b` : escapeRegex(d.need);
@@ -83,7 +91,8 @@ export function heuristicExtract(input: { request: ExtractionRequest; bodyText: 
     delivery_fee_usd: delivery?.usd ?? null,
     delivery_included: deliveryIncluded,
     tax_usd: null,
-    tax_included: null,
+    tax_included: taxOnTop ? false : taxIncluded ? true : null,
+    ...(fee ? { other_fees: [{ label: fee[2]!.toLowerCase(), amount_usd: findDollarAmounts(fee[0])[0] !== undefined ? findDollarAmounts(fee[0])[0]! / 100 : null, included_in_total: null, excerpt: fee[0].trim().slice(0, 200) }] } : {}),
     total_usd: total?.usd ?? null,
     deposit_usd: deposit?.usd ?? null,
     menu_items: [],
