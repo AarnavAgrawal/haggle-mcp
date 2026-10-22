@@ -47,6 +47,7 @@ select pg_temp.expect_fail('settled payment marked failed', $$update public.paym
 -- Manual handoff: "the customer reports paying" only from an open handoff.
 insert into public.bookings (id, job_id, approval_id, quote_id, business_id, total_cents, payment_cents, status)
   values ('bkint2', 'job_int', 'apint2', 'qint1', 'biz_8888888888888888', 115000, 34500, 'not_in_writing');
+update public.bookings set human_attested_at = now() where id = 'bkint2'; -- 118: accepted by the human first
 select pg_temp.expect_fail('handoff inserted as reported paid', $$insert into public.payment_handoffs (id, job_id, approval_id, business_id, amount_cents, status, confirmed_by, confirmed_at) values ('hoint2','job_int','apint2','biz_8888888888888888',34500,'human_confirmed','+14155550101',now())$$);
 insert into public.payment_handoffs (id, job_id, approval_id, business_id, amount_cents, status)
   values ('hoint2', 'job_int', 'apint2', 'biz_8888888888888888', 34500, 'instructions_requested');

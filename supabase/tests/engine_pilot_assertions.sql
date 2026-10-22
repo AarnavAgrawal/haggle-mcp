@@ -29,6 +29,8 @@ update public.approvals set status = 'approved', decided_at = now() where id = '
 -- Since 110 a handoff needs its booking confirmed (here: confirmed by the human directly).
 insert into public.bookings (id, job_id, approval_id, quote_id, business_id, total_cents, payment_cents, status)
   values ('bkpil1', 'job_pil', 'appil1', 'qpil1', 'biz_8888888888888888', 115000, 34500, 'not_in_writing');
+-- Since 118 the human must have accepted it (BOOKED <code>) before any handoff.
+update public.bookings set human_attested_at = now() where id = 'bkpil1';
 select pg_temp.expect_fail('handoff at a different amount', $$insert into public.payment_handoffs (id, job_id, approval_id, business_id, amount_cents, status) values ('ho1','job_pil','appil1','biz_8888888888888888',99999,'instructions_requested')$$);
 select pg_temp.expect_fail('handoff confirmed without who/when', $$insert into public.payment_handoffs (id, job_id, approval_id, business_id, amount_cents, status) values ('ho1','job_pil','appil1','biz_8888888888888888',34500,'human_confirmed')$$);
 insert into public.payment_handoffs (id, job_id, approval_id, business_id, amount_cents, status) values ('ho1', 'job_pil', 'appil1', 'biz_8888888888888888', 34500, 'instructions_requested');

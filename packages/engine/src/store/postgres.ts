@@ -518,7 +518,7 @@ export class PostgresRepository implements Repository {
   async getBookingByApproval(approvalId: string) {
     return row<BookingRow>((await this.sql`select * from bookings where approval_id = ${approvalId}`)[0]);
   }
-  async updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason">>) {
+  async updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason" | "human_attested_at">>) {
     try {
       const r = await this.sql`update bookings set ${this.sql(this.vals({ ...patch, updated_at: new Date().toISOString() } as never))} where id = ${id} and status = any(${fromStatuses}) returning *`;
       return row<BookingRow>(r[0]);

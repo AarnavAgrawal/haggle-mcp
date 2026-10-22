@@ -74,8 +74,11 @@ export function purchaseView(f: PurchaseFacts): PurchaseView | null {
   const b = f.booking;
   if (!b) return null;
   const h = f.handoff;
+  // Not in writing: booked only once the human accepted it (BOOKED <code>, migration 118); a handoff
+  // that already exists comes from before that rule (the human confirmed directly, as it then said).
+  const attested = b.status === "not_in_writing" && (!!b.human_attested_at || !!h);
   const base = {
-    rail: "manual" as const, amount_usd: b.payment_cents / 100, total_usd: b.total_cents / 100, money_verified: false, booked: b.status === "confirmed", ...(b.status === "not_in_writing" ? { booked_by_human: true as const } : {}),
+    rail: "manual" as const, amount_usd: b.payment_cents / 100, total_usd: b.total_cents / 100, money_verified: false, booked: b.status === "confirmed", ...(attested ? { booked_by_human: true as const } : {}),
     ...(f.order ? { order: f.order } : {}), ...(f.mustHaves ? { must_haves: f.mustHaves } : {}), ...(f.confirmOnly ? { confirm_only: true as const } : {}),
   };
   const reply = vendorText(b.reply_text);
@@ -115,6 +118,11 @@ export function purchaseView(f: PurchaseFacts): PurchaseView | null {
       next: b.stalled_at
         ? `${f.business} hasn't confirmed after Haggle's reminder. Tell the human: don't pay; call ${f.business} directly, or choose another quote (cancel_deal, then a new deal, or get_quotes and approve another option).`
         : `Wait for ${f.business}'s confirmation (wait_for_update). Tell the human not to pay until Haggle texts that it is booked.` };
+  }
+  if (b.status === "not_in_writing" && !attested) {
+    return { ...base, stage: "awaiting_vendor_confirmation", ...(b.stalled_at ? { stalled: true as const, operator_attention: "the human hasn't confirmed the booking with the business" } : {}),
+      summary: `Approved by the human. Haggle can't get ${f.business}'s confirmation in writing on its channel, so the human confirms the booking with them directly (availability, the ${usd(b.total_cents)} terms${f.mustHaves ? ", the must-haves" : ""}) and replies BOOKED${code}. Not booked yet, and nothing should be paid yet.`,
+      next: `Tell the human to confirm the booking with ${f.business} directly, then reply BOOKED${code} to Haggle's text (never ask them for the code); they shouldn't pay before that. Then wait_for_update. If ${f.business} can't do it, approve another quote or cancel_deal.` };
   }
   if (f.confirmOnly) {
     // Confirm-only: the business's written yes is the end of it; nothing is paid through Haggle.
