@@ -30,7 +30,7 @@ import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers, type PlannedCounter } from "../negotiation/counteroffer.ts";
 import { applyStrategy, type StrategyContext } from "../negotiation/strategist.ts";
 import { imessageFailureReason } from "../outbound/imessageErrors.ts";
-import { checkMessage, findDollarAmounts } from "../negotiation/messageGuard.ts";
+import { checkMessage, citesCompetingOffer, findDollarAmounts } from "../negotiation/messageGuard.ts";
 import { buildRfqEmail, eventPlace, eventWhen, humanTime, quantityText } from "../outbound/rfq.ts";
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.ts";
@@ -570,6 +570,9 @@ export class HaggleEngine {
     }
     if (input.businesses.length === 0) throw new EngineError("no_businesses", "No businesses to contact.", "Pass businesses[] (name + email or phone), or call discover first.", "discover");
     validateAsk(input.request);
+    // Every business is told the details: a competitor's price comes only from a stored quote (negotiate), never the request (S5-D F7).
+    const cited = (input.request.details ?? []).find((d) => citesCompetingOffer(`${d.label}: ${d.value}`));
+    if (cited) throw new EngineError("detail_cites_competitor", `The detail "${cited.label}" cites a competing offer; businesses are only ever told real, stored quotes.`, "Remove it; once quotes arrive Haggle's negotiate round cites the best real one.", "deal");
     // Requirements as the agent wrote them (plain words or coarse kinds): kind, dietary need and minimum count made checkable.
     input = { ...input, request: { ...input.request, requirements: normalizeRequirements(input.request.requirements ?? []) } };
     const approverPhone = (await this.getSettings(ws)).approver_phone;
@@ -2107,8 +2110,10 @@ export class HaggleEngine {
     const parsed = m.text.trim().match(TEXT_DECISION);
     if (!parsed) return null;
     const texted: ApprovalRow[] = [];
+    const mine: JobRow[] = []; // open deals this number approves for now
     for (const job of open) {
       if (from !== (await this.notifyTarget(job))) continue;
+      mine.push(job);
       const a = await this.repo.getLatestApproval(job.id);
       if (a && (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`))) texted.push(a);
       // Haggle's earlier texted suggestions that a better quote replaced (reviseSuggestion): their code
@@ -2120,9 +2125,12 @@ export class HaggleEngine {
       }
     }
     // The approval texted last may belong to a deal that has since closed (approved on the card and paid).
+    // Only while this number is still that deal's approver: a replaced approver's phone (lost, or the
+    // operator changed it) keeps its old text route but never decides (S5-D F1).
     if (last?.approvalId && !texted.some((a) => a.id === last.approvalId)) {
       const a = await this.repo.getApproval(last.approvalId);
-      if (a) texted.push(a);
+      const aJob = a ? await this.repo.getJob(a.job_id) : null;
+      if (a && aJob && from === (await this.notifyTarget(aJob))) texted.push(a);
     }
     const pending = texted.filter((a) => a.status === "pending");
     const code = parsed[2];
@@ -2130,7 +2138,8 @@ export class HaggleEngine {
       // Already decided elsewhere (the card, email) or unknown: tell the human, never forward the code.
       const decided = texted.find((a) => a.code === code);
       if (decided || pending.length === 0) {
-        const job = await this.repo.getJob(decided?.job_id ?? last?.jobId ?? open.find(() => true)?.id ?? "");
+        // Recorded and answered only on a deal this number approves for: never another workspace's (S5-D F2).
+        const job = await this.repo.getJob(decided?.job_id ?? texted.find((a) => a.id === last?.approvalId)?.job_id ?? mine[0]?.id ?? "");
         const stored = job ? await this.repo.insertMessage({
           job_id: job.id, business_id: null, approval_id: decided?.id ?? null, direction: "in", kind: "approval_reply", channel: "imessage", provider_email_id: `sms-in:${m.messageId}`, idempotency_key: null,
           rfc_message_id: null, thread_id: null, from_address: from, to_address: null, subject: null, body_text: m.text.slice(0, 500), attachments: [], attachments_download_url: null,
@@ -5960,7 +5969,7 @@ export class HaggleEngine {
       for (const c of [q.total_cents, q.deposit_cents, q.record.price_per_head_cents, q.record.subtotal_cents, q.record.delivery_fee_cents, q.record.tax_cents]) if (c !== null) verified.add(c);
       for (const v of Object.values(q.record.fields ?? {})) if (typeof v === "number") verified.add(v);
     }
-    for (const d of job.request.details ?? []) for (const c of findDollarAmounts(d.value)) verified.add(c);
+    for (const d of job.request.details ?? []) if (!citesCompetingOffer(`${d.label}: ${d.value}`)) for (const c of findDollarAmounts(d.value)) verified.add(c);
     const others = (await this.repo.getBusinesses(job.id)).filter((x) => x.business_id !== b.business_id).map((x) => x.name);
     const g = checkMessage({ text, limit, verifiedCents: verified, otherBusinessNames: others });
     if (g.ok) return;
@@ -6426,15 +6435,19 @@ export class HaggleEngine {
     // Two pending approvals under one code (another deal or another workspace): never pick one.
     if (code && new Set(pending.filter((a) => a.code === code).map((a) => a.id)).size > 1) return { jobId: null, outcome: "ambiguous_code" };
     const target = code ? pending.find((a) => a.code === code) : !yes && pending.length === 1 ? pending[0] : undefined;
-    if (!target && code && yes && pending.length === 1) {
-      // A wrong code against the approver's only pending approval counts toward the lockout.
-      const only = pending[0]!;
-      const w = await this.repo.recordWrongApprovalCode(only.id, this.d.config.maxApprovalAttempts ?? DEFAULT_MAX_APPROVAL_ATTEMPTS);
-      if (w?.locked) {
-        await this.repo.appendEvent(only.job_id, "approval_locked", { approval_id: only.id, attempts: w.attempts });
-        await this.advanceJob(only.job_id);
+    if (!target && code && yes && pending.length >= 1) {
+      // A wrong code counts toward the lockout of every approval pending for this approver, so several
+      // pending approvals never allow unlimited guesses (S5-D F5; the CALL path does the same).
+      let locked = false;
+      for (const a of pending) {
+        const w = await this.repo.recordWrongApprovalCode(a.id, this.d.config.maxApprovalAttempts ?? DEFAULT_MAX_APPROVAL_ATTEMPTS);
+        if (w?.locked) {
+          locked = true;
+          await this.repo.appendEvent(a.job_id, "approval_locked", { approval_id: a.id, attempts: w.attempts });
+          await this.advanceJob(a.job_id);
+        }
       }
-      return { jobId: only.job_id, outcome: w?.locked ? "approval_locked" : "wrong_code" };
+      return { jobId: pending.length === 1 ? pending[0]!.job_id : null, outcome: locked ? "approval_locked" : "wrong_code" };
     }
     if (!target) return { jobId: null, outcome: code ? "no_matching_approval" : yes ? "code_required" : "ambiguous" };
     const stored = await this.repo.insertMessage({
