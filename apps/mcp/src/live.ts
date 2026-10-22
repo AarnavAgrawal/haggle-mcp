@@ -41,7 +41,13 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const ceiling = Number(env.HAGGLE_SPENDING_CAP_CEILING_CENTS ?? "500000");
   // Supabase's session pooler caps clients (15): a small pool per process (HAGGLE_DB_POOL_MAX, default 4).
   const poolMax = Number(env.HAGGLE_DB_POOL_MAX ?? "4");
-  const repo = new PostgresRepository(env.SUPABASE_DB_URL!, { max: Number.isInteger(poolMax) && poolMax >= 1 && poolMax <= 10 ? poolMax : 4, ...(env.HAGGLE_DB_SCHEMA?.trim() ? { schema: env.HAGGLE_DB_SCHEMA.trim() } : {}) });
+  // A query waits at most HAGGLE_DB_QUEUE_TIMEOUT_MS (default 5 s; config.ts validates 100-60000) for a
+  // free pooled connection, then fails as transient: polling boards can't queue without limit.
+  const queueTimeoutMs = Number(env.HAGGLE_DB_QUEUE_TIMEOUT_MS ?? "5000");
+  const repo = new PostgresRepository(env.SUPABASE_DB_URL!, {
+    max: Number.isInteger(poolMax) && poolMax >= 1 && poolMax <= 10 ? poolMax : 4, ...(env.HAGGLE_DB_SCHEMA?.trim() ? { schema: env.HAGGLE_DB_SCHEMA.trim() } : {}),
+    queueTimeoutMs: Number.isInteger(queueTimeoutMs) && queueTimeoutMs >= 100 && queueTimeoutMs <= 60_000 ? queueTimeoutMs : 5_000, applicationName: `haggle-mcp-${deployEnv}`,
+  });
   // Each outbound channel is OFF unless explicitly enabled (real calls / iMessages / A2A tasks need
   // Yash's go-ahead). A2A cards and phone numbers must still be on the recipient allowlist; iMessage
   // only ever goes to the settings approver.
@@ -202,7 +208,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const roster = async () => buildRoster(contacts, await channels());
   if (vendorConfig.errors.length) logger.warn("demo_vendors_config", { errors: vendorConfig.errors });
   const ops = {
-    env: deployEnv, repo, database: "postgres" as const, ai, alerts, stalled,
+    env: deployEnv, repo, database: "postgres" as const, ai, alerts, stalled, pool: () => repo.poolStats(),
     providers: { inkbox: true, anthropic: true, payments: env.HAGGLE_PAYMENTS === "manual" ? "manual" as const : stripe ? "stripe_test" as const : "disabled" as const, alerts: alerts.enabled },
   };
   return { mode: "live", engine, brain, missing: [], roster, channels, configErrors: vendorConfig.errors, ops, ...(env.GOOGLE_PLACES_API_KEY ? { placesKey: env.GOOGLE_PLACES_API_KEY } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript }, ...(reconciler ? { reconciler } : {}) };

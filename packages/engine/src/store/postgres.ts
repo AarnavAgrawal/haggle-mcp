@@ -4,6 +4,7 @@
 import postgres from "postgres";
 import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
+import { gatedSql, PoolGate, type PoolStats } from "./poolGate.ts";
 import {
   DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow,
 } from "./types.ts";
@@ -63,15 +64,25 @@ export function retryingReads(sql: Sql, delayMs = 300): Sql {
 export class PostgresRepository implements Repository {
   private readonly sql: Sql;
 
-  /** `schema`: where the migrations were applied when not `public` (a database shared with another app). */
-  constructor(url: string, opts: { max?: number; schema?: string; retryDelayMs?: number } = {}) {
+  /** Connection-slot accounting for this repository's pool (store/poolGate.ts). */
+  private readonly gate: PoolGate;
+
+  /**
+   * `schema`: where the migrations were applied when not `public` (a database shared with another app).
+   * `queueTimeoutMs`: how long a query waits for a free pooled connection before failing as transient
+   * (PoolBusyError); `maxQueue`: waiters beyond this fail at once. `applicationName` shows in pg_stat_activity.
+   */
+  constructor(url: string, opts: { max?: number; schema?: string; retryDelayMs?: number; queueTimeoutMs?: number; maxQueue?: number; applicationName?: string } = {}) {
     if (opts.schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(opts.schema)) throw new Error(`invalid database schema name: ${opts.schema}`);
+    const max = opts.max ?? 4;
     // Small pool, idle connections released after 20 s, recycled after 30 min: Supabase's session
-    // pooler caps clients per database (15), shared by every process and reload.
-    this.sql = retryingReads(postgres(url, {
-      max: opts.max ?? 4, idle_timeout: 20, max_lifetime: 30 * 60, connect_timeout: 15, prepare: false, onnotice: () => {},
-      ...(opts.schema ? { connection: { search_path: opts.schema } } : {}),
-    }) as unknown as Sql, opts.retryDelayMs ?? 300);
+    // pooler caps clients per database (15), shared by every process and reload. The gate bounds the
+    // wait for one of them, so polling boards can't queue without limit behind a saturated pool.
+    this.gate = new PoolGate(max, opts.queueTimeoutMs ?? 5_000, opts.maxQueue ?? 500);
+    this.sql = retryingReads(gatedSql(postgres(url, {
+      max, idle_timeout: 20, max_lifetime: 30 * 60, connect_timeout: 15, prepare: false, onnotice: () => {},
+      connection: { application_name: (opts.applicationName ?? "haggle-engine").slice(0, 63), ...(opts.schema ? { search_path: opts.schema } : {}) },
+    }) as unknown as Sql, this.gate), opts.retryDelayMs ?? 300);
   }
 
   async close() {
@@ -526,5 +537,9 @@ export class PostgresRepository implements Repository {
   }
   async getHandoffReceipt(handoffId: string) {
     return row<HandoffReceiptRow>((await this.sql`select * from handoff_receipts where handoff_id = ${handoffId}`)[0]);
+  }
+  /** Pool slot usage for /ready: in use, queued, peaks, timeouts (counts only). */
+  poolStats(): PoolStats {
+    return this.gate.stats();
   }
 }

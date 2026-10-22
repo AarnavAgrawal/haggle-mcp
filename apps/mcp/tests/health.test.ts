@@ -1,6 +1,6 @@
 // Readiness (src/health.ts): database, migration ledger, providers, AI usage and stalled jobs, with
 // fakes. Output carries no secret, URL or address, and a runtime failure's text is never echoed.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AiUsageMeter, findMigrationsDir, repoMigrations, StalledJobMonitor } from "@haggle/engine";
 import { migrationsCheck, readiness, type RuntimeOps } from "../src/health.ts";
 
@@ -75,5 +75,40 @@ describe("/ready", () => {
   it("mock servers: memory database, ledger not applicable", async () => {
     const r = await readiness({ mode: "mock", ops: { env: "development", database: "memory", repo: { listRecentJobs: async () => [] }, providers: { inkbox: false, anthropic: false, payments: "disabled", alerts: false } } }, {});
     expect(r).toMatchObject({ ready: true, mode: "mock", env: "development", checks: { migrations: { ok: true, ledger: "not_applicable" } } });
+  });
+});
+
+describe("/ready under a database outage and a database ahead of the build", () => {
+  it("a database whose queries hang is unready within the 3 s budget, reason only", async () => {
+    vi.useFakeTimers();
+    try {
+      const hanging: RuntimeOps = { ...ops(), repo: { listRecentJobs: () => new Promise(() => {}), listAppliedMigrations: () => new Promise(() => {}) } };
+      const p = readiness({ mode: "live", ops: hanging }, LIVE_ENV);
+      await vi.advanceTimersByTimeAsync(3_100);
+      const r = await p;
+      expect(r.ready).toBe(false);
+      expect(r.checks.database).toEqual({ ok: false, kind: "postgres", reason: "unreachable" });
+      expect(r.checks.migrations).toMatchObject({ ok: false, reason: "database_unreachable" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a ledger read that hangs after the database answered is reported as ledger_unreadable", async () => {
+    vi.useFakeTimers();
+    try {
+      const slowLedger: RuntimeOps = { ...ops(), repo: { listRecentJobs: async () => [], listAppliedMigrations: () => new Promise(() => {}) } };
+      const p = readiness({ mode: "live", ops: slowLedger }, LIVE_ENV);
+      await vi.advanceTimersByTimeAsync(3_100);
+      expect((await p).checks.migrations).toEqual({ ok: false, reason: "ledger_unreadable" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an engine migration the build doesn't know is reported (database_ahead) but doesn't fail readiness (rollback)", async () => {
+    const ahead = [...ledgerOf(engineFiles), { name: "199_engine_from_the_future.sql", checksum: "a".repeat(64), applied_at: at }];
+    expect(await migrationsCheck(ops({ ledger: ahead }), files)).toMatchObject({ ok: true, unexpected: ["199_engine_from_the_future.sql"], database_ahead: true });
+    expect(await migrationsCheck(ops(), files)).toMatchObject({ ok: true, unexpected: [] });
   });
 });
