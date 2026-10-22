@@ -52,6 +52,7 @@ import { rankQuotes, rejectReason, softTierOf, type RankableQuote, type Ranking 
 import { assessCompliance, complianceSummary, type Compliance } from "../ranking/compliance.ts";
 import { DEFAULT_QUOTE_VALIDITY_MS, quoteFreshness } from "../ranking/validity.ts";
 import { selectionOf, type QuoteSelection } from "../ranking/selection.ts";
+import { exclusionLine, exclusionOf, type ExclusionStatus } from "../ranking/exclusion.ts";
 import { confirmsReceipt, readBookingReply, vendorOwnWords } from "../approvals/bookingReply.ts";
 import { mustHaveLine, normalizeRequirements } from "./requestNormalize.ts";
 import { purchasePaymentLine, purchaseView, type PurchaseStage, type PurchaseView } from "../payments/purchase.ts";
@@ -415,7 +416,7 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
   /** Per current quote: extra fees (with inclusion) and commercial terms, as the business stated them. */
   terms?: Record<string, { fees?: { label: string; amount_usd?: number; included: boolean | null; excerpt: string }[]; deposit_terms?: string | null; cancellation?: string | null; exclusions?: string[] }>;
   /** Per business id: where Haggle stands with it (inbound/contactStatus.ts); `detail` only when it says more than the board status. */
-  vendor_contact?: Record<string, { status: BusinessContactStatus["contact_status"]; detail?: string }>;
+  vendor_contact?: Record<string, { status: BusinessContactStatus["contact_status"] | ExclusionStatus; detail?: string }>;
 };
 
 const REJECT_TEXT: Record<import("../ranking/rank.ts").RejectReason, string> = {
@@ -1726,7 +1727,9 @@ export class HaggleEngine {
     if (!job || !job.ready || (job.state !== "collecting" && job.state !== "negotiating") || !this.d.sms) return;
     const events = await this.repo.listEvents(jobId);
     if (!events.some((e) => e.type === "ready" && Number(e.data.round) === job.round)) return;
-    if (events.some((e) => e.type === "ready_offered" && Number(e.data.round) === job.round)) return;
+    // Offered once per round; an offer cut short by a lost lease (nothing reached the human) is offered again.
+    const offers = (type: string) => events.filter((e) => e.type === type && Number(e.data.round) === job.round).length;
+    if (offers("ready_offered") > offers("ready_offer_lost")) return;
     if (!(await this.notifyTarget(job))) return;
     // A reply that came in just now (its webhook lost) is read before Haggle recommends anything.
     if (await this.reconcileJob(jobId)) await this.parsePending(job);
@@ -1776,6 +1779,11 @@ export class HaggleEngine {
       if (q.total_cents) await this.notifyHuman(job, `ready:${job.round}`, `${head}. Recommended: ${clip(name, 30)} ${usdText(q.total_cents)}. See every option on the deal board in Claude.`);
     } catch (err) {
       this.log("notify_failed", { job_id: jobId, key: "ready", error: (err as Error).message });
+    } finally {
+      // The lease was lost during the offer: its texts were fenced (never sent). The next advance (this
+      // instance's or the new holder's) offers again; texts that did go out are deduped by their keys,
+      // and a suggestion still pending keeps the job awaiting approval, so nothing is offered twice.
+      if (this.fenced(jobId)) await this.repo.appendEvent(jobId, "ready_offer_lost", { round: job.round }).catch(() => undefined);
     }
   }
 
@@ -5845,7 +5853,20 @@ export class HaggleEngine {
     const contactSuppressions = contactRows.length ? await this.repo.findSuppressions(contactRows) : [];
     const vendorContact = Object.fromEntries(businesses.map((business) => contactStatusOf({ business, messages, suppressions: contactSuppressions, events }))
       .filter((c) => NOTABLE_CONTACT.has(c.contact_status))
-      .map((c) => [c.business_id, { status: c.contact_status, detail: c.line, ...(c.next_contact_at ? { next_contact_at: c.next_contact_at } : {}) }]));
+      .map((c) => [c.business_id, { status: c.contact_status as BusinessContactStatus["contact_status"] | ExclusionStatus, detail: c.line, ...(c.next_contact_at ? { next_contact_at: c.next_contact_at } : {}) }]));
+    // Every other contacted vendor that isn't compared says why, in plain words (ranking/exclusion.ts).
+    const pricedNow = new Set(quotes.filter((q) => q.total_cents !== null && q.record.available).map((q) => q.business_id));
+    const quotesFinal = job.ready || !["created", "contacting", "collecting", "negotiating"].includes(job.state);
+    for (const b of businesses) {
+      if (vendorContact[b.business_id]) continue;
+      const x = exclusionOf({
+        name: b.name, channel: b.channel, compared: pricedNow.has(b.business_id), declined: b.status === "declined" || quotes.some((q) => q.business_id === b.business_id && !q.record.available),
+        unreachable: b.status === "unavailable" ? this.route(b).reason ?? "no usable channel" : null, question: questions.find((q) => q.business_id === b.business_id)?.text ?? null,
+        unreadable: unreadable.has(b.business_id), quotesFinal, replied: !!b.last_reply_at,
+      });
+      if (x) vendorContact[b.business_id] = { status: x.status, detail: x.detail };
+    }
+    const notCompared = exclusionLine(businesses.filter((b) => vendorContact[b.business_id] && !pricedNow.has(b.business_id)).map((b) => ({ name: b.name, status: vendorContact[b.business_id]!.status })));
     const boardById = new Map(out.map((q) => [q.quote_id, q]));
     // A request compared on a non-money answer (earliest date) recommends in the ranker's compare_by order.
     const recommendOrder = nonMoneyCompare(job.request) ? ranking.ranked.map((r) => r.quoteId) : value.ranked.map((r) => r.quoteId);
@@ -5918,7 +5939,7 @@ export class HaggleEngine {
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
       payment_ceiling_usd: centsToUsd(Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents)),
       payments_enabled: this.d.stripe !== undefined || !this.d.payer.disabledReason,
-      next,
+      next: notCompared && job.ready && ["collecting", "negotiating", "awaiting_approval"].includes(job.state) ? `${next} ${notCompared}` : next,
     };
   }
 

@@ -4,7 +4,11 @@
 // directly (a thread-only email, or a vendor Haggle can't get a written answer from). Real engine,
 // in-memory store, fake ports; nothing is sent or paid.
 import { describe, expect, it } from "vitest";
+import { PostgresRepository } from "../src/store/postgres.ts";
+import type { Repository } from "../src/store/types.ts";
 import { humanApproves, purchaseEnv, quotedDeal, type PurchaseEnv } from "./helpers/purchaseKit.ts";
+
+const PG_URL = process.env.HAGGLE_TEST_DATABASE_URL;
 
 const HARBOR = "events@harbor.example";
 const GRILL = "orders@grill.example";
@@ -69,25 +73,7 @@ describe("bypass attempts: nothing is booked or handed off without the vendor's 
   });
 
   it("a vendor Haggle can't get a written answer from (phone): no handoff until the approver's BOOKED <code>; PAID before that records nothing", async () => {
-    const env = purchaseEnv({ phone: true });
-    const d = await quotedDeal(env, [{ name: "Mission Eats", phone: PHONE, channel: "phone", reply: "We can do $1,700 total all-in, 14 vegetarian, delivered by 11:00, with a $300 deposit." }]);
-    const q = d.quote("Mission Eats");
-    expect(q.total_usd).toBe(1700);
-    const { a } = await humanApproves(env, d.jobId, q.quote_id);
-    // The approval text asks for BOOKED once they've checked with the vendor, never "pay now".
-    expect(env.lastToApprover()).toMatch(/confirm the booking with them directly.*reply BOOKED \d{4}.*Don't pay before that/);
-    expect(await handoff(env, a.id)).toBeNull();
-    expect((await env.engine.getQuotes(d.jobId)).purchase).toMatchObject({ stage: "awaiting_vendor_confirmation", booked: false });
-    expect((await env.human(`PAID ${a.code}`)).outcome).toBe("paid_before_booking");
-    expect((await env.repo.getJob(d.jobId))!.state).toBe("paying");
-    // The approver checked with Mission Eats by phone and accepts it.
-    expect((await env.human(`BOOKED ${a.code}`)).outcome).toBe("booking_confirmed");
-    expect(env.lastToApprover()).toMatch(/accepted the booking with Mission Eats.*reply PAID \d{4}/);
-    expect((await handoff(env, a.id))!.status).toBe("instructions_requested");
-    expect((await env.engine.getQuotes(d.jobId)).purchase).toMatchObject({ stage: "instructions_requested", booked_by_human: true, money_verified: false });
-    // A second BOOKED changes nothing; PAID now records the customer's report.
-    expect((await env.human(`BOOKED ${a.code}`)).outcome).toBe("booked_already");
-    expect((await env.human(`PAID ${a.code}`)).outcome).toBe("handoff_confirmed");
+    await phoneVendorNeedsBooked();
   });
 
   it("a confirm-only order by a thread-only email isn't confirmed until BOOKED <code>", async () => {
@@ -140,5 +126,41 @@ describe("bypass attempts: nothing is booked or handed off without the vendor's 
     expect((await env.mail(jobId, HARBOR, "Confirmed! See you on November 15.")).outcome).toBe("booking_unclear");
     expect((await env.repo.getBookingByApproval(a.id))!.status).toBe("awaiting_vendor_confirmation");
     expect((await env.mail(jobId, HARBOR, "Sorry, typo: confirmed for November 14.")).outcome).toBe("booking_confirmed");
+  });
+});
+
+/** A phone vendor (not in writing): nothing is handed off before the approver's BOOKED <code>. Unique numbers per run (Postgres is shared). */
+async function phoneVendorNeedsBooked(repo?: Repository) {
+  const u = String(Math.floor(Math.random() * 9_000_000) + 1_000_000);
+  const env = purchaseEnv({ phone: true, ...(repo ? { repo, approver: `+1415${u}` } : {}) });
+  const phone = repo ? `+1628${u}` : PHONE;
+  const d = await quotedDeal(env, [{ name: "Mission Eats", phone, channel: "phone", reply: "We can do $1,700 total all-in, 14 vegetarian, delivered by 11:00, with a $300 deposit." }]);
+  const q = d.quote("Mission Eats");
+  expect(q.total_usd).toBe(1700);
+  const { a } = await humanApproves(env, d.jobId, q.quote_id);
+  // The approval text asks for BOOKED once they've checked with the vendor, never "pay now".
+  expect(env.lastToApprover()).toMatch(/confirm the booking with them directly.*reply BOOKED \d{4}.*Don't pay before that/);
+  expect(await handoff(env, a.id)).toBeNull();
+  expect((await env.engine.getQuotes(d.jobId)).purchase).toMatchObject({ stage: "awaiting_vendor_confirmation", booked: false });
+  expect((await env.human(`PAID ${a.code}`)).outcome).toBe("paid_before_booking");
+  expect((await env.repo.getJob(d.jobId))!.state).toBe("paying");
+  // The approver checked with Mission Eats by phone and accepts it.
+  expect((await env.human(`BOOKED ${a.code}`)).outcome).toBe("booking_confirmed");
+  expect(env.lastToApprover()).toMatch(/accepted the booking with Mission Eats.*reply PAID \d{4}/);
+  expect((await handoff(env, a.id))!.status).toBe("instructions_requested");
+  expect((await env.engine.getQuotes(d.jobId)).purchase).toMatchObject({ stage: "instructions_requested", booked_by_human: true, money_verified: false });
+  // A second BOOKED changes nothing; PAID now records the customer's report.
+  expect((await env.human(`BOOKED ${a.code}`)).outcome).toBe("booked_already");
+  expect((await env.human(`PAID ${a.code}`)).outcome).toBe("handoff_confirmed");
+}
+
+describe.skipIf(!PG_URL)("on Postgres (migration 118's trigger enforces the same rule)", { timeout: 60_000 }, () => {
+  it("a phone vendor's booking needs the approver's BOOKED <code> before any handoff", async () => {
+    const repo = new PostgresRepository(PG_URL!);
+    try {
+      await phoneVendorNeedsBooked(repo);
+    } finally {
+      await repo.close();
+    }
   });
 });

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { inputRequired, inputResponse, MCPServer } from "mcp-use";
 import { z } from "zod";
-import { budgetFrom, businessIdForContact, complianceSummary, DEFAULT_WORKSPACE_ID, EngineError, eventWhen, MAX_ROUNDS, normalizeBusinessName, normalizePlainRequest, normalizeRequirements, placesDiscover, PlacesError, type DealBoardData, type DealInput, type PlacesFailure, type WorkspaceEngine } from "@haggle/engine";
+import { budgetFrom, businessIdForContact, complianceSummary, DEFAULT_WORKSPACE_ID, EngineError, eventWhen, localDate, MAX_ROUNDS, normalizeBusinessName, normalizePlainRequest, normalizeRequirements, placesDiscover, PlacesError, type DealBoardData, type DealInput, type PlacesFailure, type WorkspaceEngine } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
@@ -344,7 +344,8 @@ export const deal = server.tool(
   },
   async (input, ctx) =>
     run(ctx, async ({ rt, engine, mode }) => {
-      const today = new Date().toISOString().slice(0, 10);
+      // "Tomorrow", "Saturday" and "is it in the past?" are read on the workspace's own calendar (not UTC).
+      const today = localDate(new Date(), (await engine.identity()).workspace.timezone);
       // The user's own words (headcount, when, where, delivery, dietary, budget) become the same structured
       // facts every later stage uses (RFQ, comparison, approval, booking, handoff); nothing is guessed.
       const { when, where, delivery, dietary, quantity: qIn, date: dIn, time: tIn, ...plainRest } = input.request;
