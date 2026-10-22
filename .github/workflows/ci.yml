@@ -60,6 +60,15 @@ jobs:
       - name: Install
         run: npm ci
 
+      # npm ci already refuses a lockfile out of sync with package.json; this also fails on missing or
+      # invalid installed dependencies (extraneous optional wasm shims are reported, not fatal).
+      - name: Dependency tree consistent
+        run: npm ls --all > /dev/null
+
+      # Committed docs and generated reports: no credential-shaped strings (file:line + pattern only).
+      - name: Secret scan (docs and reports)
+        run: node apps/mcp/scripts/secret-scan.ts
+
       - name: psql client
         run: command -v psql || (sudo apt-get update -q && sudo apt-get install -y -q postgresql-client)
 
@@ -73,7 +82,7 @@ jobs:
       - name: Unit and end-to-end tests (mock mode, no network)
         run: npx vitest run
 
-      - name: Migrations apply in order; SQL assertions
+      - name: Migrations apply in order; SQL assertions; each 112+ migration alone on 100-111
         run: scripts/verify-migrations.sh
 
       - name: Engine suite and migration ledger on Postgres 17
