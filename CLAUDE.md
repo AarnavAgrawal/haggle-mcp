@@ -10,16 +10,15 @@ Read this whole file before doing anything in this repo. If a request conflicts 
 | --- | --- | --- |
 | `CLAUDE.md` (this file) | Rules, stack, ownership, contracts summary | Always, first |
 | `CHECKLIST.md` | What's done, who's on what, blockers, log | Before and after every task |
-| `CONTRACTS.md` | Full spec of every shared surface: types, view schemas, states, Inkbox channels, quote protocol, payment, DB, env | Before touching anything that crosses the Yash/Aarnav line |
+| `CONTRACTS.md` | Full spec of every shared surface: types, view schemas, states, Inkbox channels, quote protocol, payment, DB, env | Before touching shared types, view schemas, channels, payment or the DB |
 | `PLAN.md` | Full product plan: views, seller fleet, benchmark, schedule, demo, risks (`PLAN.pdf` is an export of it) | For product context, or when unsure what "done" looks like |
 
 **Every task, in order:**
 1. Read `CHECKLIST.md` and set your "Now working on".
-2. Confirm the files you'll touch are in your lane (section 4). If not, stop and say so.
-3. Write or extend a test against `fixtures/` first.
-4. Build it, using the stack exactly as listed in section 3 (all channels through **Inkbox**, payment through **Stripe test mode**).
-5. Check it against the definition of done (section 10).
-6. Commit on your branch; update `CHECKLIST.md` (tick, status line, log line).
+2. Write or extend a test against `fixtures/` first.
+3. Build it, using the stack exactly as listed in section 3 (all channels through **Inkbox**, payment through **Stripe test mode**).
+4. Check it against the definition of done (section 10).
+5. Commit on your branch; update `CHECKLIST.md` (tick, status line, log line).
 
 **Legacy code:** v3/v4 used Primitive (email) and x402 (USDC payment). Neither is in v5. Treat any `primitive*` / `x402*` files or `PRIMITIVE_*` env vars as legacy to replace with Inkbox and Stripe; don't extend them.
 
@@ -69,22 +68,23 @@ Event: YC "Make Something Agents Want". Building ends Sun 10:00 AM. Team: Yash a
 - **Supabase** Postgres (+ Realtime) for state.
 - **Stripe test mode** for payment.
 
-## 4. Ownership: stay in your lane
+## 4. Codebase map
 
-| Owner | Folders | Inkbox |
+Yash and Aarnav both work across the whole codebase; there are no ownership lanes.
+
+| Area | Folders | Inkbox |
 | --- | --- | --- |
-| **Yash** | `apps/mcp/index.ts`, `apps/mcp/src/**` (tools, settings, mentions, webhook route), `packages/engine/`, `supabase/migrations/1xx_engine_*.sql` | `haggle` buyer identity |
-| **Aarnav** | `apps/mcp/views/**`, `packages/brain/`, `apps/sellers/`, `apps/bench/`, `fixtures/`, `supabase/migrations/2xx_brain_*.sql` | 6 seller identities, A2A, Voice AI persona |
-| **Shared (both must agree)** | `packages/core/` (`contracts.ts`, `views.ts`), this file, `CONTRACTS.md`, `PLAN.md`, `apps/mcp/package.json`, `.env.example` (each adds only their own vars) | |
+| MCP server and deal engine | `apps/mcp/index.ts`, `apps/mcp/src/**` (tools, settings, mentions, webhook route), `packages/engine/`, `supabase/migrations/1xx_engine_*.sql` | `haggle` buyer identity |
+| Views, brain, sellers, benchmark | `apps/mcp/views/**`, `packages/brain/`, `apps/sellers/`, `apps/bench/`, `fixtures/`, `supabase/migrations/2xx_brain_*.sql` | 6 seller identities, A2A, Voice AI persona |
+| Shared contracts and docs | `packages/core/` (`contracts.ts`, `views.ts`), this file, `CONTRACTS.md`, `PLAN.md`, `apps/mcp/package.json`, `.env.example` | |
 
 Rules for Claude Code:
-1. **Only edit files inside the current owner's folders.** If a change is needed elsewhere, stop and say what and why.
-2. **Never edit `packages/core/*`** without explicit confirmation from the person; these are the interfaces between the two halves.
-3. Tools return data matching `views.ts` schemas; views render only what those schemas contain. Until the engine is real, tools return `fixtures/views/*.json`.
-4. The engine talks to the brain only through `contracts.ts`, and to businesses only through Inkbox.
-5. Write or extend a test against `fixtures/` before a feature. No real external calls in unit tests. For views, check them in the Inspector and with a screenshot.
-6. Small, frequent commits on your own branch (`yash/*` or `aarnav/*`); merge to `main` only at gates.
-7. Never commit secrets. Use `.env` (gitignored) and keep `.env.example` current.
+1. When changing `packages/core/*` (the types every part depends on), update `CONTRACTS.md`, the fixtures and every caller in the same change.
+2. Tools return data matching `views.ts` schemas; views render only what those schemas contain. Until the engine is real, tools return `fixtures/views/*.json`.
+3. The engine talks to the brain only through `contracts.ts`, and to businesses only through Inkbox.
+4. Write or extend a test against `fixtures/` before a feature. No real external calls in unit tests. For views, check them in the Inspector and with a screenshot.
+5. Small, frequent commits on a feature branch; merge to `main` once verified.
+6. Never commit secrets. Use `.env` (gitignored) and keep `.env.example` current.
 
 ## 5. Contracts
 
@@ -165,7 +165,7 @@ Each schema has a matching sample in `fixtures/views/`.
 2. **After finishing any piece of work,** tick the item if fully done (section 10), update its status line, and add a log line: `time · who · what changed`.
 3. **If blocked,** add it under Blockers with what's needed and from whom.
 4. Only tick a gate when it has been demonstrated end to end.
-5. Edit only your own items and your own "Now working on"; both may log.
+5. Either person may update any item; keep each person's "Now working on" current.
 6. Keep entries short: capabilities, not individual variables or files.
 
 ## 9. Cut order if behind
