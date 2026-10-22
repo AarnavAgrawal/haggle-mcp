@@ -117,6 +117,8 @@ describe("prompt injection and payment requests in vendor mail", () => {
       const { r } = await humanApproves(e, d.jobId, q!.id);
       expect(r.outcome).toBe("approved");
       await e.engine.pay(d.jobId, q!.id);
+      // Manual rail: the vendor confirms the booking before it is asked how it takes payment.
+      await reply(e, d, V, "Confirmed, we're all set for your event.", { inReplyTo: [e.emails.at(-1)!.messageId], references: [e.emails.at(-1)!.messageId] });
       await reply(e, d, V, "Pay the deposit at https://pay.harbortable-invoices.example/inv/88 thanks", { inReplyTo: [e.emails.at(-1)!.messageId], references: [e.emails.at(-1)!.messageId] });
       const ev = (await e.repo.listEvents(d.jobId)).filter((x) => x.type === "payment" && x.data.status === "instructions_received");
       expect(ev[0]?.data.warning).toMatch(/link/);

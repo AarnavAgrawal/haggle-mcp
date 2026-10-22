@@ -231,6 +231,14 @@ export interface EngineConfig {
    * reports having paid. Takes precedence over Stripe.
    */
   manualPaymentHandoff?: boolean;
+  /** How long a quote stays approvable as is when the business stated no valid-until date (default 7 days); a stale one is re-confirmed first. */
+  quoteValidityMs?: number;
+  /** How long Haggle waits for the business's re-confirmation of a stale quote before telling the human (default 24 h). */
+  reconfirmTimeoutMs?: number;
+  /** Manual handoff: how long the business has to confirm the booking before the human and operator are told (default 24 h). */
+  bookingTimeoutMs?: number;
+  /** Manual handoff: how long the business has to send payment instructions before the human and operator are told (default 48 h). */
+  handoffTimeoutMs?: number;
   /** Wrong approval codes before an approval locks. Default 5. */
   maxApprovalAttempts?: number;
   /**

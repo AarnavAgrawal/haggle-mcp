@@ -52,6 +52,15 @@ async function approvedDeal(env: Env) {
   return { jobId: deal.job_id, b, q, a };
 }
 
+/** Manual rail: the business confirms the booking before the customer pays it directly. */
+async function bookedDeal(env: Env) {
+  const r = await approvedDeal(env);
+  const trusted = (e: string) => ({ trusted: true as const, address: e, reason: "trusted" as const, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
+  const out = await env.engine.ingest({ providerEventId: "ev2", eventType: "message.received", providerEmailId: "in2", threadId: "th1", messageId: "<in2@v.example>", inReplyTo: [r.b.rfq_message_id!], references: [r.b.rfq_message_id!], from: VENDOR, to: ["haggle@inkboxmail.test"], subject: "Re: Quote", bodyText: "Confirmed, we're all set for your event.", attachments: [], attachmentsDownloadUrl: null }, trusted);
+  expect(out.outcome).toBe("booking_confirmed");
+  return r;
+}
+
 describe("job-ops arguments", () => {
   it("validates commands and demands who is acting", () => {
     expect(planOps(["list-stuck"])).toEqual({ kind: "list-stuck", limit: 200 });
@@ -121,7 +130,7 @@ describe("job-ops retry applied, the engine performing it", () => {
 
   it("a confirmation left unknown by a crash: reviewed, listed as stuck, re-sent once only with the override", async () => {
     const env = setup({ manual: true });
-    const { jobId, a } = await approvedDeal(env);
+    const { jobId, a } = await bookedDeal(env);
     const key = `confirm:${a.id}`;
     await env.repo.claimOutbox({ key, job_id: jobId, kind: "email" }, env.clock.now().toISOString());
     env.clock.advance(3 * 60_000);

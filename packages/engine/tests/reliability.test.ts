@@ -95,6 +95,13 @@ async function approved(env: Env, body = "We can do it: $1,150 total, delivered.
   return { jobId, b: bs[0]!, q, a };
 }
 
+/** Manual rail: approved, then the business confirms the booking (the handoff starts only after that). */
+async function booked(env: Env) {
+  const r = await approved(env);
+  expect((await mail(env, r.b, "Confirmed, we're all set for your event.")).outcome).toBe("booking_confirmed");
+  return r;
+}
+
 /**
  * Crash injection: the process dies right after Inkbox accepted a call, before the call's message
  * row is written. The write never completes (a dead process doesn't run its error handlers).
@@ -276,7 +283,7 @@ describe("outbox: every external side effect is claimed and keyed", () => {
 
   it("crash between claim and send of an obligation (a confirmation): it is never re-sent automatically; an operator reviews it", async () => {
     const env = setup({ manualPaymentHandoff: true });
-    const { jobId, a } = await approved(env);
+    const { jobId, a } = await booked(env);
     const key = `confirm:${a.id}`;
     await env.repo.claimOutbox({ key, job_id: jobId, kind: "email" }, env.clock.now().toISOString());
     env.clock.advance(3 * 60_000);
@@ -457,14 +464,15 @@ describe("vendor replies hours or days late", () => {
 
   it("a reply days after the deal closed is stored, shown on the board, texted to the human, and never read into the deal", async () => {
     const env = setup({ manualPaymentHandoff: true });
-    const { jobId, b, a } = await approved(env);
+    const { jobId, b, a } = await booked(env);
     expect((await env.engine.ingestText({ messageId: "paid_late", from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("handoff_confirmed");
     expect((await env.repo.getJob(jobId))!.state).toBe("paid");
     const quotesBefore = (await env.repo.listQuotes(jobId)).length;
     env.clock.advance(3 * 86_400_000);
-    expect((await mail(env, b, "Actually we can't do that date. New price $2,400 total.")).outcome).toMatch(/stored|job_closed/);
+    // (A decline after a reported payment is escalated to the operator instead: the next test.)
+    expect((await mail(env, b, "Thanks again! For future events our price is now $2,400 total.")).outcome).toMatch(/stored|job_closed/);
     await env.engine.advanceJob(jobId);
-    const msgs = (await env.repo.listMessages(jobId)).filter((m) => m.direction === "in" && /can't do that date/.test(m.body_text ?? ""));
+    const msgs = (await env.repo.listMessages(jobId)).filter((m) => m.direction === "in" && /For future events/.test(m.body_text ?? ""));
     expect(msgs).toHaveLength(1);
     expect(msgs[0]!.parse_status).not.toBe("pending");
     expect((await env.repo.listQuotes(jobId)).length).toBe(quotesBefore);
@@ -472,6 +480,20 @@ describe("vendor replies hours or days late", () => {
     expect((await env.repo.listEvents(jobId)).some((e) => e.type === "late_reply")).toBe(true);
     expect((await env.repo.listEvents(jobId)).some((e) => e.type === "reply" && e.data.kind === "late_reply" && /after this deal was paid/.test(String(e.data.summary)))).toBe(true);
     expect(env.texts.at(-1)!.text).toMatch(/replied after this deal closed/);
+  });
+
+  it("the business backing out days after the customer reported paying is escalated, never read as a new quote, and no refund is claimed", async () => {
+    const env = setup({ manualPaymentHandoff: true });
+    const { jobId, b, a } = await booked(env);
+    expect((await env.engine.ingestText({ messageId: "paid_w", from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("handoff_confirmed");
+    const quotesBefore = (await env.repo.listQuotes(jobId)).length;
+    env.clock.advance(3 * 86_400_000);
+    expect((await mail(env, b, "Sorry, we can't do that date after all.")).outcome).toBe("operator_attention");
+    await env.engine.advanceJob(jobId);
+    expect((await env.repo.listEvents(jobId)).some((e) => e.type === "operator_attention" && e.data.reason === "business_withdrew_after_reported_payment")).toBe(true);
+    expect((await env.repo.listQuotes(jobId)).length).toBe(quotesBefore);
+    expect(env.texts.at(-1)!.text).toMatch(/can't reverse or refund/);
+    expect(env.texts.some((t) => /refund(ed)? (has been|was) (issued|sent)/i.test(t.text))).toBe(false);
   });
 });
 

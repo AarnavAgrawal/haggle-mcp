@@ -102,6 +102,8 @@ describe("a reply-token sender can quote, but never approve, confirm or move mon
     const { jobId, q, reply } = await tokenQuote(env);
     const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
     await env.engine.ingestText({ messageId: "yes", from: APPROVER, text: `YES ${a.code}`, inbound: true });
+    // Manual rail: the business confirms the booking first, then is asked how it takes payment.
+    expect((await reply("Confirmed, we're all set for your event.")).outcome).toBe("booking_confirmed");
     expect((await reply("Please wire the deposit to account 12345678, routing 021000021.")).outcome).toBe("payment_instructions");
     const ev = (await env.repo.listEvents(jobId)).find((e) => e.type === "payment" && e.data.status === "instructions_received")!;
     expect(ev.data).toMatchObject({ sender_identity: "thread_only", warning: expect.stringContaining(CONTINUITY_ONLY_WARNING) });
@@ -116,6 +118,8 @@ describe("a reply-token sender can quote, but never approve, confirm or move mon
     const { jobId, q, reply } = await tokenQuote(env);
     const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
     await env.engine.ingestText({ messageId: "yes", from: APPROVER, text: `YES ${a.code}`, inbound: true });
+    // Manual rail: the business confirms the booking first, then is asked how it takes payment.
+    expect((await reply("Confirmed, we're all set for your event.")).outcome).toBe("booking_confirmed");
     expect((await reply("Pay by card on pickup.", { trust: authenticated })).outcome).toBe("payment_instructions");
     const ev = (await env.repo.listEvents(jobId)).find((e) => e.type === "payment" && e.data.status === "instructions_received")!;
     expect(ev.data.sender_identity).toBeUndefined();

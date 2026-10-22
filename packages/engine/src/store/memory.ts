@@ -23,6 +23,8 @@ import {
   type HeldTextRow,
   type SuppressionRemovalRow,
   type OperatorReviewRow,
+  type BookingRow,
+  type HandoffReceiptRow,
 } from "./types.ts";
 
 const now = () => new Date().toISOString();
@@ -132,7 +134,9 @@ export class InMemoryRepository implements Repository {
     if (this.handoffs.some((x) => x.approval_id === h.approval_id)) return null;
     const a = this.approvals.find((x) => x.id === h.approval_id);
     if (!a || a.job_id !== h.job_id || a.business_id !== h.business_id || a.payment_cents !== h.amount_cents || a.action === "confirm" || !["approved", "used"].includes(a.status)) throw new Error("handoff must match a human-approved paying approval");
-    const row = { ...h, created_at: now(), updated_at: now() };
+    // 110: a handoff starts only after the booking is confirmed (or confirmed by the human directly).
+    if (!this.bookings.some((x) => x.approval_id === h.approval_id && ["confirmed", "not_in_writing"].includes(x.status))) throw new Error("a payment handoff starts only after the booking is confirmed");
+    const row = { stalled_at: null, ...h, created_at: now(), updated_at: now() };
     this.handoffs.push(row);
     return clone(row);
   }
@@ -496,5 +500,51 @@ export class InMemoryRepository implements Repository {
     if (!cur || cur.status !== "open") return null;
     Object.assign(cur, { status: "resolved", resolution: r.resolution, resolved_by: r.resolved_by, resolved_at: at, updated_at: at });
     return clone(cur);
+  }
+  // bookings and verified receipts (migration 110): the same rules as its triggers.
+  private bookings: BookingRow[] = [];
+  private receipts: HandoffReceiptRow[] = [];
+
+  async insertBooking(b: Omit<BookingRow, "created_at" | "updated_at">) {
+    if (this.bookings.some((x) => x.approval_id === b.approval_id)) return null;
+    const a = this.approvals.find((x) => x.id === b.approval_id);
+    if (!a || a.job_id !== b.job_id || a.quote_id !== b.quote_id || a.business_id !== b.business_id || a.quote_total_cents !== b.total_cents || a.payment_cents !== b.payment_cents || a.action === "confirm" || !["approved", "used"].includes(a.status)) {
+      throw new Error("booking must match a human-approved paying approval");
+    }
+    if (!["awaiting_vendor_confirmation", "not_in_writing"].includes(b.status)) throw new Error("a booking starts awaiting the business (or not in writing)");
+    const row = { ...b, created_at: now(), updated_at: now() };
+    this.bookings.push(row);
+    return clone(row);
+  }
+  async getBookingByApproval(approvalId: string) {
+    const b = this.bookings.find((x) => x.approval_id === approvalId);
+    return b ? clone(b) : null;
+  }
+  async updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason">>) {
+    const i = this.bookings.findIndex((x) => x.id === id);
+    const cur = this.bookings[i];
+    if (!cur || !fromStatuses.includes(cur.status) || ["declined", "changed", "cancelled"].includes(cur.status)) return null;
+    if (["confirmed", "not_in_writing"].includes(cur.status) && patch.status && patch.status !== cur.status && patch.status !== "cancelled") return null;
+    this.bookings[i] = { ...cur, ...patch, updated_at: now() };
+    return clone(this.bookings[i]!);
+  }
+  async markHandoffStalled(id: string, at: string) {
+    const i = this.handoffs.findIndex((x) => x.id === id);
+    const cur = this.handoffs[i];
+    if (!cur || cur.stalled_at || !["instructions_requested", "instructions_received"].includes(cur.status)) return null;
+    this.handoffs[i] = { ...cur, stalled_at: at, updated_at: now() };
+    return clone(this.handoffs[i]!);
+  }
+  async insertHandoffReceipt(r: Omit<HandoffReceiptRow, "created_at">) {
+    if (this.receipts.some((x) => x.handoff_id === r.handoff_id)) return null;
+    const h = this.handoffs.find((x) => x.id === r.handoff_id);
+    if (!h || h.job_id !== r.job_id || h.status !== "human_confirmed") throw new Error("a receipt is recorded only after the customer reported paying");
+    const row = { ...r, created_at: now() };
+    this.receipts.push(row);
+    return clone(row);
+  }
+  async getHandoffReceipt(handoffId: string) {
+    const r = this.receipts.find((x) => x.handoff_id === handoffId);
+    return r ? clone(r) : null;
   }
 }

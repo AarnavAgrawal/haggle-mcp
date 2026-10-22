@@ -288,6 +288,8 @@ export interface PaymentHandoffRow {
   instructions_message_id: string | null;
   confirmed_by: string | null;
   confirmed_at: string | null;
+  /** When the business's instructions were overdue and the human and operator were told (migration 110). */
+  stalled_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -354,6 +356,42 @@ export interface OperatorReviewRow {
   resolved_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * The booking after the human's approval (migration 110): the business must explicitly confirm
+ * availability and the approved terms before the deal counts as booked and the payment handoff
+ * starts. "not_in_writing": a business Haggle can't get a written answer from (a phone or A2A
+ * business); the human confirms with it directly. Its reply is untrusted text, shown, never followed.
+ */
+export interface BookingRow {
+  id: string;
+  job_id: string;
+  approval_id: string;
+  quote_id: string;
+  business_id: string;
+  total_cents: number;
+  payment_cents: number;
+  status: "awaiting_vendor_confirmation" | "confirmed" | "not_in_writing" | "declined" | "changed" | "cancelled";
+  request_message_id: string | null;
+  reply_text: string | null;
+  reply_message_id: string | null;
+  reply_has_link: boolean;
+  confirmed_at: string | null;
+  stalled_at: string | null;
+  cancel_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The business's explicit "payment received" (verified sender) after the customer reported paying. */
+export interface HandoffReceiptRow {
+  id: string;
+  handoff_id: string;
+  job_id: string;
+  message_id: string;
+  evidence: string;
+  created_at: string;
 }
 
 /** Persistence port. InMemoryRepository for tests/mock mode; PostgresRepository for live. */
@@ -515,4 +553,15 @@ export interface Repository {
   // ops (migration 111; optional: in-memory and test repositories have no ledger)
   /** The migration ledger rows; null when engine_migrations doesn't exist yet. Read-only. */
   listAppliedMigrations?(): Promise<{ name: string; checksum: string | null; applied_at: string }[] | null>;
+  // bookings and verified receipts (migration 110), appended
+  /** Null when the approval already has a booking. */
+  insertBooking(b: Omit<BookingRow, "created_at" | "updated_at">): Promise<BookingRow | null>;
+  getBookingByApproval(approvalId: string): Promise<BookingRow | null>;
+  /** CAS on status; null when the booking isn't in one of `fromStatuses`. */
+  updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason">>): Promise<BookingRow | null>;
+  /** Mark a handoff's instructions overdue (once; only while it waits for them). */
+  markHandoffStalled(id: string, at: string): Promise<PaymentHandoffRow | null>;
+  /** Null when the handoff already has a receipt. */
+  insertHandoffReceipt(r: Omit<HandoffReceiptRow, "created_at">): Promise<HandoffReceiptRow | null>;
+  getHandoffReceipt(handoffId: string): Promise<HandoffReceiptRow | null>;
 }

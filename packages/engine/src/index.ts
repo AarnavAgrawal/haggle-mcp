@@ -59,3 +59,9 @@ export * from "./live/alerts.ts";
 export * from "./live/aiUsage.ts";
 export * from "./ops/stalled.ts";
 export * from "./ops/migrations.ts";
+// Workstream D: purchase after approval, compliance, freshness, request normalization.
+export * from "./payments/purchase.ts";
+export * from "./ranking/compliance.ts";
+export * from "./ranking/validity.ts";
+export * from "./approvals/bookingReply.ts";
+export * from "./workflow/requestNormalize.ts";

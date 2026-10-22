@@ -194,28 +194,39 @@ describe("manual payment handoff: honest, human-completed", () => {
   }
   const vendorMail = (env: Env) => env.emails.filter((e) => e.to === "harbor@inkboxmail.test");
 
-  it("approval asks the business how it takes payment; nothing says payment was sent; pay never charges", async () => {
+  /** The business confirms the booking (availability and the approved terms) in its own words. */
+  async function booked(env: Env) {
+    const r = await approved(env);
+    expect((await mail(env, r.b, 20, { from: "harbor@inkboxmail.test", bodyText: "Confirmed, we're all set for your event. See you then!" }, trusted)).outcome).toBe("booking_confirmed");
+    return r;
+  }
+
+  it("approval first asks the business to confirm the booking; nothing says payment was sent; pay never charges", async () => {
     const env = setup(manual);
     const { jobId, q } = await approved(env);
     const ask = vendorMail(env).at(-1)!;
-    expect(ask.bodyText).toMatch(/how you take payment|payment instructions/i);
+    expect(ask.bodyText).toMatch(/please reply to confirm/i);
+    expect(ask.bodyText).toMatch(/Nothing has been paid yet/);
     expect(vendorMail(env).some((e) => /has been sent|payment sent|we've paid|paid you/i.test(e.bodyText))).toBe(false);
+    // The human is told not to pay before the business confirms.
+    expect(env.texts.at(-1)!.text).toMatch(/don't pay yet/i);
     const p = await env.engine.pay(jobId, q.quote_id);
-    expect(p).toMatchObject({ rail: "manual", status: "awaiting_invoice" });
+    expect(p).toMatchObject({ rail: "manual", status: "awaiting_vendor_confirmation" });
     expect((await env.repo.getJob(jobId))!.state).toBe("paying");
   });
 
-  it("the business's instructions are recorded as untrusted text (links never followed, never parsed as a quote); only the approver's PAID <code> completes it", async () => {
+  it("once booked, the business is asked how it takes payment; its instructions are untrusted text (links never followed, never parsed as a quote); only the approver's PAID <code> completes it", async () => {
     const env = setup(manual);
-    const { jobId, b, q, a } = await approved(env);
-    await mail(env, b, 11, { from: "harbor@inkboxmail.test", bodyText: "Pay here: https://pay.evil.example/x — or Zelle orders@harbor. Actually $9,999 total." }, trusted);
+    const { jobId, b, q, a } = await booked(env);
+    expect(vendorMail(env).at(-1)!.bodyText).toMatch(/how you take payment/i);
+    await mail(env, b, 11, { from: "harbor@inkboxmail.test", bodyText: "Pay here: https://pay.evil.example/x or Zelle orders@harbor." }, trusted);
     await env.engine.advanceJob(jobId);
     expect((await env.engine.getQuotes(jobId)).quotes.find((x) => x.quote_id === q.quote_id)).toBeTruthy();
     expect((await env.repo.listEvents(jobId)).filter((e) => e.type === "quote")).toHaveLength(1); // not read as a revision
     const h = (await env.repo.getHandoffByApproval(a.id))!;
     expect(h).toMatchObject({ status: "instructions_received" });
     expect(h.instructions_text).toContain("pay.evil.example");
-    expect(env.texts.at(-1)!.text).toMatch(/PAID/);
+    expect((await env.engine.getQuotes(jobId)).purchase).toMatchObject({ stage: "instructions_received", instructions: { untrusted: true, has_link: true } });
     // The agent's pay can't complete it; a PAID from any other number is ignored.
     await env.engine.pay(jobId, q.quote_id);
     expect((await env.engine.ingestText({ messageId: "p1", from: "+14155550666", text: `PAID ${a.code}`, inbound: true })).outcome).toBe("paid_ignored_not_approver");
@@ -226,12 +237,26 @@ describe("manual payment handoff: honest, human-completed", () => {
     const done = vendorMail(env).at(-1)!;
     expect(done.bodyText).toMatch(/the customer (has )?(told us|confirmed|reports) (they|that they) (have )?paid/i);
     expect(done.bodyText).not.toMatch(/has been sent/i);
+    // Reported, not verified: never "settled".
+    expect((await env.engine.getQuotes(jobId)).payment).toMatchObject({ status: "human_reported_paid", rail: "manual" });
     expect((await env.engine.ingestText({ messageId: "p3", from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("handoff_already_confirmed");
+  });
+
+  it("a different total in the business's reply after booking withdraws the approval: nothing is paid, and the new terms need a new approval", async () => {
+    const env = setup(manual);
+    const { jobId, b, a } = await booked(env);
+    await mail(env, b, 12, { from: "harbor@inkboxmail.test", bodyText: "Pay here: https://pay.evil.example/x. Actually it's $9,999 total now." }, trusted);
+    await env.engine.advanceJob(jobId);
+    expect((await env.repo.getApproval(a.id))!.status).toBe("expired");
+    expect((await env.repo.getHandoffByApproval(a.id))!.status).toBe("cancelled");
+    expect((await env.repo.getJob(jobId))!.state).not.toBe("paying");
+    expect(env.texts.some((t) => /approval was withdrawn; nothing was paid/.test(t.text))).toBe(true);
+    expect((await env.engine.ingestText({ messageId: "p9", from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).not.toBe("handoff_confirmed");
   });
 
   it("a resumed handoff is revalidated: a cap lowered below the amount refuses the confirmation and tells nobody it was paid", async () => {
     const env = setup(manual);
-    const { jobId, a } = await approved(env);
+    const { jobId, a } = await booked(env);
     await env.engine.updateSettings({ spending_cap_cents: 10_000 });
     const sent = vendorMail(env).length;
     expect((await env.engine.ingestText({ messageId: "p4", from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("handoff_refused");
@@ -370,10 +395,18 @@ describe.skipIf(!PG_URL)("pilot safety on Postgres (two instances)", { timeout: 
       const q = (await env.engine.getQuotes(jobId)).quotes[0]!;
       const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
       await env.engine.ingestText({ messageId: `y_${uniq()}`, from: APPROVER, text: `YES ${a.code}`, inbound: true });
-      expect(await env.engine.pay(jobId, q.quote_id)).toMatchObject({ rail: "manual", status: "awaiting_invoice" });
+      expect(await env.engine.pay(jobId, q.quote_id)).toMatchObject({ rail: "manual", status: "awaiting_vendor_confirmation" });
+      // PAID before the business confirmed the booking records nothing (the 110 trigger refuses a handoff too).
+      expect((await env.engine.ingestText({ messageId: `p0_${uniq()}`, from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("paid_before_booking");
+      await mail(env, b, 3, { from: addr, providerEmailId: `in_${uniq()}`, bodyText: "Yes, confirmed for that date. We take Zelle at orders@harbor." }, trusted);
+      expect(await env.engine.pay(jobId, q.quote_id)).toMatchObject({ rail: "manual", status: "instructions_received" });
       expect((await env.engine.ingestText({ messageId: `p_${uniq()}`, from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("handoff_confirmed");
       expect((await pg.getJob(jobId))!.state).toBe("paid");
       expect(env.emails.filter((e) => e.to === addr).some((e) => /has been sent/i.test(e.bodyText))).toBe(false);
+      expect((await env.engine.getQuotes(jobId)).purchase).toMatchObject({ stage: "human_reported_paid", amount_usd: 345, money_verified: false });
+      // The business's own "received" (verified sender) is stored under 110's trigger: settled_verified.
+      expect((await mail(env, b, 4, { from: addr, providerEmailId: `in_${uniq()}`, bodyText: "Payment received, thank you!" }, trusted)).outcome).toBe("receipt_confirmed");
+      expect((await env.engine.getQuotes(jobId)).purchase).toMatchObject({ stage: "settled_verified", money_verified: true });
       // Opt-out recorded on Postgres stops a later deal from another engine.
       const other = `stop-${uniq()}@inkboxmail.test`;
       const d2 = await dealWith(env, other);

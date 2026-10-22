@@ -5,7 +5,7 @@ import postgres from "postgres";
 import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -23,6 +23,8 @@ function row<T>(r: Record<string, unknown> | undefined): T | null {
 const rows = <T>(rs: readonly Record<string, unknown>[]): T[] => rs.map((r) => row<T>(r)!);
 /** bigint columns come back from postgres.js as strings; cents are always numbers in the engine. */
 const settingsRow = (s: SettingsRow | null): SettingsRow | null => (s ? { ...s, spending_cap_cents: Number(s.spending_cap_cents) } : null);
+/** payment_handoffs.amount_cents is bigint (106): a number in the engine, never a string. */
+const handoffRow = (r: Record<string, unknown> | undefined): PaymentHandoffRow | null => { const h = row<PaymentHandoffRow>(r); return h ? { ...h, amount_cents: Number(h.amount_cents) } : null; };
 
 /** A tagged-template query that only reads (a plain SELECT, not the event-appending function). */
 const isReadTemplate = (s: unknown): boolean =>
@@ -150,14 +152,14 @@ export class PostgresRepository implements Repository {
   }
   async insertHandoff(h: Omit<PaymentHandoffRow, "created_at" | "updated_at">) {
     const r = await this.sql`insert into payment_handoffs ${this.sql(this.vals(h as never))} on conflict (approval_id) do nothing returning *`;
-    return row<PaymentHandoffRow>(r[0]);
+    return handoffRow(r[0]);
   }
   async getHandoffByApproval(approvalId: string) {
-    return row<PaymentHandoffRow>((await this.sql`select * from payment_handoffs where approval_id = ${approvalId}`)[0]);
+    return handoffRow((await this.sql`select * from payment_handoffs where approval_id = ${approvalId}`)[0]);
   }
   async updateHandoff(id: string, fromStatuses: PaymentHandoffRow["status"][], patch: Partial<Pick<PaymentHandoffRow, "status" | "instructions_text" | "instructions_message_id" | "confirmed_by" | "confirmed_at">>) {
     const r = await this.sql`update payment_handoffs set ${this.sql(this.vals({ ...patch, updated_at: new Date().toISOString() } as never))} where id = ${id} and status = any(${fromStatuses}) returning *`;
-    return row<PaymentHandoffRow>(r[0]);
+    return handoffRow(r[0]);
   }
   async setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }) {
     const r = await this.sql`
@@ -496,5 +498,33 @@ export class PostgresRepository implements Repository {
       if ((e as { code?: string }).code === "42P01") return null; // 111 not applied yet
       throw e;
     }
+  }
+  // bookings and verified receipts (migration 110); the database's triggers re-check every rule.
+  async insertBooking(b: Omit<BookingRow, "created_at" | "updated_at">) {
+    const r = await this.sql`insert into bookings ${this.sql(this.vals(b as never))} on conflict (approval_id) do nothing returning *`;
+    return row<BookingRow>(r[0]);
+  }
+  async getBookingByApproval(approvalId: string) {
+    return row<BookingRow>((await this.sql`select * from bookings where approval_id = ${approvalId}`)[0]);
+  }
+  async updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason">>) {
+    try {
+      const r = await this.sql`update bookings set ${this.sql(this.vals({ ...patch, updated_at: new Date().toISOString() } as never))} where id = ${id} and status = any(${fromStatuses}) returning *`;
+      return row<BookingRow>(r[0]);
+    } catch (e) {
+      if ((e as { code?: string }).code === "P0001") return null; // the trigger refused (a final booking)
+      throw e;
+    }
+  }
+  async markHandoffStalled(id: string, at: string) {
+    const r = await this.sql`update payment_handoffs set stalled_at = ${at}, updated_at = now() where id = ${id} and stalled_at is null and status in ('instructions_requested','instructions_received') returning *`;
+    return handoffRow(r[0]);
+  }
+  async insertHandoffReceipt(r: Omit<HandoffReceiptRow, "created_at">) {
+    const x = await this.sql`insert into handoff_receipts ${this.sql(this.vals(r as never))} on conflict (handoff_id) do nothing returning *`;
+    return row<HandoffReceiptRow>(x[0]);
+  }
+  async getHandoffReceipt(handoffId: string) {
+    return row<HandoffReceiptRow>((await this.sql`select * from handoff_receipts where handoff_id = ${handoffId}`)[0]);
   }
 }
