@@ -109,7 +109,7 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   /** Per current quote: does it meet every must (compliant / unconfirmed / noncompliant), and what it misses. Only compliant quotes are recommended. */
   compliance: z.record(z.string(), z.object({ status: z.enum(["compliant", "unconfirmed", "noncompliant"]), issues: z.array(z.object({ code: z.string(), text: z.string() })), assumed: z.array(z.string()) })).optional(),
   /** Per current quote: until when it can be approved as is; a stale one is re-confirmed with the business first. */
-  freshness: z.record(z.string(), z.object({ stale: z.boolean(), good_until: z.string(), valid_until: z.string().nullable(), reconfirmation: z.literal("requested").optional() })).optional(),
+  freshness: z.record(z.string(), z.object({ stale: z.boolean(), good_until: z.string(), /** Absent in the compact board when it equals the quote's own valid_until. */ valid_until: z.string().nullable().optional(), reconfirmation: z.literal("requested").optional() })).optional(),
   /**
    * After approval under the manual handoff: booking, payment instructions (untrusted text, links never
    * opened), the customer's reported payment and the business's confirmation of receipt. money_verified
@@ -173,8 +173,8 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
 });
 export type DealBoardPlus = z.infer<typeof DealBoardPlus>;
 
-/** get_quotes budget: a six-quote board's structuredContent stays under this many characters (about 2,200 tokens at ~4 chars/token). */
-export const BOARD_CHAR_BUDGET = 9_000;
+/** get_quotes budget: a six-quote board's structuredContent stays under this many characters (about 2,500 tokens at ~4 chars/token; the full board is ~14,500). */
+export const BOARD_CHAR_BUDGET = 10_000;
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 
 /**
@@ -234,6 +234,8 @@ export function compactBoard(b: DealBoardPlus): DealBoardPlus {
       return [id, { ...rest, ...(current_total_usd !== undefined && current_total_usd !== s.first_total_usd ? { current_total_usd } : {}) }];
     }));
   }
+  // Stale quotes: valid_until is already on the quote row.
+  if (b.freshness) out.freshness = Object.fromEntries(Object.entries(b.freshness).map(([id, f]) => [id, { stale: f.stale, good_until: f.good_until, ...(f.valid_until !== null && f.valid_until === b.quotes.find((q) => q.quote_id === id)?.valid_until ? {} : { valid_until: f.valid_until }), ...(f.reconfirmation ? { reconfirmation: f.reconfirmation } : {}) }]));
   for (const k of ["freshness", "terms"] as const) if (out[k] && !Object.keys(out[k]!).length) delete out[k];
   return out;
 }

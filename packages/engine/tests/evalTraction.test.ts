@@ -66,10 +66,15 @@ describe("abandonment funnel (from job_events)", () => {
 const PG_URL = process.env.HAGGLE_TEST_DATABASE_URL;
 describe.skipIf(!PG_URL)("traction on Postgres (migration 116): mixed real, simulated and test rows", { timeout: 60_000 }, () => {
   it("counts only verified outcomes of real jobs, and test marks move jobs in and out", async () => {
-    const sql = postgres(PG_URL!, { max: 1, onnotice: () => {} });
+    const db = postgres(PG_URL!, { max: 1, onnotice: () => {} });
     const u = Math.random().toString(36).slice(2, 8);
     const U = u.toUpperCase().replace(/[^A-Z0-9]/g, "X");
+    const ROLLBACK = new Error("rollback: leave no rows behind");
+    // One repeatable-read transaction: other suites write to this database in parallel, so counts are
+    // compared within a snapshot where only this test's rows change; rolled back at the end.
     try {
+      await db.begin("isolation level repeatable read", async (tx) => {
+      const sql = tx as unknown as postgres.Sql;
       const before = await loadTraction(sql);
       const wsReal = `ws_tr_real_${u}`;
       const wsTest = `ws_tr_test_${u}`;
@@ -157,12 +162,14 @@ describe.skipIf(!PG_URL)("traction on Postgres (migration 116): mixed real, simu
       await markTest(sql, { kind: "job", id: marked }, false, "it was a real pilot deal", "eval test");
       expect((await loadTraction(sql)).traction.deals_created - before.traction.deals_created).toBe(2);
       expect((await loadFunnel(sql)).rows.find((r) => r.job_id === marked)).toMatchObject({ milestone: "contacted", stopped_at: STOP_REASON.contacted });
-      await expect(sql`update public.analytics_test_marks set marked = true where target_id = ${marked}`).rejects.toThrow(/append-only/);
-      await expect(sql`delete from public.analytics_test_marks where target_id = ${marked}`).rejects.toThrow(/append-only/);
-      await markTest(sql, { kind: "job", id: marked }, true, "smoke test after all", "eval test");
-      for (const j of [real, mock, inTestWs, marked]) await sql`delete from public.jobs where id = ${j}`;
+      await expect(tx.savepoint((sp) => sp`update public.analytics_test_marks set marked = true where target_id = ${marked}`)).rejects.toThrow(/append-only/);
+      await expect(tx.savepoint((sp) => sp`delete from public.analytics_test_marks where target_id = ${marked}`)).rejects.toThrow(/append-only/);
+      throw ROLLBACK;
+      });
+    } catch (e) {
+      if (e !== ROLLBACK) throw e;
     } finally {
-      await sql.end({ timeout: 5 });
+      await db.end({ timeout: 5 });
     }
   });
 });

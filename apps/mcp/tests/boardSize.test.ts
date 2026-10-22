@@ -8,7 +8,7 @@ import { createMockEngine } from "../../../packages/engine/src/mock.ts";
 import { fleetBusinesses, GOLDEN_REQUEST } from "../../../packages/engine/src/sim/fleet.ts";
 import { BOARD_CHAR_BUDGET, compactBoard, DealBoardPlus, toDealBoardPlus } from "../src/views.ts";
 
-async function goldenBoard(): Promise<DealBoardData> {
+async function goldenBoard(readLaterMs = 0): Promise<DealBoardData> {
   let t = Date.parse("2026-10-20T16:00:00Z");
   const { engine } = createMockEngine({ now: () => new Date(t) });
   const { budget_usd, ...request } = GOLDEN_REQUEST;
@@ -20,6 +20,7 @@ async function goldenBoard(): Promise<DealBoardData> {
     b = await engine.getQuotes(d.job_id);
     for (const q of b.open_questions) await engine.answerSeller(d.job_id, q.question_id, "Yes please, plates and cutlery for 40.");
   }
+  if (readLaterMs) { t += readLaterMs; b = await engine.getQuotes(d.job_id); }
   return b;
 }
 
@@ -38,6 +39,18 @@ describe("get_quotes size budget (simulated golden fleet)", { timeout: 60_000 },
     // Both are valid outputs of the tool and of the shared view schema.
     expect(DealBoardPlus.safeParse(compact).success).toBe(true);
     expect(DealBoard.safeParse({ ...compact, quotes: compact.quotes.map((q) => ({ ...q, total_usd: q.total_usd ?? 0 })) }).success).toBe(true);
+  });
+
+  it("a board read after the quotes went stale (every quote needs re-confirmation) still fits", async () => {
+    const b = await goldenBoard(3 * 86_400_000);
+    const c = toDealBoardPlus(b, "mock");
+    expect(Object.keys(c.freshness ?? {}).length).toBeGreaterThan(0);
+    for (const [id, f] of Object.entries(toDealBoardPlus(b, "mock", {}, { detail: true }).freshness ?? {})) {
+      expect(c.freshness![id]).toMatchObject({ stale: f.stale, good_until: f.good_until });
+      expect(c.freshness![id]!.valid_until ?? c.quotes.find((q) => q.quote_id === id)?.valid_until).toBe(f.valid_until);
+    }
+    const size = JSON.stringify(c).length;
+    expect(size, `stale compact board is ${size} chars`).toBeLessThanOrEqual(BOARD_CHAR_BUDGET);
   });
 
   it("keeps what the view renders and every decision-critical fact", async () => {
