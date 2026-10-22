@@ -15,6 +15,7 @@ import { handleInkboxWebhook } from "./src/webhook.ts";
 import { limitsMiddleware } from "./src/limits.ts";
 import { ConfigError } from "./src/config.ts";
 import { cachedReadiness } from "./src/health.ts";
+import { releaseInfo, serverVersion } from "./src/release.ts";
 import { authRequired, CONNECTOR_HEADER, isHandshakeOnly, resolveWorkspace } from "./src/workspace.ts";
 import "./src/live.ts";
 
@@ -31,7 +32,7 @@ type AppEnv = { Variables: { workspaceId: string } };
 const server = new MCPServer<never, AppEnv>({
   name: "haggle",
   title: "Haggle",
-  version: `0.6.0${process.env.HAGGLE_BUILD_SHA ? `+${process.env.HAGGLE_BUILD_SHA}` : ""}`,
+  version: serverVersion(),
   description: "Lets AI agents buy from businesses the way businesses work: email, phone and agent-to-agent. Quotes, honest negotiation and human approval; payment is a manual handoff to the vendor on pilot servers (Stripe test mode on demo servers).",
   instructions: [
     "Haggle turns businesses' email, phone calls and texts into an API: it contacts each business on its own channel, collects and compares quotes, negotiates honestly and gets a human's approval; on pilot servers the customer pays the vendor directly and Haggle records the vendor's confirmation (demo servers use Stripe test mode).",
@@ -1376,10 +1377,10 @@ server.get("/health", async (c) => {
   const missing = missingLiveConfig();
   try {
     const rt = await getRuntime();
-    return c.json({ ok: true, service: "haggle-mcp", version: "0.6.0", build: process.env.HAGGLE_BUILD_SHA ?? null, env: rt.ops?.env ?? null, mode: rt.mode, auth: authRequired() ? "required" : "open", approvals: rt.engine.outOfBandApprovalsOnly ? "out_of_band" : "demo", phone: rt.engine.phoneEnabled, a2a: rt.engine.a2aEnabled, imessage: rt.engine.imessageEnabled, payments: rt.engine.paymentsEnabled ? "enabled" : "disabled", brain: rt.engine.brainIsStub ? "stub" : "connected" });
+    return c.json({ ok: true, service: "haggle-mcp", ...releaseInfo(), env: rt.ops?.env ?? null, mode: rt.mode, auth: authRequired() ? "required" : "open", approvals: rt.engine.outOfBandApprovalsOnly ? "out_of_band" : "demo", phone: rt.engine.phoneEnabled, a2a: rt.engine.a2aEnabled, imessage: rt.engine.imessageEnabled, payments: rt.engine.paymentsEnabled ? "enabled" : "disabled", brain: rt.engine.brainIsStub ? "stub" : "connected" });
   } catch (e) {
     // Never echo a provider error (it may carry an address or a key): config problems by name only.
-    return c.json({ ok: false, service: "haggle-mcp", error: e instanceof ConfigError ? "configuration refused" : "runtime failed to start (see the server log)", ...(e instanceof ConfigError ? { problems: e.errors } : {}), missing }, 503);
+    return c.json({ ok: false, service: "haggle-mcp", ...releaseInfo(), error: e instanceof ConfigError ? "configuration refused" : "runtime failed to start (see the server log)", ...(e instanceof ConfigError ? { problems: e.errors } : {}), missing }, 503);
   }
 });
 
@@ -1397,7 +1398,7 @@ server.get("/ready", async (c) => {
     runtimeError = e;
   }
   const report = await cachedReadiness({ mode: rt?.mode ?? (process.env.HAGGLE_MODE === "live" ? "live" : "mock"), ops: rt?.ops ?? null, ...(runtimeError ? { runtimeError } : {}) });
-  return c.json({ ...report, version: "0.6.0", build: process.env.HAGGLE_BUILD_SHA ?? null }, report.ready ? 200 : 503);
+  return c.json({ ...report, ...releaseInfo() }, report.ready ? 200 : 503);
 });
 
 /** Inkbox webhooks for the buyer identity (logic and tests in src/webhook.ts). */
