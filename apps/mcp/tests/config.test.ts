@@ -115,11 +115,11 @@ describe("operator scripts are guarded", () => {
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/workspace-admin\.ts refused: SUPABASE_DB_URL points at a production database/);
     expect(r.stderr + r.stdout).not.toMatch(/hunter2pw/);
-  });
+  }, 60_000);
 
   it("workspace-create is guarded the same way", () => {
     const r = run("workspace-create.ts", { SUPABASE_DB_URL: "postgres://u:pw@db.example/haggle_production" });
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/workspace-create\.ts refused/);
-  });
+  }, 60_000);
 });

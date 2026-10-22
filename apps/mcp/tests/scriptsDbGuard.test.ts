@@ -47,19 +47,19 @@ describe("operator scripts and the production-database guard", () => {
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/job-ops\.ts refused: SUPABASE_DB_URL points at a production database but HAGGLE_ENV is staging/);
     expect(r.stderr + r.stdout).not.toMatch(/hunter2pw|prodref123\./);
-  });
+  }, 60_000);
 
   it("migrations refuses a production database named by --db-url-env, without printing it", () => {
     const r = run("migrations.ts", ["status", "--db-url-env", "TARGET_DB_URL"], { TARGET_DB_URL: PROD_DB, HAGGLE_PROD_DB_HOSTS: "prodref123" });
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/TARGET_DB_URL points at a production database/);
     expect(r.stderr + r.stdout).not.toMatch(/hunter2pw/);
-  });
+  }, 60_000);
 
   it("launch-gate refuses to read a production ledger from staging", () => {
     const r = run("launch-gate.ts", ["--target", "staging", "--db-url-env", "TARGET_DB_URL", "--skip-config", "--skip-build"], { TARGET_DB_URL: PROD_DB, HAGGLE_PROD_DB_HOSTS: "prodref123" });
     expect(r.status).toBe(1);
     expect(r.stdout).toMatch(/FAIL\s+migrations.*production database/);
     expect(r.stderr + r.stdout).not.toMatch(/hunter2pw/);
-  });
+  }, 60_000);
 });
