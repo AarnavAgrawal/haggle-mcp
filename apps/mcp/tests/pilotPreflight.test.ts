@@ -69,7 +69,7 @@ describe("pilot preflight", () => {
 
   it("with the explicit read-only webhook check, a fully ready setup exits 0", async () => {
     const repo = await readyWorkspace();
-    const listWebhooks = async () => [{ url: "https://haggle.example/webhooks/inkbox", eventTypes: ["message.received", "call.ended", "imessage.received", "a2a.sent_task.updated"] }];
+    const listWebhooks = async () => [{ url: "https://haggle.example/webhooks/inkbox", eventTypes: ["message.received", "message.bounced", "message.failed", "call.ended", "imessage.received", "a2a.sent_task.updated"] }];
     const r = await runPreflight(opts({ workspaces: ["ws_bay_events_co"], checkWebhooks: true, webhookUrl: "https://haggle.example/webhooks/inkbox" }), { gate: gate(undefined, undefined, { listWebhooks }), repo });
     expect(check(r, "webhook subscriptions")).toBe("PASS");
     expect(r).toMatchObject({ ok: true, exitCode: 0 });
