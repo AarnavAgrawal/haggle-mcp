@@ -6879,6 +6879,21 @@ export class HaggleEngine {
   }
 
   /** Business names on a deal (wait_for_update names whose quote is whose without building the board). */
+  /**
+   * Where a deal stands after quotes, for list_deals (resume in a new conversation without a board
+   * read): the purchase stage in honest words, the vendor's payment instructions as untrusted text, and
+   * the next step. Null before an approval exists. No advance (a list must stay a few reads per deal);
+   * purchase rows change when replies and texts arrive, not on advance.
+   */
+  async dealSummary(jobId: string): Promise<{ stage: string; summary: string; next: string; instructions?: PurchaseView["instructions"] } | null> {
+    const job = await this.loadJob(jobId);
+    if (!["awaiting_approval", "paying", "paid", "confirmed"].includes(job.state)) return null;
+    const v = await this.purchaseFor(job);
+    if (v) return { stage: v.stage, summary: v.summary, next: v.next, ...(v.instructions ? { instructions: { ...v.instructions, text: clip(v.instructions.text, 300) } } : {}) };
+    const hint = await this.nextHint(job);
+    return { stage: job.state, summary: job.state === "awaiting_approval" ? "Waiting for the human's approval." : `Deal ${job.state}.`, next: hint };
+  }
+
   async businessNames(jobId: string): Promise<Map<string, string>> {
     return new Map((await this.repo.getBusinesses(jobId)).map((b) => [b.business_id, b.name]));
   }
@@ -7101,6 +7116,7 @@ export class WorkspaceEngine {
   async revokeApproval(jobId: string, approvalId: string, reason: string) { await this.own(jobId); return this.engine.revokeApproval(jobId, approvalId, reason); }
   async approvalById(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalById(approvalId); }
   async advanceJob(jobId: string) { await this.own(jobId); return this.engine.advanceJob(jobId); }
+  async dealSummary(jobId: string) { await this.own(jobId); return this.engine.dealSummary(jobId); }
 }
 
 const STRIPE_REFUSALS: Record<StripeGuardCode, [string, string, string]> = {
