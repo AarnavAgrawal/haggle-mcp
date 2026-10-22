@@ -1,4 +1,4 @@
-// POST /webhooks/inkbox for the buyer identity (mail, call.ended, imessage.received, text.received,
+// POST /webhooks/inkbox for the buyer identity (mail received / bounced / failed, call.ended, imessage.received, text.received,
 // a2a.sent_task.updated): verify the signature on the RAW body first, then one idempotent ingest.
 // Unknown event types are acknowledged and ignored.
 //
@@ -37,6 +37,18 @@ export async function handleInkboxWebhook(rt: Runtime, raw: string, headers: Hea
         ({ jobId, outcome } = await rt.engine.ingest(msg, trustForSender(trust, msg.from)));
       }
       handled = `mail:${id}`;
+    } else if (payload.event_type === "message.bounced" || payload.event_type === "message.failed") {
+      // Our own outbound email bounced or failed. The event is signed, but the message is re-read from
+      // the buyer mailbox: it must be outbound, from the buyer, and really in that status now.
+      const id = (payload.data.message as { id?: string } | undefined)?.id;
+      if (!id) return { status: 400, body: { error: "bad payload" } };
+      const status = payload.event_type === "message.bounced" ? "bounced" : "failed";
+      const detail = await rt.inkbox.api.get(rt.inkbox.buyerMailbox, id);
+      const outbound = detail.direction === "outbound" && (detail.fromAddress ?? "").trim().toLowerCase() === rt.inkbox.buyerMailbox.toLowerCase();
+      if (!outbound) outcome = "not_buyer_outbound";
+      else if (detail.status && detail.status !== status) outcome = `status_mismatch:${detail.status}`;
+      else ({ jobId, outcome } = await rt.engine.ingestDeliveryStatus({ providerMessageId: detail.id, rfcMessageId: detail.messageId || null, status, source: "webhook" }));
+      handled = `status:${id}`;
     } else if (payload.event_type === "call.ended") {
       const call = inkboxCallEnded(payload);
       if (call) {

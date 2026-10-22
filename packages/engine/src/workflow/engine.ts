@@ -20,6 +20,7 @@ import type {
 } from "../contract.ts";
 import { businessIdForContact, newApprovalCode, newId, newShortCode, normalizeBusinessName, slugify } from "../ids.ts";
 import { cleanEmailBody } from "../inbound/emailBody.ts";
+import { applyDeliveryStatus, type DeliveryStatusInput } from "../inbound/deliveryStatus.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
 import { isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
@@ -2996,6 +2997,11 @@ export class HaggleEngine {
     await this.repo.appendEvent(hit.job_id, "reply", { business_id: hit.business_id, summary: `Email to ${hit.name} bounced (address doesn't exist); it won't be emailed again` });
     await this.repo.touchJob(hit.job_id);
     return { jobId: hit.job_id, outcome: "bounced" };
+  }
+
+  /** Inkbox message.bounced / message.failed (or the reconciler's outbound status sweep) for one of our own emails. See inbound/deliveryStatus.ts. */
+  ingestDeliveryStatus(s: DeliveryStatusInput): Promise<{ jobId: string | null; outcome: string }> {
+    return applyDeliveryStatus(this.repo, s, (event, data) => this.log(event, data));
   }
 
   /** The business asked not to be contacted: suppressed for every workspace and deal, and marked declined here. */

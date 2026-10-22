@@ -28,7 +28,7 @@ export type Recovered = { channel: "email" | "text" | "call"; providerId: string
 export type SweepResult = { recovered: Recovered[]; errors: number; skipped?: string };
 
 type Deps = {
-  engine: Pick<HaggleEngine, "ingest" | "ingestText" | "ingestCall">;
+  engine: Pick<HaggleEngine, "ingest" | "ingestText" | "ingestCall" | "ingestDeliveryStatus">;
   repo: Pick<Repository, "getJob" | "listOpenJobs" | "listRecentJobs" | "listMessages" | "findMessageByProviderId">;
   sources: ReconcileSources;
   log?: (event: string, data: Record<string, unknown>) => void;
@@ -81,7 +81,7 @@ export class InboundReconciler {
     this.d.log?.(event, data);
   }
 
-  /** The webhook processed this item: no need to look at it again. Keys: mail:<id>, text:<id>, call:<id>. */
+  /** The webhook processed this item: no need to look at it again. Keys: mail:<id>, status:<id>, text:<id>, call:<id>. */
   noteHandled(key: string) {
     this.handled.add(key);
     if (this.handled.size > 5000) this.handled.delete(this.handled.values().next().value!);
@@ -132,6 +132,7 @@ export class InboundReconciler {
     const oldest = Math.min(...jobs.map((j) => ms(j.created_at)).filter(Number.isFinite));
     const since = new Date(Math.max(Number.isFinite(oldest) ? oldest - 60_000 : now, now - (this.d.maxLookbackMs ?? 6 * 3600_000))).toISOString();
     if (this.d.sources.mail) await this.sweepMail(since, out);
+    if (this.d.sources.mail) await this.sweepDeliveryStatus(since, out);
     if (this.d.sources.texts) await this.sweepTexts(since, out);
     if (this.d.sources.calls) await this.sweepCalls(jobs, since, out);
     if (out.recovered.length || out.errors) this.log("reconcile_sweep", { jobs: jobs.length, since, recovered: out.recovered.length, errors: out.errors });
@@ -215,6 +216,38 @@ export class InboundReconciler {
         if (!trust.trusted && trust.retryable) return "retry";
         const r = await this.d.engine.ingest(msg, trustForSender(trust, msg.from));
         return r.outcome === "duplicate" ? "skip" : { channel: "email", providerId: id, jobId: r.jobId, outcome: r.outcome };
+      });
+    }
+  }
+
+  /**
+   * Our outbound mail that bounced or failed (a lost message.bounced / message.failed webhook, or a
+   * subscription without those event types). Only messages from the buyer mailbox; the engine
+   * matches each to its own outbound row and is idempotent.
+   */
+  private async sweepDeliveryStatus(since: string, out: SweepResult) {
+    const { api, buyerMailbox } = this.d.sources.mail!;
+    const buyer = buyerMailbox.toLowerCase();
+    const hits: { id: string; messageId: string; status: "bounced" | "failed" }[] = [];
+    try {
+      let n = 0;
+      for await (const m of api.list(buyerMailbox, { direction: "outbound", startDatetime: since, pageSize: 50 })) {
+        if (++n > (this.d.maxItems ?? 100)) break;
+        if (Number.isFinite(ms(m.createdAt)) && ms(m.createdAt) < Date.parse(since)) break; // newest first
+        if (!m.id || (m.direction && m.direction !== "outbound") || (m.status !== "bounced" && m.status !== "failed")) continue;
+        if (m.fromAddress && m.fromAddress.trim().toLowerCase() !== buyer) continue;
+        if (this.handled.has(`status:${m.id}`)) continue;
+        hits.push({ id: m.id, messageId: m.messageId, status: m.status });
+      }
+    } catch (e) {
+      out.errors++;
+      this.log("reconcile_list_failed", { channel: "email_status", kind: classifyFailure(e), error: (e as Error).message?.slice(0, 200) });
+      return;
+    }
+    for (const h of hits.reverse()) {
+      await this.attempt(`status:${h.id}`, out, async () => {
+        const r = await this.d.engine.ingestDeliveryStatus({ providerMessageId: h.id, rfcMessageId: h.messageId || null, status: h.status, source: "reconcile" });
+        return r.outcome === "duplicate" || r.outcome === "unmatched" ? "skip" : { channel: "email", providerId: h.id, jobId: r.jobId, outcome: r.outcome };
       });
     }
   }
