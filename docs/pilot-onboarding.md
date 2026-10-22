@@ -6,7 +6,19 @@ by the customer directly to the vendor. Haggle never takes or sends money on a p
 (`HAGGLE_PAYMENTS=manual`).
 
 Server setup (environment, migrations, deploy) is in `docs/deployment.md`. This guide starts once a
-live server is running with migrations 100–113 applied.
+live server is running with every engine migration applied, including `119_engine_pilot.sql` (the
+operator log: suspension, approver verification and the roster history live there).
+
+The whole path, in order:
+
+1. `workspace-create.ts` (dry run, then `--apply`): the workspace, its approver and cap, credentials.
+2. `workspace-admin.ts verify-approver`: you confirm the approver phone is really the approver's.
+3. `workspace-admin.ts add-vendor` three or more times: real vendors, each with its recorded consent.
+4. `pilot-preflight.ts --workspace <id>`: every deployment and workspace check, with the fix for each.
+5. Hand the credentials over (§2) and send the customer `docs/first-user-guide.md`.
+
+Every change these scripts make is recorded in the operator log (who: `--by`, why: `--reason`, when).
+`workspace-admin.ts history --id <ws>` lists it.
 
 Everything here runs on the operator's machine with direct database access. None of it goes through
 an MCP tool: a model that could set who approves, or how much may be spent, could approve its own
@@ -37,6 +49,10 @@ Never point an env file at production from a laptop except for a deliberate oper
 
 ## 2. Create the workspace
 
+First a dry run. It validates the arguments, checks the database (an existing id, an approver phone
+already used by another workspace) and prints what it would do. Nothing is written and no secret is
+shown:
+
 ```
 node --env-file=<env> scripts/workspace-create.ts \
   --name "Bay Events Co" \
@@ -47,6 +63,18 @@ node --env-file=<env> scripts/workspace-create.ts \
   [--approver-email ops@bayevents.example] [--id ws_bay_events] [--base-url https://<server>]
 ```
 
+Then the same command with `--apply --by "<you>" --credentials-file <new file>`:
+
+- The credentials go into the file, created with mode 0600. An existing file is never overwritten.
+  Stdout shows where they are and how to hand them over, never the secrets themselves.
+- `--print-credentials` (instead of `--credentials-file`) prints them once on stdout. Use it only on
+  a terminal nobody records.
+- Re-running for a workspace that already exists with the same settings changes nothing and issues
+  no new credentials (`rotate` does that). Different settings are refused, with the
+  `workspace-admin.ts` command that changes each one.
+- On a staging or production database, a `localhost` base URL is flagged: the customer's client
+  needs the server's public URL (`--base-url` or `PUBLIC_BASE_URL`).
+
 - `--approver-phone` is the one human whose texted `YES <code>` approves a purchase. Without it,
   nothing in the workspace can be approved on a live server. A phone that already approves for
   another workspace is refused unless you pass `--allow-shared-approver`. Texts from a shared number
@@ -55,8 +83,8 @@ node --env-file=<env> scripts/workspace-create.ts \
   agent can only lower it.
 - `--area` is the default "where" for requests that don't say.
 
-The script prints the credentials once. Only their SHA-256 hashes are stored, so they can't be
-shown again:
+Only the credentials' SHA-256 hashes are stored, so they can't be shown again. The credentials file
+holds:
 
 ```
   MCP endpoint:   https://<server>/mcp
@@ -66,12 +94,16 @@ shown again:
   Claude Code:    claude mcp add --transport http haggle https://<server>/mcp --header "Authorization: Bearer hgw_..."
 ```
 
-It ends with the readiness check, which shows FAIL until vendors are added (§3).
+The output ends with the readiness check, which shows FAIL until vendors are added (§3).
 
-Send the customer one of these through a channel you'd trust with a password:
+**Handing the credentials over.** Send the customer the file's contents through a channel meant for
+secrets (a password manager share), then delete the file. The customer needs one of:
 - the Claude Code command;
-- the connector URL;
-- or the endpoint and the token.
+- the connector URL, for Claude or ChatGPT custom connectors;
+- or the endpoint and the token, for any client that can send a header.
+
+The connector URL *is* the credential. It belongs only in the customer's connector settings: never in
+a chat message, an email body, a ticket or a screenshot.
 
 ### Which clients can connect
 
@@ -87,18 +119,29 @@ still can't approve: only the approver's text does). Rotate it if it leaks (§5)
 
 ## 3. Add vendors, each with its consent
 
+A pilot needs at least three real vendors who agreed to be contacted.
+
 ```
 node --env-file=<env> scripts/workspace-admin.ts add-vendor --id ws_bay_events \
-  --contact events@harbortable.example --name "Harbor Table" \
+  --contact events@harbortable.example --name "Harbor Table" --by "<you>" \
   --consent "Maria (owner) agreed by phone 2026-10-20 to get quote requests by email"
 
 node --env-file=<env> scripts/workspace-admin.ts add-vendor --id ws_bay_events \
-  --contact +14155550177 --name "Sunset Kitchen" --channel text \
+  --contact +14155550177 --name "Sunset Kitchen" --channel text --by "<you>" \
   --consent "Dev agreed in person 2026-10-21 to get quote requests by text"
 ```
 
-- `--consent` is required. Record who agreed, how and when; it is stored with the vendor and shown by
-  `show`. What counts as enough consent is still an open decision (`docs/overnight-sprint-report.md` §10).
+- `--consent` is required. Record who agreed, how and when. It is stored with the vendor, shown by
+  `show`, and written to the operator log with `--by`. The preflight counts a vendor only when its
+  consent is at least a short sentence (10 characters). What counts as enough consent is still an open
+  decision (`docs/overnight-sprint-report.md` §10).
+- Adding the same contact again replaces its consent; the log keeps the old text.
+- `remove-vendor --id <ws> --contact <c> --by <you> --reason "<why>"` stops it being contacted. The
+  removed vendor's consent stays in the log.
+- On a live workspace the preflight rejects simulated contacts: the demo fleet (`*.sim.haggle.dev`),
+  reserved test domains (`.example`, `.test`, `example.com`), fictional 555-01xx numbers, and anything
+  configured in `HAGGLE_DEMO_VENDORS` or `HAGGLE_DEMO_FLEET`. The examples in this guide use
+  `.example` addresses for that reason: replace them with the vendors' real contacts.
 - `--channel` is `email` (the default for an address), `text` (SMS from Haggle's number, or iMessage
   when enabled), or `phone` (a Voice AI call; only vendors who agreed to AI calls, and only with
   `HAGGLE_ENABLE_CALLS=true`).
@@ -109,9 +152,30 @@ node --env-file=<env> scripts/workspace-admin.ts add-vendor --id ws_bay_events \
 - A vendor that opted out or bounced is never contacted, whatever its row says. `remove-suppression`
   is the escape hatch for a wrong one. It applies to every workspace and records who removed it and why.
 
-Other vendor commands: `list-vendors --id`, `remove-vendor --id --contact`.
+Other vendor commands: `list-vendors --id`, `history --id` (the roster's changes, with who and why).
 
-## 4. Check readiness
+## 4. Verify the approver
+
+The approver phone is the one number whose `YES <code>` text approves a purchase, so confirm it
+belongs to the approver before the first deal. Haggle has no automatic check for this yet. Do it out of
+band, for example:
+
+1. Text a short code from your own phone to the approver number.
+2. Call the approver on a number you already know for them, and have them read the code back.
+
+Then record it:
+
+```
+node --env-file=<env> scripts/workspace-admin.ts verify-approver --id ws_bay_events \
+  --phone +14155550123 --by "<you>" \
+  --how "texted a code from my phone; Maria read it back on a call 2026-10-22"
+```
+
+`--phone` must be the workspace's current approver phone. Any approver change (`set-approver`) needs a
+new verification, even a change back to the old number. `unverify-approver --id <ws> --by <you>
+--reason "<why>"` withdraws one, for example if the phone is lost.
+
+## 5. Check readiness
 
 ```
 node --env-file=<env> scripts/workspace-admin.ts show --id ws_bay_events
@@ -131,22 +195,63 @@ then the readiness check:
 ```
 
 Each FAIL line gives the exact command that fixes it. The script exits with status 1 on FAIL, so
-you can run it in a checklist or a CI step. WARN lines don't fail the check.
+you can run it in a checklist or a CI step. WARN lines don't fail the check. `show` also prints whether
+the workspace is suspended and whether the approver is verified.
 
 The check can't see the server's channel switches. A text vendor needs `HAGGLE_ENABLE_SMS` (or
 iMessage), and a phone vendor needs `HAGGLE_ENABLE_CALLS`. If a channel is off, the vendor shows up
 as a setup blocker when a deal starts, and nothing is sent to it.
 
-## 5. Change, rotate, revoke
+### The full pilot preflight
+
+`show` checks one workspace's own rows. Before the first real deal, run the pilot preflight, which
+also checks the deployment:
+
+```
+npx tsx scripts/pilot-preflight.ts --target staging --env-file <staging env file> \
+  --db-url-env SUPABASE_DB_URL --workspace ws_bay_events [--json]
+```
+
+It reads the env file and the database only. Each check is PASS, WARN, FAIL or BLOCKED, with a `fix:`
+line. BLOCKED means the fix is outside the session: a provider dashboard, or the approver verification.
+
+- **Deployment:** everything `launch-gate.ts` checks (configuration, the migration ledger, the
+  production-database guard), plus:
+  - `HAGGLE_PAYMENTS=manual`;
+  - a vendor-contact window (`HAGGLE_CONTACT_HOURS` not `off`);
+  - the webhook signing secret and the Inkbox key are present (Inkbox isn't called);
+  - `HAGGLE_ALLOWED_RECIPIENTS` has no whole-domain entries;
+  - an alert webhook is set;
+  - no demo vendors are configured;
+  - the known brain-tenancy gap (always WARN until Aarnav's change lands).
+- **Each workspace:**
+  - credentials active, and not suspended;
+  - an approver phone, and that phone verified;
+  - a spending cap;
+  - at least 3 usable vendors: a valid contact, recorded consent, not suppressed, not simulated;
+  - a default area and an approver email (WARN when missing).
+
+The Inkbox webhook subscription stays BLOCKED unless you ask for the read-only listing with
+`--check-webhooks --webhook-url https://<server>/webhooks/inkbox`.
+
+Exit codes: 0 ready (warnings allowed), 1 something failed, 3 only BLOCKED items remain, 2 usage
+error. On `--target production` the contact window, allowlist, alert webhook and demo-vendor checks
+fail instead of warning.
+
+## 6. Change, rotate, revoke, suspend
+
+Every change needs `--by "<you>"`, and most need `--reason "<why>"`. Both are written to the operator
+log.
 
 | Task | Command |
 | --- | --- |
-| New approver | `set-approver --id <ws> --phone +1... [--email ...]` (`--phone none` clears it) |
-| New cap | `set-cap --id <ws> --usd 1500` |
-| Leaked or lost credentials | `rotate --id <ws> [--base-url https://<server>]`: new token and connector URL, printed once; the old ones stop working at once |
-| Stop a customer | `revoke --id <ws>`: every request with its credentials is refused (401) until `rotate` |
+| New approver | `set-approver --id <ws> --phone +1... [--email ...] --by <you> --reason "<why>"` (`--phone none` clears it). Then verify it again (§4). |
+| New cap | `set-cap --id <ws> --usd 1500 --by <you> --reason "<why>"` |
+| Leaked or lost credentials | `rotate --id <ws> [--base-url https://<server>] --by <you> --reason "<why>"`: a new token and connector URL, printed once. The old ones stop working at once. |
+| Stop a customer for good | `revoke --id <ws> --by <you> --reason "<why>"`: every request with those credentials is refused (401) on the next call, until `rotate` |
+| Pause a customer | `suspend --id <ws> --by <you> --reason "<why>"`: the credentials still work, but every tool call gets `WORKSPACE_SUSPENDED`, and every open deal is held (nothing more is sent). Lift it with `resume --id <ws> --by <you> --reason "<why>"`. See `docs/operator-recovery.md` §7. |
 
-## 6. What the customer's human does
+## 7. What the customer's human does
 
 There are three things, plus one when needed, all on their own phone or in their own chat:
 
@@ -164,7 +269,7 @@ There are three things, plus one when needed, all on their own phone or in their
 If the vendor's payment details came only through the email thread or by SMS, Haggle's text says to
 confirm them with the vendor by phone before paying. Haggle never opens links in vendor messages.
 
-## 7. When something stalls
+## 8. When something stalls
 
 - **No booking confirmation within 24 hours:** Haggle reminds the vendor once, texts the human
   "don't pay", and records `operator_attention: booking_unconfirmed`.
@@ -175,9 +280,13 @@ confirm them with the vendor by phone before paying. Haggle never opens links in
 Operator review and retries are covered in `apps/mcp/scripts/job-ops.ts` (workstream F's
 `docs/operator-recovery.md`).
 
-## 8. Rehearse without real vendors
+## 9. Rehearse without real vendors
 
 `apps/mcp/tests/acceptancePilot.test.ts` runs this whole flow end to end. It is SIMULATED: in-memory
 store, fake email and SMS ports, no provider. It covers onboarding, three vendors, a plain-language
 request, a vendor question, approval by text, booking, handoff and PAID, over the real MCP endpoint.
 Run it with `npx vitest run apps/mcp/tests/acceptancePilot.test.ts`.
+
+The onboarding steps above (provisioning, consent, verification, suspension, preflight) are covered,
+also SIMULATED, by `apps/mcp/tests/operatorActions.test.ts`, `pilotPreflight.test.ts` and
+`lifecycleControls.test.ts`.

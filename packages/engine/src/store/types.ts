@@ -578,6 +578,31 @@ export interface Repository {
   getReconcileCursor?(scope: string, channel: ReconcileChannel): Promise<string | null>;
   /** Move the mark forward (never back). */
   advanceReconcileCursor?(scope: string, channel: ReconcileChannel, at: string): Promise<void>;
+  // operator actions (migration 119), appended; optional so a store without them reads as "none recorded"
+  /** Append-only audit row (who, what, why, when). */
+  appendOperatorAction?(a: Omit<OperatorActionRow, "at">): Promise<OperatorActionRow>;
+  /** Newest first. */
+  listOperatorActions?(q: { workspaceId?: string; jobId?: string; actions?: OperatorAction[]; limit?: number }): Promise<OperatorActionRow[]>;
+}
+
+/** What an operator did, from the scripts (migration 119). */
+export type OperatorAction =
+  | "workspace_created" | "workspace_suspended" | "workspace_resumed" | "credentials_revoked" | "credentials_rotated"
+  | "approver_changed" | "approver_verified" | "approver_unverified" | "cap_changed"
+  | "vendor_added" | "vendor_removed" | "suppression_removed"
+  | "text_release_requested" | "callback_requested" | "job_held" | "job_resumed" | "job_close_requested"
+  | "retry_requested" | "review_resolved";
+
+/** One operator action (migration 119; append-only). */
+export interface OperatorActionRow {
+  id: string;
+  workspace_id: string | null;
+  job_id: string | null;
+  action: OperatorAction;
+  operator: string;
+  reason: string;
+  detail: Record<string, unknown>;
+  at: string;
 }
 
 /** An operator's decision on a quarantined inbound message (migration 112; append-only, one per message). */
