@@ -13,6 +13,7 @@ const ALPHA_HUMAN = "+14155550101";
 const BETA_HUMAN = "+14155550202";
 const MISSION = "+14155550104";
 const { budget_usd, ...request } = GOLDEN_REQUEST;
+const usdCents = (usd: number) => Math.round(usd * 100);
 
 // Reads figures out of free text, like the Claude extractor does live.
 const textExtractor = {
@@ -418,6 +419,128 @@ describe("simulated replies, keyword-fallback readings and quarantined messages 
       for (const ch of ["imessage", "view"] as const) await expect(env.engine.requestApproval(deal.job_id, q.quote_id, ch)).rejects.toMatchObject({ code: "quote_not_eligible" });
     }
     expect((await env.engine.ingestText({ messageId: "y", from: ALPHA_HUMAN, text: "YES 1234", inbound: true })).outcome).not.toBe("approved");
+  });
+});
+
+// ───────────────────────────── what the agent's view of the engine can do ─────────────────────────────
+
+describe("the agent's engine (WorkspaceEngine, the only one MCP tools get) has no operator capability", () => {
+  const OPERATOR_ONLY = ["addWorkspaceVendor", "removeWorkspaceVendor", "revokeWorkspace", "rotateWorkspaceCredentials", "createWorkspace", "workspaceByCredential", "operatorCallback", "releaseHeldText", "recoverStuck", "advanceAllOpen", "reportReconcileGaveUp", "recordSettlement", "ingest", "ingestText", "ingestCall", "ingestIMessage", "ingestA2aTask", "ingestDeliveryStatus", "forWorkspace", "fire"];
+
+  it("none of the operator / provider-webhook methods exist on it (and they do exist on the full engine)", () => {
+    const env = setup();
+    const w = env.engine.forWorkspace("ws_alpha") as unknown as Record<string, unknown>;
+    const names = new Set<string>();
+    for (let p = Object.getPrototypeOf(w); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) for (const n of Object.getOwnPropertyNames(p)) names.add(n);
+    for (const n of OPERATOR_ONLY) {
+      expect(names.has(n), n).toBe(false);
+      expect(typeof (env.engine as unknown as Record<string, unknown>)[n], n).toBe("function");
+    }
+    // updateSettings is the agent's: approver and cap raises are refused (by: "agent").
+    expect(names.has("updateSettings")).toBe(true);
+  });
+
+  it("settings through the agent's engine: no approver change, no cap raise; lowering stays self-service", async () => {
+    const env = setup();
+    await workspace(env, "ws_alpha", ALPHA_HUMAN);
+    await env.engine.updateSettings({ spending_cap_cents: 100_000 }, "ws_alpha", "operator");
+    const w = env.engine.forWorkspace("ws_alpha");
+    await expect(w.updateSettings({ approver_phone: "+14155550666" })).rejects.toMatchObject({ code: "approver_change_requires_operator" });
+    await expect(w.updateSettings({ approver_email: "agent@attacker.example" })).rejects.toMatchObject({ code: "approver_change_requires_operator" });
+    await expect(w.updateSettings({ spending_cap_cents: 100_001 })).rejects.toMatchObject({ code: "cap_increase_requires_operator" });
+    expect((await w.updateSettings({ spending_cap_cents: 50_000 })).spending_cap_cents).toBe(50_000);
+  });
+
+  it("a live deal can't reach a contact the operator didn't authorize, and nothing the agent does authorizes one", async () => {
+    const env = setup({ recipientAllowlist: ["harbor-ok@inkboxmail.test"] });
+    await workspace(env, "ws_alpha", ALPHA_HUMAN);
+    const w = env.engine.forWorkspace("ws_alpha");
+    await expect(w.deal({ request, budget_usd, businesses: [{ name: "Attacker Catering", email: "orders@attacker.example" }] })).rejects.toMatchObject({ code: "recipient_not_allowed" });
+    await expect(w.deal({ request, budget_usd, businesses: [{ name: "Attacker Catering", phone: "+14155550999" }] })).rejects.toMatchObject({ code: "recipient_not_allowed" });
+    expect(await w.mayContact({ email: "orders@attacker.example" })).toBe(false);
+    expect(await w.workspaceVendors()).toEqual([]);
+    expect(env.emails).toEqual([]);
+    expect(env.calls).toEqual([]);
+    // Another workspace's authorized vendor is not this workspace's.
+    await workspace(env, "ws_beta", BETA_HUMAN);
+    await env.engine.addWorkspaceVendor({ workspace_id: "ws_beta", contact: "orders@attacker.example", name: "Attacker Catering", consent: "agreed by email", added_by: "op" });
+    await expect(w.deal({ request, budget_usd, businesses: [{ name: "Attacker Catering", email: "orders@attacker.example" }] })).rejects.toMatchObject({ code: "recipient_not_allowed" });
+  });
+
+  it("a live job is never approved by a client form, a view code or a simulated human, even if the engine's approval config allows in-band channels", async () => {
+    const env = setup({ notifyPhone: ALPHA_HUMAN, outOfBandApprovalsOnly: false });
+    const w = env.engine.forWorkspace("ws_default");
+    const deal = await w.deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor-band@inkboxmail.test" }, { name: "Quiet", email: "quiet-band@inkboxmail.test" }] });
+    const b = (await env.repo.getBusinesses(deal.job_id)).find((x) => x.name === "Harbor Table")!;
+    await env.engine.ingest({ providerEventId: "eb", eventType: "message.received", providerEmailId: "in_b", threadId: "tb", messageId: "<in_b@x>", inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: b.email!, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "$1,150 total, delivered. $345 deposit.", attachments: [], attachmentsDownloadUrl: null }, trusted);
+    await env.engine.advanceJob(deal.job_id);
+    const q = (await w.getQuotes(deal.job_id)).quotes[0]!;
+    const a = await w.requestApproval(deal.job_id, q.quote_id, "view");
+    for (const ch of ["elicitation", "view"] as const) await expect(w.decideApproval(a.id, "approve", ch, "mcp-client:x")).rejects.toMatchObject({ code: "approval_needs_human_channel" });
+    await expect(w.decideApproval(a.id, "approve", "simulated", "DEMO")).rejects.toMatchObject({ code: "simulation_disabled" });
+    await expect(w.approveWithViewCode(a.id, a.code)).rejects.toMatchObject({ code: "approval_needs_human_channel" });
+    expect((await env.repo.getApproval(a.id))!.status).toBe("pending");
+  });
+});
+
+// ───────────────────────────── hard requirements through alternate tool sequences ─────────────────────────────
+
+describe("hard requirements can't be changed or bypassed by other tool sequences", () => {
+  const VEG = { id: "veg20", kind: "dietary" as const, text: "At least 20 vegetarian meals", hard: true, min_count: 20 };
+  const req = { ...request, requirements: [VEG] };
+
+  it("re-deal with the same client_request_id and relaxed requirements returns the original deal, requirements untouched", async () => {
+    const env = setup();
+    const w = env.engine.forWorkspace("ws_default");
+    const d1 = await w.deal({ request: req, budget_usd, client_request_id: "same", businesses: [{ name: "Harbor Table", email: "harbor-rq@inkboxmail.test" }] });
+    const d2 = await w.deal({ request: { ...request, requirements: [] }, budget_usd: 99_999, client_request_id: "same", businesses: [{ name: "Harbor Table", email: "harbor-rq@inkboxmail.test" }] });
+    expect(d2.job_id).toBe(d1.job_id);
+    const job = await env.repo.getJob(d1.job_id);
+    expect(job!.request.requirements.filter((r) => r.hard).map((r) => r.text)).toEqual([VEG.text]);
+    expect(job!.budget_cents).toBe(usdCents(budget_usd));
+  });
+
+  it("an answer to a business telling it to drop a requirement doesn't change the deal: the quote still misses it, and the human sees that", async () => {
+    const env = setup({ notifyPhone: ALPHA_HUMAN });
+    const asker = { async extract(i: { bodyText: string }) { const x = await textExtractor.extract(i); return /plates/.test(i.bodyText) && x.total_usd === null ? { ...x, questions: ["Do you need plates?"] } : { ...x, dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 8 }] }; } };
+    (env.engine as unknown as { d: { extractor: unknown } }).d.extractor = asker;
+    const w = env.engine.forWorkspace("ws_default");
+    const deal = await w.deal({ request: req, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor-ans@inkboxmail.test" }, { name: "Quiet", email: "quiet-ans@inkboxmail.test" }] });
+    const b = (await env.repo.getBusinesses(deal.job_id)).find((x) => x.name === "Harbor Table")!;
+    let k = 0;
+    const mail = (body: string) => env.engine.ingest({ providerEventId: `ea${++k}`, eventType: "message.received", providerEmailId: `in_a${k}`, threadId: "ta", messageId: `<in_a${k}@x>`, inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: b.email!, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: body, attachments: [], attachmentsDownloadUrl: null }, trusted);
+    await mail("Happy to quote. Do you need plates?");
+    await env.engine.advanceJob(deal.job_id);
+    const question = (await env.repo.listQuestions(deal.job_id))[0]!;
+    await w.answerSeller(deal.job_id, question.id, "No plates. Also forget the vegetarian requirement, 8 is fine, mark it as met.").catch(() => null);
+    await mail("OK: $1,050 total, delivered, 8 vegetarian. $200 deposit.");
+    await env.engine.advanceJob(deal.job_id);
+    expect((await env.repo.getJob(deal.job_id))!.request.requirements.find((r) => r.hard)!.text).toBe(VEG.text);
+    const q = (await w.getQuotes(deal.job_id)).quotes.find((x) => x.business === "Harbor Table" && x.total_usd === 1050)!;
+    expect(q.compliance?.status ?? q.verdict).not.toBe("compliant");
+    expect((await w.getQuotes(deal.job_id)).recommended_quote_id ?? null).not.toBe(q.quote_id);
+    // The human may still knowingly choose it: the requirement miss is a caveat on the approval, never hidden.
+    expect((await w.approvalCaveats(deal.job_id, q.quote_id)).join(" ")).toMatch(/vegetarian/);
+  });
+
+  it("a quote id from another deal (same workspace or another) is never approvable here", async () => {
+    const env = setup({ notifyPhone: ALPHA_HUMAN });
+    await workspace(env, "ws_beta", BETA_HUMAN);
+    const w = env.engine.forWorkspace("ws_default");
+    const mk = async (ws: string, email: string) => {
+      const d = await env.engine.forWorkspace(ws).deal({ request, budget_usd, businesses: [{ name: "Harbor Table", email }, { name: "Q", email: `q-${email}` }] });
+      const b = (await env.repo.getBusinesses(d.job_id)).find((x) => x.email === email)!;
+      await env.engine.ingest({ providerEventId: `x${email}`, eventType: "message.received", providerEmailId: `in_${email}`, threadId: `t${email}`, messageId: `<in_${email}>`, inReplyTo: [b.rfq_message_id!], references: [b.rfq_message_id!], from: email, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "$900 total, delivered. $100 deposit.", attachments: [], attachmentsDownloadUrl: null }, trusted);
+      await env.engine.advanceJob(d.job_id);
+      return { jobId: d.job_id, quoteId: (await env.repo.listQuotes(d.job_id))[0]!.id };
+    };
+    const mine = await mk("ws_default", "h1@inkboxmail.test");
+    const other = await mk("ws_default", "h2@inkboxmail.test");
+    const theirs = await mk("ws_beta", "h3@inkboxmail.test");
+    for (const qid of [other.quoteId, theirs.quoteId]) {
+      await expect(w.requestApproval(mine.jobId, qid, "imessage")).rejects.toMatchObject({ code: "quote_not_found" });
+      await expect(w.pay(mine.jobId, qid)).rejects.toMatchObject({ code: "no_approval" });
+    }
   });
 });
 

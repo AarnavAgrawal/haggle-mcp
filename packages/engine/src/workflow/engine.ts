@@ -6438,8 +6438,19 @@ export class WorkspaceEngine {
   async approvalReach(jobId: string) { await this.own(jobId); return this.engine.approvalReach(jobId); }
   async approvalOffers(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalOffers(approvalId); }
   /** Tool paths can only claim the in-band channels (a coded text or email is decided by ingest, never by a tool). */
-  async decideApproval(approvalId: string, decision: "approve" | "decline", channel: "elicitation" | "view" | "simulated", approver: string | null) { await this.ownApproval(approvalId); return this.engine.decideApproval(approvalId, decision, channel, approver); }
-  async approveWithViewCode(approvalId: string, code: string) { await this.ownApproval(approvalId); return this.engine.approveWithViewCode(approvalId, code); }
+  // A live job is never approved by a client form, a card's view-held code or a simulated human, whatever
+  // the engine's approval config says: those are client-side signals, not proof a human decided.
+  async decideApproval(approvalId: string, decision: "approve" | "decline", channel: "elicitation" | "view" | "simulated", approver: string | null) {
+    const a = await this.ownApproval(approvalId);
+    // (A simulated decision outside mock mode is refused by the engine itself: simulation_disabled.)
+    if (decision === "approve" && (await this.engine.loadJob(a.job_id)).mode === "live" && (channel !== "simulated" || this.engine.mode === "mock")) throw needsHumanChannel();
+    return this.engine.decideApproval(approvalId, decision, channel, approver);
+  }
+  async approveWithViewCode(approvalId: string, code: string) {
+    const a = await this.ownApproval(approvalId);
+    if ((await this.engine.loadJob(a.job_id)).mode === "live") throw needsHumanChannel();
+    return this.engine.approveWithViewCode(approvalId, code);
+  }
   async approvalIMessageSent(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalIMessageSent(approvalId); }
   async pay(jobId: string, quoteId: string) { await this.own(jobId); return this.engine.pay(jobId, quoteId); }
   async cancel(jobId: string) { await this.own(jobId); return this.engine.cancel(jobId); }
