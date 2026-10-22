@@ -41,6 +41,8 @@ List the production **project ref**, not the shared pooler host: the pooler host
 
 ## 2. Environment variables
 
+**`docs/env-manifest.md` is the complete list.** It is generated from `apps/mcp/src/envManifest.ts` and covers every variable the code reads, with its purpose, whether it's a secret, what each target needs and the validation rule. `config.ts` validates from that manifest.
+
 `.env.example` documents every variable. Set secrets on the server with `mcp-use servers env set <server-id> KEY=VALUE`. Never commit them, and prefer pasting into the dashboard: the CLI puts the value in your shell history.
 
 **Required in live mode (any environment).** A missing or invalid value refuses to start:
@@ -63,6 +65,8 @@ List the production **project ref**, not the shared pooler host: the pooler host
 | `HAGGLE_AI_MAX_CALLS_PER_JOB`, `HAGGLE_AI_DAILY_TOKEN_BUDGET` | positive integers; unset means no limit (production warns when the daily budget is unset) |
 | `HAGGLE_STALL_CHECK_EVERY_S` | positive integer, or `0` (off); default 300 |
 | `HAGGLE_DB_POOL_MAX` | 1 to 10 (default 4; Supabase's session pooler allows 15 clients in total) |
+| `HAGGLE_DB_QUEUE_TIMEOUT_MS` | 100 to 60000 (default 5000): how long a query waits for a free pooled connection before failing as transient |
+| `HAGGLE_PAYMENTS`, `HAGGLE_EXTERNAL_SENDERS`, `HAGGLE_GLOBAL_PAYMENT_CAP_CENTS`, `HAGGLE_SPENDING_CAP_CEILING_CENTS`, `HAGGLE_DB_SCHEMA` | a malformed value is refused (they used to fall back silently) |
 | `HAGGLE_LOG_LEVEL` | `debug` \| `info` (default) \| `warn` \| `error` |
 
 **Per environment, at minimum:**
@@ -92,6 +96,21 @@ Every channel stays off unless explicitly enabled (`HAGGLE_ENABLE_CALLS`, `HAGGL
    ```bash
    npx tsx apps/mcp/scripts/migrations.ts status
    ```
+4. **Run the launch gate for the target.** It exits non-zero on any failed prerequisite and never prints a value. The operator passes the target's env file; nothing reads `.env` by default:
+   ```bash
+   npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env file> --db-url-env SUPABASE_DB_URL
+   ```
+   It checks:
+   - **config:** `checkConfig` on that file. The file must say `HAGGLE_ENV=<target>` and, for staging or production, `HAGGLE_MODE=live`.
+   - **recommended variables:** missing ones are a warning only.
+   - **migration files:** no duplicate numbers, every name valid.
+   - **the ledger against this checkout:** read-only, and refused for a production database unless `--target production`. It fails on pending, drift, unverified or **unexpected** migrations (the database has an engine migration this checkout lacks). `--allow-ahead` accepts unexpected ones for a deliberate rollback.
+   - **build:** present and newer than the sources.
+   - **webhook subscriptions:** opt-in, read-only. Use `--check-webhooks --webhook-url https://<server>/webhooks/inkbox`, with `INKBOX_API_KEY` in the env file.
+
+   "Tests last green" isn't checkable from a laptop: it shows as `skip`. Check CI on the exact commit instead.
+
+**Node version.** Both `package.json` files require Node ≥ 22.22.2 (`engines`). CI uses `node-version: 22.x`, which resolves to the newest 22 release (22.23.3 on the first runs, 2026-10-22), and a step fails the job if that release is below the floor. Manufact builds with its own Node 22. Local Node 22.21.0 still installs (npm only warns with `EBADENGINE`) and passed the full gate on 2026-10-22. Upgrade it anyway, because the floor is what CI and production are held to.
 
 ## 4. Migrations and the ledger
 
@@ -140,7 +159,31 @@ npx tsx apps/mcp/scripts/migrations.ts verify
 
 **Ordering.** Apply migrations **before** deploying code that needs them. Migrations are additive, so the old code keeps working on the new schema.
 
-**Readiness.** `/ready` reports `migrations.ok: false` with the missing, drifted or unverified file names until the ledger matches the deployed build.
+**The engine migrations, in order.** There is no `107` (the number was skipped), so "100 to 106, then 108 to 111" is the full pre-sprint-4 set.
+
+| File | What | Depends on | Compatibility with code already running | Rollback limit |
+|---|---|---|---|---|
+| `100`–`102` | Core schema, channels, Stripe test payments | – | – | Restore only |
+| `103_engine_parity` | Workspaces; job/approval checks widened (`confirmed`, approval actions); rows moved to `ws_default` | 100–102 | Pre-103 code works: new columns have defaults, checks are widened | **Drops and recreates CHECK constraints and moves rows**: undo only by restore/PITR. Once newer code writes `confirmed` jobs or confirm-only approvals, pre-103 code can't read them correctly |
+| `104_engine_read_indexes` | Read indexes only | 100 | No schema change | Indexes can be dropped |
+| `105_engine_security` | `workspaces.revoked_at`; quotes immutable; approvals must match their quote | 103 | Additive; the triggers refuse writes that were already wrong | Dropping the triggers removes safety checks: don't |
+| `106_engine_pilot` | Job leases, outbox, suppressions, workspace vendors, payment handoffs | 103 | Additive (new tables) | Tables can stay; older code ignores them |
+| `108_engine_tenancy` | Text routes, held texts, suppression removals, `workspace_vendors.channel` | 103, 106 | Additive | As above |
+| `109_engine_reliability` | Operator reviews (dead letters), outbox guards | 106 | Additive; new triggers only refuse unsafe outbox moves | As above |
+| `110_engine_booking` | Bookings, handoff receipts, booking-before-handoff trigger | 100, 106 | Additive; a handoff now needs a confirmed booking (older code that skips booking is refused there, by design) | As above |
+| `111_engine_ops` | The migration ledger `engine_migrations` | – (idempotent) | Additive | Safe to re-run |
+| `112_engine_inbound_review` (A), `113_engine_purchasing` (B), `114_engine_deploy` (C, only if added), `115_engine_security` (D), `116_engine_analytics` (E), `117_engine_ops` (F) | Sprint 4 workstreams | **Each on 100–111 alone**: none may depend on another sprint-4 file | Must be additive (the reviewer checks each one for `drop`/`rename`/narrowed checks) | Per file, in its header |
+
+**Checks on every CI run:**
+- `scripts/verify-migrations.sh` applies every file in order and runs the SQL assertions.
+- It then applies **each 112+ engine migration alone** on 100–111 in a fresh database, so a hidden dependency between parallel branches fails the build.
+- `migrationFileProblems` (unit test, `migrations.ts verify` and the launch gate) refuses two files with the same number and any misnamed file.
+
+**Rollback limits in general.** There are no down migrations. To roll back:
+- **Code:** redeploy the previous build. The schema stays: everything since 104 is additive. `/ready` then reports the newer migrations as `unexpected` with `database_ahead: true` and **stays ready**. `migrations.ts verify` and the launch gate need `--allow-ahead`.
+- **Schema:** restore from a backup or with PITR (`docs/backup-restore.md`). A restore also loses every row written since. Don't drop a migration's tables by hand while code that uses them might run.
+
+**Readiness.** `/ready` reports `migrations.ok: false` with the missing, drifted or unverified file names until the ledger matches the deployed build. Engine migrations in the ledger that the build doesn't know are listed in `unexpected`; that alone doesn't fail readiness, so a rollback stays possible.
 
 **Drift.** Drift means the repo file changed after it was applied. Don't "fix" it with `--accept-drift` until you have compared the database with the file.
 
@@ -201,6 +244,14 @@ node apps/mcp/scripts/smoke.ts http://127.0.0.1:3000
 
 Exit 0 means every check passed. Manufact answers `/health` itself on hosted servers, so there it is reported as "skip"; `/ready` is the hosted check. For deeper read-only checks against a live server, use `scripts/acceptance/live-readonly.mjs`.
 
+**Production-safe mode: `--live-readonly`.** Use this mode for staging and production after every deploy:
+```bash
+HAGGLE_SMOKE_TOKEN=<workspace bearer> node apps/mcp/scripts/smoke.ts https://<server> --live-readonly --expect-build <sha>
+```
+It calls `/health`, `/ready`, MCP `initialize`, `tools/list`, and only `list_deals` and `get_identity`. Each of those is called only if the server annotates it `readOnlyHint: true, openWorldHint: false`.
+
+Every tool that sends, calls, texts, pays, changes a deal or advances deals as a side effect is refused before any request is made, whatever the server's annotations say: `deal`, `pay`, `approve`, `answer_business`, `send_message`, `negotiate`, `cancel_deal`, `call_back*`, `*_in_view`, `wait_for_update`, `get_quotes`, `open_haggle`, `get_conversation`, `discover`, `business_profile`, `ask` and `check_price`. `apps/mcp/tests/opsReadiness.e2e.test.ts` checks this against a local server and against a fake server that marks `deal` read-only.
+
 ## 7. Operating it
 
 **`/health` (liveness).**
@@ -213,8 +264,14 @@ Exit 0 means every check passed. Manufact answers `/health` itself on hosted ser
 | Check | What it says |
 |---|---|
 | `config` | Configuration errors (by variable name); whether the runtime failed to start |
-| `database` | The database answers a read within 3 s |
-| `migrations` | Every engine migration in this build is recorded in the ledger with a matching checksum (live only; mock reports it but doesn't require it) |
+| `database` | The database answers a read within 3 s. `reason` is `unreachable` (down or timed out) or `pool_busy` (this process's connections are all in use past `HAGGLE_DB_QUEUE_TIMEOUT_MS`). `pool` shows `max`, `in_use`, `queued`, peaks, `timeouts` and `rejected` (counts only) |
+| `migrations` | Every engine migration in this build is recorded in the ledger with a matching checksum (live only; mock reports it but doesn't require it). `unexpected` / `database_ahead` lists engine migrations the database has and this build doesn't (reported, not fatal) |
+
+**`/health` against `/ready` during a database outage.** `/health` is liveness. It never queries the database, so it stays 200 and the platform doesn't restart a healthy process because Postgres is down. `/ready` answers 503 with `database.reason` and nothing else: no host, user or driver message. `apps/mcp/tests/opsReadiness.e2e.test.ts` checks this against a server whose database port is closed.
+
+**Connection pool.** Each process opens at most `HAGGLE_DB_POOL_MAX` connections (default 4). Supabase's session pooler allows 15 in total, across every process, replica and reload. Work out `replicas × HAGGLE_DB_POOL_MAX + operator scripts (1 each)` and keep it under 15. Board polling never holds a connection while it waits: `wait_for_update` sleeps between reads. Under load, queries wait in a bounded queue (`HAGGLE_DB_QUEUE_TIMEOUT_MS`, 500 waiters at most) and then fail as transient: one retry for a read, then an error the agent can retry. They don't pile up without limit. `packages/engine/tests/poolGate.test.ts` covers this:
+- 60 pollers on a fake slow database never exceed the pool;
+- 60 concurrent board reads on Postgres use at most 2 connections when the pool is 2.
 | `providers` | Inkbox and Anthropic are configured; the payments mode (`manual` / `stripe_test` / `disabled`); whether alerts are on |
 | `ai` | Today's calls and tokens, the limits, the remaining budget, how many jobs are at their call limit. A spent budget doesn't make the server unready: new replies are held for humans |
 | `stalled_jobs` | The last stalled-job check's counts by reason |
@@ -254,7 +311,75 @@ Counters are per process and per UTC day. With several replicas, each one enforc
 
 ## 8. Known gaps
 
-- **Operator scripts need `npx tsx`, not plain `node`.** The engine uses TypeScript parameter properties (`reputation/places.ts`, `live/reconcile.ts`, `workflow/textBudget.ts`), which Node 22's type stripping rejects. Older docs say `node --env-file=.env scripts/…`; use `npx tsx --env-file=<file> apps/mcp/scripts/…`, or `node --experimental-transform-types`.
+- **Operator scripts: plain `node` or `npx tsx`.** The operator scripts now load under Node 22's type stripping: `workspace-admin`, `workspace-create`, `job-ops`, `migrations`, `launch-gate`, `env-manifest`, `secret-scan` and `smoke`. `apps/mcp/tests/scriptsPlainNode.test.ts` checks this. Engine code must therefore avoid TypeScript-only syntax such as parameter properties and enums. `npx tsx` keeps working. Pass the env file explicitly (`--env-file=<file>`): never the production `.env` from a laptop by habit.
 - **The ledger doesn't apply migrations.** Applying stays a manual, reviewed step.
 - **Per-process state.** AI usage counters and alert rate limits live in each process's memory.
 - **Not verified here.** Nothing above was run against the hosted server or a live database (2026-10-22): the deploy steps come from the 2026-10-17 deploy notes. `/ready` on calm-spark will report `migrations.ok: false` until 111 is applied and backfilled.
+
+## 9. Setting up staging, and the first CI run
+
+Staging is a **second, independent server**. It shares code with production and nothing else: no database, no Inkbox identity, no webhook secret, no Anthropic key, no alert channel. Each step below is a dashboard action for the user. Nothing in the repository performs any of them.
+
+**GitHub (first CI run):**
+1. **Allow Actions.** Repository Settings → Actions → General: allow GitHub Actions for the repository. Workflow permissions: **Read repository contents** (`ci.yml` asks only for `contents: read`).
+2. **Run CI once.** Push the branch or open a pull request (draft PR #1 on `yashnil` did this on 2026-10-22). The **CI** workflow runs with:
+   - no secrets;
+   - mock mode;
+   - a Postgres 17 service container.
+
+   Its steps:
+   - Node satisfies `engines`
+   - `npm ci`
+   - dependency tree consistent
+   - secret scan
+   - psql client
+   - typecheck
+   - build
+   - tests
+   - migrations (including each 112+ file alone)
+   - the Postgres suite and ledger.
+3. **Protect `main`.** Settings → Branches → add a rule (or ruleset) for `main`:
+   - require a pull request;
+   - require the status check **CI / verify**;
+   - require branches to be up to date.
+
+   Do this after the first run, so the check name is selectable.
+4. **No repository secrets are needed.** CI never deploys, and it must not get provider credentials.
+
+**Supabase (staging project):**
+1. **Create a separate project**, e.g. `haggle-staging`, in the same region as production. Note its project ref (the staging ref).
+2. **Database → Connect:** copy the **session pooler** connection string (port 5432). Use a role with BYPASSRLS (the default `postgres` role). This becomes staging's `SUPABASE_DB_URL`.
+3. **Check backups.** Database → Backups: note whether daily backups and PITR are on for the plan (`docs/backup-restore.md`).
+4. **Apply the migrations** from a clean checkout of the commit, in filename order. Then fill the ledger: `migrations.ts record` / `backfill` (section 4).
+
+**Inkbox (staging buyer identity):**
+1. **Create a staging identity**, e.g. `haggle-staging`, in the org that should own staging. Simulated sellers need the buyer identity in their own org for sender trust.
+2. **Create an API key scoped to that identity** for `INKBOX_API_KEY`, and copy the webhook signing secret for `INKBOX_WEBHOOK_SECRET`.
+3. **Create the webhook subscription**, only after the staging server is deployed: URL `https://<staging server>/webhooks/inkbox`, events `message.received`, plus `call.ended`, `imessage.received` and `a2a.sent_task.updated` for the channels staging enables. Check it read-only: `launch-gate.ts --check-webhooks --webhook-url …`.
+
+**Anthropic:** a separate API key (or workspace) for staging, so its spend and `HAGGLE_AI_DAILY_TOKEN_BUDGET` are separate.
+
+**Manufact (staging server):**
+1. **Create a second server** (not a new deployment of `calm-spark-ck3qm`), e.g. `haggle-staging`, and link a separate checkout or worktree to it. `.mcp-use/cloud/link.json` decides which server `mcp-use deploy` updates: keep one link file per checkout, and never copy production's into the staging checkout.
+2. **Start command:** `cd apps/mcp && ../../node_modules/.bin/mcp-use start --host 0.0.0.0`, port 3000.
+3. **Environment.** Set staging's variables in the dashboard (`docs/env-manifest.md`, "Staging, separate from production"):
+   - `HAGGLE_ENV=staging`, `HAGGLE_MODE=live`;
+   - the four required variables, all from the staging accounts above;
+   - `HAGGLE_PROD_DB_HOSTS=<production ref>`;
+   - `HAGGLE_PAYMENTS=manual`;
+   - `HAGGLE_AI_MAX_CALLS_PER_JOB` and `HAGGLE_AI_DAILY_TOKEN_BUDGET`;
+   - `HAGGLE_ALERT_WEBHOOK_URL` for a staging channel;
+   - `HAGGLE_BUILD_SHA`.
+
+   Leave every `HAGGLE_ENABLE_*` channel off until it is tested.
+4. **Before the first deploy,** keep the same variables in a local staging env file outside the repository, and run:
+   ```bash
+   node apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env file> --db-url-env SUPABASE_DB_URL
+   ```
+5. **Deploy and smoke.** Deploy (section 5, with the staging link), then:
+   ```bash
+   HAGGLE_SMOKE_TOKEN=<staging workspace bearer> node apps/mcp/scripts/smoke.ts https://<staging server> --live-readonly --expect-build <sha>
+   ```
+6. **Create a staging workspace** with `workspace-create.ts`, run against the staging database (`HAGGLE_ENV=staging` in its env file). The guard refuses the production database there.
+
+**Production stays as it is.** Production uses `HAGGLE_ENV=production` and the production database, and refuses mock flags. Run the same launch gate with `--target production` and its own env file before each production deploy.

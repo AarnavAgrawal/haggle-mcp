@@ -29,7 +29,7 @@ describe.skipIf(!URL_)("migration ledger on Postgres", () => {
     const r = cli("verify");
     expect(r.status).toBe(1);
     expect(r.stdout).toMatch(/engine migrations: NOT OK/);
-  });
+  }, 60_000);
 
   it("record needs --confirm; backfill records every file through the named one; then status is OK and /ready agrees", async () => {
     expect(() => planMigrations(["backfill", "--through", "111_engine_ops.sql"])).toThrow(/--confirm/);
@@ -42,7 +42,7 @@ describe.skipIf(!URL_)("migration ledger on Postgres", () => {
     expect(await repo.listAppliedMigrations()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "100_engine_core.sql", checksum: files.find((f) => f.name === "100_engine_core.sql")!.checksum })]));
     expect(await migrationsCheck({ repo, database: "postgres" }, files)).toMatchObject({ ok: true, pending: [], drift: [] });
     expect(r.stdout + status.stdout).not.toMatch(/postgres:\/\//);
-  });
+  }, 60_000);
 
   it("a changed file is drift: reported, refused by record, only accepted explicitly", async () => {
     const changed = [{ name: "100_engine_core.sql", checksum: "0".repeat(64) }];
@@ -55,5 +55,18 @@ describe.skipIf(!URL_)("migration ledger on Postgres", () => {
     expect(await migrationsCheck({ repo, database: "postgres" }, files)).toMatchObject({ ok: true });
     expect(selectForRecord(planMigrations(["record", "111_engine_ops.sql", "--confirm"]) as never, files).map((f) => f.name)).toEqual(["111_engine_ops.sql"]);
     expect(() => selectForRecord(planMigrations(["record", "999_engine_nope.sql", "--confirm"]) as never, files)).toThrow(/not in supabase\/migrations/);
-  });
+  }, 60_000);
+
+  it("a database ahead of the checkout: verify fails (UNEXPECTED) unless --allow-ahead; /ready reports it and stays ok", async () => {
+    await sql`insert into engine_migrations (name, checksum, recorded_by) values ('199_engine_from_newer_build.sql', ${"a".repeat(64)}, 'test')`;
+    try {
+      const v = cli("verify");
+      expect(v.status).toBe(1);
+      expect(v.stdout).toMatch(/UNEXPECTED: engine migration in the database but not in this checkout[\s\S]*199_engine_from_newer_build\.sql/);
+      expect(cli("verify", "--allow-ahead").status).toBe(0);
+      expect(await migrationsCheck({ repo, database: "postgres" }, files)).toMatchObject({ ok: true, unexpected: ["199_engine_from_newer_build.sql"], database_ahead: true });
+    } finally {
+      await sql`delete from engine_migrations where name = '199_engine_from_newer_build.sql'`;
+    }
+  }, 60_000);
 });

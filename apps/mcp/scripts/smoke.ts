@@ -3,23 +3,47 @@
 // deal on a live server: it checks the server's own mode first, twice. Prints no secrets.
 //
 //   node apps/mcp/scripts/smoke.ts <base url> [--token <workspace bearer>] [--expect-build <sha>] [--no-deal]
+//   node apps/mcp/scripts/smoke.ts <base url> --live-readonly [--token ...] [--expect-build <sha>]
 //   (or HAGGLE_SMOKE_TOKEN in the environment). Exit 0 = every check passed.
+//
+// --live-readonly (production-safe): /health, /ready, initialize, tools/list and only the tools in
+// READONLY_TOOLS, each called only if the server itself annotates it readOnlyHint=true and
+// openWorldHint=false. A tool that can send, call, text, advance a deal or pay is refused before any
+// request is made (assertReadOnlyCall), whatever the server says.
 //
 // Manufact intercepts /health on its hosted servers (the platform answers it), so a non-Haggle
 // /health response is reported as skipped there; /ready and the MCP checks still run.
 
-export interface SmokeOptions { base: string; token?: string; expectBuild?: string; deal: boolean; fetch?: typeof fetch; log?: (line: string) => void; dealTimeoutMs?: number }
+export interface SmokeOptions { base: string; token?: string; expectBuild?: string; deal: boolean; readonly?: boolean; fetch?: typeof fetch; log?: (line: string) => void; dealTimeoutMs?: number }
 export interface SmokeResult { ok: boolean; checks: { name: string; status: "pass" | "fail" | "skip"; detail: string }[] }
 
 const CORE_TOOLS = ["deal", "wait_for_update", "get_quotes", "approve", "pay", "list_deals", "open_haggle"];
+/** The only tools --live-readonly calls: they read the database and contact nobody. */
+export const READONLY_TOOLS: Record<string, Record<string, unknown>> = { list_deals: { limit: 1 }, get_identity: {} };
+/**
+ * Never called by --live-readonly, even if a server annotated them read-only: they send, call, text,
+ * pay or change a deal, advance deals as a side effect of reading (wait_for_update, get_quotes,
+ * open_haggle, get_conversation run the engine's advance), or reach public providers.
+ */
+export const SENDS_OR_PAYS = new Set(["deal", "pay", "approve", "answer_business", "send_message", "negotiate", "cancel_deal", "call_back", "call_back_in_view", "approve_in_view", "choose_in_view", "wait_for_update", "get_quotes", "open_haggle", "get_conversation", "discover", "business_profile", "ask", "check_price"]);
+
+export interface ToolMeta { name: string; annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean; destructiveHint?: boolean } }
+/** Throws unless `name` is allowlisted, not a sending/paying tool, and the server annotates it read-only and closed-world. */
+export function assertReadOnlyCall(name: string, tools: ToolMeta[]): void {
+  if (SENDS_OR_PAYS.has(name) || !Object.hasOwn(READONLY_TOOLS, name)) throw new Error(`refused: ${name} is not a read-only smoke tool`);
+  const t = tools.find((x) => x.name === name);
+  if (!t) throw new Error(`refused: ${name} is not listed by the server`);
+  if (t.annotations?.readOnlyHint !== true || t.annotations?.openWorldHint !== false || t.annotations?.destructiveHint === true) throw new Error(`refused: the server does not annotate ${name} as read-only and closed-world`);
+}
 
 export function parseSmokeArgs(argv: string[], env: Record<string, string | undefined> = process.env): SmokeOptions {
   const base = argv.find((a, i) => !a.startsWith("--") && !["--token", "--expect-build"].includes(argv[i - 1] ?? ""));
-  if (!base || !/^https?:\/\/[^\s/]+/.test(base)) throw new Error("usage: smoke.ts <base url, e.g. http://127.0.0.1:3000> [--token <bearer>] [--expect-build <sha>] [--no-deal]");
+  if (!base || !/^https?:\/\/[^\s/]+/.test(base)) throw new Error("usage: smoke.ts <base url, e.g. http://127.0.0.1:3000> [--token <bearer>] [--expect-build <sha>] [--no-deal | --live-readonly]");
+  const readonly = argv.includes("--live-readonly");
   const val = (n: string) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : undefined; };
   const token = val("token") ?? env.HAGGLE_SMOKE_TOKEN?.trim();
   const expectBuild = val("expect-build");
-  return { base: base.replace(/\/+$/, "").replace(/\/mcp$/, ""), ...(token ? { token } : {}), ...(expectBuild ? { expectBuild } : {}), deal: !argv.includes("--no-deal") };
+  return { base: base.replace(/\/+$/, "").replace(/\/mcp$/, ""), ...(token ? { token } : {}), ...(expectBuild ? { expectBuild } : {}), deal: !readonly && !argv.includes("--no-deal"), ...(readonly ? { readonly } : {}) };
 }
 
 export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
@@ -37,7 +61,12 @@ export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
     if (msg.error) throw new Error(`${method}: ${msg.error.message ?? "error"}`);
     return msg.result as Record<string, unknown>;
   };
-  const call = async (name: string, args: Record<string, unknown>) => (await rpc("tools/call", { name, arguments: args })) as { isError?: boolean; content?: { text?: string }[]; structuredContent?: Record<string, unknown> };
+  const call = async (name: string, args: Record<string, unknown>) => {
+    // Defence in depth: in --live-readonly nothing outside the allowlist reaches the server.
+    if (o.readonly && (SENDS_OR_PAYS.has(name) || !Object.hasOwn(READONLY_TOOLS, name))) throw new Error(`refused: ${name} in --live-readonly`);
+    return callTool(name, args);
+  };
+  const callTool = async (name: string, args: Record<string, unknown>) => (await rpc("tools/call", { name, arguments: args })) as { isError?: boolean; content?: { text?: string }[]; structuredContent?: Record<string, unknown> };
   const getJson = async (path: string) => {
     const res = await f(`${o.base}${path}`, { signal: AbortSignal.timeout(15_000) });
     const body = await res.text();
@@ -67,13 +96,24 @@ export async function runSmoke(o: SmokeOptions): Promise<SmokeResult> {
     const init = await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "haggle-smoke", version: "1" } });
     const info = init.serverInfo as { name?: string; version?: string } | undefined;
     check("MCP initialize", info?.name === "haggle" ? "pass" : "fail", `server ${info?.name ?? "?"} ${info?.version ?? ""}`.trim());
-    const { tools } = (await rpc("tools/list")) as { tools: { name: string }[] };
+    const { tools } = (await rpc("tools/list")) as { tools: ToolMeta[] };
     const names = new Set(tools.map((t) => t.name));
     const missing = CORE_TOOLS.filter((t) => !names.has(t));
     check("MCP tools/list", missing.length ? "fail" : "pass", missing.length ? `missing ${missing.join(", ")}` : `${tools.length} tools`);
+    if (o.readonly) {
+      for (const [name, args] of Object.entries(READONLY_TOOLS)) {
+        try {
+          assertReadOnlyCall(name, tools);
+          const r = await call(name, args);
+          const m = r.structuredContent?.mode;
+          check(`read-only ${name}`, r.isError ? "fail" : "pass", r.isError ? "tool error" : `mode ${typeof m === "string" ? m : "?"}`);
+        } catch (e) { check(`read-only ${name}`, "fail", (e as Error).message); }
+      }
+    }
   } catch (e) { check("MCP initialize + tools/list", "fail", (e as Error).message); }
 
-  if (!o.deal) check("mock deal", "skip", "--no-deal");
+  if (o.readonly) check("mock deal", "skip", "--live-readonly");
+  else if (!o.deal) check("mock deal", "skip", "--no-deal");
   else if (mode !== "mock") check("mock deal", "skip", `server mode is ${mode ?? "unknown"}; deals run only against mock servers`);
   else {
     try {

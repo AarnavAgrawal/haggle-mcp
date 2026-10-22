@@ -3,7 +3,9 @@
 // an operator step (psql -1 -f, or the SQL editor); this records it afterwards. See docs/deployment.md.
 //
 //   node --env-file=<env> apps/mcp/scripts/migrations.ts status  [--db-url-env SUPABASE_DB_URL] [--json]
-//   node --env-file=<env> apps/mcp/scripts/migrations.ts verify  [--db-url-env ...]      exit 1 unless every engine migration is recorded and matches
+//   node --env-file=<env> apps/mcp/scripts/migrations.ts verify  [--db-url-env ...] [--allow-ahead]
+//        exit 1 unless every engine migration is recorded and matches, and the ledger has no engine
+//        migration this checkout lacks (--allow-ahead: a deliberate rollback to an older build)
 //   node --env-file=<env> apps/mcp/scripts/migrations.ts record 111_engine_ops.sql [...] --confirm
 //   node --env-file=<env> apps/mcp/scripts/migrations.ts backfill --through 111_engine_ops.sql --confirm
 //
@@ -11,11 +13,11 @@
 // an existing row with a different checksum is refused unless --accept-drift. status and verify only read.
 // A production database (HAGGLE_PROD_DB_HOSTS) is refused unless HAGGLE_ENV=production or
 // HAGGLE_ALLOW_PROD_DB=true (src/config.ts).
-import { compareMigrations, findMigrationsDir, isEngineMigration, ledgerClient, readLedger, recordMigrations, repoMigrations, type MigrationStatus, type RepoMigration } from "@haggle/engine";
+import { compareMigrations, findMigrationsDir, isEngineMigration, ledgerClient, migrationFileProblems, readLedger, recordMigrations, repoMigrations, type MigrationStatus, type RepoMigration } from "@haggle/engine";
 import { prodDbGuard } from "../src/config.ts";
 
 export type MigrationsCommand =
-  | { kind: "status" | "verify"; urlEnv: string; json: boolean }
+  | { kind: "status" | "verify"; urlEnv: string; json: boolean; allowAhead: boolean }
   | { kind: "record"; urlEnv: string; names: string[]; acceptDrift: boolean }
   | { kind: "backfill"; urlEnv: string; through: string; acceptDrift: boolean };
 
@@ -29,7 +31,7 @@ export function planMigrations(argv: string[]): MigrationsCommand {
   const [kind, ...rest] = argv;
   const urlEnv = arg(argv, "db-url-env") ?? "SUPABASE_DB_URL";
   if (!/^[A-Z][A-Z0-9_]{2,60}$/.test(urlEnv)) throw new Error("--db-url-env must name an environment variable");
-  if (kind === "status" || kind === "verify") return { kind, urlEnv, json: argv.includes("--json") };
+  if (kind === "status" || kind === "verify") return { kind, urlEnv, json: argv.includes("--json"), allowAhead: argv.includes("--allow-ahead") };
   const acceptDrift = argv.includes("--accept-drift");
   if (kind !== "record" && kind !== "backfill") throw new Error("command must be one of: status, verify, record, backfill");
   if (!argv.includes("--confirm")) throw new Error(`${kind} writes the ledger: add --confirm once the migrations really are applied`);
@@ -65,7 +67,8 @@ export function formatStatus(s: MigrationStatus): string {
     ...line("DRIFT: applied file has changed in the repo", s.drift),
     ...line("recorded without a checksum (run record)", s.unverified),
     ...line("not recorded (pending, or applied before the ledger: backfill)", s.pending),
-    ...line("in the ledger but not in this checkout", s.unknown),
+    ...line("UNEXPECTED: engine migration in the database but not in this checkout (a newer build or another branch applied it)", s.unexpected),
+    ...line("in the ledger but not in this checkout (not engine)", s.unknown.filter((n) => !s.unexpected.includes(n))),
     `engine migrations: ${s.ok ? "OK" : "NOT OK"}`,
   ].join("\n");
 }
@@ -83,9 +86,10 @@ async function main(argv = process.argv.slice(2)) {
   const sql = ledgerClient(url, schema);
   try {
     if (cmd.kind === "status" || cmd.kind === "verify") {
-      const s = compareMigrations(repo, await readLedger(sql), isEngineMigration);
-      console.log(cmd.json ? JSON.stringify(s) : formatStatus(s));
-      if (cmd.kind === "verify" && !s.ok) process.exitCode = 1;
+      const s = compareMigrations(repo, await readLedger(sql), isEngineMigration, { allowUnexpected: cmd.allowAhead });
+      const fileProblems = migrationFileProblems(dir);
+      console.log(cmd.json ? JSON.stringify({ ...s, file_problems: fileProblems }) : [formatStatus(s), ...fileProblems.map((p) => `FILES: ${p}`)].join("\n"));
+      if (cmd.kind === "verify" && (!s.ok || fileProblems.length)) process.exitCode = 1;
       return;
     }
     const write = cmd as Extract<MigrationsCommand, { kind: "record" | "backfill" }>;

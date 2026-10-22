@@ -17,4 +17,14 @@ describe("operator scripts load under plain node", () => {
       expect(r.stderr).toMatch(new RegExp(`${s} failed:`));
     });
   }
+  // Sprint 4 deployment scripts: load under plain node; with no arguments they print usage (or run
+  // their offline default) and never crash on syntax.
+  for (const [s, status, out] of [["launch-gate", 2, /usage: launch-gate\.ts/], ["env-manifest", 0, /\| Variable \| Purpose/], ["secret-scan", 0, /secret scan: clean/], ["smoke", 1, /usage: smoke\.ts/]] as const) {
+    it(s, () => {
+      const r = spawnSync(process.execPath, [`scripts/${s}.ts`], { cwd: APP, env, encoding: "utf8", timeout: 60_000 });
+      expect(r.stderr).not.toMatch(/ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX|SyntaxError|ERR_MODULE_NOT_FOUND/);
+      expect(r.status).toBe(status);
+      expect(r.stdout + r.stderr).toMatch(out);
+    });
+  }
 });

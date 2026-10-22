@@ -73,3 +73,4 @@ export * from "./inbound/quarantineReview.ts";
 export * from "./inbound/trustStrength.ts";
 // Sprint 4 B: why each quote was selected or rejected.
 export * from "./ranking/selection.ts";
+export * from "./store/poolGate.ts";

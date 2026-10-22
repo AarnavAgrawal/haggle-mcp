@@ -52,6 +52,16 @@ end $$;
 SQL
 }
 
+# pg_sql_on <database>: like pg_sql, against another database on the same server (stdin, ON_ERROR_STOP).
+pg_sql_on() {
+  local db="$1"
+  if [ -n "${PG_DB_NAME:-}" ]; then
+    ${PSQL:-psql} "$(node -e 'const u = new URL(process.argv[1]); u.pathname = "/" + process.argv[2]; console.log(u.href)' "$HAGGLE_PG_ADMIN_URL" "$db")" -v ON_ERROR_STOP=1 -q
+  else
+    docker exec -i "$PG_DOCKER_NAME" psql -U postgres -d "$db" -v ON_ERROR_STOP=1 -q
+  fi
+}
+
 # Applies every supabase/migrations file in order.
 pg_apply_migrations() {
   local root="$1" f

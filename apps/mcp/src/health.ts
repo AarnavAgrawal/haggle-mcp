@@ -4,7 +4,7 @@
 // Liveness stays /health. Output carries booleans, counts and migration file names only: never a
 // value of any variable, a URL, an address or a job's contents. Results are cached briefly so an
 // unauthenticated caller can't turn /ready into database load.
-import { compareMigrations, findMigrationsDir, isEngineMigration, LEDGER_MIGRATION, repoMigrations, type Alerter, type AiUsageMeter, type AiUsageSnapshot, type RepoMigration, type Repository, type StalledJobMonitor } from "@haggle/engine";
+import { compareMigrations, findMigrationsDir, isEngineMigration, LEDGER_MIGRATION, repoMigrations, type Alerter, type AiUsageMeter, type AiUsageSnapshot, type PoolStats, type RepoMigration, type Repository, type StalledJobMonitor } from "@haggle/engine";
 import { checkConfig, haggleEnv, type HaggleEnv } from "./config.ts";
 
 /** What the runtime hands /ready (built by runtime.ts / live.ts). */
@@ -16,6 +16,8 @@ export interface RuntimeOps {
   ai?: AiUsageMeter;
   alerts?: Alerter;
   stalled?: StalledJobMonitor;
+  /** Postgres pool slot usage (PostgresRepository.poolStats): counts only. */
+  pool?: () => PoolStats;
   providers: { inkbox: boolean; anthropic: boolean; payments: "disabled" | "stripe_test" | "manual"; alerts: boolean };
 }
 
@@ -49,9 +51,12 @@ export async function migrationsCheck(ops: Pick<RuntimeOps, "repo" | "database">
     const self = ledger.find((r) => r.name === LEDGER_MIGRATION);
     return { ok: !!self?.checksum, ledger: "present", repo_files: "unavailable", recorded: ledger.length };
   }
-  const s = compareMigrations(files, ledger, isEngineMigration);
+  // A database ahead of this build (engine migrations it doesn't know) is reported, not fatal: after a
+  // rollback to an older build the additive schema still serves it. migrations.ts verify and the
+  // launch gate refuse it unless the operator says --allow-ahead.
+  const s = compareMigrations(files, ledger, isEngineMigration, { allowUnexpected: true });
   const pick = (l: string[]) => l.filter(isEngineMigration);
-  return { ok: s.ok, ledger: "present", applied: s.applied.length, pending: pick(s.pending), drift: pick(s.drift), unverified: pick(s.unverified), unknown: s.unknown.length };
+  return { ok: s.ok, ledger: "present", applied: s.applied.length, pending: pick(s.pending), drift: pick(s.drift), unverified: pick(s.unverified), unknown: s.unknown.length, unexpected: s.unexpected, ...(s.unexpected.length ? { database_ahead: true } : {}) };
 }
 
 function aiCheck(snap: AiUsageSnapshot | null): ReadyCheck {
@@ -72,9 +77,12 @@ export async function readiness(input: { mode: "mock" | "live"; ops: RuntimeOps 
     try {
       await withTimeout(ops.repo.listRecentJobs(1), 3_000);
       database = { ok: true, kind: ops.database, latency_ms: Date.now() - t0 };
-    } catch {
-      database = { ok: false, kind: ops.database, reason: "unreachable" };
+    } catch (e) {
+      // A saturated pool (PoolBusyError) is not an outage of the database itself: say which.
+      database = { ok: false, kind: ops.database, reason: (e as { code?: string })?.code === "EPOOLBUSY" ? "pool_busy" : "unreachable" };
     }
+    const pool = ops.pool?.();
+    if (pool) database = { ...database, pool };
     if (database.ok) {
       try {
         migrations = await withTimeout(migrationsCheck(ops), 3_000);

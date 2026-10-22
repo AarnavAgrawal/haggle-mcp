@@ -32,6 +32,22 @@ export function findMigrationsDir(from: string = process.cwd()): string | null {
   return null;
 }
 
+/**
+ * Problems with the migration files themselves: two files sharing a number (parallel branches both
+ * took 1NN), a .sql file whose name the ledger would ignore, a 1xx file not named 1NN_engine_*.
+ * Empty = the directory is consistent.
+ */
+export function migrationFileProblems(dir: string): string[] {
+  const all = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
+  const named = all.filter((f) => NAME.test(f));
+  const out = all.filter((f) => !NAME.test(f)).map((f) => `${f}: not a migration file name (NNN_name.sql, lower case)`);
+  const byNum = new Map<string, string[]>();
+  for (const f of named) byNum.set(f.slice(0, 3), [...(byNum.get(f.slice(0, 3)) ?? []), f]);
+  for (const [n, fs] of byNum) if (fs.length > 1) out.push(`migration number ${n} is used by ${fs.join(" and ")}`);
+  for (const f of named) if (f.startsWith("1") && !isEngineMigration(f)) out.push(`${f}: 1xx migrations must be named 1NN_engine_<area>.sql`);
+  return out;
+}
+
 export function repoMigrations(dir: string): RepoMigration[] {
   return readdirSync(dir).filter((f) => NAME.test(f)).sort().map((name) => ({ name, checksum: migrationChecksum(readFileSync(join(dir, name))) }));
 }
@@ -51,15 +67,24 @@ export interface MigrationStatus {
   pending: string[];
   /** Ledger rows with no repo file (applied from another branch, or the file was renamed). */
   unknown: string[];
-  /** Required migrations all applied, none drifted or unverified. */
+  /**
+   * The required (engine) subset of `unknown`: the database has a migration this build doesn't know
+   * (a newer build applied it, it came from another branch, or a file was renamed). Not ok unless
+   * `allowUnexpected` (a deliberate rollback to an older build on an additive schema).
+   */
+  unexpected: string[];
+  /** Required migrations all applied, none drifted or unverified, nothing unexpected (unless allowed). */
   ok: boolean;
 }
 
-/** Pure comparison. `required` limits which pending/drift entries make it not ok (default: all). */
-export function compareMigrations(repo: RepoMigration[], ledger: LedgerRow[] | null, required: (name: string) => boolean = () => true): MigrationStatus {
-  if (ledger === null) return { ledger: "absent", applied: [], drift: [], unverified: [], pending: repo.map((m) => m.name), unknown: [], ok: false };
+/**
+ * Pure comparison. `required` limits which entries make it not ok (default: all): pending, drift,
+ * unverified, and (unless `opts.allowUnexpected`) ledger rows this checkout doesn't have.
+ */
+export function compareMigrations(repo: RepoMigration[], ledger: LedgerRow[] | null, required: (name: string) => boolean = () => true, opts: { allowUnexpected?: boolean } = {}): MigrationStatus {
+  if (ledger === null) return { ledger: "absent", applied: [], drift: [], unverified: [], pending: repo.map((m) => m.name), unknown: [], unexpected: [], ok: false };
   const byName = new Map(ledger.map((r) => [r.name, r]));
-  const s: MigrationStatus = { ledger: "present", applied: [], drift: [], unverified: [], pending: [], unknown: [], ok: true };
+  const s: MigrationStatus = { ledger: "present", applied: [], drift: [], unverified: [], pending: [], unknown: [], unexpected: [], ok: true };
   for (const m of repo) {
     const r = byName.get(m.name);
     if (!r) s.pending.push(m.name);
@@ -69,7 +94,8 @@ export function compareMigrations(repo: RepoMigration[], ledger: LedgerRow[] | n
   }
   const names = new Set(repo.map((m) => m.name));
   s.unknown = ledger.filter((r) => !names.has(r.name)).map((r) => r.name);
-  s.ok = ![...s.pending, ...s.drift, ...s.unverified].some(required);
+  s.unexpected = s.unknown.filter(required);
+  s.ok = ![...s.pending, ...s.drift, ...s.unverified, ...(opts.allowUnexpected ? [] : s.unexpected)].some(required);
   return s;
 }
 
