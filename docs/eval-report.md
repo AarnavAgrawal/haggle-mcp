@@ -7,6 +7,15 @@
 
 **None yet.** No real vendor has been contacted, no real reply read, no real approval, booking or payment recorded, and the Claude extractor has not been run on this corpus. Every section below is simulated. Real pilot outcomes will come from `apps/mcp/scripts/traction.ts` (verified outcomes from the production database, excluding mock jobs, test workspaces/jobs and simulated vendors) and are to be reported separately from this file.
 
+Simulated evaluation and real-world evidence are kept apart (sprint 5, `docs/pilot-metrics.md`):
+
+| | Simulated evaluation (this file, `scripts/pilot-benchmark.ts`) | Real-world evidence (`scripts/metrics.ts`, `scripts/traction.ts`) |
+| --- | --- | --- |
+| Data | hand-written replies, the scripted DEMO fleet, a fake clock, a deterministic extractor | rows of live jobs in the engine database |
+| Counts as real | never | only live jobs outside test workspaces/jobs with at least one non-simulated vendor; simulated vendors' rows are dropped even inside those |
+| Status | measured (deterministic; benchmark fingerprint per seed) | **none yet**: no pilot job exists |
+| AI cost | 0 recorded (mock mode makes no Claude calls); a live projection is an assumption | approximate, from per-call usage rows (migration 122) once the live meter persists them |
+
 ## Corpus review
 
 59 labelled replies; **49 independently meaningful** for extraction, 10 near-duplicates in content (kept because each adds a mail-client layout or a delivery path the reader must survive):
