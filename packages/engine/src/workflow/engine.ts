@@ -4000,9 +4000,7 @@ export class HaggleEngine {
    * exactly that. No business is contacted. While money may be moving it waits; after the customer
    * reported paying it is refused (resolved with the reason). True: this advance stops here.
    */
-  private async runOperatorClose(job: JobRow): Promise<boolean> {
-    const req = await this.repo.findOpenReview("stuck_job", closeSubject(job.id));
-    if (!req) return false;
+  private async runOperatorClose(job: JobRow, req: OperatorReviewRow): Promise<boolean> {
     const at = this.now().toISOString();
     const done = (resolution: string) => this.repo.resolveReview(req.id, { resolution, resolved_by: "haggle-server" }, at);
     const pay = await this.repo.getPaymentForJob(job.id);
@@ -4108,8 +4106,11 @@ export class HaggleEngine {
       return;
     }
     // Operator actions (job-ops): a requested fail-safe close runs first; a hold stops everything else.
-    if (await this.runOperatorClose(first)) return;
-    if (await this.repo.findOpenReview("stuck_job", holdSubject(jobId))) {
+    // One read for both (this runs on every advance): the job's open stuck_job reviews.
+    const operator = (await this.repo.listReviews({ status: "open", jobId, limit: 1000 })).filter((r) => r.kind === "stuck_job");
+    const closeReq = operator.find((r) => r.subject === closeSubject(jobId));
+    if (closeReq && (await this.runOperatorClose(first, closeReq))) return;
+    if (operator.some((r) => r.subject === holdSubject(jobId))) {
       this.log("advance_held", { job_id: jobId });
       return;
     }

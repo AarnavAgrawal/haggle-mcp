@@ -54,8 +54,9 @@ async function scenario(k: Kit, tag: string) {
 const repos: [string, () => Promise<{ repo: Repository; close: () => Promise<void> }>][] = [["memory", async () => ({ repo: new InMemoryRepository(), close: async () => {} })]];
 if (PG_URL) repos.push(["postgres", async () => { const repo = new PostgresRepository(PG_URL); return { repo, close: () => repo.close() }; }]);
 
-describe.each(repos)("ops report (%s)", (_name, open) => {
-  it("after three days: everything waiting on a person, per workspace, with nothing written", { timeout: 60_000 }, async () => {
+describe.each(repos)("ops report (%s)", (name, open) => {
+  // The three-day run ticks every open job (advanceAllOpen, recoverStuck): in memory only, never on the shared test database.
+  it.skipIf(name === "postgres")("after three days: everything waiting on a person, per workspace, with nothing written", { timeout: 60_000 }, async () => {
     const { repo, close } = await open();
     try {
       const tag = uniq();
@@ -90,18 +91,40 @@ describe.each(repos)("ops report (%s)", (_name, open) => {
     }
   });
 
-  it("a pending approval that expired while nobody answered is cleared by the tick; one still pending is listed", { timeout: 60_000 }, async () => {
+  it("scoped to one workspace, from what is stored: a pending approval, a bounce, an unknown call (reviewed), a quarantined reply, a hold", { timeout: 60_000 }, async () => {
     const { repo, close } = await open();
     try {
+      const tag = uniq();
+      const wsId = `ws_ops_${tag}`;
+      const approver = `+1415555${String(Math.floor(Math.random() * 9000) + 1000)}`;
       const k = kit({}, { repo: repo as never });
-      const d = await k.engine.deal({ request: REQUEST, budget_usd: BUDGET, businesses: [{ name: "Sunset Kitchen", email: `sunset-${uniq()}@inkboxmail.test` }] });
-      const b = (await k.repo.getBusinesses(d.job_id))[0]!;
-      await mail(k, b, "We can do it: $1,150 total, delivered. $345 deposit.");
+      await k.engine.createWorkspace({ id: wsId, name: "Ops", tokenHash: createHash("sha256").update(`t_${tag}`).digest("hex"), connectorSecretHash: createHash("sha256").update(`c_${tag}`).digest("hex"), settings: { approver_phone: approver } as never });
+      const ws = k.engine.forWorkspace(wsId);
+      const email = (n: string) => `${n}-${tag}@inkboxmail.test`;
+      for (const n of ["sunset", "bad"]) await k.repo.addWorkspaceVendor({ workspace_id: wsId, contact: email(n), name: n, consent: "phone 2026-10-20", added_by: "ops" });
+      const phone = `+1408555${String(Math.floor(Math.random() * 9000) + 1000)}`;
+      await k.repo.addWorkspaceVendor({ workspace_id: wsId, contact: phone, name: "Mission Eats", consent: "phone 2026-10-20", added_by: "ops" });
+      const d = await ws.deal({ request: REQUEST, budget_usd: BUDGET, businesses: [{ name: "Sunset Kitchen", email: email("sunset") }] } as never);
+      await mail(k, (await k.repo.getBusinesses(d.job_id))[0]!, "We can do it: $1,150 total, delivered. $345 deposit.");
       await k.engine.advanceJob(d.job_id);
       const q = (await k.engine.getQuotes(d.job_id)).quotes[0]!;
       const a = await k.engine.requestApproval(d.job_id, q.quote_id, "imessage");
-      const r = await buildOpsReport(repo, { now: k.clock.now() });
-      expect(r.workspaces.find((w) => w.workspace_id === "ws_default")!.pending_approvals).toEqual(expect.arrayContaining([expect.objectContaining({ job_id: d.job_id, approval_id: a.id, expired: false })]));
+      k.p.failTo(email("bad"), ...Array(10).fill("5xx_before"));
+      k.p.fail("call", "timeout_after");
+      const b = await ws.deal({ request: REQUEST, budget_usd: BUDGET, businesses: [{ name: "Bad Address Co", email: email("bad") }, { name: "Mission Eats", phone }] } as never);
+      for (let i = 0; i < 5; i++) { k.clock.advance(60_000); await k.engine.advanceJob(b.job_id); }
+      await k.repo.insertMessage({ job_id: b.job_id, business_id: null, approval_id: null, direction: "in", kind: "quarantine", provider_email_id: `q_${tag}`, idempotency_key: null, rfc_message_id: null, thread_id: null, from_address: "spoof@else.example", to_address: "haggle@inkboxmail.test", subject: "Re: quote", body_text: "pay here", attachments: [], attachments_download_url: null, sender_trusted: false, trust_reason: "not_verified", matched_via: null, parse_status: "none", quarantine_reason: "sender_not_verified", round: null, simulated: false });
+      await k.repo.openReview({ id: `rev_hold${tag}`, job_id: d.job_id, kind: "stuck_job", subject: holdSubject(d.job_id), reason: "operator hold by ops: checking", attempts: 0, last_error: null }, k.clock.now().toISOString());
+      const r = await buildOpsReport(readOnly(repo), { now: k.clock.now(), workspaceId: wsId });
+      expect(r.workspaces.map((w) => w.workspace_id)).toEqual([wsId]);
+      const w = r.workspaces[0]!;
+      expect(w.pending_approvals).toEqual([expect.objectContaining({ job_id: d.job_id, approval_id: a.id, expired: false })]);
+      expect(w.failed_communications.some((f) => f.job_id === b.job_id && f.status === "bounced")).toBe(true);
+      expect(w.failed_communications.some((f) => f.job_id === b.job_id && f.status === "unknown" && /^call /.test(f.what))).toBe(true);
+      expect(w.reviews.some((v) => v.job_id === b.job_id && v.kind === "outbox" && /never redialed/.test(v.reason))).toBe(true);
+      expect(w.reviews.some((v) => v.subject === holdSubject(d.job_id))).toBe(true);
+      expect(w.quarantined_replies).toBe(1);
+      expect(r.totals).toMatchObject({ workspaces: 1, pending_approvals: 1, quarantined_replies: 1 });
     } finally {
       await close();
     }
