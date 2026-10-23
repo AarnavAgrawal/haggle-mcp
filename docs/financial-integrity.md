@@ -85,8 +85,16 @@ The evidence is private (0600) in `~/haggle-staging-ops/eval-runs/2026-10-23T19-
 - **Synthetic corpus, one recorded run.** Claude varies between runs: c17's deposit was read in the first run and not in the second, and c13's total was Claude-summed in one run and absent in the other. The rules are written for both shapes, and tests cover both, but real vendor mail will have shapes we haven't seen.
 - **Tolerance.** The tolerance is $1, and the tax share for "tax included" is 2–15%. A real 1% local tax hidden in an itemised "tax included" total would be held for clarification. That's the safe direction.
 - **Discounts.** The extraction schema has no discount field. A discount reaches the check only if Claude lists it as an "other fee" (sign normalised from the label). A discount Claude drops makes the parts exceed the total, so the quote is held: safe, but a possible false hold.
-- **Not changed (needs a product decision, see the eval report):**
-  - "Delivery included" judged unmet when delivery is extra (c13, c47, fx-11 requirement checks);
-  - an alternate-date offer read as a decline (c43);
-  - multi-option replies (c45).
+- **Alternatives (follow-up pass, `f05d312`):** c43's other-date offer and c45's priced options are now kept for the human and never approvable until the business confirms (§6).
+- **Not changed (needs a product decision):** "Delivery included" judged unmet when delivery is extra (c13, c47, fx-11 requirement checks).
 - **Aarnav's deal-board view** has no short label for the new block code `numbers_dont_add_up`. It falls back to "it can't be approved yet" with the full reason. A one-line `BLOCK_SHORT` entry is suggested, not applied (his file).
+
+## 6. Follow-up: vendor alternatives (`f05d312` and the head commit)
+
+- **Another date (c43):** "booked on the 29th, but we can do the 30th: $1,000" used to be read as a decline and the offer was lost. It's now an available quote. `date_mismatch` keeps it from approval and recommendation.
+- **Priced options (c45):** two or more labelled, priced options in the business's own words ("Option A … $890; Option B … $1,180") are kept on the record and shown in the question the human answers. None becomes the total, even when the reader picked one. The business's confirmation of the chosen option is an ordinary quote, checked like any other.
+- **Never compared:** offers for another date or time, or signed as another business, are never the cited basis of a counteroffer, nor countered. Before this, a delivery-window mismatch could be.
+- **The deal waits:** held alternatives keep it open to "ready" with the reason, instead of ending at once "without a usable quote" (which, for c45, came right after asking the human to choose).
+- **The brain** learns a price only from a quote with a total and no financial issue. A missing total used to reach it as $0.
+- **Measured** on the same recorded Claude readings: reply type 56 → 58/59, fields 317 → 322/328, financially incorrect approvable still 0, legitimate quotes approvable unchanged (32/33). Orchestration is identical on all 20 deals.
+- **Tests:** `packages/engine/tests/vendorAlternatives.test.ts`.

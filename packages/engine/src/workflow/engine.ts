@@ -5497,7 +5497,9 @@ export class HaggleEngine {
     // it: never an unverified sender, a keyword-fallback reading, or a simulated reply on a live job.
     const teaches = msg.sender_trusted === true && !heuristicReading(record) && !(job.mode === "live" && msg.simulated);
     if (teaches) try {
-      const contractQuote = quoteRow ? toContractQuote(quoteRow, b, { budgetCents: job.budget_cents }) : null;
+      // A price only when there is one to learn: never a missing total (it would read as $0) or figures
+      // the business's own numbers contradict (held until it clarifies). Questions and declines still teach.
+      const contractQuote = quoteRow && quoteRow.total_cents !== null && !recordIssues(quoteRow.record).length ? toContractQuote(quoteRow, b, { budgetCents: job.budget_cents }) : null;
       await this.d.brain.learnFromReply(b.business_id, toParsedReply(x, contractQuote, questionIds), {
         job_id: job.id, business_id: b.business_id, business_name: b.name, business_email: b.email ?? `tel:${b.phone ?? ""}`, message_id: msg.id, thread_id: msg.thread_id ?? "",
         received_at: msg.created_at, rfq_sent_at: b.contacted_at ?? job.created_at, channel: kind === "quote.json" ? "quote.json" : kind === "pdf" ? "pdf" : kind === "a2a task" ? "a2a" : kind === "call transcript" ? "transcript" : "text", reply_channel: msg.channel,

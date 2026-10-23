@@ -4,7 +4,7 @@
 // (the delivery fee read twice, the all-in total wrong or held back). The readings below are hand-written
 // in the shape Claude produced; the corpus replies are the repo's own (eval/corpus.ts). Each engine-level
 // test runs the real ingest path (cleanEmailBody -> validateQuote -> board -> approval).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadCorpus, CORPUS_REQUEST } from "../eval/corpus.ts";
 import { observeCase } from "../eval/extraction.ts";
 import { layoutReply } from "../eval/clients.ts";
@@ -16,6 +16,8 @@ import { checkApprovedPayment } from "../src/payments/guard.ts";
 import { planCounteroffers, type CounterQuote } from "../src/negotiation/counteroffer.ts";
 import { rankQuotes } from "../src/ranking/rank.ts";
 import { mergeCarryOver } from "../src/workflow/engine.ts";
+import { StubBrain } from "../src/index.ts";
+import type { ParsedReply } from "../src/contract.ts";
 import type { ExtractorPort } from "../src/workflow/ports.ts";
 
 const corpus = loadCorpus();
@@ -285,6 +287,17 @@ describe("approval paths: nothing is approved or paid on figures that don't add 
       expect(q.total_usd).toBe(1120);
       expect(q.approvable).toBe(true);
     } finally { env.restore(); }
+  });
+
+  it("the brain never learns a held figure as a price (fx-08's $1,050), nor a missing total as $0 (c45's options)", async () => {
+    for (const [id, x, priced] of [["fx-08-conflicting-numbers", FX08, 0], ["c45-multi-option", reading({ questions: [{ text: "Which would you prefer?", needs_answer_to_quote: true }] }), 0], ["c44-half-deposit", C44, 1]] as const) {
+      const spy = vi.spyOn(StubBrain.prototype, "learnFromReply");
+      const { env } = await dealWith(id, fixed(x));
+      try {
+        const quotes = spy.mock.calls.flatMap((c) => ((c as unknown[])[1] as ParsedReply).items.filter((i) => i.kind === "quote"));
+        expect(quotes.length, id).toBe(priced);
+      } finally { env.restore(); spy.mockRestore(); }
+    }
   });
 
   it("a pay-by-link reply that mentions a deposit gets no clarification ask (only figures holding back a safe quote are asked about)", async () => {

@@ -93,10 +93,15 @@ Tests:
   - The reference agent is a script, not an LLM.
   - Extraction is measured only with the offline fallback reader.
 
+## 5b. Since this report
+
+- Financial integrity and vendor alternatives (`docs/financial-integrity.md`): 0 incorrect financial quotes approvable on the recorded Claude readings (was 3); other-date offers and priced options are kept for the human, never approvable until confirmed.
+- What changes for staging, and what Aarnav must review: `docs/release-delta-staging-rc.md` (no migration, env or shared-contract delta since `396c52f`).
+
 ## 6. Remaining blockers to a first real customer
 
 1. **Staging** (in progress): Aarnav's Manufact server and Inkbox identity, then migrations, deploy, and the Gmail/Outlook trial with a `READY` verdict (`docs/staging-handoff.md`).
-2. **Claude extraction measured on the corpus:**
+2. **Claude extraction measured on the corpus:** done 2026-10-23 (`docs/financial-integrity.md` §3). To re-measure:
    ```bash
    HAGGLE_EVAL_LIVE=1 HAGGLE_EVAL_MAX_USD=5 npx tsx apps/mcp/scripts/eval-report.ts --stdout
    ```
