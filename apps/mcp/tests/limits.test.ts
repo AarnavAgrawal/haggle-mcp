@@ -7,7 +7,20 @@ import { existsSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { bodySize, limitsFromEnv, limitsMiddleware, TokenBucket, toolCalls, type LimitContext } from "../src/limits.ts";
+import { bodySize, credentialKey, limitsFromEnv, limitsMiddleware, TokenBucket, toolCalls, type LimitContext } from "../src/limits.ts";
+
+describe("rate-limit buckets", () => {
+  const ctx = (headers: Record<string, string>, path = "/mcp") => ({ req: { path, method: "POST", raw: new Request("http://x"), header: (n: string) => headers[n.toLowerCase()] } }) as unknown as LimitContext;
+  it("the web app's service token gets one bucket per workspace, apart from bearer tokens and anonymous calls", () => {
+    const a = credentialKey(ctx({ "x-haggle-service-token": "svc", "x-haggle-workspace": "ws_u_a" }));
+    const b = credentialKey(ctx({ "x-haggle-service-token": "svc", "x-haggle-workspace": "ws_u_b" }));
+    expect(a).not.toBe(b);
+    expect(a).not.toBe("anonymous");
+    expect(credentialKey(ctx({ "x-haggle-service-token": "svc", "x-haggle-workspace": "ws_u_a" }))).toBe(a);
+    expect(credentialKey(ctx({ authorization: "Bearer hgw_x" }))).not.toBe(a);
+    expect(credentialKey(ctx({}))).toBe("anonymous");
+  });
+});
 
 describe("limits (unit)", () => {
   it("reads limits from the environment: rate limiting on by default in live mode only; invalid values fall back", () => {

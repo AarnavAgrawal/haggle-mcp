@@ -373,7 +373,7 @@ Live mode sends real messages, so it needs accounts and explicit choices about w
 
 1. **Create your env file:** `cp .env.example apps/mcp/.env`. Never commit it.
 2. **Fill in the required variables:** `HAGGLE_MODE=live`, `INKBOX_API_KEY`, `INKBOX_IDENTITY`, `INKBOX_WEBHOOK_SECRET`, `ANTHROPIC_API_KEY` and `SUPABASE_DB_URL`.
-3. **Apply the migrations** to your own Supabase project, in order: `supabase/migrations/100_*`, `101_*`, `102_*`, `200_*`, `201_*`. Check them with `npm run verify:db`.
+3. **Apply the migrations** to your own Supabase project: every file in `supabase/migrations/` in numeric order (engine `1xx`, brain `2xx`, then the web app's `3xx`, which need the engine's `workspaces` table). Check them with `npm run verify:db`.
 4. **Say who may be contacted.** Either:
    - `HAGGLE_DEMO_VENDORS`: JSON keyed by vendor. Configuring a contact authorizes it.
    - or `HAGGLE_ALLOWED_RECIPIENTS`: emails, `@domains` or E.164 numbers.
@@ -390,6 +390,15 @@ Live mode sends real messages, so it needs accounts and explicit choices about w
    - The seller fleet (`npm run setup -w @haggle/sellers`, then `npm run dev:sellers`) gives you realistic businesses to deal with. Run it with the key of the Inkbox org that owns the seller identities.
 
 Check `/health`: it reports the mode, which channels are on, whether payments are enabled and the build. If anything required is missing, it returns 503 with the list.
+
+### 7.5 Web app (optional)
+
+`apps/web` is a signed-in website on top of the same MCP server. It has Supabase sign-in, a chat that gathers requirements and previews the deal before starting it, a live deal dashboard, and approval and payment by the human's own clicks. Its backend is an MCP client and a trusted MCP Apps host: every deal action is a tool call, made with the `HAGGLE_SERVICE_TOKEN` shared with the server.
+
+- **Needs:** a Supabase project with the engine migrations plus `300_web_accounts.sql` and `301_web_chat.sql`, and an MCP server that stores workspaces in that same database.
+- **Run:** `npm run dev -w @haggle/web` (port 3200).
+
+Setup, architecture, auth, environment variables and limitations: [`docs/web-app.md`](docs/web-app.md).
 
 ## 8. Configuration reference
 
@@ -479,17 +488,15 @@ packages/
   core/         shared contracts and view schemas (zod) – the seam between engine and views
   engine/       the buyer engine: workflow, channels, parsing, ranking, negotiation, payments, stores
   brain/        business learning: profiles, estimates, price checks, directory
-supabase/migrations/   100–102 engine, 200–201 brain
+supabase/migrations/   1xx engine, 2xx brain, 3xx web app
+apps/web/              the web app (sign-in, chat, live dashboard); see docs/web-app.md
 fixtures/       sample views, replies, brain and buyer fixtures for tests
 scripts/        Postgres test runner, migration checks, acceptance scripts, spikes
 docs/           contracts, traceability, release notes, runbooks, screenshots
 CLAUDE.md · CONTRACTS.md · PLAN.md · CHECKLIST.md   team rules, full spec, product plan, progress
 ```
 
-**Ownership:**
-- **Yash:** the server tools and the engine (`apps/mcp/index.ts`, `apps/mcp/src`, `packages/engine`, `1xx` migrations).
-- **Aarnav:** the views, brain, sellers, bench and fixtures (`apps/mcp/views`, `packages/brain`, `apps/sellers`, `apps/bench`, `fixtures`, `2xx` migrations).
-- **Shared:** `packages/core`, which both owners must agree to change.
+**Ownership:** Yash and Aarnav both work across the whole codebase (see `CLAUDE.md` §4 for the map of what lives where).
 
 ## 13. Status and known limitations
 
@@ -506,6 +513,7 @@ CLAUDE.md · CONTRACTS.md · PLAN.md · CHECKLIST.md   team rules, full spec, pr
 |---|---|
 | [`PLAN.md`](PLAN.md) | Product plan: problem, views, seller fleet, benchmark and demo script. |
 | [`CONTRACTS.md`](CONTRACTS.md) | Full spec of shared surfaces: types, view schemas, states, channels, quote protocol, payment, database and environment. |
+| [`docs/web-app.md`](docs/web-app.md) | The web app: architecture, auth and tenancy, chat, dashboard, approval, setup and testing. |
 | [`docs/contracts-rc1.md`](docs/contracts-rc1.md) | Current tool contracts, board model and engine invariants. |
 | [`docs/traceability.md`](docs/traceability.md) | Requirements → code → tests. |
 | [`docs/release-rc1.md`](docs/release-rc1.md) | Release notes and verification record. |

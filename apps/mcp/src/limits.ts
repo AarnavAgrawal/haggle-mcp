@@ -12,7 +12,7 @@
 // workspace gets up to N times the rate). Webhook 5xx answers are alerted (deduped by the alerter).
 import { createHash } from "node:crypto";
 import { getRuntime } from "./runtime.ts";
-import { CONNECTOR_HEADER } from "./workspace.ts";
+import { CONNECTOR_HEADER, SERVICE_TOKEN_HEADER, SERVICE_WORKSPACE_HEADER } from "./workspace.ts";
 
 export interface LimitConfig {
   mcpMaxBytes: number;
@@ -108,8 +108,11 @@ export interface LimitsOptions {
   onWebhookFailure?: (status: number, path: string) => void;
 }
 
-const credentialKey = (c: LimitContext) => {
-  const cred = c.req.header("authorization") ?? c.req.header(CONNECTOR_HEADER) ?? (c.req.path.match(/^\/c\/([^/]+)\/mcp$/)?.[1] ?? "");
+export const credentialKey = (c: LimitContext) => {
+  // The web app's service token acts for many workspaces: one bucket per workspace it names.
+  const service = c.req.header(SERVICE_TOKEN_HEADER);
+  const cred = (service ? `${service}\n${c.req.header(SERVICE_WORKSPACE_HEADER) ?? ""}` : null)
+    ?? c.req.header("authorization") ?? c.req.header(CONNECTOR_HEADER) ?? (c.req.path.match(/^\/c\/([^/]+)\/mcp$/)?.[1] ?? "");
   return cred ? createHash("sha256").update(cred).digest("hex").slice(0, 32) : "anonymous";
 };
 

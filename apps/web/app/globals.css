@@ -142,6 +142,12 @@ button:focus-visible {
   border-color: var(--win);
   color: #fff;
 }
+@media (prefers-color-scheme: dark) {
+  /* The dark theme's green is light: dark text keeps the label readable (WCAG AA). */
+  .btn-primary {
+    color: #0b1a14;
+  }
+}
 .btn:disabled {
   opacity: 0.6;
   cursor: default;
