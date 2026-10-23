@@ -5,12 +5,25 @@ import type { User } from "@supabase/supabase-js";
 import { haggleConfig } from "@/lib/env";
 import { autoOnboard } from "@/lib/demo";
 import { haggleClient, provisionWorkspace } from "@/lib/haggle";
+import { GUEST_REFUSED_PATH, isAllowedUser } from "@/lib/account/gate";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { supabaseServer } from "@/lib/supabase/server";
 
-export async function sessionUser(): Promise<User | null> {
+export { isAllowedUser };
+
+/** The Supabase session's user, guests included (gating is sessionUser's job). */
+async function rawSessionUser(): Promise<User | null> {
   const { data } = await (await supabaseServer()).auth.getUser();
   return data.user ?? null;
+}
+
+/**
+ * The signed-in user every page and API route acts for, or null. A guest (anonymous sign-in) counts
+ * only on a demo site (isAllowedUser): on a live site their routes answer 401 and pages go to /login.
+ */
+export async function sessionUser(): Promise<User | null> {
+  const user = await rawSessionUser();
+  return user && isAllowedUser(user) ? user : null;
 }
 
 /** The user's workspace (row-level security: a user reads only their own memberships). */
@@ -22,8 +35,9 @@ export async function membership(userId: string): Promise<{ workspace_id: string
 
 /** The signed-in user's Haggle client; sends them to /login or /onboarding when there is none yet. */
 export async function requireHaggle() {
-  const user = await sessionUser();
+  const user = await rawSessionUser();
   if (!user) redirect("/login");
+  if (!isAllowedUser(user)) redirect(GUEST_REFUSED_PATH); // a guest on a live site: sign in with an email
   const m = await membership(user.id);
   if (!m) {
     // Guests, and everyone on a demo site, get their workspace without the onboarding form.

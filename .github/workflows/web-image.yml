@@ -1,0 +1,60 @@
+# Web app container image (apps/web/Dockerfile): builds it on Linux with placeholder public values and
+# checks it starts and serves as the unprivileged user. It never pushes the image anywhere and gets no
+# secret: the typecheck, tests and `next build` of apps/web are part of CI / verify (ci.yml).
+# docs/production-deploy.md has the real build command (per-environment NEXT_PUBLIC_* build args).
+name: Web image
+
+on:
+  pull_request:
+    paths:
+      - apps/web/**
+      - packages/core/**
+      - package.json
+      - package-lock.json
+      - .github/workflows/web-image.yml
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image (context = repo root)
+        run: |
+          docker buildx build --load -f apps/web/Dockerfile \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL=https://ci-placeholder.supabase.co \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-placeholder-anon-key \
+            -t haggle-web:ci .
+
+      - name: No env file or secret in the image
+        run: |
+          found=$(docker run --rm --entrypoint sh haggle-web:ci -c 'find /app -name ".env*" ! -name ".env.example"')
+          if [ -n "$found" ]; then echo "env files in the image:"; echo "$found"; exit 1; fi
+
+      - name: Runs as a non-root user and serves on port 3000
+        run: |
+          test "$(docker run --rm --entrypoint id haggle-web:ci -u)" != "0"
+          docker run -d --init --name web -p 3000:3000 \
+            -e HAGGLE_MCP_URL=https://mcp.invalid -e HAGGLE_SERVICE_TOKEN=ci-placeholder-service-token-0123456789 \
+            haggle-web:ci
+          for _ in $(seq 1 30); do
+            body=$(curl -s http://127.0.0.1:3000/api/cron/tick || true)
+            # The route's own refusal (not Next's 404 page): CRON_SECRET isn't set, so the endpoint is off.
+            if echo "$body" | grep -q '"cron_disabled"'; then echo "web app up (cron endpoint off without CRON_SECRET)"; exit 0; fi
+            sleep 1
+          done
+          docker logs web
+          exit 1

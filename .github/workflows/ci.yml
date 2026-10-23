@@ -85,14 +85,25 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # Before the tests: the MCP end-to-end suites start the built server (as Manufact does).
+      # Before the tests: the MCP end-to-end suites start the built server (as Manufact does), and so
+      # does the web app's approval e2e. This also runs the web app's `next build` (apps/web), with
+      # placeholder public values (NEXT_PUBLIC_* are inlined at build time; nothing is contacted).
       - name: Build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-anon-key
+          NEXT_PUBLIC_HAGGLE_DEMO: "false"
         run: npm run build
+
+      # The root build covers every workspace with a build script; fail loudly if the web app's was skipped.
+      - name: Web app built (next build)
+        run: test -f apps/web/.next/BUILD_ID
 
       # Offline part of the launch gate: migration file numbers/names unique, build newer than the sources.
       - name: Launch gate (migration files, build)
         run: node apps/mcp/scripts/launch-gate.ts --target development --skip-config
 
+      # Every workspace's suite, apps/web/tests included (the web app's typecheck is in `npm run typecheck`).
       - name: Unit and end-to-end tests (mock mode, no network)
         run: npx vitest run
 

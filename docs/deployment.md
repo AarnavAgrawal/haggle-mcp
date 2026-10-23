@@ -192,6 +192,7 @@ npx tsx apps/mcp/scripts/migrations.ts verify
 | `111_engine_ops` | The migration ledger `engine_migrations` | – (idempotent) | Additive | Safe to re-run |
 | `112_engine_inbound_review` (A), `113_engine_purchasing` (B), `114_engine_deploy` (C, only if added), `115_engine_security` (D), `116_engine_analytics` (E), `117_engine_ops` (F) | Sprint 4 workstreams | **Each on 100–111 alone**: none may depend on another sprint-4 file | Must be additive (the reviewer checks each one for `drop`/`rename`/narrowed checks) | Per file, in its header |
 | `118_engine_booking` (A), `119_engine_pilot` (B), `120_engine_release` (C, not added), `121_engine_security2` (D), `122_engine_metrics` (E) | Sprint 5 workstreams | **Each on 100–117 alone** | As above | Per file, in its header |
+| `123_engine_web_approvals` | Web app: approvals decided by the signed-in account owner (channel `web`) | On 100–122 | Additive; safe to re-run | In its header |
 
 **Checks on every CI run:**
 - **`scripts/verify-migrations.sh`:**

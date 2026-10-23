@@ -1,0 +1,28 @@
+/* Legal pages (/terms, /privacy, /acceptable-use). Uses the tokens in app/globals.css. */
+.legal {
+  max-width: 720px;
+  font-size: 15px;
+  line-height: 1.6;
+}
+.legal h1 {
+  margin-top: 16px;
+  font-size: 26px;
+}
+.legal h2 {
+  margin-top: 28px;
+  font-size: 18px;
+}
+.legal p,
+.legal ul {
+  margin: 10px 0;
+}
+.legal li + li {
+  margin-top: 4px;
+}
+.legal-draft {
+  padding: 10px 12px;
+  border-radius: var(--radius-s);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-weight: 600;
+}

@@ -1,0 +1,125 @@
+/* Vendors page: builds on globals.css tokens (light and dark come from there). */
+
+.vend-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.vend-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--rule);
+}
+.vend-item:first-child {
+  border-top: 0;
+}
+.vend-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.vend-contact {
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+}
+.vend-actions {
+  flex: none;
+}
+.vend-consent summary {
+  cursor: pointer;
+}
+.vend-consent-text {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.vend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.vend-search {
+  align-items: end;
+}
+.vend-search-btn {
+  display: flex;
+  align-items: flex-end;
+}
+
+.vend-select,
+.vend-textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-s);
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+}
+.vend-textarea {
+  width: 100%;
+  resize: vertical;
+}
+.vend-select:focus-visible,
+.vend-textarea:focus-visible,
+.vend-radio input:focus-visible,
+.vend-check input:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.vend-fieldset {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+  margin: 0;
+  padding: 8px 12px 12px;
+  display: grid;
+  gap: 8px;
+}
+.vend-fieldset legend {
+  font-weight: 600;
+  padding: 0 4px;
+}
+.vend-radio,
+.vend-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: 400;
+  margin: 0;
+  cursor: pointer;
+}
+.vend-radio input,
+.vend-check input {
+  width: auto;
+  margin-top: 3px;
+  flex: none;
+}
+.vend-radio > span {
+  display: grid;
+}
+.vend-radio-off {
+  opacity: 0.55;
+  cursor: default;
+}
+.vend-explain {
+  font-size: 12px;
+}
+.vend-err {
+  margin: 4px 0 0;
+  color: var(--risk);
+  font-size: 12px;
+}
+.vend-form input[aria-invalid="true"],
+.vend-form select[aria-invalid="true"] {
+  border-color: var(--risk);
+}
+
+@media (max-width: 560px) {
+  .vend-item {
+    flex-direction: column;
+  }
+}

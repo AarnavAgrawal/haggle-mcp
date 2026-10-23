@@ -141,6 +141,8 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       emailApprovalByCode: emailApprovalByCode(env),
       // Live: only the approver's own coded reply approves (never a tool call, form or card button).
       outOfBandApprovalsOnly: true,
+      // The signed-in account owner's click in the web app (service routes only; MCP tools unchanged).
+      webApprovals: !/^(false|0|off|no)$/i.test(env.HAGGLE_WEB_APPROVALS?.trim() ?? ""),
       // Pilot: no money moves through Haggle (the human pays the business; HAGGLE_PAYMENTS=manual).
       ...(env.HAGGLE_PAYMENTS === "manual" ? { manualPaymentHandoff: true } : {}),
       // Vendors are contacted only in business hours (default Mon-Sat 08:00-19:00 America/Los_Angeles; HAGGLE_CONTACT_HOURS=off disables).

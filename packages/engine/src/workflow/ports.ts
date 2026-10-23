@@ -206,6 +206,13 @@ export interface EngineConfig {
    */
   outOfBandApprovalsOnly?: boolean;
   /**
+   * The signed-in account owner approves, reports payment, cancels a confirmed booking and authorizes a
+   * callback in the Haggle web app (approval channel "web", recorded as web:<actor>). Reached only
+   * through the service-token routes (apps/mcp/src/service/approvals.ts), never an MCP tool, so it holds
+   * under outOfBandApprovalsOnly too. Default on; false refuses every web decision (web_approvals_off).
+   */
+  webApprovals?: boolean;
+  /**
    * The workspace whose open requests the shared Voice AI line may describe to callers (every
    * workspace shares one buyer identity). Default DEFAULT_WORKSPACE_ID; other workspaces' jobs are
    * never in the answering instructions.

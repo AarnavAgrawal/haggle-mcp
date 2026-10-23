@@ -171,6 +171,7 @@ const RECOVERY_SWEEP_MS = 2 * 60_000;
 
 /** Approval channels a tool call can claim (form, card button, simulated human): not proof of a human. */
 const IN_BAND_CHANNELS = new Set<ApprovalRow["channel"]>(["elicitation", "view", "simulated"]);
+const webApprovalsOff = () => new EngineError("web_approvals_off", "Web approvals are off on this server.", "Approve by replying to Haggle's approval text (YES <code>), or ask the operator to enable HAGGLE_WEB_APPROVALS.", "wait_for_update");
 const needsHumanChannel = () => new EngineError("approval_needs_human_channel", "On this server only the approver's own reply approves: a coded text (YES <code>) from the workspace approver's phone.", "Ask the human to reply to Haggle's approval text; never ask them for the code.", "wait_for_update");
 const approverChangeRefused = () => new EngineError("approver_change_requires_operator", "The approver can only be changed by the operator, never through a tool call.", "Ask the operator to change it (scripts/workspace-admin.ts set-approver).", "settings");
 /** A placed call with no call-ended result after this long no longer blocks new calls. */
@@ -2323,7 +2324,15 @@ export class HaggleEngine {
       await reply(coded.length > 1 ? `more than one of your deals has code ${code}; nothing was accepted. Reply again with the deal code, e.g. "BOOKED ${code} HG-${job.short_code}".` : "that code doesn't match a booking waiting for you; nothing was accepted.");
       return { jobId: job.id, outcome: coded.length > 1 ? "booked_ambiguous_code" : "booked_no_match" };
     }
-    const a = coded[0]!;
+    return this.acceptBooking(job, coded[0]!, reply);
+  }
+
+  /**
+   * The human accepts the booking for this approval (BOOKED <code>, or the web app as web:<actor>): a
+   * confirmation the business sent from a sender Haggle can't verify, or a booking Haggle can't get in
+   * writing that the human confirmed with the business directly. `reply` is the text path's answer.
+   */
+  private async acceptBooking(job: JobRow, a: ApprovalRow, reply: (text: string) => Promise<void>): Promise<{ jobId: string | null; outcome: string }> {
     const booking = await this.repo.getBookingByApproval(a.id);
     if (booking?.status === "not_in_writing") return this.attestBooking(job, a, booking, reply);
     const claim = (await this.repo.listEvents(job.id)).filter((e) => e.type === "booking" && e.data.approval_id === a.id && e.data.status === "vendor_claims_confirmed").at(-1);
@@ -2426,21 +2435,31 @@ export class HaggleEngine {
       await reply("already recorded that you reported paying. Nothing else to do.");
       return { jobId: job.id, outcome: "handoff_already_confirmed" };
     }
+    const r = await this.confirmReportedPayment(job, target, h, from);
+    if (r.outcome === "handoff_refused") await reply(`couldn't record that payment: the approval no longer matches (${r.code.toLowerCase().replace(/_/g, " ")}). Nothing was sent to the business; see the deal board.`);
+    return { jobId: job.id, outcome: r.outcome };
+  }
+
+  /**
+   * The human's report that they paid the business directly (PAID <code> text, or the web app's "I've
+   * paid" as web:<actor>): the exact approval, quote, amount, caps and job state are revalidated first;
+   * only then is the handoff final (the business is told the customer reports having paid).
+   */
+  private async confirmReportedPayment(job: JobRow, target: ApprovalRow, h: PaymentHandoffRow, by: string): Promise<{ outcome: "handoff_confirmed" | "handoff_already_confirmed" } | { outcome: "handoff_refused"; code: string }> {
     const fresh = (await this.repo.getJob(job.id)) ?? job;
     const held = (await this.repo.getBookingByApproval(target.id))?.status;
     const verdict = await this.paymentVerdict(fresh, target, { bookingHeld: held === "confirmed" || held === "not_in_writing" });
     if (!verdict.ok) {
       await this.repo.appendEvent(job.id, "payment_refused", { code: verdict.code, approval_id: target.id, rail: "manual" });
-      await reply(`couldn't record that payment: the approval no longer matches (${verdict.code.toLowerCase().replace(/_/g, " ")}). Nothing was sent to the business; see the deal board.`);
-      return { jobId: job.id, outcome: "handoff_refused" };
+      return { outcome: "handoff_refused", code: verdict.code };
     }
-    const done = await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "human_confirmed", confirmed_by: from, confirmed_at: this.now().toISOString() });
-    if (!done) return { jobId: job.id, outcome: "handoff_already_confirmed" };
+    const done = await this.repo.updateHandoff(h.id, ["instructions_requested", "instructions_received"], { status: "human_confirmed", confirmed_by: by, confirmed_at: this.now().toISOString() });
+    if (!done) return { outcome: "handoff_already_confirmed" };
     await this.repo.transitionApproval(target.id, "approved", { status: "used" });
     // The customer's report, not a verified settlement (that needs the business's own "received").
-    await this.repo.appendEvent(job.id, "payment", { status: "human_reported_paid", rail: "manual", reported_by: "human", amount_usd: centsToUsd(h.amount_cents) });
+    await this.repo.appendEvent(job.id, "payment", { status: "human_reported_paid", rail: "manual", reported_by: "human", amount_usd: centsToUsd(h.amount_cents), ...(by.startsWith("web:") ? { via: "web" } : {}) });
     await this.fire(job.id, { type: "payment_settled" });
-    return { jobId: job.id, outcome: "handoff_confirmed" };
+    return { outcome: "handoff_confirmed" };
   }
 
   /**
@@ -5868,6 +5887,11 @@ export class HaggleEngine {
     return this.repo.addWorkspaceVendor({ ...v, contact, consent: v.consent.trim() });
   }
 
+  /** Read only: which of these contacts are suppressed everywhere (opted out or bounced); the web's vendor form refuses them. */
+  async contactSuppressions(contacts: string[]) {
+    return this.repo.findSuppressions(contacts.map((c) => (c.includes("@") ? normalizeAddress(c) : c.replace(/[\s().-]/g, ""))));
+  }
+
   /** Operator only: withdraw a vendor's authorization for one workspace. */
   async removeWorkspaceVendor(workspaceId: string, contact: string) {
     return this.repo.removeWorkspaceVendor(workspaceId, contact.includes("@") ? normalizeAddress(contact) : contact.replace(/[\s().-]/g, ""));
@@ -6935,10 +6959,12 @@ export class HaggleEngine {
     return true;
   }
 
-  async decideApproval(approvalId: string, decision: "approve" | "decline", channel: ApprovalRow["channel"], approver: string | null, opts: { payByText?: boolean } = {}) {
+  async decideApproval(approvalId: string, decision: "approve" | "decline", channel: ApprovalRow["channel"], approver: string | null, opts: { payByText?: boolean; web?: true } = {}) {
     const a = await this.repo.getApproval(approvalId);
     if (!a) return false;
     if (channel === "simulated" && this.d.config.mode !== "mock") throw new EngineError("simulation_disabled", "Simulated approval is only available in mock mode.", "Approve through the form or by email.", "approve");
+    // "web" is the account owner's click in the web app, reached only through decideWebApproval (service token).
+    if (channel === "web" && (opts.web !== true || !this.webApprovalsEnabled)) throw webApprovalsOff();
     if (decision === "approve" && this.outOfBandApprovalsOnly && IN_BAND_CHANNELS.has(channel)) throw needsHumanChannel();
     if (this.now().getTime() > Date.parse(a.expires_at)) {
       await this.repo.transitionApproval(a.id, "pending", { status: "expired", decided_at: this.now().toISOString() });
@@ -7010,7 +7036,7 @@ export class HaggleEngine {
    * the reply says what actually happened.
    */
   private async alreadyDecidedText(job: JobRow, a: ApprovalRow): Promise<string> {
-    const where = a.channel === "view" ? " on the card" : a.channel === "elicitation" ? " in the chat's approval form" : a.channel === "email" ? " by email" : a.channel === "imessage" ? " by text" : a.channel === "simulated" ? " (simulated, DEMO)" : "";
+    const where = a.channel === "view" ? " on the card" : a.channel === "web" ? " in the Haggle web app" : a.channel === "elicitation" ? " in the chat's approval form" : a.channel === "email" ? " by email" : a.channel === "imessage" ? " by text" : a.channel === "simulated" ? " (simulated, DEMO)" : "";
     const at = await this.clockTime(a.decided_at, job.workspace_id);
     const replaced = (await this.repo.listEvents(job.id)).find((e) => e.type === "approval_superseded" && e.data.approval_id === a.id);
     if (replaced) return `that suggestion was replaced at ${at} (${String(replaced.data.reason).slice(0, 60)}). Nothing was paid; see the deal board.`;
@@ -7334,6 +7360,150 @@ export class HaggleEngine {
     const r = await this.fire(jobId, { type: "cancelled" });
     if (!r.ok) throw new EngineError("cannot_cancel", r.reason ?? "conflict", job.state === "paid" ? "Settled payments can't be reversed." : "Wait for the payment to resolve.", "wait_for_update");
     return { ok: true as const, state: "cancelled" as JobState };
+  }
+
+  // ───────────────── the web app: the signed-in account owner decides (service routes only) ─────────────────
+  //
+  // The Haggle web app's backend is a first-party host that reaches the server only with the service
+  // token (apps/mcp/src/service/approvals.ts) and names the signed-in user (x-haggle-actor). Its clicks
+  // are the human's own: channel "web", recorded as web:<actor>. No MCP tool reaches these methods, so
+  // the agent-facing rules (outOfBandApprovalsOnly, callbacksNeedApproverText) are unchanged. Every
+  // method checks the job belongs to the caller's workspace (another's reads as "not found"). No code
+  // (approval, CALL, CANCEL) is ever returned or texted by these paths.
+
+  /** EngineConfig.webApprovals (default on). */
+  get webApprovalsEnabled(): boolean {
+    return this.d.config.webApprovals !== false;
+  }
+  /** True when approved deals end in the manual handoff (the human pays the business directly). */
+  get manualHandoff(): boolean {
+    return this.d.config.manualPaymentHandoff === true;
+  }
+
+  private async webJob(workspaceId: string, jobId: string, actor: string | null, needActor = true): Promise<{ job: JobRow; by: string }> {
+    if (!this.webApprovalsEnabled) throw webApprovalsOff();
+    const who = (actor ?? "").replace(/[\u0000-\u001f]/g, "").trim().slice(0, 120);
+    if (needActor && !who) throw new EngineError("actor_required", "Web decisions must name the signed-in user.", "Send x-haggle-actor with the user's email or id.", "none");
+    const job = await this.repo.getJob(jobId);
+    if (!job || job.workspace_id !== workspaceId) throw new EngineError("job_not_found", `No job ${jobId}.`, "Use a deal from this workspace's deals list.", "list_deals");
+    return { job, by: `web:${who}` };
+  }
+
+  /**
+   * Open (or reuse) the pending approval for this exact quote on channel "web". Nothing is texted or
+   * emailed: the owner decides with decideWebApproval. An approval already recorded for this quote is
+   * returned as it stands (a repeated click).
+   */
+  async requestWebApproval(workspaceId: string, jobId: string, quoteId: string, action: ApprovalAction | undefined, actor: string | null): Promise<{ approval: ApprovalRow; business: string; caveats: string[] }> {
+    const { job } = await this.webJob(workspaceId, jobId, actor, false);
+    const latest = await this.repo.getLatestApproval(jobId);
+    const done = latest && latest.quote_id === quoteId && (latest.status === "approved" || latest.status === "used") && (job.state === "paying" || job.state === "paid" || job.state === "confirmed");
+    // The owner picked another option while an undecided approval waits (e.g. a confirm dialog they
+    // closed, or the agent's texted one): it is replaced (expires, so its code can never approve).
+    if (!done && job.state === "awaiting_approval" && latest?.status === "pending" && (latest.quote_id !== quoteId || (action && latest.action !== normalizeAction(action)))) {
+      await this.supersedeAutoApproval(job, latest, "the account owner chose another option in the web app");
+    }
+    const approval = done ? latest : await this.requestApproval(jobId, quoteId, "web", action);
+    return { approval, business: await this.businessName(jobId, approval.business_id), caveats: await this.approvalCaveats(jobId, quoteId) };
+  }
+
+  /**
+   * The owner's Approve / Decline click. Only a pending, unexpired approval of a job in this workspace;
+   * a repeat of the same decision is a no-op (`changed: false`). Recorded as channel "web", web:<actor>.
+   */
+  async decideWebApproval(workspaceId: string, approvalId: string, decision: "approve" | "decline", actor: string | null): Promise<{ approval: ApprovalRow; changed: boolean; job: JobRow }> {
+    const a0 = await this.repo.getApproval(approvalId);
+    if (!a0) throw new EngineError("approval_not_found", "No such approval.", "Request the approval again from the deal page.", "none");
+    const { by } = await this.webJob(workspaceId, a0.job_id, actor).catch((e: EngineError) => {
+      throw e.code === "job_not_found" ? new EngineError("approval_not_found", "No such approval.", "Request the approval again from the deal page.", "none") : e;
+    });
+    const want = decision === "approve" ? "approved" : "declined";
+    const settled = (a: ApprovalRow) => a.status === want || (decision === "approve" && a.status === "used");
+    if (a0.status !== "pending") {
+      if (settled(a0)) return { approval: a0, changed: false, job: await this.loadJob(a0.job_id) };
+      throw new EngineError(`approval_${a0.status}`, `This approval is already ${a0.status}.`, "Choose the quote again to start a new approval.", "get_quotes");
+    }
+    const ok = await this.decideApproval(a0.id, decision, "web", by, { web: true });
+    const a = (await this.repo.getApproval(a0.id))!;
+    if (!ok && !settled(a)) {
+      throw a.status === "expired"
+        ? new EngineError("approval_expired", "This approval expired before it was decided.", "Choose the quote again to start a new approval.", "get_quotes")
+        : new EngineError(`approval_${a.status}`, `This approval is already ${a.status}.`, "Choose the quote again to start a new approval.", "get_quotes");
+    }
+    return { approval: a, changed: ok, job: await this.loadJob(a.job_id) };
+  }
+
+  /** The deal's next step after a web decision, in the board's words (purchase stage when there is one). */
+  async webNext(jobId: string): Promise<{ state: JobState; stage?: string; summary?: string; next: string }> {
+    const job = await this.loadJob(jobId);
+    const v = job.state === "paying" || job.state === "paid" || job.state === "confirmed" ? await this.purchaseFor(job) : null;
+    return v ? { state: job.state, stage: v.stage, summary: v.summary, next: v.next } : { state: job.state, next: await this.nextHint(job) };
+  }
+
+  /**
+   * "I've paid the vendor" in the web app: the same effect as the approver's PAID <code> text, recorded as
+   * web:<actor>. Only on the manual rail, only once the business confirmed the booking (or the human
+   * accepted it) and Haggle asked how to pay; the payment checks are revalidated first.
+   */
+  async reportPaidByWeb(workspaceId: string, jobId: string, actor: string | null): Promise<{ outcome: "reported" | "already_reported" }> {
+    const { job, by } = await this.webJob(workspaceId, jobId, actor);
+    if (!this.manualHandoff) throw new EngineError("not_manual_rail", "This server doesn't use the manual payment handoff, so there is no direct payment to report.", "Use Pay on the approval panel (it charges the approved amount).", "pay");
+    const a = await this.repo.getLatestApproval(jobId);
+    if (!a || (a.status !== "approved" && a.status !== "used") || a.action === "confirm") throw new EngineError("nothing_to_pay", "Nothing on this deal is approved for payment.", "Approve a quote first; a confirm-only order is paid to the business under its own terms.", "get_quotes");
+    const [h, bk] = await Promise.all([this.repo.getHandoffByApproval(a.id), this.repo.getBookingByApproval(a.id)]);
+    const name = await this.businessName(jobId, a.business_id);
+    if (!h && (bk?.status === "awaiting_vendor_confirmation" || (bk?.status === "not_in_writing" && !bk.human_attested_at))) {
+      // Paid before the business confirmed: nothing is marked paid and the business isn't told (as the text path).
+      await this.repo.appendEvent(jobId, "operator_attention", { reason: "paid_before_booking_confirmed", approval_id: a.id, via: "web" });
+      throw new EngineError("paid_before_booking", `${name} hasn't confirmed the booking yet, so nothing was recorded as paid.`, `Don't pay before ${name} confirms. If you already paid, tell them directly; the deal page updates when they confirm.`, "wait_for_update");
+    }
+    if (!h) throw new EngineError("no_handoff", "Haggle hasn't asked this business how it takes payment yet.", "Wait for the booking to be confirmed (the deal page updates), then report the payment.", "wait_for_update");
+    if (h.status === "human_confirmed") return { outcome: "already_reported" };
+    if (h.status !== "instructions_requested" && h.status !== "instructions_received") throw new EngineError("not_payable", `The payment handoff is ${h.status.replace(/_/g, " ")}.`, "Nothing to report; see the deal page.", "get_quotes");
+    const r = await this.confirmReportedPayment(job, a, h, by);
+    if (r.outcome === "handoff_refused") throw new EngineError("handoff_refused", `The approval no longer passes the payment checks (${r.code.toLowerCase().replace(/_/g, " ")}), so nothing was recorded or sent to ${name}.`, "Don't pay. The operator was flagged; a fresh approval may be needed (e.g. the spending cap was lowered).", "get_quotes");
+    return { outcome: r.outcome === "handoff_confirmed" ? "reported" : "already_reported" };
+  }
+
+  /**
+   * "The booking is confirmed" in the web app: the same as the approver's BOOKED <code> (a confirmation
+   * from a sender Haggle can't verify, or a business Haggle can't get a written answer from), web:<actor>.
+   */
+  async acceptBookingByWeb(workspaceId: string, jobId: string, actor: string | null): Promise<{ outcome: string }> {
+    const { job, by } = await this.webJob(workspaceId, jobId, actor);
+    if (!this.manualHandoff) throw new EngineError("not_manual_rail", "This server doesn't use the manual payment handoff; there is no booking to accept.", "See the deal page for the next step.", "get_quotes");
+    const a = await this.repo.getLatestApproval(jobId);
+    if (!a || a.status !== "approved" || job.state !== "paying") throw new EngineError("no_booking", "There's no booking waiting for you on this deal.", "See the deal page for the next step.", "get_quotes");
+    await this.repo.appendEvent(jobId, "booking_accept_requested", { approval_id: a.id, by });
+    const r = await this.acceptBooking(job, a, async () => undefined);
+    if (r.outcome === "booked_nothing_pending") throw new EngineError("no_booking", "There's no booking waiting for you on this deal; nothing was changed.", "See the deal page for the next step.", "get_quotes");
+    return { outcome: r.outcome };
+  }
+
+  /**
+   * Cancel from the web app as the account owner: like cancel_deal, and also a booking the business
+   * already confirmed (what the approver's CANCEL <code> text does). Never reverses a reported payment.
+   */
+  async cancelByWeb(workspaceId: string, jobId: string, actor: string | null) {
+    const { by } = await this.webJob(workspaceId, jobId, actor);
+    for (const old of pendingCallbackAuths(await this.repo.listEvents(jobId), this.now(), "cancel")) {
+      await this.repo.appendEvent(jobId, "cancel_auth_decided", { auth_id: old.auth_id, business_id: old.business_id, decision: "superseded" });
+    }
+    return this.cancelJob(jobId, by);
+  }
+
+  /**
+   * One callback authorized by the account owner in the web app (what the approver's CALL <code> text
+   * does): the proposal and the callee's consent are required, as for every callback.
+   */
+  async authorizeCallbackByWeb(workspaceId: string, jobId: string, businessId: string, actor: string | null): Promise<{ placed: boolean; scheduledFor?: string; proposal: CallbackProposal }> {
+    const { by } = await this.webJob(workspaceId, jobId, actor);
+    await this.callbackProposalOrThrow(jobId, businessId);
+    await this.requireCallbackConsent(jobId, businessId);
+    for (const old of pendingCallbackAuths(await this.repo.listEvents(jobId), this.now()).filter((x) => x.business_id === businessId)) {
+      await this.repo.appendEvent(jobId, "callback_auth_decided", { auth_id: old.auth_id, business_id: businessId, decision: "superseded" });
+    }
+    return this.placeCallback(jobId, businessId, by);
   }
 }
 

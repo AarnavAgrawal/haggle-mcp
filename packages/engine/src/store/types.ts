@@ -178,7 +178,8 @@ export interface ApprovalRow {
   payment_cents: number;
   cap_cents: number;
   approver: string | null;
-  channel: "elicitation" | "email" | "simulated" | "view" | "imessage";
+  /** "web": the signed-in account owner in the Haggle web app (service routes only, never an MCP tool; migration 123). */
+  channel: "elicitation" | "email" | "simulated" | "view" | "imessage" | "web";
   /** locked = too many wrong codes (MAX approval attempts); it can't be approved any more. */
   status: "pending" | "approved" | "declined" | "expired" | "used" | "locked";
   /** What the human approves; confirm-only approvals have payment_cents 0. */

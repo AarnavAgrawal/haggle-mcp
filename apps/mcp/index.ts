@@ -423,7 +423,7 @@ export const deal = server.tool(
         const sel = await resolveSelection(workspaceVendorList(own).map((v) => v.name), rt, { vendors: own, learning: engine, discovered: discoveredFor(engine.workspaceId) });
         if (!sel.ok) return fail(mode, sel.code, sel.message, sel.fix, "none");
         businesses = sel.selected.filter((x) => x.send).map(toSend);
-        blockers = sel.selected.filter((x) => !x.send).map((x) => ({ vendor: x.name, channel: x.kind === "workspace_vendor" ? x.vendor.channel : "email", reason: x.status.summary, fix: `Operator: run scripts/workspace-admin.ts show --id ${engine.workspaceId} for what's missing.` }));
+        blockers = sel.selected.filter((x) => !x.send).map((x) => ({ vendor: x.name, channel: x.kind === "workspace_vendor" ? x.vendor.channel : "email", reason: x.status.summary, fix: `Add or fix this vendor on the Vendors page of the Haggle web app (operator: scripts/workspace-admin.ts show --id ${engine.workspaceId}).` }));
         rosterTotal = sel.selected.length;
         preview = sel.selected.map((x) => ({ name: x.name, business_ref: x.business_ref, ...(x.send ? { channel: x.send.channel } : {}), contact_state: x.status.state, ready: !!x.send, ...(x.send ? {} : { reason: x.status.summary }) }));
       } else if (fromRoster) {
@@ -472,7 +472,7 @@ export const deal = server.tool(
         const v = DealBoardPlus.parse({ ok: false, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode: mode, setup, next: "Setup needed before Haggle can contact any vendor: show the user these blockers. Nothing was sent." });
         const lines = ownDefault
           ? [`NOT STARTED: none of this workspace's ${rosterTotal} vendors can be contacted right now. Nothing was sent.`, ...blockers.map((x) => `${x.vendor} [${x.channel}]: ${x.reason}. Fix: ${x.fix}`)]
-          : [`NOT STARTED: none of the ${roster.length} demo vendors can be contacted from this server yet. Nothing was sent.`, ...(own.length === 0 && mode === "live" ? [`This workspace has no vendors of its own yet: the operator adds each one, with its consent, using scripts/workspace-admin.ts add-vendor --id ${engine.workspaceId}.`] : []), ...blockerLines(roster)];
+          : [`NOT STARTED: none of the ${roster.length} demo vendors can be contacted from this server yet. Nothing was sent.`, ...(own.length === 0 && mode === "live" ? [`This workspace has no vendors of its own yet: add the businesses you work with, with their consent, on the Vendors page of the Haggle web app (operator: scripts/workspace-admin.ts add-vendor --id ${engine.workspaceId}).`] : []), ...blockerLines(roster)];
         return ok(v, [...lines, "next: show the user these setup steps; call deal again once one is fixed."].join("\n"));
       }
       // Plain-words requirements become checkable ones (kind, dietary minimum); explicit fields stand.

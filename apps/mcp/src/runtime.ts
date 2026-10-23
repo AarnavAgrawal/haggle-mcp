@@ -98,7 +98,7 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
     delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain, ...(personas ? { personas } : {}),
     ...(env.HAGGLE_MOCK_DATABASE_URL ? { repo: new PostgresRepository(env.HAGGLE_MOCK_DATABASE_URL) } : {}),
     // HAGGLE_DEMO_SPEED=true: the same shorter windows as live (decision 49).
-    config: { ...mockDemoConfig(env), ...(allow ? { recipientAllowlist: allow } : {}), outOfBandApprovalsOnly: outOfBandApprovals(env) },
+    config: { ...mockDemoConfig(env), ...(allow ? { recipientAllowlist: allow } : {}), outOfBandApprovalsOnly: outOfBandApprovals(env), webApprovals: !/^(false|0|off|no)$/i.test(env.HAGGLE_WEB_APPROVALS?.trim() ?? "") },
   });
   // Mock: the simulated fleet plays all six demo vendors; every one is reachable (DEMO).
   // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board).

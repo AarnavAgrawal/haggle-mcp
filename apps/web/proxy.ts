@@ -4,7 +4,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 // /api/* answers for itself (401/403 JSON from each route), never with a redirect to a page.
-const PUBLIC = [/^\/$/, /^\/login(?:\/|$)/, /^\/auth\//, /^\/api\//];
+const PUBLIC = [/^\/$/, /^\/login(?:\/|$)/, /^\/auth\//, /^\/api\//, /^\/(?:terms|privacy|acceptable-use)(?:\/|$)/];
 
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });

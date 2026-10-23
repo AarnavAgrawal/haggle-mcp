@@ -1,0 +1,27 @@
+# Ignore file for apps/web/Dockerfile (build context = the repo root). BuildKit uses
+# <Dockerfile>.dockerignore next to the Dockerfile; a plain .dockerignore here would not apply.
+
+# Never send a secret into the build context.
+**/.env*
+!**/.env.example
+.mcp-use
+.claude
+
+# Installed or built output: the image installs from the lockfile and builds itself.
+**/node_modules
+**/.next
+**/dist
+**/build
+**/coverage
+**/.turbo
+**/.vite
+**/*.tsbuildinfo
+
+# Not needed to build the web app.
+.git
+.github
+.haggle-data
+docs
+**/*.log
+**/*.pdf
+**/.DS_Store

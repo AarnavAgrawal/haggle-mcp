@@ -20,6 +20,7 @@ export function TopBar({ email, active }: { email?: string | null; active?: "dea
         {item("/deals", "Deals", "deals")}
         {item("/vendors", "Vendors", "vendors")}
         {item("/settings", "Settings", "settings")}
+        {item("/account", "Account", "account")}
       </nav>
       <form action="/auth/sign-out" method="post" style={{ display: "flex", alignItems: "center", gap: 12 }}>
         {email && <span className="muted">{email}</span>}

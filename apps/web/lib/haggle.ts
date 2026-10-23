@@ -161,7 +161,8 @@ export async function callService<T = Record<string, unknown>>(
   const res = await (cfg.fetchImpl ?? fetch)(`${base(cfg)}${path}`, {
     method: opts.method ?? (opts.body === undefined ? "GET" : "POST"),
     headers: {
-      "content-type": "application/json", "x-haggle-service-token": cfg.serviceToken,
+      // A bodiless GET carries no content-type (the server answers 400 "Invalid JSON" to an empty JSON body).
+      ...(opts.body === undefined ? {} : { "content-type": "application/json" }), "x-haggle-service-token": cfg.serviceToken,
       ...(opts.workspaceId ? { "x-haggle-workspace": opts.workspaceId } : {}),
       ...(opts.actor ? { "x-haggle-actor": opts.actor } : {}),
     },

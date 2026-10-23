@@ -6,6 +6,18 @@ import { supabaseBrowser } from "@/lib/supabase/browser";
 
 /** One-click guest access (Supabase anonymous sign-in): straight into a new request. */
 export function GuestButton({ label = "Try the demo", className = "btn btn-primary" }: { label?: string; className?: string }) {
+  // With bot protection on, a guest sign-in needs the captcha token: /login has the widget.
+  if (process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY) {
+    return (
+      <a className={className} href="/login">
+        {label}
+      </a>
+    );
+  }
+  return <GuestSignIn label={label} className={className} />;
+}
+
+function GuestSignIn({ label, className }: { label: string; className: string }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -22,7 +22,7 @@ The web app owns only three things: sign-in, which workspace a user belongs to, 
  │ lib/workspace.ts   session user + workspace_members lookup (requireHaggle, onboard)     │
  │ lib/chat/*         Claude tool loop over the allowlisted MCP tools; threads in Supabase │
  │ lib/dashboard/*    deal pages, SSE over wait_for_update, answer/message/negotiate/cancel│
- │ lib/approval/*     approve / pay / callback from a human click (host calls, codes kept) │
+ │ lib/approval/*     approve / pay / callback from a human click (service routes)        │
  │ lib/haggle.ts      MCP client: x-haggle-service-token + x-haggle-workspace on every call│
  └───────┬──────────────────────────────┬───────────────────────────────┬────────────────────┘
          │ Supabase Auth + Postgres     │ Claude API (chat only)         │ POST /mcp, POST /internal/workspaces
@@ -118,11 +118,7 @@ API routes never redirect: they answer with JSON (`401` signed out, `403` no wor
 
 Only a signed-in human's click approves, pays or authorizes a callback (`lib/approval/flow.ts`, `components/approval/ApprovalPanel.tsx`). Approving charges nothing. Pay charges the approved amount: the deposit, or the full total when the business stated no deposit. The amount is never an input.
 
-**Demo server** (mock mode, `HAGGLE_APPROVALS` not `out_of_band`). The backend calls `choose_in_view` as a host. The server returns a one-time ticket (`_meta["haggle/approval"]`), and the same click spends it on `approve_in_view`: one click records one yes. Pay then calls `pay`. For callbacks, `call_back` returns a code (`_meta["haggle/callback"]`) that the same click spends on `call_back_in_view`.
-
-**Live or out-of-band server** (`HAGGLE_MODE=live`, or `HAGGLE_APPROVALS=out_of_band`). The server never hands a host a code. `choose_in_view` texts the workspace approver, and the panel shows `pending_text`: the approver approves by replying `YES <code>` to Haggle's text. Callbacks work the same way, with the approver replying `CALL <code>`. If the approver can't be reached by text, the server refuses with `NO_HUMAN_CHANNEL` and nothing is approved. Once the text approval lands, the live stream refreshes the page and the panel shows Pay.
-
-**Codes never leave the server.** Flow results are built field by field from the tool's data, and no result type has a code or ticket field. The tests check this.
+**One path for demo and live servers** (`lib/approval/flow.ts` → the MCP server's service routes, `apps/mcp/src/service/approvals.ts`). Approve opens or reuses an approval on the "web" channel (`POST /internal/approvals/request`), shows the server's terms (business, amount paid now, total, caveats) in a confirm step, and the confirming click decides it (`POST /internal/approvals/decide`, recorded as `web:<the signed-in user>`). No code ever leaves the server. On the charging rail Pay then calls `pay`; on the manual rail (`HAGGLE_PAYMENTS=manual`, production) the panel shows the purchase stages: the vendor's written confirmation, its payment instructions as untrusted text (verify before paying), "I've paid the vendor" (`/internal/purchases/paid`), the vendor's receipt; plus "booking confirmed" (`/internal/purchases/booked`) and cancel (`/internal/purchases/cancel`). Callbacks go through `/internal/callbacks/authorize` and still need a justified callback and the business's recorded consent. `HAGGLE_WEB_APPROVALS=false` turns these routes off (text approval by `YES <code>` keeps working either way). MCP tools are unchanged: no agent can approve through them.
 
 **Route guards** (`lib/approval/route.ts`):
 - At most 30 actions per user per minute.
@@ -206,7 +202,6 @@ All of these tests call no external service. The e2e test starts a local server 
 ## Known limitations
 
 - **No browser end-to-end test yet.** Pages and components are checked by hand. The automated coverage is the pure logic, the routes and one server-level approval e2e.
-- **Live-mode approvals are by text.** On a live (out-of-band) server, clicking Approve sends the approver a text, and only their `YES <code>` reply approves. The web app can't approve in one click there. Callbacks likewise need `CALL <code>`.
 - **Rate limits are per process.** The chat's 20 turns per 10 minutes, the approval routes' 30 actions per minute and double-click joining all live in memory. With several instances or serverless functions, each instance counts on its own.
 - **All web traffic shares one MCP rate-limit bucket.** The MCP server's tool-call limiter (`apps/mcp/src/limits.ts`, on by default in live mode) keys on the bearer token or connector secret. Service-token requests carry neither, so every web workspace (and every open deal page's long-poll) counts against the same bucket.
 - **Workspace settings are read-only in the app.** Changing the approver or raising the cap is the operator's job.

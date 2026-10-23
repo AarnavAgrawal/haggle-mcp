@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { DemoBanner } from "@/components/DemoBanner";
+import { Footer } from "@/components/Footer";
 import { GuestButton } from "@/components/GuestButton";
 import { DEMO } from "@/lib/demo";
 import { sessionUser } from "@/lib/workspace";
@@ -45,6 +46,7 @@ export default async function Home() {
         </ol>
         <p className="landing-channels">Email · Voice AI calls · Texts · Agent-to-agent. Built on the Haggle MCP server, so any AI agent can buy the same way.</p>
       </main>
+      <Footer />
     </>
   );
 }

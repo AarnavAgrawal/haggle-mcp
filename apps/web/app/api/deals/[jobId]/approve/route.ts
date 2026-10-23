@@ -1,4 +1,6 @@
-// POST { quote_id, action?: "pay" | "confirm" }: the signed-in human approves this exact quote.
+// POST { quote_id, action?: "pay" | "confirm" }: preview the approval for this exact quote (business,
+// amount paid now, total, caveats). POST { quote_id, approval_id, decision }: the signed-in human's
+// confirm (or decline), recorded as theirs. No code ever reaches the browser.
 import { routeDeps } from "@/lib/approval/deps";
 import { handleAction } from "@/lib/approval/route";
 

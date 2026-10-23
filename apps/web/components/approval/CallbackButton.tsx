@@ -1,6 +1,7 @@
 "use client";
-// One Voice AI callback a deal offers, authorized by the human (CLAUDE.md §7): a confirm step, then
-// one POST. Demo servers place it on this click; live servers text the approver (CALL <code>).
+// One Voice AI callback a deal offers, authorized by the signed-in human (CLAUDE.md §7): a confirm
+// step, then one POST (/internal/callbacks/authorize on the server). The server still requires a
+// justified proposal and the business's consent to be called; a refusal shows its fix.
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { postAction, type ApiError } from "./post";
@@ -12,8 +13,8 @@ export interface CallbackButtonProps {
   business: string;
 }
 
-type Phase = "idle" | "confirming" | "sending" | "placed" | "scheduled" | "pending_text" | "declined";
-type CallbackAnswer = { status: "placed" | "scheduled" | "pending_text" | "declined"; scheduled_for?: string; next: string };
+type Phase = "idle" | "confirming" | "sending" | "placed" | "scheduled" | "declined";
+type CallbackAnswer = { status: "placed" | "scheduled" | "declined"; scheduled_for?: string; next: string };
 
 const when = (iso?: string) => {
   if (!iso) return "later";
@@ -50,7 +51,6 @@ export function CallbackButton({ jobId, businessId, business }: CallbackButtonPr
       <div aria-live="polite">
         {phase === "placed" && <p className="note ap-ok">Calling {business} back now. The deal updates when the call ends.</p>}
         {phase === "scheduled" && <p className="note ap-ok">Callback to {business} scheduled for {when(scheduledFor)} (call hours or a recent call).</p>}
-        {phase === "pending_text" && <p className="note ap-wait">We texted your approver: reply CALL with the code from that text to allow the callback.</p>}
         {phase === "declined" && <p className="muted">Callback not placed.</p>}
         {error && (
           <p className="note note-risk" role="alert">
@@ -67,7 +67,7 @@ export function CallbackButton({ jobId, businessId, business }: CallbackButtonPr
       )}
       {(phase === "confirming" || phase === "sending") && (
         <div className="ap-confirm" role="group" aria-label={`Confirm callback to ${business}`}>
-          <p>Haggle&apos;s AI will call {business} back and cite a real cheaper quote. Nothing is bought.</p>
+          <p>Haggle&apos;s AI assistant will call {business} back once, say it is an AI, and cite a real cheaper quote. Nothing is bought.</p>
           <div className="ap-actions">
             <button type="button" className="btn btn-primary" onClick={send} disabled={phase === "sending"} aria-busy={phase === "sending"}>
               {phase === "sending" ? "Asking…" : "Yes, call them"}

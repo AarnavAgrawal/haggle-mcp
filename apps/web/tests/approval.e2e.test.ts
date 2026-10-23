@@ -1,15 +1,16 @@
 // The web app's approve-then-pay click against the REAL built Haggle MCP server (`mcp-use start` in
 // apps/mcp, MOCK mode, auth required): provision a workspace with the service token, start the
-// catering deal with a real haggleClient, wait for the (instant) mock quotes, then run approveQuote
-// and payQuote from lib/approval/flow.ts exactly as the routes do. The deal ends paid (simulated) and
-// no response carried a code. Run `mcp-use build` in apps/mcp first (this test doesn't build it).
+// catering deal with a real haggleClient, wait for the (instant) mock quotes, then run previewApproval,
+// decideApproval (the server's /internal/approvals/* routes, as the signed-in user) and payQuote from
+// lib/approval/flow.ts exactly as the routes do. The deal ends paid (simulated), the approval is
+// recorded as the user's, and no response carried a code. Run `mcp-use build` in apps/mcp first.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { approveQuote, payQuote } from "../lib/approval/flow.ts";
-import { haggleClient, provisionWorkspace, type HaggleClient } from "../lib/haggle.ts";
+import { decideApproval, payQuote, previewApproval, purchaseStatus, type ApprovalClient } from "../lib/approval/flow.ts";
+import { callService, haggleClient, provisionWorkspace, type HaggleClient } from "../lib/haggle.ts";
 
 const APP_DIR = join(import.meta.dirname, "../../mcp");
 const WIN = process.platform === "win32";
@@ -69,21 +70,21 @@ async function readyBoard(haggle: HaggleClient, jobId: string): Promise<Board> {
 }
 
 describe("web approval flow against the built MCP server (mock)", () => {
-  it("approves with one click (host ticket spent server-side), pays, and the deal ends paid (simulated)", async () => {
+  it("previews, approves as the signed-in user (service routes), pays, and the deal ends paid (simulated)", async () => {
     const { workspace_id } = await provisionWorkspace(cfg, { owner_ref: `web-e2e-${Date.now()}`, name: "Web e2e", cap_usd: 1500 });
     const haggle = haggleClient(cfg, workspace_id);
 
-    // The flow's host calls go through a recorder so the test can see what the server handed out.
-    const seen: { name: string; meta?: Record<string, unknown> }[] = [];
-    const recorder = {
+    // Everything the flow receives goes through a recorder, to check no code ever came back.
+    const seen: unknown[] = [];
+    const client: ApprovalClient = {
       callTool: async <T,>(name: string, args?: Record<string, unknown>) => {
         const r = await haggle.callTool<T>(name, args);
-        seen.push({ name, ...(r.meta ? { meta: r.meta } : {}) });
+        seen.push(r);
         return r;
       },
-      callToolAsHost: async <T,>(name: string, args?: Record<string, unknown>) => {
-        const r = await haggle.callToolAsHost<T>(name, args);
-        seen.push({ name, ...(r.meta ? { meta: r.meta } : {}) });
+      service: async <T,>(path: string, body: Record<string, unknown>) => {
+        const r = await callService<T>(cfg, path, { workspaceId: workspace_id, actor: "ada@example.com", body });
+        seen.push(r);
         return r;
       },
     };
@@ -96,29 +97,24 @@ describe("web approval flow against the built MCP server (mock)", () => {
     expect(bay, JSON.stringify(board.quotes.map((q) => q.business))).toBeTruthy();
     expect(board.recommended_quote_id).toBe(bay!.quote_id);
 
-    // A plain (non-host) caller can't press the board's buttons.
-    await expect(haggle.callTool("choose_in_view", { job_id: jobId, quote_id: bay!.quote_id })).rejects.toMatchObject({ code: "view_only" });
+    const preview = await previewApproval(client, jobId, bay!.quote_id);
+    expect(preview).toMatchObject({ ok: true, mode: "mock", rail: "charge", status: "pending", action: "pay", amount_usd: 5, business: "Bay Catering" });
+    if (!preview.ok) throw new Error("no preview");
+    const decided = await decideApproval(client, preview.approval_id, "approve");
+    expect(decided).toMatchObject({ ok: true, status: "approved", changed: true, amount_usd: 5 });
+    expect(await decideApproval(client, preview.approval_id, "approve")).toMatchObject({ ok: true, status: "approved", changed: false });
 
-    const approved = await approveQuote(recorder, jobId, bay!.quote_id);
-    expect(approved).toMatchObject({ ok: true, mode: "mock", status: "approved", action: "pay", amount_usd: 5 });
-    // The server did hand this host a ticket, and the flow spent it in the same click.
-    const ticket = seen.find((s) => s.name === "choose_in_view")?.meta?.["haggle/approval"] as { code: string } | undefined;
-    expect(ticket?.code).toMatch(/^\d{4}$/);
-    expect(seen.map((s) => s.name)).toEqual(["choose_in_view", "approve_in_view"]);
-    expect(JSON.stringify(approved)).not.toContain(ticket!.code);
-
-    const paid = await payQuote(recorder, jobId, bay!.quote_id);
+    const paid = await payQuote(client, jobId, bay!.quote_id);
     expect(paid).toMatchObject({ ok: true, mode: "mock", status: "paid", amount_usd: 5, simulated: true });
-    expect(JSON.stringify(paid)).not.toContain(ticket!.code);
-    expect(JSON.stringify(paid)).not.toMatch(/"code"/);
 
     const final = (await haggle.callTool<Board>("get_quotes", { job_id: jobId })).data;
     expect(final.job.state).toBe("paid");
     expect(final.payment).toMatchObject({ status: "settled", simulated: true });
+    expect(await purchaseStatus(client, jobId)).toMatchObject({ ok: true, rail: "charge", state: "paid", payment: { status: "settled" } });
 
-    // Paying again is safe (idempotent) and still reports paid; approving again doesn't re-approve.
-    expect(await payQuote(recorder, jobId, bay!.quote_id)).toMatchObject({ ok: true, status: "paid" });
-    const again = await approveQuote(recorder, jobId, bay!.quote_id);
-    expect(JSON.stringify(again)).not.toContain(ticket!.code);
+    // Paying again is safe (idempotent) and still reports paid.
+    expect(await payQuote(client, jobId, bay!.quote_id)).toMatchObject({ ok: true, status: "paid" });
+    // No server answer the flow saw carried an approval code (4 digits under a "code" key).
+    expect(JSON.stringify(seen)).not.toMatch(/"code"\s*:\s*"\d{4,6}"/);
   }, 120_000);
 });

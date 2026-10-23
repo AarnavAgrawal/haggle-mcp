@@ -1,0 +1,36 @@
+/* /account. Uses the tokens in app/globals.css. */
+.acct {
+  max-width: 640px;
+}
+.acct h2 {
+  font-size: 16px;
+}
+.acct p {
+  margin: 0;
+}
+.acct-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+.acct-facts dt {
+  color: var(--ink-3);
+}
+.acct-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.acct-danger {
+  border-color: var(--risk);
+}
+.acct-delete {
+  background: var(--risk);
+  border-color: var(--risk);
+  color: #fff;
+}
+@media (prefers-color-scheme: dark) {
+  .acct-delete {
+    color: #1a0b09;
+  }
+}
