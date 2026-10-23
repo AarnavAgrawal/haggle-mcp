@@ -40,6 +40,7 @@ import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } f
 import { dropUnstatedDietaryRefusals, dropUnsupportedRequirementAnswers, validateQuote } from "../parsing/validate.ts";
 import { APPROXIMATE_FLAG, confirmsFirm, isApproximateTotal } from "../parsing/approximate.ts";
 import { pdfBodyTotalConflict } from "../parsing/pdfBody.ts";
+import { optionsLine, pricedOptions } from "../parsing/options.ts";
 import { DEPOSIT_ISSUES, issuesText, recordIssues, usd as usdCents, type FinancialIssue } from "../parsing/financialIntegrity.ts";
 import { termsMismatch } from "../parsing/termsCheck.ts";
 import { isTransientParseError, MAX_PARSE_RETRIES, parseErrorKind, parseRetryDelayMs } from "../parsing/parseErrors.ts";
@@ -425,6 +426,12 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
   /** Per business id: where Haggle stands with it (inbound/contactStatus.ts); `detail` only when it says more than the board status. */
   vendor_contact?: Record<string, { status: BusinessContactStatus["contact_status"] | ExclusionStatus; detail?: string }>;
 };
+
+/** Approval blocks the business or the human can lift (the deal waits for them instead of failing). */
+const RESOLVABLE: ReadonlySet<string> = new Set(["total_not_firm", "numbers_dont_add_up", "date_mismatch", "delivery_window_mismatch"]);
+
+/** Offers that aren't the order asked for (parsing/termsCheck.ts): shown and kept, never cited or countered. */
+const NOT_COMPARABLE: ReadonlySet<string> = new Set(["date_mismatch", "delivery_window_mismatch", "identity_mismatch"]);
 
 const REJECT_TEXT: Record<import("../ranking/rank.ts").RejectReason, string> = {
   not_current: "superseded by a newer quote", unavailable: "the business declined", unverified_sender: "sender could not be verified",
@@ -992,9 +999,10 @@ export class HaggleEngine {
     const payment = await this.repo.getPaymentForJob(job.id);
     const approval = event?.type === "approval_verified" || event?.type === "booking_confirmed" ? await this.repo.getLatestApproval(job.id) : null;
     return {
-      // An approximate total, or figures that don't add up, count: each becomes approvable once the business
-      // confirms (Haggle asked), so the deal waits for that answer instead of failing.
-      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => { const h = this.approvability(job, q).hard; return h === null || h === "total_not_firm" || h === "numbers_dont_add_up"; }).length, counterable: plan.length > 0,
+      // An approximate total, figures that don't add up, an offer for another date or time, or priced options
+      // awaiting the human's choice count: each becomes approvable once the business confirms (Haggle asked,
+      // or the human decides), so the deal reaches ready with the reason instead of failing and losing it.
+      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => { const h = this.approvability(job, q).hard; return h === null || RESOLVABLE.has(h) || (h === "no_total" && (q.record.options?.length ?? 0) > 0); }).length, counterable: plan.length > 0,
       negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent", "charging"].includes(payment.status),
       ...(approval ? { approvalAction: approval.action } : {}), ...(this.d.config.manualPaymentHandoff ? { bookingFirst: true } : {}),
     };
@@ -1017,7 +1025,8 @@ export class HaggleEngine {
       // A business's negotiation round is how far it has been countered (1 = not yet), never how many
       // replies it sent: a confirm-once revision (a firm total, a confirmed requirement) is still round 1.
       // A keyword-fallback reading is neither cited to other businesses nor countered: its figures aren't reliable.
-      rankable.filter((r) => { const row = rows.get(r.quoteId); return !row || !heuristicReading(row.record); }).map((r) => ({
+      // Nor an offer for another date or time, or from another business than the one contacted: its price isn't comparable.
+      rankable.filter((r) => { const row = rows.get(r.quoteId); return !row || (!heuristicReading(row.record) && !row.record.flags.some((f) => NOT_COMPARABLE.has(f))); }).map((r) => ({
         ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: Math.max(1, byId.get(r.businessId)?.countered_round ?? 0),
         deliveryFeeCents: rows.get(r.quoteId)?.record.delivery_fee_cents ?? null, depositCents: rows.get(r.quoteId)?.deposit_cents ?? null, approximate: isApproximate(rows.get(r.quoteId)?.record),
       })),
@@ -5270,6 +5279,14 @@ export class HaggleEngine {
     const needs = reqs.filter((r) => r.kind === "dietary" && r.need).map((r) => r.need!);
     const priorRecord = priorCurrent?.sender_trusted ? priorCurrent.record : null;
     const ownText = msg.channel === "email" ? cleanEmailBody(msg.body_text ?? "") : msg.body_text ?? "";
+    // Another date, a delivery window that misses the time, a reply written as another business
+    // (parsing/termsCheck.ts): flagged below, and approval waits for the human to sort it out. A call
+    // transcript is checked only through what the reader extracted (it holds the agent's words too).
+    const terms = termsMismatch({ own: msg.channel === "phone" ? null : ownText, x, request: job.request, businessName: b.name });
+    // "Booked on the 29th, but we can do the 30th: $1,000" is an offer for another date, not a decline
+    // (live eval c43: read as a decline, the alternative was lost). Kept as an available quote; the
+    // date_mismatch block keeps it from being approved, recommended or cited until the date is agreed.
+    if (!x.available && terms.offered_date && (x.total_usd !== null || x.subtotal_usd !== null || x.price_per_head_usd !== null)) x = { ...x, available: true };
     // The business's own words (never a call transcript: it holds the agent's words too) for deposits stated as a share.
     let fresh = validateQuote(x, job.request.quantity, ask, { needs, requirementIds: reqs.map((r) => r.id), prior: priorRecord, ...(msg.channel !== "phone" ? { text: ownText } : {}) });
     // "prolly around 1300", "approximately twelve hundred": the business's own words hedge the total.
@@ -5284,10 +5301,6 @@ export class HaggleEngine {
       const issue: FinancialIssue = { code: "document_total_mismatch", detail: `the attached quote says ${usdCents(docConflict.pdfCents)} but the email says ${docConflict.bodyCents.map(usdCents).join(" / ")}`, stated_cents: docConflict.pdfCents, expected_cents: docConflict.bodyCents[0]! };
       fresh = { ...fresh, flags: [...new Set([...fresh.flags, "conflicting_numbers"])], financial: { stated_total_cents: fresh.financial?.stated_total_cents ?? null, notes: fresh.financial?.notes ?? [], status: "inconsistent", issues: [...(fresh.financial?.issues ?? []), issue] } };
     }
-    // Another date, a delivery window that misses the time, a reply written as another business
-    // (parsing/termsCheck.ts): flagged, and approval waits for the human to sort it out. A call
-    // transcript is checked only through what the reader extracted (it holds the agent's words too).
-    const terms = termsMismatch({ own: msg.channel === "phone" ? null : ownText, x, request: job.request, businessName: b.name });
     if (terms.flags.length) fresh = { ...fresh, flags: [...new Set([...fresh.flags, ...terms.flags])], terms_mismatch: { notes: terms.notes, ...(terms.offered_date ? { offered_date: terms.offered_date } : {}), ...(terms.delivery_window ? { delivery_window: terms.delivery_window } : {}), ...(terms.signed_as ? { signed_as: terms.signed_as } : {}) } };
     let record = mergeCarryOver(fresh, priorRecord);
     // An answer to "can you confirm X?" ("yes, 45 vegetarian", "$250 extra for delivery") carries no
@@ -5357,6 +5370,22 @@ export class HaggleEngine {
       const issues = record.financial.issues.filter((i) => i.code !== "deposit_unquantified");
       record = { ...record, financial: { ...record.financial, issues, status: issues.length ? "inconsistent" : "unverifiable" } };
     }
+    // Two or more priced options and a request to choose (live eval c45): kept for the human, shown in
+    // the question they answer, and never a total. Nothing is approvable until the business confirms
+    // the chosen option's total (an ordinary quote, checked like any other). Applied after the carry-over,
+    // so an earlier total never stands in for an unchosen option.
+    const options = msg.channel === "phone" || !record.available ? [] : pricedOptions(ownText);
+    if (options.length && (record.questions.length > 0 || x.total_usd === null)) {
+      const line = optionsLine(options);
+      const asks = record.questions.length ? record.questions : ["Which option would you like?"];
+      const { total: _stated, ...sources } = record.sources;
+      record = {
+        ...record, options, total_cents: null, sources,
+        questions: asks.map((q) => (/\$\s?\d/.test(q) ? q : `${q} (the business's options: ${line})`).slice(0, 500)),
+        missing_fields: [...new Set([...record.missing_fields, "total"])],
+        flags: [...new Set([...record.flags.filter((f) => f !== APPROXIMATE_FLAG), "question_pending"])],
+      };
+    }
     const results = evaluateRequirements(record, reqs, job.request.quantity);
     const compliant = meetsHardRequirements(results, reqs);
     // Delivery said only in prose ("we'll bring everything to the office"): a delivery requirement the
@@ -5375,7 +5404,7 @@ export class HaggleEngine {
     let quoteRow: QuoteRow | null = null;
     // Every priced reply is reported as a quote, even without a single stated total (flagged; Haggle
     // asks for the exact total below when it can).
-    const priced = record.total_cents !== null || record.subtotal_cents !== null || record.price_per_head_cents !== null || record.deposit_cents !== null;
+    const priced = record.total_cents !== null || record.subtotal_cents !== null || record.price_per_head_cents !== null || record.deposit_cents !== null || (record.options?.length ?? 0) > 0;
     const statedField = Object.values(record.fields ?? {}).some((v) => v !== null);
     if (priced || !record.available || statedField) {
       const source = record.sources.total?.source ?? (kind === "quote.json" ? "quote.json" : kind);
@@ -5978,7 +6007,8 @@ export class HaggleEngine {
     if (pending.length && (job.state !== "awaiting_approval" || suggestion) && job.state !== "paying") {
       const n = pending.length;
       const after = suggestion ? `Quotes are final otherwise: Haggle texted the user its recommendation (quote_id ${suggestion.quote_id}; a reply YES <code> approves it, ${this.afterYes()}); approve(job_id, quote_id) for another quote the user picks replaces it.`
-        : job.ready ? "Quotes are final otherwise: get_quotes, then approve(job_id, quote_id) for its recommended_quote_id." : "The other businesses keep quoting; call wait_for_update.";
+        : job.ready ? ((await this.recommendedQuote(job)) ? "Quotes are final otherwise: get_quotes, then approve(job_id, quote_id) for its recommended_quote_id." : "Quotes are final otherwise, but nothing can be approved yet: get_quotes shows why for each quote.")
+        : "The other businesses keep quoting; call wait_for_update.";
       const texted = this.d.sms && (await this.notifyTarget(job)) ? " Haggle texts the user these questions and sends their reply to each business, so you can simply leave them." : " Ask the user.";
       return `${n} business question${n === 1 ? "" : "s"} Haggle couldn't answer from the request (open_questions in get_quotes). Answer one with answer_business(job_id, question_id='${pending[0]!.id}', answer) only from the request or what the user told you; never guess a time, an entrance, set-up/serving or any preference.${texted} ${after}`;
     }
@@ -6194,7 +6224,7 @@ export class HaggleEngine {
         ? `Quotes are final. Call approve(job_id, quote_id='${recommended.quote_id}') for ${recommended.business}, the recommended quote the human can approve${recommendation_note ? ` (${bestValue!.business} is better value but blocked: ${bestValue!.approval_block?.code})` : ""}.`
         : bestAvailable
         ? `Quotes are final, but none meets every requirement, so Haggle recommends none: ${out.filter((q) => q.approvable && q.status === "current").map((q) => `${q.business} ${q.total_usd === null ? "" : `$${q.total_usd}`} (${complianceSummary(q.compliance!)})`).join("; ").slice(0, 600)}. Tell the user and ask which, if any, to approve knowingly (approve(job_id, quote_id) shows the human these caveats); don't pick one for them.${fixableLine.slice(0, 400)}`
-        : `Quotes are final, but none can be approved yet: ${out.filter((q) => q.approval_block && q.status === "current").map((q) => `${q.business}: ${q.approval_block!.reason}`).join(" ").slice(0, 600) || "no priced quote"}. Tell the user; they may ask a business for a firm total or a smaller deposit.`
+        : `Quotes are final, but none can be approved yet: ${out.filter((q) => q.approval_block && q.status === "current").map((q) => `${q.business}: ${q.approval_block!.reason.replace(/\.$/, "")}`).join("; ").slice(0, 600) || "no priced quote"}. Tell the user what each business needs (a firm or corrected total, a smaller deposit, or an agreed date or time); nothing is approved until the business confirms.`
       : hint;
     return {
       ok: true, mode: job.mode, job_id: jobId, state: job.state,

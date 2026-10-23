@@ -127,7 +127,8 @@ export async function observeCase(c: CorpusCase, extractor: ExtractorPort = heur
     // Flags of a reply that made no quote row (no price) are only job events.
     const eventFlags = (await env.repo.listEvents(deal.job_id)).filter((e) => e.type === "flag").map((e) => String(e.data.flag));
     const flags = [...new Set([...(r?.flags ?? []), ...eventFlags])];
-    const priced = !!r && (r.total_cents !== null || r.subtotal_cents !== null || r.price_per_head_cents !== null);
+    // Priced options awaiting the buyer's choice are a quote too (no total until the business confirms one).
+    const priced = !!r && (r.total_cents !== null || r.subtotal_cents !== null || r.price_per_head_cents !== null || (r.options?.length ?? 0) > 0);
     const outcome: Outcome = res.outcome === "opted_out" ? "opt_out" : status === "declined" || (r && !r.available) ? "decline"
       : flags.includes("external_payment_link") ? "unsafe_payment" : flags.includes("prompt_injection") ? "unsafe_injection"
       : priced ? "quote" : questions.length ? "question" : "no_new_price";
@@ -147,7 +148,8 @@ export async function observeCase(c: CorpusCase, extractor: ExtractorPort = heur
       delivery: !r ? null : r.delivery_included === true || r.delivery_fee_cents !== null ? true : r.delivery_included === false ? false : null,
       veg_count: veg?.count_offered ?? null, compliant, flags, approvable: bq?.approvable ?? false, approval_block: bq?.approval_block?.code ?? null,
       questions, total_source: r?.sources.total?.source ?? null, fetches: env.fetches.length,
-      tax, fees, date_ok: status === "declined" || (r && !r.available) ? false : null, requirements,
+      // The engine's own date / delivery-window check counts: it is what keeps such an offer from being approved.
+      tax, fees, date_ok: status === "declined" || (r && !r.available) || flags.includes("date_mismatch") || flags.includes("delivery_window_mismatch") ? false : null, requirements,
       shown_total_usd: bq?.total_usd ?? null, shown_deposit_usd: bq?.deposit_usd ?? null,
     };
   } finally {

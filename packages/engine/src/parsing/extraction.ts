@@ -230,4 +230,6 @@ export interface QuoteRecord {
    * business clarifies. Absent on records stored before it existed (re-checked from the record).
    */
   financial?: import("./financialIntegrity.ts").FinancialCheck;
+  /** Priced options the business offered instead of one total (parsing/options.ts): for the human to choose, never approvable as is. */
+  options?: import("./options.ts").PricedOption[];
 }
