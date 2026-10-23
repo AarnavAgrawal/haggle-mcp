@@ -352,7 +352,7 @@ Counters are per process and per UTC day. With several replicas, each one enforc
 
 ## 9. Setting up staging, and the first CI run
 
-**`docs/staging.md` is the full, step-by-step staging procedure**: provisioning, env file, plan, migrations, deploy, webhooks, verify and rollback. `apps/mcp/scripts/staging-release.ts` scripts it, and refuses anything but staging. The summary below is kept for the GitHub steps.
+**`docs/staging.md` is the full, step-by-step staging procedure**: provisioning, env file, plan, migrations, deploy, webhooks, verify and rollback. `apps/mcp/scripts/staging-release.ts` scripts it, and refuses anything but staging. Who sets up which part, and the joint go/no-go gates, are in `docs/staging-handoff.md`. The summary below is kept for the GitHub steps.
 
 Staging is a **second, independent server**. It shares code with production and nothing else: no database, no Inkbox identity, no webhook secret, no Anthropic key, no alert channel. Each step below is a dashboard action for the user. Nothing in the repository performs any of them.
 

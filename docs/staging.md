@@ -6,7 +6,14 @@ Every step is marked:
 - **[YOU]**: a dashboard or account action only the user can take (a provider account, a credential, a live change). Nothing in this repository performs it.
 - **[SCRIPT]**: a command from this repository. It never runs against production: `apps/mcp/scripts/staging-release.ts` refuses anything but a staging env file.
 
-Status on 2026-10-22: **nothing below has been provisioned.** The scripts were run only in plan mode and against throwaway local databases (section 9).
+**Two people set staging up.** Who owns each step below, the shared secrets vault, what Aarnav reports back, and the joint go/no-go gates are in `docs/staging-handoff.md`.
+- Supabase and Anthropic: Yashnil.
+- Manufact and Inkbox: Aarnav.
+
+Status on 2026-10-22:
+- **Provisioned:** the Supabase staging project (`vsvcgzesbhjmxwnnqjkh`, reachable through the session pooler, schema empty) and the Anthropic staging key.
+- **Not yet:** Manufact, Inkbox, Slack, migrations.
+- **Scripts:** run only in plan mode, read-only, and against throwaway local databases (section 9).
 
 ## 1. Provision the accounts
 
@@ -35,7 +42,7 @@ Create an incoming webhook for a staging channel, e.g. `#haggle-staging-alerts`.
    git worktree add ../haggle-staging <commit>
    cd ../haggle-staging && npm ci
    ```
-2. Create a **second server**: not a new deployment of production's `calm-spark-ck3qm`. From that checkout, `./node_modules/.bin/mcp-use deploy --new --name haggle-staging` creates one and writes `.mcp-use/cloud/link.json`. Check the flags with `mcp-use deploy --help` first, because this CLI changes between versions. The first deploy can wait until section 5; to create the server without deploying, use the dashboard instead.
+2. Create a **second server**: not a new deployment of production's `calm-spark-ck3qm`. From that checkout, `./node_modules/.bin/mcp-use deploy --new --no-github --name haggle-staging` creates one and writes `.mcp-use/cloud/link.json`. `--no-github` makes it a managed upload of that checkout, like production. Check the flags with `mcp-use deploy --help` first, because this CLI changes between versions. The first deploy can wait until section 5; to create the server without deploying, use the dashboard instead.
 3. **Never copy production's `.mcp-use/cloud/link.json` into this checkout.** `staging-release.ts` refuses a checkout linked to `calm-spark-ck3qm`, or to any `--production-server` you name.
 4. Set the start command to `cd apps/mcp && ../../node_modules/.bin/mcp-use start --host 0.0.0.0` and the port to 3000.
 5. Note the server **id**, which `servers env` and `--server-id` take. Copy the MCP URL from the dashboard; never guess it.
@@ -61,15 +68,22 @@ HAGGLE_PAYMENTS=manual
 HAGGLE_AI_MAX_CALLS_PER_JOB=60
 HAGGLE_AI_DAILY_TOKEN_BUDGET=<tokens per day>
 HAGGLE_ALERT_WEBHOOK_URL=<staging Slack webhook>
+HAGGLE_EXTERNAL_SENDERS=reply_token
+HAGGLE_REPLY_TOKEN_SECRET=<generated in the vault, >= 16 characters>
 HAGGLE_SMOKE_TOKEN=<staging workspace bearer, after section 4.3>
 ```
+
+- **The pooler host matters.** Use the session pooler host from Database → Connect (the staging project's is `aws-0-us-east-1.pooler.supabase.com`). The direct `db.<ref>.supabase.co` host is IPv6-only, so many networks can't reach it.
+- **Percent-encode** `@`, `:`, `/`, `#`, `?` and `%` in the password.
+- **Reply tokens:** real mailboxes (Gmail, Outlook) are trusted only with `HAGGLE_EXTERNAL_SENDERS=reply_token` (`docs/pilot-onboarding.md`).
+- **Brain store:** leave `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` off the **server** until the 2xx brain migrations are on staging (`docs/staging-handoff.md` §3).
 
 `docs/env-manifest.md` ("Staging, separate from production") lists every other variable.
 
 Leave every `HAGGLE_ENABLE_*` channel off until it has been tested on staging. `HAGGLE_BUILD_SHA` and `HAGGLE_BUILD_TIME` are set per deploy (section 5), not in this file.
 
 ### 2.2 The same variables on the server [YOU]
-Set them in the Manufact dashboard: paste them there, so nothing lands in shell history. Or use `./node_modules/.bin/mcp-use servers env set <staging server id> KEY=VALUE`. Leave out `HAGGLE_SMOKE_TOKEN`: it belongs to the smoke test, not the server.
+Set them in the Manufact dashboard: paste them there, so nothing lands in shell history. Or use `./node_modules/.bin/mcp-use servers env set <staging server id> KEY=VALUE`. Prefer the dashboard: `servers env set` puts the value in shell history. Leave out `HAGGLE_SMOKE_TOKEN`, `HAGGLE_EMAIL_TRIAL` and `HAGGLE_EMAIL_TRIAL_MAILBOXES`: only local scripts read them.
 
 ## 3. Plan the release [SCRIPT, read-only]
 

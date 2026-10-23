@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: first staging deployment + consenting-mailbox email trial (`docs/staging-email-trial-runbook.md`); blocked on the staging accounts in `docs/manual-actions.md` §1 · Aarnav: branch `merged-working-demo` (main + feat/live-demo merged; decisions in `docs/merge-decisions-working-demo.md`; needs Yash's review before it reaches main)
+**Now working on:** Yash: first staging deployment + consenting-mailbox email trial (`docs/staging-email-trial-runbook.md`); Supabase + Anthropic staging done; waiting on Aarnav's Manufact + Inkbox staging setup (`docs/staging-handoff.md` §3–5), then gates G1–G4 · Aarnav: branch `merged-working-demo` (main + feat/live-demo merged; decisions in `docs/merge-decisions-working-demo.md`; needs Yash's review before it reaches main)
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -87,6 +87,7 @@ _MVP audit (2026-10-17, main 54b2d47, deployed as calm-spark 0.5.0+54b2d47). PAS
 
 Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
+- Aarnav: staging Manufact server + Inkbox `haggle-staging` identity, and the non-secret report in the vault (`docs/staging-handoff.md` §3–5). Blocks staging migrations, deploy and the email trial.
 - Team, org split (blocks A2A, calls, and trusted multi-seller replies): buyer `haggle` is in Yash's Inkbox org; sellers, `haggle-buyer` and the only phone number are in Aarnav's. Recommendation: run the demo from `haggle-buyer`. Aarnav creates its agent-scoped API key + webhook signing secret and gives them to Yash through the env file (not chat); Yash points the webhook at calm-spark and sets `INKBOX_API_KEY`/`INKBOX_IDENTITY`/`INKBOX_WEBHOOK_SECRET`/`HAGGLE_DEMO_FLEET` on Manufact. Alternative: an admin adds an outbound A2A allow for `@bay-catering-sf` on `haggle` (plus inbound `@haggle` on Bay).
 - Yash: authorization for the live rehearsal (recipients on the allowlist, calls/iMessage/A2A/payments flags, one test-mode charge). Nothing is sent until then.
 - Yash: ChatGPT check needs a human: add https://calm-spark-ck3qm.run.mcp-use.com/mcp as a developer-mode app, then `get_quotes job_id=job_512a5d0265b144ed9337`.
@@ -104,6 +105,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-22 · Yash · Staging handoff for two founders (`docs/staging-handoff.md`): owners, shared vault + local env file, Aarnav's Manufact/Inkbox steps and non-secret report, joint go/no-go gates G1–G4; Supabase staging (pooler) and Anthropic key verified; shared-file corrections proposed, not applied
 - 2026-10-22 · Yash · Staging-trial readiness: tests independent of the real date (skewed-clock CI step), email trial hardened (staging-only gates, one-shot send, per-reply Message-ID/token/webhook/quarantine/extraction diagnostics), `ops-report --brief/--fail-on-attention`, carrier opt-out keyword handling, staging email-trial runbook
 
 - 2026-10-22 · Yash · Security decisions H1–H3 implemented: texted vendor confirmations/receipts never bind (approver's BOOKED code), caller ID never callback consent, vendor-confirmed bookings cancel only on the approver's CANCEL code; in-memory store clock fix for the failure drill

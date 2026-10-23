@@ -2,14 +2,17 @@
 
 Only what needs a person, a provider dashboard, new credentials, a live system, or another person's agreement. Everything else is in the code. The order is the order to do them; the exact commands are in `docs/staging-email-trial-runbook.md`.
 
-## 1. Before the first staging trial (Yash)
-- [ ] **Supabase:** create the staging project and copy its pooler URL. Note the production project ref for `HAGGLE_PROD_DB_HOSTS`. Install the PostgreSQL 17 client tools (`psql`, `pg_dump`) on the machine that runs the release.
-- [ ] **Inkbox:** create a **staging identity with its own mailbox**; the email trial refuses the production `haggle` handle. Also a staging API key and webhook signing secret. If the identity's inbound filter is in whitelist mode, allow your two trial addresses.
-- [ ] **Manufact:** create a separate staging server, and link a **separate clean checkout** to it. This repo's `.mcp-use/cloud/link.json` points at production `calm-spark-ck3qm`, so `staging-release.ts` refuses it. Confirm the flags for a new server with `mcp-use deploy --help`.
-- [ ] **Anthropic:** a staging key with a spending limit.
-- [ ] **Write `~/.config/haggle/staging.env`** (`chmod 600`, outside the repo) with the variables in `docs/staging.md` §2.1, and set the same names on the Manufact staging server.
-- [ ] **Two mailboxes you own** for the trial (e.g. one Gmail, one Outlook), with Gmail web/app, Outlook and iOS Mail available to reply from.
-- [ ] **Run the runbook** §1–§10. After deploying, subscribe the staging identity to `message.received`, `message.bounced` and `message.failed` (runbook §4).
+## 1. Before the first staging trial (Yashnil + Aarnav)
+Owners, the shared vault, Aarnav's exact steps and the joint go/no-go gates are in `docs/staging-handoff.md`.
+- [x] **Supabase (Yashnil):** staging project `vsvcgzesbhjmxwnnqjkh`, session-pooler URL, `HAGGLE_PROD_DB_HOSTS`, in the vault. PostgreSQL 17 client tools installed on Yashnil's Mac (2026-10-22).
+- [ ] **Anthropic (Yashnil):** the key is in the vault and verified. Still to do: confirm the spend limit on workspace `wrkspc_016wWanebQdavDeFHZ1fVKra` in the Console; set the `HAGGLE_AI_*` budgets.
+- [ ] **Reply-token secret (Yashnil):** generate `HAGGLE_REPLY_TOKEN_SECRET` in the vault.
+- [ ] **Manufact (Aarnav):** the staging server, its env vars and the link file (handoff §3).
+- [ ] **Inkbox (Aarnav):** the `haggle-staging` identity, its key and webhook secret, the inbound filter (handoff §4). The subscription comes after the release deploy.
+- [ ] **Report (Aarnav):** the non-secret report in the vault note (handoff §5).
+- [ ] **Slack alerts (owner to agree):** a staging incoming webhook for `HAGGLE_ALERT_WEBHOOK_URL`.
+- [ ] **Two mailboxes Yashnil owns** for the trial (e.g. one Gmail, one Outlook), with Gmail web/app, Outlook and iOS Mail available to reply from.
+- [ ] **Gates G1–G4, then the runbook** §1–§10 (`docs/staging-email-trial-runbook.md`).
 
 ## 2. Questions for providers (email; answers change code or config)
 - [ ] **Inkbox, mail:**

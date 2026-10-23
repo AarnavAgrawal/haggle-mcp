@@ -12,13 +12,19 @@ One pass, in order. Each step gives the command, what you should see, what a fai
 
 ## 0. Prerequisites [YOU] (each is in `docs/manual-actions.md`)
 
-| Need | Check |
-| --- | --- |
-| Supabase staging project (pooler URL) | `SUPABASE_DB_URL` in `$STG`; `HAGGLE_PROD_DB_HOSTS` names the production ref |
-| Inkbox staging identity with its own mailbox, its API key and webhook secret | `INKBOX_IDENTITY`, `INKBOX_API_KEY`, `INKBOX_WEBHOOK_SECRET` in `$STG` |
-| Manufact staging server, and the clean checkout linked to it | `cat .mcp-use/cloud/link.json` shows the staging slug, not `calm-spark-ck3qm` |
-| Anthropic staging key with a spending limit | `ANTHROPIC_API_KEY` in `$STG` |
-| Server env vars set in the Manufact dashboard (same names as `$STG`, minus `HAGGLE_SMOKE_TOKEN`) | dashboard |
+The owners, the shared vault and the go/no-go gates G1–G4 are in `docs/staging-handoff.md`.
+- G1 comes before the first deploy.
+- G2 before §2.
+- G3 before §3–§4.
+- G4 before §6.
+
+| Need | Owner | Check |
+| --- | --- | --- |
+| Supabase staging project (pooler URL) | Yashnil | `SUPABASE_DB_URL` in `$STG`; `HAGGLE_PROD_DB_HOSTS` names the production ref |
+| Inkbox staging identity with its own mailbox, its API key and webhook secret | Aarnav | `INKBOX_IDENTITY`, `INKBOX_API_KEY`, `INKBOX_WEBHOOK_SECRET` in `$STG` |
+| Manufact staging server, and the clean checkout linked to it | Aarnav (server); each of you (your checkout) | `cat .mcp-use/cloud/link.json` shows the staging slug, not `calm-spark-ck3qm` |
+| Anthropic staging key with a spending limit | Yashnil | `ANTHROPIC_API_KEY` in `$STG` |
+| Server env vars set in the Manufact dashboard (same names as `$STG`, minus the local-only ones) | Aarnav | `mcp-use servers env list <id>` (names only) |
 
 ## 1. Plan the release [SCRIPT, contacts nothing]
 

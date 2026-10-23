@@ -1,5 +1,7 @@
 # Haggle buyer runbook (Yash's lane)
 
+> **Superseded (2026-10-22).** This predates the move to Inkbox and Stripe and still mentions Primitive, x402 and pnpm. Kept as history. Current docs: `README.md`, `docs/deployment.md`, `docs/staging-handoff.md`.
+
 ## What runs today
 
 | Capability | Mock mode (default) | Live mode |

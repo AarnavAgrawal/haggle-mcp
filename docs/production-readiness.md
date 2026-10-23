@@ -4,7 +4,8 @@ Next-steps reference for taking Haggle from hackathon release candidate to produ
 
 **Stack corrections vs. the original list.** The source list came from an older plan, so these items are rewritten for v5:
 - Email is **Inkbox**, not Primitive (section 1).
-- Payment is **Stripe test mode**, not Base Sepolia x402 (section 6).
+- Payment is never x402. The pilot uses the manual handoff (`HAGGLE_PAYMENTS=manual`): the customer pays the vendor directly. Stripe test mode is the only automated rail, and it is off in the pilot (section 6).
+- Staging is set up by both founders: `docs/staging-handoff.md` (section 1, separate environments).
 - The MCP surface has more than eight tools: `ask`, `discover`, `check_price`, `deal`, `wait_for_update`, `get_quotes`, `answer_business`, `approve`, `pay`, `business_profile`, `open_haggle`, `list_deals`, `call_back`, `settings_read`/`settings_update` (section 2).
 - Channels are email, Voice AI phone calls, iMessage and A2A, all through Inkbox (section 3).
 
@@ -32,7 +33,7 @@ Each new engine test was run and seen failing before its fix.
 | Vulnerability (audit) | Before | After (verified by) |
 | --- | --- | --- |
 | Agent names its own email approver (`deal.approver_email`) | Accepted and stored on the job | Ignored with a warning; the job takes the workspace approver (approvalSecurity, security.e2e) |
-| `settings_update` changes the approver or raises the cap | Allowed | `approver_change_requires_operator` / `cap_increase_requires_operator`; only `scripts/workspace-admin.ts` (DB access) can do it. Lowering the cap and setting the area stay self-service |
+| `settings_update` changes the approver or raises the cap | Allowed | `approver_change_requires_operator` / `cap_increase_requires_operator`; only `apps/mcp/scripts/workspace-admin.ts` (DB access) can do it. Lowering the cap and setting the area stay self-service |
 | `choose_in_view` → `approve_in_view` → `pay` with no human | Code returned in `_meta`; the e2e test did exactly this | Live (and mock with `HAGGLE_APPROVALS=out_of_band`): no code is ever returned. `approve_in_view`, form (elicitation) and simulated approvals are refused by the engine (`approval_needs_human_channel`). Only the approver's coded text approves |
 | Email code approval on by default (spoofable From) | On | Off unless `HAGGLE_EMAIL_APPROVAL_BY_CODE=true`; not offered as an approval route when off |
 | Workspace spending cap advisory only | Caveat; only the $5k server ceiling enforced | Payment ≤ min(server ceiling, workspace cap) at deal, approval and pay time (lowering the cap after approval blocks the charge) |
