@@ -121,6 +121,8 @@ export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers" | 
   tax_evidence?: string;
   tax_included?: boolean | null;
   requirement_checks?: RequirementCheckExtraction[];
+  /** The headcount is the request's, not one the business stated (quote.json): never multiplied into food. */
+  headcount_assumed?: boolean;
 };
 
 /**

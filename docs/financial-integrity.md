@@ -30,6 +30,7 @@ All arithmetic is in integer cents, with a tolerance of $1.00 for one rounding.
    - an attached quote whose total disagrees with the email's (`document_total_mismatch`, previously only a caveat);
    - a payable field above the total.
 7. **A per-person price that multiplies out to the stated total exactly** is an all-in per-person price, not the food line (eval fx-01's `quote.json`).
+8. **Food uses only a quantity the business stated.** A `quote.json` carries the request's headcount (`headcount_assumed`), so its per-head price is never multiplied into food. CI caught this: the mock acceptance deal for 50 people held Bay Catering's 40-person quote and never became ready.
 
 ## 2. Every path that can make a quote approvable
 

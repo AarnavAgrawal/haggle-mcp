@@ -261,7 +261,7 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
     }
   }
   // Food as the business priced it in this reply (a quantity it stated, never the requested one).
-  const statedFood = cents.subtotal ?? (!perHeadAllIn && cents.price_per_head !== null && quotedHeadcount !== null && quotedHeadcount > 0 ? cents.price_per_head * quotedHeadcount : null);
+  const statedFood = cents.subtotal ?? (!perHeadAllIn && !x.headcount_assumed && cents.price_per_head !== null && quotedHeadcount !== null && quotedHeadcount > 0 ? cents.price_per_head * quotedHeadcount : null);
 
   // 2b. Tax: Claude judges what the business said (tax_status + rate + evidence); this code only
   // does the arithmetic. A reply that doesn't mention tax keeps the business's earlier decision, and

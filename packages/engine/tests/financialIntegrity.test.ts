@@ -203,6 +203,11 @@ describe("validateQuote: the eval failures, as Claude read them", () => {
     expect(codes(allIn)).toEqual([]);
   });
 
+  it("quote.json carries the request's headcount, not its own: a per-head price for 40 against a 50-person request is never 'food' (mock acceptance regression)", () => {
+    const x = reading({ price_per_head_usd: 28.75, headcount: 50, headcount_assumed: true, delivery_included: true, total_usd: 1150, sources: [src("price_per_head", "price_per_head=28.75", "quote.json"), src("total", "total=1150", "quote.json")] });
+    expect(codes(validateQuote(x, 50))).toEqual([]);
+  });
+
   it("adversarial: per-unit x quantity contradicting the subtotal, a deposit over the total, a deposit contradicting its share, a rate contradicting the total", () => {
     const items = validateQuote(reading({ price_per_head_usd: 25, headcount: 40, subtotal_usd: 1100, total_usd: 1100, sources: [src("price_per_head", "$25 each"), src("subtotal", "40 x $25 = $1,100"), src("total", "Total $1,100")] }), 40);
     expect(codes(items)).toContain("line_items_mismatch");
