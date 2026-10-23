@@ -1,0 +1,92 @@
+/* Approval panel and callback button. Tokens and .card/.btn/.note/.chip come from app/globals.css. */
+.ap-panel > * + * {
+  margin-top: 12px;
+}
+.ap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ap-head h3 {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.ap-amounts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin: 0;
+}
+.ap-amounts > div {
+  min-width: 0;
+}
+.ap-amounts dt {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ap-amounts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ap-big {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.ap-demo {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.ap-ok {
+  background: var(--win-soft);
+  color: var(--win);
+}
+.ap-wait {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.ap-status > * {
+  margin: 0;
+}
+.ap-status > * + * {
+  margin-top: 8px;
+}
+.ap-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  opacity: 0.9;
+}
+.ap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ap-actions .btn {
+  min-height: 40px;
+}
+@media (max-width: 480px) {
+  .ap-actions .btn {
+    flex: 1 1 100%;
+  }
+}
+
+.ap-callback > * + * {
+  margin-top: 8px;
+}
+.ap-callback p {
+  margin: 0;
+}
+.ap-confirm {
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  background: var(--paper);
+}
+.ap-confirm > * + * {
+  margin-top: 8px;
+}

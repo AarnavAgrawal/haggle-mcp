@@ -1,61 +1,79 @@
+// /deals: every deal in the workspace (list_deals, newest 20), each linking to its live page.
+import Link from "next/link";
+import { TopBar } from "@/components/TopBar";
+import { ago, dealLine, money, stateTone, stateWords } from "@/lib/dashboard/format";
+import type { DealList } from "@/lib/dashboard/types";
 import { HaggleError } from "@/lib/haggle";
 import { requireHaggle } from "@/lib/workspace";
+import "@/components/dashboard/dashboard.css";
 
-type DealRow = { job_id: string; what: string; state: string; date?: string; area?: string; quantity?: number; unit?: string; created_at?: string };
-type Deals = { mode: "mock" | "live"; deals: DealRow[]; next: string };
+export const dynamic = "force-dynamic";
 
-const STATE_WORDS: Record<string, string> = {
-  created: "Starting", contacting: "Contacting businesses", collecting: "Collecting quotes", negotiating: "Negotiating",
-  awaiting_approval: "Waiting for your approval", paying: "Approved", paid: "Paid", confirmed: "Confirmed", cancelled: "Cancelled", failed: "Stopped",
-};
-
-/** The workspace's deals, read through the MCP server (list_deals). The full dashboard builds on this. */
 export default async function DealsPage() {
   const { user, haggle } = await requireHaggle();
-  let deals: Deals | null = null;
-  let error: string | null = null;
+  let deals: DealList | null = null;
+  let error: { message: string; fix: string } | null = null;
   try {
-    deals = (await haggle.callTool<Deals>("list_deals", { limit: 20 })).data;
+    deals = (await haggle.callTool<DealList>("list_deals", { limit: 20 })).data;
   } catch (err) {
-    error = err instanceof HaggleError ? `${err.message} ${err.fix}`.trim() : "The Haggle server couldn't be reached.";
+    error = err instanceof HaggleError ? { message: err.message, fix: err.fix } : { message: "The Haggle server couldn't be reached.", fix: "Try again in a moment." };
   }
 
   return (
     <>
-      <header className="topbar">
-        <a className="brand" href="/deals">
-          Haggle
-        </a>
-        <form action="/auth/sign-out" method="post" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span className="muted">{user.email}</span>
-          <button className="btn" type="submit">
-            Sign out
-          </button>
-        </form>
-      </header>
+      <TopBar email={user.email} active="deals" />
       <main className="shell stack">
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <h1>Your deals</h1>
-          {deals?.mode === "mock" && <span className="chip demo">DEMO data</span>}
+        <div className="dash-head">
+          <div className="dash-title">
+            <h1>Your deals</h1>
+            {deals?.mode === "mock" && <span className="chip demo">DEMO data</span>}
+          </div>
+          <Link className="btn btn-primary" href="/chat">
+            New request
+          </Link>
         </div>
         {error ? (
           <p className="note note-risk" role="alert">
-            {error}
+            {error.message} <span className="fix">{error.fix}</span>
           </p>
         ) : deals && deals.deals.length ? (
-          <ul className="card deals">
+          <ul className="card deals" aria-label="Deals">
             {deals.deals.map((d) => (
               <li key={d.job_id} className="deal">
-                <div>
-                  <strong>{d.what}</strong>
-                  <div className="muted">{[d.quantity ? `${d.quantity} ${d.unit ?? "people"}` : null, d.date, d.area].filter(Boolean).join(" · ")}</div>
-                </div>
-                <span className="chip">{STATE_WORDS[d.state] ?? d.state}</span>
+                <Link className="deal-link" href={`/deals/${encodeURIComponent(d.job_id)}`} style={{ flex: 1 }}>
+                  <div>
+                    <strong>{d.what}</strong>
+                    <div className="muted">{dealLine(d)}</div>
+                    {d.purchase ? <div className="hint">{d.purchase.summary}</div> : null}
+                  </div>
+                  <div className="deal-side">
+                    <span className={`chip chip-${stateTone(d.state)}`}>{stateWords(d.state)}</span>
+                    {d.leading ? (
+                      <span>
+                        Leading: {d.leading.business} {money(d.leading.total_usd)}
+                      </span>
+                    ) : d.quotes !== undefined && d.businesses !== undefined ? (
+                      <span className="muted">
+                        {d.quotes}/{d.businesses} quoted
+                      </span>
+                    ) : null}
+                    {d.created_at ? <span className="hint">Started {ago(d.created_at)}</span> : null}
+                  </div>
+                </Link>
               </li>
             ))}
           </ul>
         ) : (
-          <p className="card muted">No deals yet. Chat with Haggle to start one.</p>
+          <div className="card stack">
+            <p className="muted" style={{ margin: 0 }}>
+              No deals yet. Tell Haggle what you need and it gets real quotes by email, phone and text.
+            </p>
+            <div>
+              <Link className="btn btn-primary" href="/chat">
+                New request
+              </Link>
+            </div>
+          </div>
         )}
       </main>
     </>

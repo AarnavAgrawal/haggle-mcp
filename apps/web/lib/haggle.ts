@@ -84,6 +84,10 @@ export function haggleClient(cfg: HaggleConfig, workspaceId: string) {
       if (r.isError) throw toolError(text);
       return { data: (r.structuredContent ?? {}) as T, text, ...(r._meta ? { meta: r._meta } : {}) };
     },
+    /** As a trusted MCP Apps host (the board/card button tools). See callToolAsHost below. */
+    callToolAsHost<T = Record<string, unknown>>(name: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<ToolResult<T>> {
+      return callToolAsHost<T>(cfg, workspaceId, name, args, signal);
+    },
   };
 }
 export type HaggleClient = ReturnType<typeof haggleClient>;
@@ -98,4 +102,48 @@ export async function provisionWorkspace(
   });
   if (!res.ok) throw await httpError(res);
   return (await res.json()) as { workspace_id: string; created: boolean };
+}
+
+// ── Host calls (approval, payment, callbacks) ──────────────────────────────────────────────────
+// The board/card button tools (choose_in_view, approve_in_view, call_back_in_view) run only for a
+// client that declares the MCP Apps UI extension in the per-request envelope (protocol 2026-07-28,
+// apps/mcp/index.ts rendersViews). This web app's server IS such a host: it renders its own approval
+// panel, keeps the one-time ticket in `meta` on the server, and spends it only on the human's click.
+
+const HOST_PROTOCOL = "2026-07-28";
+const UI_EXTENSION = { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } };
+let hostId = 0;
+
+/** tools/call with the host envelope and the same service headers; same { data, text, meta } as callTool. */
+export async function callToolAsHost<T = Record<string, unknown>>(
+  cfg: HaggleConfig, workspaceId: string, name: string, args: Record<string, unknown> = {}, signal?: AbortSignal,
+): Promise<ToolResult<T>> {
+  const res = await (cfg.fetchImpl ?? fetch)(`${base(cfg)}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json", accept: "application/json, text/event-stream",
+      "mcp-protocol-version": HOST_PROTOCOL, "mcp-method": "tools/call", "mcp-name": name,
+      "x-haggle-service-token": cfg.serviceToken, "x-haggle-workspace": workspaceId,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: ++hostId, method: "tools/call",
+      params: {
+        name, arguments: args,
+        _meta: {
+          "io.modelcontextprotocol/protocolVersion": HOST_PROTOCOL,
+          "io.modelcontextprotocol/clientInfo": { name: "haggle-web", version: "1" },
+          "io.modelcontextprotocol/clientCapabilities": { extensions: UI_EXTENSION },
+        },
+      },
+    }),
+    cache: "no-store",
+    ...(signal ? { signal } : {}),
+  });
+  if (!res.ok) throw await httpError(res);
+  const msg = parseRpcBody(await res.text());
+  if (msg.error) throw new HaggleError("RPC_ERROR", msg.error.message, "Check the tool name and its arguments.");
+  const r = msg.result as { isError?: boolean; content?: { type: string; text?: string }[]; structuredContent?: T; _meta?: Record<string, unknown> };
+  const text = (r.content ?? []).map((c) => c.text ?? "").join("\n");
+  if (r.isError) throw toolError(text);
+  return { data: (r.structuredContent ?? {}) as T, text, ...(r._meta ? { meta: r._meta } : {}) };
 }
