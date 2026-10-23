@@ -147,3 +147,28 @@ export async function callToolAsHost<T = Record<string, unknown>>(
   if (r.isError) throw toolError(text);
   return { data: (r.structuredContent ?? {}) as T, text, ...(r._meta ? { meta: r._meta } : {}) };
 }
+
+/**
+ * The MCP server's service-only HTTP routes (/internal/*, apps/mcp/src/service): approvals and the
+ * purchase lifecycle, vendors, account. Same service token and workspace as the MCP calls, plus the
+ * signed-in user the request acts for (recorded on approvals and consents).
+ */
+export async function callService<T = Record<string, unknown>>(
+  cfg: HaggleConfig,
+  path: string,
+  opts: { workspaceId?: string; actor?: string; method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal } = {},
+): Promise<T> {
+  const res = await (cfg.fetchImpl ?? fetch)(`${base(cfg)}${path}`, {
+    method: opts.method ?? (opts.body === undefined ? "GET" : "POST"),
+    headers: {
+      "content-type": "application/json", "x-haggle-service-token": cfg.serviceToken,
+      ...(opts.workspaceId ? { "x-haggle-workspace": opts.workspaceId } : {}),
+      ...(opts.actor ? { "x-haggle-actor": opts.actor } : {}),
+    },
+    ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
+    cache: "no-store",
+    ...(opts.signal ? { signal: opts.signal } : {}),
+  });
+  if (!res.ok) throw await httpError(res);
+  return (await res.json()) as T;
+}

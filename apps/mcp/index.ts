@@ -16,7 +16,9 @@ import { limitsMiddleware } from "./src/limits.ts";
 import { ConfigError } from "./src/config.ts";
 import { cachedReadiness } from "./src/health.ts";
 import { releaseInfo, serverVersion } from "./src/release.ts";
-import { authRequired, CONNECTOR_HEADER, isHandshakeOnly, planServiceWorkspace, resolveWorkspace, SERVICE_TOKEN_HEADER, SERVICE_WORKSPACE_HEADER, serviceTokenValid } from "./src/workspace.ts";
+import { authRequired, CONNECTOR_HEADER, isHandshakeOnly, resolveWorkspace, SERVICE_TOKEN_HEADER, SERVICE_WORKSPACE_HEADER } from "./src/workspace.ts";
+import { registerServiceRoutes } from "./src/service/index.ts";
+import type { ServiceApp } from "./src/service/http.ts";
 import { suspensionRefusal } from "./src/operatorGate.ts";
 import "./src/live.ts";
 
@@ -1524,37 +1526,8 @@ server.post("/internal/tick", async (c) => {
   return c.json({ ok: true, ...(await rt.engine.advanceAllOpen()) });
 });
 
-/**
- * POST /internal/workspaces (x-haggle-service-token: HAGGLE_SERVICE_TOKEN): the web app creates the
- * workspace for a newly signed-up user, once per owner (idempotent), with its approver and cap. The
- * web app then calls the MCP endpoint with the service token and x-haggle-workspace. Off (404) when
- * the token isn't configured.
- */
-const ProvisionBody = z.object({
-  owner_ref: z.string().min(1).max(200), name: z.string().max(120).optional(),
-  approver_phone: z.string().optional(), approver_email: z.string().email().optional(),
-  cap_usd: z.number().positive().optional(), timezone: z.string().max(64).optional(), area: z.string().max(120).optional(),
-});
-server.post("/internal/workspaces", async (c) => {
-  if ((process.env.HAGGLE_SERVICE_TOKEN?.trim().length ?? 0) < 32) return c.json({ error: { code: "DISABLED", message: "Service onboarding is off.", fix: "Set HAGGLE_SERVICE_TOKEN (at least 32 chars) on the server and the web app." } }, 404);
-  if (!serviceTokenValid(c.req.header(SERVICE_TOKEN_HEADER))) return c.json({ error: { code: "UNAUTHORIZED", message: "Unknown service token.", fix: "Send x-haggle-service-token: HAGGLE_SERVICE_TOKEN." } }, 401);
-  const body = ProvisionBody.safeParse(await c.req.json().catch(() => null));
-  if (!body.success) return c.json({ error: { code: "INVALID_INPUT", message: body.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "), fix: "Pass owner_ref and optional name, approver_phone (E.164), approver_email, cap_usd, timezone, area." } }, 400);
-  let rt: Runtime;
-  try {
-    rt = await getRuntime();
-  } catch {
-    return c.json({ error: { code: "CONFIG_MISSING", message: "This server isn't fully configured.", fix: "The operator must set the missing environment variables (see /health)." } }, 503);
-  }
-  const b = body.data;
-  try {
-    const plan = planServiceWorkspace({ ownerRef: b.owner_ref, name: b.name ?? "My workspace", approverPhone: b.approver_phone, approverEmail: b.approver_email, capUsd: b.cap_usd, timezone: b.timezone, area: b.area });
-    const r = await rt.engine.provisionWorkspace(plan);
-    return c.json({ ok: true, workspace_id: r.workspace.id, created: r.created }, r.created ? 201 : 200);
-  } catch (err) {
-    const e = err as { code?: string; message: string; fix?: string };
-    return c.json({ error: { code: e.code ?? "INVALID_INPUT", message: e.message, fix: e.fix ?? "Fix the input and try again." } }, 400);
-  }
-});
+// The web app's service-only routes (x-haggle-service-token): workspaces, approvals, vendors, account
+// (src/service/*). Off (404) when HAGGLE_SERVICE_TOKEN isn't configured.
+registerServiceRoutes(server as unknown as ServiceApp);
 
 export default server;
