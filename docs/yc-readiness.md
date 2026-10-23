@@ -19,7 +19,7 @@ What Haggle's buyer side does today, and how we know. It separates what runs for
 | --- | --- | --- |
 | `deal` from plain words (headcount, date, budget, dietary, area) | **Implemented, tested** | `mcp.e2e`, `requestNormalize` tests; audit journey (a): words read correctly |
 | Vendor outreach by email, with follow-ups and negotiation on real competing quotes only | **Implemented; simulated only** | orchestration eval (corpus + fleet arms) |
-| Reading replies (Claude structured outputs; keyword fallback) | **Implemented; Claude unmeasured** | Fallback reader: 38/55 totals correct, 0 approvable money errors. The Claude reader has never been run on the corpus (needs `HAGGLE_EVAL_LIVE=1` and a dollar cap) |
+| Reading replies (Claude structured outputs; keyword fallback) | **Implemented, measured on the corpus** | Claude: 54/54 totals, 317/328 fields; deterministic money check after extraction; 0 incorrect financial quotes approvable (was 3) on the same readings (`docs/financial-integrity.md`) |
 | Comparison, recommendation, explained refusal | **Implemented, tested** | Benchmark: 10/10 deals end where a careful buyer would (4 bought, 6 handed to the human with reasons) |
 | Human approval (coded text from the approver's phone only, in live mode) | **Implemented, tested; never live** | `security*`, `purchaseFlow.e2e`; the code never reaches the model |
 | Manual payment handoff (vendor confirms, human pays directly, PAID, verified receipt) | **Implemented, tested; never live** | New `pilot:manual` arm: 6/6 settled_verified, 2 human texts per deal, no charge |

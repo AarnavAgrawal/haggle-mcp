@@ -18,7 +18,8 @@ const extractor = {
     return {
       available: true, price_per_head_usd: null, headcount: 1, subtotal_usd: null, delivery_fee_usd: null, delivery_included: null, tax_usd: null, tax_included: /tax/i.test(t) ? true : null,
       total_usd: total, deposit_usd: deposit, menu_items: [], dietary_coverage: [], requirement_answers: answers, valid_until: null, questions: [], payment_request: "none" as const, instructions_to_agent: false,
-      sources: total !== null ? [{ field: "total" as const, source: "email body", excerpt: `$${total} total` }] : [], missing_fields: total === null ? ["total"] : [], confidence: 0.9,
+      // Claude cites every figure it sets; an uncited one is dropped (validate.ts).
+      sources: [...(total !== null ? [{ field: "total" as const, source: "email body", excerpt: `$${total} total` }] : []), ...(deposit !== null ? [{ field: "deposit" as const, source: "email body", excerpt: `$${deposit} deposit` }] : [])], missing_fields: total === null ? ["total"] : [], confidence: 0.9,
     };
   },
 };

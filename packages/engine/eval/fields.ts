@@ -79,6 +79,9 @@ export function scoreFields(c: CorpusCase, o: FieldObservation): FieldScore {
     if (firmWrong || unfirmShownFirm || leaked || !priced) shown.push("total");
   }
   if (o.shown_deposit_usd !== null && (l.deposit_usd === null ? o.shown_deposit_usd > 0 : !close(o.shown_deposit_usd, l.deposit_usd))) shown.push("deposit");
+  // A deposit the business stated but the board lacks is a money error too: the approval then says the
+  // full total is due up front (live eval 2026-10-23, c44 "half up front").
+  else if (o.shown_deposit_usd === null && o.shown_total_usd !== null && l.deposit_usd !== null && l.deposit_usd > 0) shown.push("deposit");
   return { id: c.id, fields, money_error_shown: shown, money_error_approvable: o.approvable ? shown : [] };
 }
 

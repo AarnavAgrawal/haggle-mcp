@@ -40,6 +40,7 @@ import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } f
 import { dropUnstatedDietaryRefusals, dropUnsupportedRequirementAnswers, validateQuote } from "../parsing/validate.ts";
 import { APPROXIMATE_FLAG, confirmsFirm, isApproximateTotal } from "../parsing/approximate.ts";
 import { pdfBodyTotalConflict } from "../parsing/pdfBody.ts";
+import { DEPOSIT_ISSUES, issuesText, recordIssues, usd as usdCents, type FinancialIssue } from "../parsing/financialIntegrity.ts";
 import { termsMismatch } from "../parsing/termsCheck.ts";
 import { isTransientParseError, MAX_PARSE_RETRIES, parseErrorKind, parseRetryDelayMs } from "../parsing/parseErrors.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
@@ -429,6 +430,7 @@ const REJECT_TEXT: Record<import("../ranking/rank.ts").RejectReason, string> = {
   not_current: "superseded by a newer quote", unavailable: "the business declined", unverified_sender: "sender could not be verified",
   external_payment_link: "asked for payment through an external link (blocked)", prompt_injection: "contained instructions aimed at the agent (ignored)",
   requirement_unmet: "does not meet every hard requirement", missing_info: "a required answer is still missing", no_total: "no exact total yet", all_in_unknown: "all-in total not confirmed yet (delivery, tax or fees not stated)", over_budget: "over the budget",
+  numbers_dont_add_up: "its figures don't add up (the business was asked to confirm them)",
 };
 
 export type WaitUntil = "any_change" | "ready" | "approval_decided" | "done";
@@ -465,6 +467,17 @@ export function maskHandle(h: string): string {
 export function mergeCarryOver(next: QuoteRecord, prev: QuoteRecord | null): QuoteRecord {
   if (!prev || !next.available || !prev.available) return next;
   const out: QuoteRecord = { ...next, sources: { ...next.sources }, dietary_coverage: { ...next.dietary_coverage }, missing_fields: [...next.missing_fields], flags: [...next.flags] };
+  // A total (or deposit) carried from the earlier reply keeps what was wrong with it: a reply that only
+  // answers something else ("yes, 45 vegetarian") never clears figures that didn't add up. A newly
+  // stated total is checked on its own (validateQuote); a newly stated deposit settles deposit issues.
+  const totalCarried = next.total_cents === null && prev.total_cents !== null;
+  const prevIssues = recordIssues(prev);
+  if (totalCarried && prevIssues.length) {
+    const carried = prevIssues.filter((i) => !DEPOSIT_ISSUES.has(i.code) || next.deposit_cents === null);
+    const own = (next.financial?.issues ?? []).filter((i) => !carried.some((c) => c.code === i.code));
+    out.financial = { stated_total_cents: prev.financial?.stated_total_cents ?? prev.total_cents, status: "inconsistent", issues: [...carried, ...own], notes: [...(next.financial?.notes ?? []), "issues carried from the earlier reply (its total still applies)"] };
+    if (carried.some((i) => !DEPOSIT_ISSUES.has(i.code))) out.flags.push("conflicting_numbers");
+  }
   const money = [["total_cents", "total"], ["deposit_cents", "deposit"], ["price_per_head_cents", "price_per_head"], ["subtotal_cents", "subtotal"], ["delivery_fee_cents", "delivery_fee"], ["tax_cents", "tax"]] as const;
   for (const [k, field] of money) {
     if (out[k] !== null || prev[k] === null) continue;
@@ -850,6 +863,7 @@ export class HaggleEngine {
       ...(required.length ? { missingRequired: required.some((k) => (q.record.fields?.[k] ?? null) === null) } : {}),
       // What approval would pay now can't be approved over the cap: it ranks with the stated misses.
       ...(capCents !== null && payNowCents(q) !== null && payNowCents(q)! > capCents ? { overCap: true } : {}),
+      ...(recordIssues(q.record).some((i) => !DEPOSIT_ISSUES.has(i.code)) ? { figuresInconsistent: true } : {}),
     }));
     // Any budget (a target or a "limit") is soft: over it ranks lower with a caveat (decisions 1, 33);
     // over a limit ranks with the stated misses, and only a quote that misses nothing wins by default.
@@ -880,6 +894,10 @@ export class HaggleEngine {
       : q.total_cents <= 0 ? "zero_total"
       // "around $1,300" is a price to compare, never an amount to approve or charge.
       : isApproximate(q.record) ? "total_not_firm"
+      // The business's own figures don't add up (a total its parts contradict, a deposit that disagrees
+      // with its stated share, a deposit mentioned but not stated): nothing is approved on them until it
+      // clarifies (parsing/financialIntegrity.ts). Re-checked here for records stored before the check.
+      : recordIssues(q.record).length ? "numbers_dont_add_up"
       // Over a budget (a target or a "limit") is a caveat, never a block (decision 33).
       : !allInKnown(q.record, this.needsDelivery(job)) ? "all_in_unknown" : null;
     const caveats: string[] = [];
@@ -960,9 +978,10 @@ export class HaggleEngine {
       date_mismatch: `${name} quoted for ${q.record.terms_mismatch?.offered_date ?? "another date"}, not the requested date; agree the date with them first.`,
       delivery_window_mismatch: `${name} can only deliver ${q.record.terms_mismatch?.delivery_window ?? "at another time"}, which misses the requested time; agree the timing with them first.`,
       no_total: "No total yet.", zero_total: "The stated total is $0; nothing to approve.", all_in_unknown: "The all-in total (delivery, tax or fees) isn't confirmed yet.",
+      numbers_dont_add_up: `${name}'s figures don't add up (${issuesText(recordIssues(q.record))}); ${name} must confirm the correct amounts before it can be approved.`,
       missing_info: `${name} hasn't answered ${job.request.compare_by ? `"${job.request.compare_by.field}"` : "a required question"} yet.`,
     };
-    return { code: hard === "no_total" || hard === "zero_total" || hard === "missing_info" || hard === "unreliable_extraction" || hard === "identity_mismatch" || hard === "date_mismatch" || hard === "delivery_window_mismatch" ? hard : "quote_not_eligible", reason: TEXT[hard] ?? hard };
+    return { code: hard === "no_total" || hard === "zero_total" || hard === "missing_info" || hard === "unreliable_extraction" || hard === "identity_mismatch" || hard === "date_mismatch" || hard === "delivery_window_mismatch" || hard === "numbers_dont_add_up" ? hard : "quote_not_eligible", reason: TEXT[hard] ?? hard };
   }
 
   private async context(job: JobRow, event?: JobEvent) {
@@ -973,8 +992,9 @@ export class HaggleEngine {
     const payment = await this.repo.getPaymentForJob(job.id);
     const approval = event?.type === "approval_verified" || event?.type === "booking_confirmed" ? await this.repo.getLatestApproval(job.id) : null;
     return {
-      // An approximate total counts: it becomes approvable once the business confirms a firm figure.
-      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => { const h = this.approvability(job, q).hard; return h === null || h === "total_not_firm"; }).length, counterable: plan.length > 0,
+      // An approximate total, or figures that don't add up, count: each becomes approvable once the business
+      // confirms (Haggle asked), so the deal waits for that answer instead of failing.
+      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => { const h = this.approvability(job, q).hard; return h === null || h === "total_not_firm" || h === "numbers_dont_add_up"; }).length, counterable: plan.length > 0,
       negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent", "charging"].includes(payment.status),
       ...(approval ? { approvalAction: approval.action } : {}), ...(this.d.config.manualPaymentHandoff ? { bookingFirst: true } : {}),
     };
@@ -2456,7 +2476,7 @@ export class HaggleEngine {
         // Manual handoff: an approval whose booking the business confirmed doesn't lapse while the human
         // arranges payment (hours or days); everything else is still revalidated.
         expires_at: opts.bookingHeld ? new Date(this.now().getTime() + 60_000).toISOString() : approval.expires_at },
-      quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
+      quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status, figures_consistent: recordIssues(quote.record).length === 0 } : null,
       payee: b && quote ? { business_id: b.business_id, on_job: true, quoted_from_trusted_sender: quote.sender_trusted && quote.business_id === b.business_id && carriesMoney } : null,
       existingPayment: null,
       spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, approval.cap_cents, (await this.getSettings(job.workspace_id)).spending_cap_cents),
@@ -5250,14 +5270,20 @@ export class HaggleEngine {
     const needs = reqs.filter((r) => r.kind === "dietary" && r.need).map((r) => r.need!);
     const priorRecord = priorCurrent?.sender_trusted ? priorCurrent.record : null;
     const ownText = msg.channel === "email" ? cleanEmailBody(msg.body_text ?? "") : msg.body_text ?? "";
-    let fresh = validateQuote(x, job.request.quantity, ask, { needs, requirementIds: reqs.map((r) => r.id), prior: priorRecord });
+    // The business's own words (never a call transcript: it holds the agent's words too) for deposits stated as a share.
+    let fresh = validateQuote(x, job.request.quantity, ask, { needs, requirementIds: reqs.map((r) => r.id), prior: priorRecord, ...(msg.channel !== "phone" ? { text: ownText } : {}) });
     // "prolly around 1300", "approximately twelve hundred": the business's own words hedge the total.
     // Deterministic, from its text (a structured quote.json is firm by construction).
     if (!opts.structured && fresh.total_cents !== null && isApproximateTotal({ totalCents: fresh.total_cents, excerpts: [(fresh.sources.total?.excerpt ?? "").split(" + ")[0]!], text: msg.body_text ?? "", channel: msg.channel })) {
       fresh = { ...fresh, flags: [...fresh.flags, APPROXIMATE_FLAG] };
     }
     // The attached PDF's total and the total the email itself states disagree: the human must see it.
-    if (msg.channel === "email" && !fresh.flags.includes("conflicting_numbers") && pdfBodyTotalConflict(x, ownText)) fresh = { ...fresh, flags: [...fresh.flags, "conflicting_numbers"] };
+    // Which of the two the business means is for it to say: approval waits until it does.
+    const docConflict = msg.channel === "email" ? pdfBodyTotalConflict(x, ownText) : null;
+    if (docConflict) {
+      const issue: FinancialIssue = { code: "document_total_mismatch", detail: `the attached quote says ${usdCents(docConflict.pdfCents)} but the email says ${docConflict.bodyCents.map(usdCents).join(" / ")}`, stated_cents: docConflict.pdfCents, expected_cents: docConflict.bodyCents[0]! };
+      fresh = { ...fresh, flags: [...new Set([...fresh.flags, "conflicting_numbers"])], financial: { stated_total_cents: fresh.financial?.stated_total_cents ?? null, notes: fresh.financial?.notes ?? [], status: "inconsistent", issues: [...(fresh.financial?.issues ?? []), issue] } };
+    }
     // Another date, a delivery window that misses the time, a reply written as another business
     // (parsing/termsCheck.ts): flagged, and approval waits for the human to sort it out. A call
     // transcript is checked only through what the reader extracted (it holds the agent's words too).
@@ -5321,7 +5347,15 @@ export class HaggleEngine {
     if (payable) {
       const v = record.fields?.[payable.key];
       if (typeof v === "number" && (record.total_cents === null || v <= record.total_cents)) record.deposit_cents = v;
-      else if (typeof v === "number") record.flags = [...new Set([...record.flags, "conflicting_numbers"])];
+      else if (typeof v === "number") {
+        const issue: FinancialIssue = { code: "payable_over_total", detail: `the amount due now (${usdCents(v)}) is more than the total (${usdCents(record.total_cents!)})`, stated_cents: v, expected_cents: record.total_cents! };
+        record = { ...record, flags: [...new Set([...record.flags, "conflicting_numbers"])], financial: { stated_total_cents: record.financial?.stated_total_cents ?? null, notes: record.financial?.notes ?? [], status: "inconsistent", issues: [...(record.financial?.issues ?? []), issue] } };
+      }
+    }
+    // A deposit known by now (the payable field, a carried or newly stated amount) settles "deposit mentioned, amount unknown".
+    if (record.deposit_cents !== null && record.financial?.issues.some((i) => i.code === "deposit_unquantified")) {
+      const issues = record.financial.issues.filter((i) => i.code !== "deposit_unquantified");
+      record = { ...record, financial: { ...record.financial, issues, status: issues.length ? "inconsistent" : "unverifiable" } };
     }
     const results = evaluateRequirements(record, reqs, job.request.quantity);
     const compliant = meetsHardRequirements(results, reqs);
@@ -5403,7 +5437,12 @@ export class HaggleEngine {
     // A delivery requirement already being asked about covers delivery: the all-in ask isn't repeated for it.
     const deliveryAsked = missing.some((m) => reqs.some((r) => r.kind === "delivery" && r.text === m));
     const allInAsk = !firmAsk && !needExact && quoteRow && record.available && b.channel !== "phone" && !(isApproximate(record)) && !allInKnown(record, this.needsDelivery(job) && !deliveryAsked) ? "the all-in total including delivery, tax and any fees" : null;
-    const totalAsk = needExact ? exactTotalAsk(record.total_cents) : firmAsk ?? allInAsk;
+    // Figures that don't add up are asked about before anything else (one message, the business's own
+    // numbers), only when they are what holds the quote back: never to a pay-by-link or injection reply.
+    const issues = recordIssues(record);
+    const integrityAsk = quoteRow && record.available && b.channel !== "phone" && issues.length && this.approvability(job, quoteRow).hard === "numbers_dont_add_up"
+      ? (issues.every((i) => DEPOSIT_ISSUES.has(i.code)) ? `the deposit amount due at booking (${issuesText(issues)})` : `your correct all-in total (${issuesText(issues)})`) : null;
+    const totalAsk = needExact ? exactTotalAsk(record.total_cents) : integrityAsk ?? firmAsk ?? allInAsk;
     if (quoteRow) {
       // No text to the human per quote: the deal board and wait_for_update show it; the human is
       // texted once quotes are final (offerReady) or when they must answer something.
@@ -6020,7 +6059,7 @@ export class HaggleEngine {
         // Soft preferences (decision 1): a ranked quote that misses one is "incomplete", never "rejected";
         // "rejected" is only for an unsafe quote or one that declined. approvable/approval_block say whether it can be approved now.
         verdict: order.has(q.id) ? (ranking.caveats.some((c) => c.quoteId === q.id) ? "incomplete" : "compliant")
-          : hard && !["no_total", "zero_total", "total_not_firm", "missing_info", "all_in_unknown"].includes(hard) ? "rejected" : "incomplete",
+          : hard && !["no_total", "zero_total", "total_not_firm", "missing_info", "all_in_unknown", "numbers_dont_add_up"].includes(hard) ? "rejected" : "incomplete",
         ...(reason ? { excluded_reason: excludedText(reason, cq.requirement_results) } : {}),
         ...(isApproximate(q.record) ? { total_approximate: true as const } : {}),
         approvable: block === null, ...(block ? { approval_block: block } : {}),
@@ -6602,7 +6641,8 @@ export class HaggleEngine {
     if (reason) {
       const fix = reason === "no_total" ? "Ask the business for its total (answer_business, or wait for the follow-up Haggle sent); every approval, confirm-only too, needs a firm total."
         : reason === "all_in_unknown" ? "Wait for the business to confirm its all-in total (delivery, tax and fees; Haggle asked), or pick another quote from get_quotes."
-        : reason === "missing_info" ? "Wait for the business's answer (Haggle asked), or pick another quote from get_quotes." : "Pick another quote from get_quotes.";
+        : reason === "missing_info" ? "Wait for the business's answer (Haggle asked), or pick another quote from get_quotes."
+        : reason === "numbers_dont_add_up" ? `Its figures don't add up (${issuesText(recordIssues(q.record))}). Wait for the business to confirm the correct amounts (Haggle asked once), or pick another quote from get_quotes. Never approve a figure Haggle worked out instead.` : "Pick another quote from get_quotes.";
       throw new EngineError("quote_not_eligible", `That quote can't be approved: ${reason}.`, fix, "get_quotes");
     }
     if (pays && !payNow) throw new EngineError("no_deposit", "This quote has no amount to pay now.", "Ask the business for its price first, or approve with action 'confirm' (no payment).", "get_quotes");
@@ -7438,6 +7478,7 @@ const STRIPE_REFUSALS: Record<StripeGuardCode, [string, string, string]> = {
   APPROVAL_DECLINED: ["The human declined this quote.", "Pick another quote.", "get_quotes"],
   APPROVAL_EXPIRED: ["The approval expired or was already used.", "Call approve again for a fresh approval.", "approve"],
   QUOTE_CHANGED: ["The quote changed after the human approved it.", "Call get_quotes, then approve the current quote.", "get_quotes"],
+  QUOTE_INCONSISTENT: ["The business's figures for this quote don't add up, so nothing is paid on it.", "Wait for the business to confirm the correct amounts (get_quotes shows what disagrees), then approve the corrected quote.", "get_quotes"],
   AMOUNT_MISMATCH: ["The amount no longer matches what the human approved.", "Call get_quotes, then approve again.", "get_quotes"],
   OVER_SPEND_CAP: ["The deposit is over the spending cap.", "Lower the deposit with the business, or ask the operator to raise the cap (agents can't).", "get_quotes"],
   JOB_NOT_READY: ["The job is not ready to pay.", "Call get_quotes to see its state.", "get_quotes"],
@@ -7494,7 +7535,7 @@ function normalizeAction(a: ApprovalAction): "confirm" | "pay" {
 function rejectToFlag(r: string) {
   const m: Record<string, import("../contract.ts").QuoteFlag> = {
     unavailable: "requirement_unmet", unverified_sender: "unverified_sender", external_payment_link: "external_payment_link", prompt_injection: "prompt_injection",
-    requirement_unmet: "requirement_unmet", missing_info: "requirement_unknown", no_total: "vague_price", all_in_unknown: "delivery_unclear", over_budget: "over_budget", not_current: "expired",
+    requirement_unmet: "requirement_unmet", missing_info: "requirement_unknown", no_total: "vague_price", all_in_unknown: "delivery_unclear", over_budget: "over_budget", not_current: "expired", numbers_dont_add_up: "conflicting_numbers",
   };
   return m[r] ?? "low_confidence";
 }

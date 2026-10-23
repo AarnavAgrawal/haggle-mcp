@@ -33,6 +33,12 @@ describe("corpus f2", () => {
 
 describe("per-field scoring (fields.ts)", () => {
   const obs = (o: Partial<FieldObservation>): FieldObservation => ({ total_usd: null, deposit_usd: null, delivery: null, tax: null, fees: [], date_ok: null, requirements: {}, flags: [], shown_total_usd: null, shown_deposit_usd: null, approvable: false, ...o });
+  it("a stated deposit missing from the board is a money error (the approval would say the full total is due up front)", () => {
+    const c = byId("c44-half-deposit"); // $1,120, half up front
+    expect(scoreFields(c, obs({ total_usd: 1120, shown_total_usd: 1120, approvable: true })).money_error_approvable).toEqual(["deposit"]);
+    expect(scoreFields(c, obs({ total_usd: 1120, deposit_usd: 560, shown_total_usd: 1120, shown_deposit_usd: 560, approvable: true })).money_error_shown).toEqual([]);
+  });
+
   it("a wrong amount on the board is a money error; approvable only when the human could approve it", () => {
     const c = byId("c14-service-charge"); // all-in $1,180
     const shownWrong = scoreFields(c, obs({ total_usd: 1000, shown_total_usd: 1000 }));

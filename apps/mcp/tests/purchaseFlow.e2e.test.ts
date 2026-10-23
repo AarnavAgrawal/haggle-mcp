@@ -24,7 +24,8 @@ const extractor: ExtractorPort = {
     return {
       available: true, price_per_head_usd: null, headcount: null, subtotal_usd: null, delivery_fee_usd: null, delivery_included: true, tax_usd: null, tax_status: "included", tax_rate_percent: null, tax_evidence: "",
       total_usd: total, deposit_usd: deposit, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 14 }], valid_until: null, questions: [], payment_request: "none", instructions_to_agent: false,
-      sources: total !== null ? [{ field: "total" as const, source: "email body", excerpt: `$${total} total` }] : [], missing_fields: total === null ? ["total"] : [], confidence: 0.9,
+      // Claude cites every figure it sets; an uncited one is dropped (validate.ts).
+      sources: [...(total !== null ? [{ field: "total" as const, source: "email body", excerpt: `$${total} total` }] : []), ...(deposit !== null ? [{ field: "deposit" as const, source: "email body", excerpt: `$${deposit} deposit` }] : [])], missing_fields: total === null ? ["total"] : [], confidence: 0.9,
       requirement_checks: (i.request.requirementList ?? []).map((r) => ({ requirement_id: r.id, met: true, evidence: "14 vegetarian, delivered by 11:00", note: "stated" })),
     } as never;
   },

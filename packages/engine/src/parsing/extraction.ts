@@ -222,4 +222,10 @@ export interface QuoteRecord {
    * (date_mismatch, delivery_window_mismatch, identity_mismatch) that blocks approval.
    */
   terms_mismatch?: { offered_date?: string; delivery_window?: string; signed_as?: string; notes: string[] };
+  /**
+   * The deterministic money check (parsing/financialIntegrity.ts): the business's stated total against
+   * its own parts, deposits stated as a share, charges read twice. Any issue blocks approval until the
+   * business clarifies. Absent on records stored before it existed (re-checked from the record).
+   */
+  financial?: import("./financialIntegrity.ts").FinancialCheck;
 }

@@ -19,6 +19,8 @@ const textExtractor = {
     const sources = [
       ...(total !== null ? [{ field: "total" as const, source: "text", excerpt: `$${total} total` }] : []),
       ...(perHead !== null ? [{ field: "price_per_head" as const, source: "text", excerpt: `$${perHead} per person` }] : []),
+      // Claude cites every figure it sets; an uncited one is dropped (validate.ts).
+      ...(deposit !== null ? [{ field: "deposit" as const, source: "text", excerpt: `$${deposit} deposit` }] : []),
     ];
     return {
       available: true, price_per_head_usd: perHead, headcount: perHead !== null ? 40 : null, subtotal_usd: null, delivery_fee_usd: null, delivery_included: /deliver/i.test(t) ? true : null,

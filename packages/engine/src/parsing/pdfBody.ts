@@ -1,7 +1,8 @@
 // PURE: a PDF quote whose total disagrees with the total the business wrote in the email itself
 // ("$1,150 total" in the body, $1,400 on the attached quote). The extractor picks one; the human
-// must see that the two disagree, so the quote is flagged `conflicting_numbers` (a caveat on the
-// approval, not a block). Only the business's own words count (the caller passes cleanEmailBody text).
+// must see that the two disagree, so the quote is flagged `conflicting_numbers` and held until the
+// business says which is right (financialIntegrity.ts "document_total_mismatch"). Only the business's
+// own words count (the caller passes cleanEmailBody text).
 import type { QuoteExtraction } from "./extraction.ts";
 
 const TOTAL_NEAR = [

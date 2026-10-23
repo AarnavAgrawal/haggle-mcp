@@ -13,6 +13,7 @@
 import type { AskField } from "../contract.ts";
 import { MoneyError, usdToCents } from "../money.ts";
 import { MONEY_FIELDS, splitQuestions, type FieldValue, type MoneyField, type QuoteExtraction, type QuoteRecord, type TaxInfo } from "./extraction.ts";
+import { checkDeposit, dedupeFees, depositShare, DISCOUNT_LABEL, RECONCILE_TOLERANCE_CENTS, reconcileTotal, usd, type FeeLine, type FinancialCheck, type FinancialIssue, type TaxPart } from "./financialIntegrity.ts";
 
 const MAX_MONEY_USD = 50_000;
 const SUBTOTAL_TOLERANCE = 0.02;
@@ -143,6 +144,11 @@ export interface ValidateOptions {
    * business stated before, and a tax decision it made earlier still applies.
    */
   prior?: QuoteRecord | null;
+  /**
+   * The business's own words in this reply (email body, text; never a call transcript, which holds the
+   * agent's words too): a deposit stated as a share ("half up front") is read from it.
+   */
+  text?: string;
 }
 
 /** A stated total "equals" parts + tax within this many cents (rounding on a call read-back). */
@@ -231,17 +237,31 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
     cents[field] = c;
   }
 
-  // 2. Subtotal must be within 2% of per-head x headcount when all three exist.
+  // The business's own figures, before Haggle adds anything: what the integrity pass reconciles.
+  const issues: FinancialIssue[] = [];
+  const statedTotal = x.total_usd !== null ? cents.total : null;
+  const statedTotalExcerpt = sources.total?.excerpt ?? "";
+  const statedTax = cents.tax;
+
+  // 2. Subtotal must be within 2% of per-head x headcount when all three exist. A difference is the
+  // business's own arithmetic not adding up: approval waits until it clarifies.
   const quotedHeadcount = x.headcount;
-  if (cents.price_per_head !== null && quotedHeadcount !== null && cents.subtotal !== null) {
+  // "$28.75 per person" x 40 = the stated $1,150: a per-person ALL-IN price (total / headcount), not the
+  // food line, so it is neither checked against a food subtotal nor counted as food below (eval fx-01).
+  const perHeadAllIn = statedTotal !== null && cents.price_per_head !== null && quotedHeadcount !== null && quotedHeadcount > 0
+    && Math.abs(cents.price_per_head * quotedHeadcount - statedTotal) <= Math.max(RECONCILE_TOLERANCE_CENTS, quotedHeadcount);
+  if (cents.price_per_head !== null && quotedHeadcount !== null && cents.subtotal !== null && !perHeadAllIn) {
     const expected = cents.price_per_head * quotedHeadcount;
     if (expected > 0 && Math.abs(cents.subtotal - expected) / expected > SUBTOTAL_TOLERANCE) {
+      issues.push({ code: "line_items_mismatch", detail: `${usd(cents.price_per_head)} x ${quotedHeadcount} is ${usd(expected)}, but the subtotal is stated as ${usd(cents.subtotal)}`, stated_cents: cents.subtotal, expected_cents: expected });
       cents.subtotal = null;
       missing.add("subtotal");
       flags.add("conflicting_numbers");
       failures++;
     }
   }
+  // Food as the business priced it in this reply (a quantity it stated, never the requested one).
+  const statedFood = cents.subtotal ?? (!perHeadAllIn && cents.price_per_head !== null && quotedHeadcount !== null && quotedHeadcount > 0 ? cents.price_per_head * quotedHeadcount : null);
 
   // 2b. Tax: Claude judges what the business said (tax_status + rate + evidence); this code only
   // does the arithmetic. A reply that doesn't mention tax keeps the business's earlier decision, and
@@ -320,6 +340,7 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
 
   // 3. Deposit cannot exceed the total. A deposit is part of the total, never added to it.
   if (cents.deposit !== null && cents.total !== null && cents.deposit > cents.total) {
+    issues.push({ code: "deposit_over_total", detail: `the deposit (${usd(cents.deposit)}) is more than the total (${usd(cents.total)})`, stated_cents: cents.deposit, expected_cents: cents.total });
     cents.deposit = null;
     missing.add("deposit");
     flags.add("conflicting_numbers");
@@ -366,22 +387,82 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
   const confidence = Math.max(0, Math.min(1, x.confidence - failures * CONFIDENCE_PENALTY));
   if (confidence < 0.6) flags.add("low_confidence");
 
-  // 8. Other fees: an amount the stated total excludes is added to the all-in total (labelled); a fee
-  // whose inclusion is unclear leaves the all-in total unknown ("fees_unclear"), never guessed.
-  const otherFees: NonNullable<QuoteRecord["other_fees"]> = [];
+  // 8. Other fees. A charge read twice (the delivery fee again as a fee) counts once. Against a STATED
+  // total, the business's own parts are reconciled (financialIntegrity.ts): a total they don't add up to
+  // is an issue (approval waits for the business), never corrected; a fee or delivery fee the reader left
+  // unclear (or misplaced) is placed only when the figures settle it to the cent, else the all-in total
+  // is unknown ("fees_unclear"). An amount outside the stated total is added to the all-in total, labelled.
+  const parsedFees: FeeLine[] = [];
   for (const f of x.other_fees ?? []) {
     let amount: number | null = null;
     try { amount = f.amount_usd === null ? null : usdToCents(f.amount_usd); } catch { amount = null; }
-    if (amount !== null && (amount < 0 || amount > MAX_MONEY_USD * 100)) amount = null;
-    otherFees.push({ label: f.label.trim().slice(0, 60) || "fee", amount_cents: amount, included_in_total: f.included_in_total, excerpt: f.excerpt.trim().slice(0, 200) });
+    const label = f.label.trim().slice(0, 60) || "fee";
+    // A discount lowers the price, however the reader signed it.
+    if (amount !== null && DISCOUNT_LABEL.test(label) && !/\b(fee|charge|surcharge)\b/i.test(label)) amount = -Math.abs(amount);
+    if (amount !== null && (Math.abs(amount) > MAX_MONEY_USD * 100 || (amount < 0 && !DISCOUNT_LABEL.test(label)))) amount = null;
+    parsedFees.push({ label, amount_cents: amount, included_in_total: f.included_in_total, excerpt: f.excerpt.trim().slice(0, 200) });
   }
-  const excluded = otherFees.filter((f) => f.included_in_total === false && f.amount_cents !== null && f.amount_cents > 0);
-  if (cents.total !== null && excluded.length) {
+  const deduped = dedupeFees(parsedFees, cents.delivery_fee, statedTax);
+  const otherFees: NonNullable<QuoteRecord["other_fees"]> = deduped.fees;
+  const notes = [...deduped.notes];
+  let reconciled: ReturnType<typeof reconcileTotal> | null = null;
+  if (statedTotal !== null && x.available) {
+    const taxPart: TaxPart = taxStatus === "added_on_top" ? { kind: "outside" }
+      : taxStatus === "included" ? (cents.tax !== null ? { kind: "inside_amount", cents: cents.tax } : tax.rate_percent !== null ? { kind: "inside_rate", rate_percent: tax.rate_percent } : { kind: "inside_unknown" })
+      : statedTax !== null ? { kind: "inside_amount", cents: statedTax } : { kind: "unstated" };
+    reconciled = reconcileTotal({ stated_total_cents: statedTotal, food_cents: statedFood, delivery: { cents: cents.delivery_fee, included: x.delivery_included }, tax: taxPart, fees: otherFees, total_excerpt: statedTotalExcerpt });
+    if (reconciled.verdict === "inconsistent") {
+      issues.push({ code: "total_mismatch", detail: `the listed charges add up to ${usd(reconciled.expected_cents!)}, but the stated total is ${usd(statedTotal)}`, stated_cents: statedTotal, expected_cents: reconciled.expected_cents! });
+      flags.add("conflicting_numbers");
+    } else if (reconciled.verdict === "ambiguous") {
+      flags.add("fees_unclear");
+      notes.push("unclear which charges the stated total includes");
+    } else {
+      reconciled.fees.forEach((place, k) => {
+        const f = otherFees[k]!;
+        if (place && f.included_in_total === null) { otherFees[k] = { ...f, included_in_total: place === "inside" }; notes.push(`"${f.label}" (${usd(f.amount_cents!)}) is ${place} the stated total: the figures add up that way`); }
+      });
+      if (reconciled.delivery === "outside" && cents.total !== null && cents.delivery_fee !== null) {
+        cents.total += cents.delivery_fee;
+        const was = sources.total;
+        sources.total = { source: `computed from stated total + delivery fee${was ? ` (${was.source})` : ""}`, excerpt: [was?.excerpt, sources.delivery_fee?.excerpt].filter(Boolean).join(" + ").slice(0, 200) };
+        notes.push(`the delivery fee (${usd(cents.delivery_fee)}) is outside the stated total: the figures add up that way`);
+      }
+    }
+  } else if (statedTotal === null && cents.total !== null) {
+    // No stated total for a fee to be inside: a priced fee line is a charge on top of the parts.
+    otherFees.forEach((f, k) => {
+      if (f.included_in_total === null && f.amount_cents !== null && f.amount_cents !== 0) { otherFees[k] = { ...f, included_in_total: false }; notes.push(`"${f.label}" (${usd(f.amount_cents)}) added: no total was stated, so it is a charge on top of the parts`); }
+    });
+  }
+  const excluded = otherFees.filter((f) => f.included_in_total === false && f.amount_cents !== null && f.amount_cents !== 0);
+  if (cents.total !== null && excluded.length && reconciled?.verdict !== "inconsistent") {
     cents.total += excluded.reduce((a, f) => a + f.amount_cents!, 0);
     const was = sources.total;
     sources.total = { source: `computed from stated total + ${excluded.map((f) => f.label).join(" + ")}${was ? ` (${was.source})` : ""}`, excerpt: [was?.excerpt, ...excluded.map((f) => f.excerpt)].filter(Boolean).join(" + ").slice(0, 200) };
   }
   if (otherFees.some((f) => f.included_in_total === null || (f.included_in_total === false && f.amount_cents === null))) flags.add("fees_unclear");
+
+  // 9. Deposits stated as a share ("half up front", "a 30% deposit"): worked out only from the business's
+  // own all-in total; a stated amount is checked against a stated share; a deposit mentioned without an
+  // amount holds approval (the human would otherwise be told the full total is due up front).
+  if (x.available && !issues.some((i) => i.code === "deposit_over_total")) {
+    const share = depositShare([opts.text ?? "", x.terms?.deposit_terms ?? "", sources.deposit?.excerpt ?? ""]);
+    const dep = checkDeposit({ deposit_cents: cents.deposit, total_cents: cents.total, stated_total_cents: statedTotal, share });
+    if (dep.issue) issues.push(dep.issue);
+    if (dep.computed && dep.deposit_cents !== null) {
+      cents.deposit = dep.deposit_cents;
+      sources.deposit = { source: dep.computed, excerpt: (x.terms?.deposit_terms ?? (typeof share === "object" && share ? share.phrase : "")).slice(0, 200) };
+      missing.delete("deposit");
+      missing.delete("deposit_usd");
+      notes.push(dep.computed);
+    }
+  }
+  const financial: FinancialCheck = {
+    stated_total_cents: statedTotal,
+    status: issues.length ? "inconsistent" : reconciled?.verdict === "consistent" ? "consistent" : "unverifiable",
+    issues, notes,
+  };
   const terms = x.terms && (x.terms.deposit_terms || x.terms.cancellation || x.terms.exclusions.length)
     ? { deposit_terms: x.terms.deposit_terms?.slice(0, 200) ?? null, cancellation: x.terms.cancellation?.slice(0, 200) ?? null, exclusions: x.terms.exclusions.map((e) => e.slice(0, 120)).slice(0, 10) }
     : undefined;
@@ -426,6 +507,7 @@ export function validateQuote(x: QuoteExtraction, requestedHeadcount: number | u
     confidence,
     ...(custom ? { fields: custom.fields, fields_missing: custom.missing } : {}),
     ...(checks ? { requirement_checks: checks } : {}),
+    financial,
   };
 }
 

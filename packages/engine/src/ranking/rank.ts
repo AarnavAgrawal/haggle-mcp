@@ -36,9 +36,11 @@ export interface RankableQuote {
   unmet?: boolean;
   /** What approval would pay now (deposit, else the full total) is over the spending cap: it can't be approved as is. */
   overCap?: boolean;
+  /** The business's own figures don't add up (parsing/financialIntegrity.ts): its total is no price to rank or cite. */
+  figuresInconsistent?: boolean;
 }
 
-export type RejectReason = "not_current" | "unavailable" | "unverified_sender" | "external_payment_link" | "prompt_injection" | "requirement_unmet" | "missing_info" | "no_total" | "all_in_unknown" | "over_budget";
+export type RejectReason = "not_current" | "unavailable" | "unverified_sender" | "external_payment_link" | "prompt_injection" | "requirement_unmet" | "missing_info" | "no_total" | "all_in_unknown" | "over_budget" | "numbers_dont_add_up";
 
 /** A preference a ranked quote misses: shown with it, never a reason to hide it. */
 export type SoftReason = "requirement_unmet" | "requirement_unknown" | "missing_info" | "over_budget" | "over_limit" | "over_cap";
@@ -66,6 +68,8 @@ export function rejectReason(q: RankableQuote, _limitCents: number | null = null
   if (!q.senderTrusted) return "unverified_sender";
   if (q.flags.includes("external_payment_link")) return "external_payment_link";
   if (q.flags.includes("prompt_injection")) return "prompt_injection";
+  // A total its own parts contradict is not a price: never ranked, recommended or cited to another business.
+  if (q.figuresInconsistent) return "numbers_dont_add_up";
   // Requirements and budget are soft (softReasons below). An unknown all-in total still ranks; it only
   // blocks approval (engine approvability), like an approximate total.
   if (q.needsTotal === false) {

@@ -33,7 +33,7 @@ const reader: ExtractorPort = {
     return {
       available: true, price_per_head_usd: null, headcount: 40, subtotal_usd: null, delivery_fee_usd: null, delivery_included: true, tax_usd: null, tax_included: true,
       total_usd: total, deposit_usd: deposit, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }], valid_until: null, questions: [],
-      payment_request: "none", instructions_to_agent: false, sources: total !== null ? [{ field: "total", source: src, excerpt: `$${total} total` }] : [], missing_fields: total === null ? ["total"] : [], confidence: 0.9,
+      payment_request: "none", instructions_to_agent: false, sources: [...(total !== null ? [{ field: "total", source: src, excerpt: `$${total} total` }] : []), ...(deposit !== null ? [{ field: "deposit", source: src, excerpt: `$${deposit} deposit` }] : [])], missing_fields: total === null ? ["total"] : [], confidence: 0.9,
     } as never;
   },
 };
