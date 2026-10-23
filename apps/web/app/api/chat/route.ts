@@ -9,7 +9,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { membership, sessionUser } from "@/lib/workspace";
 import { runChatTurn, type ChatEvent } from "@/lib/chat/agent";
 import { historyWindow } from "@/lib/chat/history";
-import { chatConfig, takeTurn } from "@/lib/chat/limits";
+import { chatConfig, takeDailyTurn, takeTurn } from "@/lib/chat/limits";
 import { appendMessages, createThread, loadMessages, setThreadJob, type Owner } from "@/lib/chat/store";
 
 export const runtime = "nodejs";
@@ -42,6 +42,10 @@ export async function POST(request: Request): Promise<Response> {
   const limit = takeTurn(user.id);
   if (!limit.ok) {
     return json(429, "rate_limited", `You've sent a lot of messages in the last 10 minutes. Try again in about ${Math.ceil(limit.retryAfterS / 60)} minute(s).`, { retry_after_s: limit.retryAfterS }, { "retry-after": String(limit.retryAfterS) });
+  }
+
+  if (!takeDailyTurn().ok) {
+    return json(429, "daily_limit", "The demo has reached today's chat limit. Try again tomorrow, or browse the deals already started.");
   }
 
   const owner: Owner = { userId: user.id, workspaceId };

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { GuestButton } from "@/components/GuestButton";
+import { DEMO } from "@/lib/demo";
 import { supabaseBrowser } from "@/lib/supabase/browser";
 
 /** Sign in with an emailed magic link, or Google. Both land on /auth/callback. */
@@ -49,6 +51,7 @@ export default function LoginPage() {
         <button className="btn" type="button" onClick={() => void google()} style={{ width: "100%" }}>
           Continue with Google
         </button>
+        {DEMO && <GuestButton label="Continue as a guest (demo)" className="btn" />}
         {error && (
           <p className="note note-risk" role="alert">
             {error}

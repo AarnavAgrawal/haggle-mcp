@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { DemoBanner } from "@/components/DemoBanner";
 
 /** App navigation for signed-in pages: deals, a new request (chat), and sign-out. */
 export function TopBar({ email, active }: { email?: string | null; active?: "deals" | "chat" | "settings" }) {
@@ -8,6 +9,8 @@ export function TopBar({ email, active }: { email?: string | null; active?: "dea
     </Link>
   );
   return (
+    <>
+    <DemoBanner />
     <header className="topbar">
       <nav style={{ display: "flex", alignItems: "center", gap: 16 }}>
         <Link className="brand" href="/deals">
@@ -24,5 +27,6 @@ export function TopBar({ email, active }: { email?: string | null; active?: "dea
         </button>
       </form>
     </header>
+    </>
   );
 }

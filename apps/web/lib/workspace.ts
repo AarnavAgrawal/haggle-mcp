@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import { haggleConfig } from "@/lib/env";
+import { autoOnboard } from "@/lib/demo";
 import { haggleClient, provisionWorkspace } from "@/lib/haggle";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { supabaseServer } from "@/lib/supabase/server";
@@ -24,7 +25,12 @@ export async function requireHaggle() {
   const user = await sessionUser();
   if (!user) redirect("/login");
   const m = await membership(user.id);
-  if (!m) redirect("/onboarding");
+  if (!m) {
+    // Guests, and everyone on a demo site, get their workspace without the onboarding form.
+    if (!autoOnboard(user)) redirect("/onboarding");
+    const workspaceId = await onboard(user, { name: user.is_anonymous ? "Guest workspace" : "Demo workspace" });
+    return { user, workspaceId, haggle: haggleClient(haggleConfig(), workspaceId) };
+  }
   return { user, workspaceId: m.workspace_id, haggle: haggleClient(haggleConfig(), m.workspace_id) };
 }
 

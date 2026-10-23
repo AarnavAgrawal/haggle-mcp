@@ -28,3 +28,24 @@ export function turnLimiter(limit = TURN_LIMIT, windowMs = TURN_WINDOW_MS) {
 
 /** The process-wide limiter the chat route uses. */
 export const takeTurn = turnLimiter();
+
+/**
+ * A site-wide cap on chat turns per UTC day (WEB_CHAT_DAILY_CAP; 0 or unset = no cap), so a shared
+ * demo link can't run up the Claude bill. In memory, per server instance.
+ */
+export function dailyCap(cap: number) {
+  let day = "";
+  let used = 0;
+  return function take(now = Date.now()): { ok: true } | { ok: false } {
+    if (!(cap > 0)) return { ok: true };
+    const today = new Date(now).toISOString().slice(0, 10);
+    if (today !== day) {
+      day = today;
+      used = 0;
+    }
+    if (used >= cap) return { ok: false };
+    used++;
+    return { ok: true };
+  };
+}
+export const takeDailyTurn = dailyCap(Number(process.env.WEB_CHAT_DAILY_CAP ?? "0"));

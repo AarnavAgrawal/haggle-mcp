@@ -6,13 +6,11 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import type { ChatEvent } from "@/lib/chat/agent";
 import { applyEvent } from "@/lib/chat/events";
+import { chatExamples } from "@/lib/demo";
 import type { DisplayItem } from "@/lib/chat/history";
 
-const EXAMPLES = [
-  "Cater lunch for 60 next Friday in SoMa, 12 vegetarian, under $2,500",
-  "Breakfast for a 200-person hackathon on Saturday at 8am",
-  "Get quotes to fix a leaking kitchen sink this week",
-];
+// A demo site's examples are catering requests the simulated businesses answer (lib/demo.ts).
+const EXAMPLES = chatExamples();
 
 export function Chat({ threadId: initialThreadId, initial }: { threadId: string | null; initial: DisplayItem[] }) {
   const [threadId, setThreadId] = useState<string | null>(initialThreadId);

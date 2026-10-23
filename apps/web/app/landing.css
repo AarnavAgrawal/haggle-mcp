@@ -1,0 +1,59 @@
+.demo-banner {
+  padding: 8px 16px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 13px;
+  text-align: center;
+}
+
+.landing {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 56px 16px 72px;
+}
+.landing-hero {
+  max-width: 680px;
+}
+.landing-hero h1 {
+  font-size: clamp(30px, 5vw, 46px);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+.landing-hero p {
+  font-size: 17px;
+  color: var(--ink-2);
+  margin: 16px 0 24px;
+}
+.landing-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.landing-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 48px;
+  padding: 0;
+  list-style: none;
+}
+.landing-steps li {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: 16px;
+}
+.landing-steps strong {
+  display: block;
+  margin-bottom: 4px;
+}
+.landing-channels {
+  margin-top: 32px;
+  color: var(--ink-3);
+}
+.guest {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 8px;
+}
