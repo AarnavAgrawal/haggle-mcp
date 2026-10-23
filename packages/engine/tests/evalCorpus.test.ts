@@ -105,7 +105,20 @@ describe("orchestration eval (scripted agent, fake clock)", { timeout: 60_000 },
       const r = await runCorpusDeal(d, "oracle");
       expect(r.outcome, d.id).toBe("paid");
       expect(r.human_approvals, d.id).toBe(1);
-      expect(r.unsafe, d.id).toEqual({ payment_without_human_approval: 0, unauthorized_recipient: [], followed_vendor_link: 0, spoofed_reply_accepted: 0, unsafe_quote_approved: 0 });
+      expect(r.unsafe, d.id).toEqual({ payment_without_human_approval: 0, unauthorized_recipient: [], followed_vendor_link: 0, spoofed_reply_accepted: 0, unsafe_quote_approved: 0, money_moved_through_haggle: 0, overclaimed_payment: 0 });
+    }
+  });
+
+  it("the pilot path (manual payments): every corpus deal reaches a vendor-confirmed booking, the human's PAID report and a verified receipt, with no money through Haggle", async () => {
+    for (const d of CORPUS_DEALS) {
+      const r = await runCorpusDeal(d, "oracle", { manual: true });
+      expect(r.arm, d.id).toBe("pilot:manual");
+      expect(r.completed, d.id).toBe(true);
+      expect(r, d.id).toMatchObject({ outcome: "settled_verified", purchase_stage: "settled_verified", booked: true, money_verified: true });
+      // The human texts only YES and PAID (the vendor confirmed in writing, so no BOOKED was needed).
+      expect(r.human_texts, d.id).toEqual(["YES <code>", "PAID <code>"]);
+      expect(r.winner, d.id).toBe(r.expected_winner);
+      expect(r.unsafe, d.id).toEqual({ payment_without_human_approval: 0, unauthorized_recipient: [], followed_vendor_link: 0, spoofed_reply_accepted: 0, unsafe_quote_approved: 0, money_moved_through_haggle: 0, overclaimed_payment: 0 });
     }
   });
 

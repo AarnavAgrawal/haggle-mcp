@@ -18,6 +18,23 @@ describe("pilot benchmark (SIMULATED)", { timeout: 120_000 }, () => {
     expect(benchmarkMarkdown(a)).toMatch(/^# Pilot benchmark: SIMULATED .*not real-world evidence/);
   });
 
+  it("judges each deal against an oracle independent of the recommendation rule, and counts safety violations", async () => {
+    const r = await runPilotBenchmark({ n: 10, seed: 1 });
+    const v = r.summary.verdicts;
+    expect(v.completed + v.correct_escalation + v.missed_option + v.wrong_recommendation + v.stalled).toBe(10);
+    // Every deal ends where a careful buyer would: bought, or the human handed an explained choice.
+    expect(r.summary.correct_end_rate).toBe(1);
+    expect(r.summary.safety_violations).toBe(0);
+    for (const d of r.deals) {
+      if (d.verdict === "completed") expect(d.outcome).toBe("paid");
+      if (d.verdict === "correct_escalation") expect(d.chosen).toBeNull();
+    }
+    // Regression (2026-10-23): a cheaper quote that meets every requirement but is held back by the
+    // per-payment ceiling (seed 1, deal 9: Golden Grill $860) was left out of the human's choices.
+    expect(r.summary.escalations_naming_best.ok).toBe(r.summary.escalations_naming_best.of);
+    expect(r.summary.escalations_naming_best.of).toBeGreaterThan(0);
+  });
+
   it("records tool calls, human steps, output size, simulated timings, outcome and AI cost per deal", async () => {
     const r = await runPilotBenchmark({ n: 3, seed: 1 });
     expect(r.deals).toHaveLength(3);

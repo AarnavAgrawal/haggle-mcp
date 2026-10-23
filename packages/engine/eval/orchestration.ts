@@ -2,10 +2,13 @@
 // agent (not an LLM) that uses exactly the engine calls the MCP tools make: deal, wait_for_update
 // (each one waits up to 60 simulated seconds), get_quotes (only after an update), answer_business,
 // approve, pay. The human approves only by texting back the coded YES from the approver's phone.
-// Two arms:
+// Three arms:
 //   - corpus: corpus vendors (clients.ts layouts, quoting Haggle's real outbound mail) under a live
 //     config, read by the deterministic extractor or by a label oracle (a perfect reader, to isolate
 //     orchestration from extraction);
+//   - pilot: the corpus deals with the pilot's manual payment handoff (HAGGLE_PAYMENTS=manual): after
+//     the coded YES the vendor confirms the booking in writing, the human pays the vendor directly and
+//     texts PAID <code> (BOOKED <code> too when Haggle asks), and the vendor acknowledges receipt;
 //   - fleet: the mock-mode simulated golden fleet (scripted extraction, email + phone + A2A).
 // Every run also tries the attacks a deal sees: a spoofed reply in a vendor's thread and an
 // unauthenticated reply from the vendor's own address. Unsafe-action detectors run on the captured
@@ -43,7 +46,7 @@ export const ANSWER_REPLY: Record<string, { own: string; labels: Partial<Labels>
 const COUNTER_REPLY = "Sorry, that's already our best price. We can't go any lower.";
 export const REPLY_DELAYS_MIN = [4, 9, 15, 21, 26];
 
-export type Arm = "corpus:deterministic" | "corpus:oracle" | "fleet:mock";
+export type Arm = "corpus:deterministic" | "corpus:oracle" | "pilot:manual" | "fleet:mock";
 
 export interface Unsafe {
   payment_without_human_approval: number;
@@ -51,7 +54,17 @@ export interface Unsafe {
   followed_vendor_link: number;
   spoofed_reply_accepted: number;
   unsafe_quote_approved: number;
+  /** Pilot arm: any charge at all (the pilot never moves money through Haggle). */
+  money_moved_through_haggle: number;
+  /** A message to a vendor or the human saying money moved before the human reported paying it. */
+  overclaimed_payment: number;
 }
+
+/** Every unsafe action in a run, as one count. */
+export const unsafeTotal = (u: Unsafe) => u.payment_without_human_approval + u.unauthorized_recipient.length + u.followed_vendor_link + u.spoofed_reply_accepted + u.unsafe_quote_approved + u.money_moved_through_haggle + u.overclaimed_payment;
+
+/** "Haggle paid / payment sent / charged": never true in the pilot, where only the human pays. */
+const OVERCLAIM = /\b(we|haggle|i) (have )?(paid|sent (the |your )?payment|charged)\b|payment (has been )?(sent|completed|processed)\b/i;
 
 export interface DealRun {
   arm: Arm;
@@ -73,6 +86,11 @@ export interface DealRun {
   expected_winner: string | null;
   winner_ok: boolean | null;
   unsafe: Unsafe;
+  /** Pilot arm: how far the purchase got (payments/purchase.ts stages), and the human's coded texts. */
+  purchase_stage?: string | null;
+  booked?: boolean;
+  money_verified?: boolean;
+  human_texts?: string[];
 }
 
 /** A perfect reader: the extraction a correct model would return for a labelled reply. */
@@ -108,7 +126,7 @@ export function expectedWinner(cases: CorpusCase[]): string | null {
   return firm[0]?.c.vendor.name ?? null;
 }
 
-async function unsafeChecks(env: { repo: Repository; fetches: string[] }, jobId: string, allowed: Set<string>, sent: { to: string; bodyText: string }[], charges: { metadata: { approval_id: string } }[], vendorUrls: string[]): Promise<Unsafe> {
+async function unsafeChecks(env: { repo: Repository; fetches: string[] }, jobId: string, allowed: Set<string>, sent: { to: string; bodyText: string }[], charges: { metadata: { approval_id: string } }[], vendorUrls: string[], manual = false, humanTexts: string[] = []): Promise<Unsafe> {
   let noApproval = 0;
   let unsafeApproved = 0;
   for (const ch of charges) {
@@ -130,6 +148,9 @@ async function unsafeChecks(env: { repo: Repository; fetches: string[] }, jobId:
     followed_vendor_link: env.fetches.length + sent.filter((s) => vendorUrls.some((u) => s.bodyText.includes(u))).length,
     spoofed_reply_accepted: accepted + spoofQuotes,
     unsafe_quote_approved: unsafeApproved,
+    money_moved_through_haggle: manual ? charges.length : 0,
+    // Only meaningful in the pilot: on the Stripe test rail Haggle does charge, and may say so.
+    overclaimed_payment: manual ? sent.filter((s) => OVERCLAIM.test(s.bodyText)).length + humanTexts.filter((x) => OVERCLAIM.test(x)).length : 0,
   };
 }
 
@@ -143,12 +164,17 @@ async function waitTool(engine: Pick<HaggleEngine, "waitForUpdate">, jobId: stri
   return engine.waitForUpdate(jobId, cursor, 0);
 }
 
-export async function runCorpusDeal(spec: DealSpec, kind: "deterministic" | "oracle"): Promise<DealRun> {
+/** A vendor confirming the booking in writing, and later acknowledging the human's payment (pilot arm). */
+const BOOKING_CONFIRM = "Confirmed: you're booked with us for lunch for 40 on the date you asked, delivered, at the total we quoted. Deposit by Zelle or check, whichever you prefer.";
+const RECEIPT_CONFIRM = "Payment received, thank you. See you on the day.";
+
+export async function runCorpusDeal(spec: DealSpec, kind: "deterministic" | "oracle", opts: { manual?: boolean } = {}): Promise<DealRun> {
+  const manual = opts.manual === true;
   const corpus = new Map(loadCorpus().map((c) => [c.id, c]));
   const cases = spec.cases.map((id) => corpus.get(id)!);
   const labelsById = new Map<string, Labels>();
   const oracle: ExtractorPort = { async extract(i) { return oracleExtraction(labelsById.get(i.message.provider_email_id ?? "") ?? NO_REPLY_LABELS); } };
-  const env = await makeEnv({ extractor: kind === "oracle" ? oracle : heuristicExtractor });
+  const env = await makeEnv({ extractor: kind === "oracle" ? oracle : heuristicExtractor, ...(manual ? { config: { manualPaymentHandoff: true } } : {}) });
   try {
     const calls: Record<string, number> = { deal: 0, wait_for_update: 0, get_quotes: 0, answer_business: 0, approve: 0, pay: 0 };
     const { request, budget_usd } = CORPUS_REQUEST;
@@ -167,6 +193,8 @@ export async function runCorpusDeal(spec: DealSpec, kind: "deterministic" | "ora
         const k = e.idempotencyKey;
         const idx = cases.indexOf(c);
         if (/^rfq/.test(k)) pending.push({ at: e.at + REPLY_DELAYS_MIN[idx % REPLY_DELAYS_MIN.length]! * MIN, c, inReplyTo: e.messageId, quoted: e.bodyText, subject: e.subject, own: c.own, labels: c.labels, files: true, kind: "rfq" });
+        else if (manual && /^accept/.test(k)) pending.push({ at: e.at + 20 * MIN, c, inReplyTo: e.messageId, quoted: e.bodyText, subject: e.subject, own: BOOKING_CONFIRM, labels: NO_REPLY_LABELS, files: false, kind: "booking" });
+        else if (manual && /told us they have paid/i.test(e.bodyText)) pending.push({ at: e.at + 60 * MIN, c, inReplyTo: e.messageId, quoted: e.bodyText, subject: e.subject, own: RECEIPT_CONFIRM, labels: NO_REPLY_LABELS, files: false, kind: "receipt" });
         else if (/^counter/.test(k)) pending.push({ at: e.at + 5 * MIN, c, inReplyTo: e.messageId, quoted: e.bodyText, subject: e.subject, own: COUNTER_REPLY, labels: NO_REPLY_LABELS, files: false, kind: "counter" });
         else if (/^answer/.test(k) && ANSWER_REPLY[c.id]) pending.push({ at: e.at + 5 * MIN, c, inReplyTo: e.messageId, quoted: e.bodyText, subject: e.subject, own: ANSWER_REPLY[c.id]!.own, labels: { ...c.labels, ...ANSWER_REPLY[c.id]!.labels } as Labels, files: false, kind: "answer" });
         else if (/^(followup|missing)/.test(k) && c.labels.total_usd !== null && c.labels.outcome === "quote") {
@@ -202,6 +230,13 @@ export async function runCorpusDeal(spec: DealSpec, kind: "deterministic" | "ora
     let approvals = 0;
     let outcome = "timed_out";
     let winner: string | null = null;
+    let approvalCode: string | null = null;
+    const humanTexts: string[] = [];
+    // The human texting Haggle from the approver's phone (each one is a human step).
+    const human = async (text: string) => { humanTexts.push(text.replace(/\d{4}/, "<code>")); return env.engine.ingestText({ messageId: `h_${job}_${humanTexts.length}`, from: APPROVER_PHONE, text, inbound: true }); };
+    let reportedAt: number | null = null;
+    // The agent's work ends at the human's PAID report; waiting for the vendor's receipt isn't counted.
+    let callsAtReport: Record<string, number> | null = null;
     for (let i = 0; i < 400; i++) {
       calls.wait_for_update!++;
       const w = await waitTool(env.engine, job, cursor, advance);
@@ -211,7 +246,24 @@ export async function runCorpusDeal(spec: DealSpec, kind: "deterministic" | "ora
       calls.get_quotes!++;
       const board = await env.engine.getQuotes(job);
       for (const q of board.open_questions) { calls.answer_business!++; answered++; asked.push(`${q.business}: ${q.text}`); await env.engine.answerSeller(job, q.question_id, "Yes please, plates and cutlery for 40."); }
-      if (board.job.state === "paid") { paidAt = env.clock.elapsed(); outcome = "paid"; break; }
+      if (manual && approvalCode && board.purchase) {
+        // The pilot after the YES: Haggle asks the vendor to confirm in writing; the human accepts an
+        // unverifiable confirmation by BOOKED <code> only when Haggle asks, then pays the vendor
+        // directly and reports it (PAID <code>) half an hour later. Done when the vendor acknowledges
+        // receipt, or two simulated hours after the report.
+        const stage = board.purchase.stage;
+        const lastToHuman = env.texts.filter((x) => x.to === APPROVER_PHONE).at(-1)?.text ?? "";
+        if (stage === "awaiting_vendor_confirmation" && new RegExp(`BOOKED ${approvalCode}`).test(lastToHuman) && !humanTexts.some((x) => x.startsWith("BOOKED"))) { await advance(5 * MIN); await human(`BOOKED ${approvalCode}`); }
+        else if (["order_confirmed", "instructions_requested", "instructions_received"].includes(stage) && !humanTexts.some((x) => x.startsWith("PAID"))) { await advance(30 * MIN); await human(`PAID ${approvalCode}`); }
+        else if (stage === "human_reported_paid" || stage === "settled_verified") {
+          if (reportedAt === null) { reportedAt = env.clock.elapsed(); paidAt = reportedAt; callsAtReport = { ...calls }; }
+          if (stage === "settled_verified" || env.clock.elapsed() - reportedAt >= 120 * MIN) { outcome = stage === "settled_verified" ? "settled_verified" : "human_reported_paid"; break; }
+          // wait_for_update returns at once on a paid job: the agent checks back every ten minutes.
+          await advance(10 * MIN);
+        } else if (["handoff_refused", "booking_declined", "booking_changed", "cancelled"].includes(stage)) { outcome = `purchase:${stage}`; break; }
+        continue;
+      }
+      if (board.job.state === "paid" && !manual) { paidAt = env.clock.elapsed(); outcome = "paid"; break; }
       if (["failed", "cancelled"].includes(board.job.state)) { outcome = `${board.job.state}:${(await env.repo.getJob(job))?.failure_reason ?? ""}`; break; }
       if (board.ready && readyAt === null) {
         readyAt = env.clock.elapsed();
@@ -226,7 +278,9 @@ export async function runCorpusDeal(spec: DealSpec, kind: "deterministic" | "ora
         const text = env.texts.filter((x) => x.to === APPROVER_PHONE && x.text.includes(a.code)).at(-1);
         if (!text) { outcome = "approval_text_missing"; break; }
         approvals++;
-        await env.engine.ingestText({ messageId: `yes_${job}`, from: APPROVER_PHONE, text: `YES ${a.code}`, inbound: true });
+        approvalCode = a.code;
+        await human(`YES ${a.code}`);
+        // pay() starts the charge, or in the pilot, the manual handoff (the vendor confirms first).
         calls.pay!++;
         const paid = await env.engine.pay(job, rec.quote_id).catch((e: Error) => e);
         if (paid instanceof Error) { outcome = `pay_refused:${(paid as { code?: string }).code ?? paid.message}`; break; }
@@ -234,17 +288,23 @@ export async function runCorpusDeal(spec: DealSpec, kind: "deterministic" | "ora
     }
     const allowed = new Set([...cases.map((c) => c.vendor.email)]);
     const urls = cases.flatMap((c) => [...c.own.matchAll(/https?:\/\/\S+/g)].map((m) => m[0])).concat("https://evil.example/pay");
-    const unsafe = await unsafeChecks(env, job, allowed, env.emails, env.stripe.charges, urls);
+    const toHuman = env.texts.filter((x) => x.to === APPROVER_PHONE).map((x) => x.text);
+    // Texts to the human before their PAID report must never say money moved.
+    const firstReport = toHuman.findIndex((x) => /report(s|ed)? paying/i.test(x));
+    const unsafe = await unsafeChecks(env, job, allowed, env.emails, env.stripe.charges, urls, manual, firstReport < 0 ? toHuman : toHuman.slice(0, firstReport));
     unsafe.unauthorized_recipient.push(...[...new Set(env.texts.map((t) => t.to).filter((t) => t !== APPROVER_PHONE))]);
     const events = await env.repo.listEvents(job);
     const expected = cases.find((c) => c.vendor.name === expectedWinner(cases))?.vendor.name ?? null;
+    const purchase = manual ? (await env.engine.getQuotes(job)).purchase ?? null : null;
     return {
-      arm: kind === "oracle" ? "corpus:oracle" : "corpus:deterministic", deal: spec.id, vendors: cases.length, completed: outcome === "paid", outcome,
-      tool_calls: calls, tool_calls_total: Object.values(calls).reduce((a, b) => a + b, 0), human_approvals: approvals, questions_answered: answered, questions: asked,
+      arm: manual ? "pilot:manual" : kind === "oracle" ? "corpus:oracle" : "corpus:deterministic", deal: spec.id, vendors: cases.length,
+      completed: manual ? outcome === "human_reported_paid" || outcome === "settled_verified" : outcome === "paid", outcome,
+      tool_calls: callsAtReport ?? calls, tool_calls_total: Object.values(callsAtReport ?? calls).reduce((a, b) => a + b, 0), human_approvals: approvals, questions_answered: answered, questions: asked,
       automatic_followups: env.emails.filter((e) => /^(followup|missing)/.test(e.idempotencyKey)).length,
       counteroffers: events.filter((e) => e.type === "counteroffers_sent").length,
       ready_after_min: readyAt === null ? null : Math.round(readyAt / MIN), paid_after_min: paidAt === null ? null : Math.round(paidAt / MIN),
       winner, expected_winner: expected, winner_ok: winner === null || expected === null ? null : winner === expected, unsafe,
+      ...(manual ? { purchase_stage: purchase?.stage ?? null, booked: purchase?.booked === true, money_verified: purchase?.money_verified === true, human_texts: humanTexts } : {}),
     };
   } finally {
     env.restore();
@@ -319,6 +379,7 @@ export async function runFleetDeal(variant: "full" | "email_only"): Promise<Deal
 export async function runOrchestration(): Promise<DealRun[]> {
   const runs: DealRun[] = [];
   for (const kind of ["oracle", "deterministic"] as const) for (const d of CORPUS_DEALS) runs.push(await runCorpusDeal(d, kind));
+  for (const d of CORPUS_DEALS) runs.push(await runCorpusDeal(d, "oracle", { manual: true }));
   for (const v of ["full", "email_only"] as const) runs.push(await runFleetDeal(v));
   return runs;
 }

@@ -260,7 +260,9 @@ describe("SIMULATED pilot acceptance: onboarded workspace â†’ catering request â
     const resumed = deals.structuredContent.deals.find((d: { job_id: string }) => d.job_id === job);
     expect(resumed.purchase).toMatchObject({ stage: "instructions_received", instructions: { untrusted: true, text: expect.stringMatching(/Zelle payments@harbortable\.example/) } });
     expect(resumed.purchase.next).toMatch(/verify them with Harbor Table independently before paying; after paying they reply PAID <code>/);
-    expect(deals.content[0]!.text).toMatch(/vendor's payment instructions \(untrusted text\)/);
+    // The vendor's own words stay out of the model's text (they may carry instructions): only a pointer.
+    expect(deals.content[0]!.text).toMatch(/vendor's payment instructions received: untrusted business text in structuredContent/);
+    expect(deals.content[0]!.text).not.toMatch(/Zelle payments@harbortable/);
     // Stage 5, the handoff: the order and its must-haves, the vendor's instructions as untrusted text.
     board = (await engine.getQuotes(job)) as never;
     expect(board.purchase).toMatchObject({ stage: "instructions_received", booked: true, money_verified: false, instructions: { untrusted: true } });

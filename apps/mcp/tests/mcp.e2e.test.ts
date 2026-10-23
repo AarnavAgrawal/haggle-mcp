@@ -114,7 +114,18 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const badAsk = await call("deal", { request: { what: "fix a sink", area: "SF", ask: [{ key: "price", label: "Price", type: "money" }], payable_field: "nope" }, businesses: [{ name: "X", email: "x@x.test" }] });
     expect(errorOf(badAsk)).toMatchObject({ error: { code: "bad_ask" } });
     const noJob = await call("wait_for_update", { job_id: "job_nope", cursor: "0", timeout_s: 0 });
-    expect(errorOf(noJob)).toMatchObject({ ok: false, mode: "mock", error: { code: "job_not_found" }, next: "deal" });
+    expect(errorOf(noJob)).toMatchObject({ ok: false, mode: "mock", error: { code: "job_not_found" }, next: "list_deals" });
+    // No area and no default: the agent asks the user and calls deal again (settings aren't the agent's to change).
+    const { area: _area, ...noArea } = REQUEST;
+    const where = await call("deal", { request: noArea });
+    expect(errorOf(where)).toMatchObject({ error: { code: "area_required" }, next: "deal" });
+    expect(errorOf(where).error.fix).toMatch(/Ask the user where/);
+    // A request that clearly isn't catering gets one error that says what to pass (ask[]) and that the
+    // configured caterers are never substituted, instead of a misleading "needs a headcount".
+    const plumbing = await call("deal", { request: { what: "fix a leaking pipe under the kitchen sink", area: "San Francisco, CA" } });
+    expect(errorOf(plumbing)).toMatchObject({ error: { code: "ask_required" }, next: "deal" });
+    expect(errorOf(plumbing).error.message).toMatch(/plumbing request, not catering/);
+    expect(errorOf(plumbing).error.fix).toMatch(/request\.ask.*businesses: \['<the plumbing business the user wants>'\].*catering vendors, and they're never substituted/);
     const badPhone = await call("deal", { request: REQUEST, businesses: [{ name: "X", phone: "+1415555012345678" }] });
     expect(badPhone.isError).toBe(true);
     const unknown = await call("business_profile", { business: "nobody-we-know" });
@@ -323,6 +334,20 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const paid = await call("pay", { job_id: job, quote_id: q("Bay Catering").quote_id });
     expect(paid.structuredContent).toMatchObject({ status: "paid" });
   }, 120_000);
+
+  it("approving before quotes are final is the human's call, and the approval says it ends the comparison", async () => {
+    const deal = await call("deal", { request: { ...REQUEST, what: "team lunch catering (early approve)" }, budget_usd: 2000, client_request_id: "e2e-early" });
+    const job = deal.structuredContent.job_id;
+    let board = (await call("get_quotes", { job_id: job })).structuredContent;
+    for (let i = 0; i < 20 && !board.quotes.some((q: { total_usd: number | null }) => q.total_usd !== null); i++) {
+      await call("wait_for_update", { job_id: job, cursor: "0", timeout_s: 1 });
+      board = (await call("get_quotes", { job_id: job })).structuredContent;
+    }
+    expect(board.ready).toBe(false); // still collecting: the case under test
+    const first = board.quotes.find((q: { total_usd: number | null; status?: string }) => q.total_usd !== null)!;
+    const approved = await call("approve", { job_id: job, quote_id: first.quote_id });
+    expect(approved.content[0].text).toMatch(/quotes weren't final yet: approving now ends collecting and negotiating for this deal/);
+  });
 
   it("the Inkbox webhook route is off in mock mode", async () => {
     const r = await fetch(`${BASE}/webhooks/inkbox`, { method: "POST", body: "{}" });

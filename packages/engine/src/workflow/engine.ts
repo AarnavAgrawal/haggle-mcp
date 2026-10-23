@@ -905,7 +905,7 @@ export class HaggleEngine {
       fees_unclear: "Some fees may not be in the total",
     };
     for (const f of q.record.flags) if (FLAG_TEXT[f]) caveats.push(FLAG_TEXT[f]!);
-    if (q.total_cents !== null && !(q.deposit_cents && q.deposit_cents > 0)) caveats.push(`No deposit stated: the full ${dollars(q.total_cents)} is charged now`);
+    if (q.total_cents !== null && !(q.deposit_cents && q.deposit_cents > 0)) caveats.push(this.manualPayments ? `No deposit stated: the full ${dollars(q.total_cents)} is due up front (the human pays the business directly)` : `No deposit stated: the full ${dollars(q.total_cents)} is charged now`);
     return { hard, caveats };
   }
 
@@ -1792,7 +1792,7 @@ export class HaggleEngine {
           if (await this.repo.findMessageByIdempotencyKey(`sms:${sendKeys.approvalRequest(a.id)}`) || (await this.isHeld(a.id))) {
             await this.repo.appendEvent(jobId, "reply", {
               business_id: null, kind: "ready_texted", approval_id: a.id,
-              summary: `All quotes are in: texted the user Haggle's recommendation, ${name} ${usdText(q.total_cents)} (${a.payment_cents > 0 ? `a reply YES approves ${usdText(a.payment_cents)}; then their texted PAY <code> or your pay charges it` : "a reply YES confirms it, nothing paid"}). If the user picks another quote (board or approve), that replaces the suggestion.`,
+              summary: `All quotes are in: texted the user Haggle's recommendation, ${name} ${usdText(q.total_cents)} (${a.payment_cents > 0 ? `a reply YES approves ${usdText(a.payment_cents)}; ${this.afterYes()}` : "a reply YES confirms it, nothing paid"}). If the user picks another quote (board or approve), that replaces the suggestion.`,
             });
             return;
           }
@@ -5808,7 +5808,7 @@ export class HaggleEngine {
 
   async loadJob(jobId: string): Promise<JobRow> {
     const job = await this.repo.getJob(jobId);
-    if (!job) throw new EngineError("job_not_found", `No job ${jobId}.`, "Check the job_id returned by deal.", "deal");
+    if (!job) throw new EngineError("job_not_found", `No job ${jobId}.`, "Use a job_id returned by deal or list_deals; call list_deals to find the deal the user means (a new request is a new deal).", "list_deals");
     return job;
   }
 
@@ -5906,6 +5906,10 @@ export class HaggleEngine {
    */
   async waitForUpdate(jobId: string, cursor: number, timeoutMs: number, signal?: AbortSignal, until: WaitUntil = "any_change"): Promise<WaitResult> {
     await this.loadJob(jobId);
+    // A cursor past this job's last event (another deal's, or made up) would hide every update: start over.
+    const head = (await this.repo.listEvents(jobId)).at(-1)?.seq ?? 0;
+    const reset = !Number.isFinite(cursor) || cursor < 0 || cursor > head;
+    if (reset) cursor = 0;
     const deadline = Date.now() + Math.min(Math.max(timeoutMs, 0), 60_000); // wall-clock: a wait timeout is real time
     for (;;) {
       await this.d.onTick?.();
@@ -5918,7 +5922,8 @@ export class HaggleEngine {
       if (met || done || Date.now() >= deadline || signal?.aborted) {
         const updates = events.map(toUpdate).filter((u): u is JobUpdate => u !== null);
         const newCursor = events.length ? events[events.length - 1]!.seq : cursor;
-        return { ok: true, mode: job.mode, job_id: jobId, state: job.state, cursor: String(newCursor), updates, timed_out: !met && !done, next: await this.nextHint(job) };
+        const hint = await this.nextHint(job);
+        return { ok: true, mode: job.mode, job_id: jobId, state: job.state, cursor: String(newCursor), updates, timed_out: !met && !done, next: reset ? `The cursor you passed isn't from this deal, so these are all of its updates from the start; use this cursor from now on. ${hint}` : hint };
       }
       await new Promise((r) => setTimeout(r, Math.min(1000, Math.max(50, deadline - Date.now()))));
     }
@@ -5933,14 +5938,14 @@ export class HaggleEngine {
     const suggestion = latest?.status === "pending" && (await this.isAutoApproval(job.id, latest.id)) ? latest : null;
     if (pending.length && (job.state !== "awaiting_approval" || suggestion) && job.state !== "paying") {
       const n = pending.length;
-      const after = suggestion ? `Quotes are final otherwise: Haggle texted the user its recommendation (quote_id ${suggestion.quote_id}; a reply YES <code> approves it, then their texted PAY <code> or your pay charges it); approve(job_id, quote_id) for another quote the user picks replaces it.`
+      const after = suggestion ? `Quotes are final otherwise: Haggle texted the user its recommendation (quote_id ${suggestion.quote_id}; a reply YES <code> approves it, ${this.afterYes()}); approve(job_id, quote_id) for another quote the user picks replaces it.`
         : job.ready ? "Quotes are final otherwise: get_quotes, then approve(job_id, quote_id) for its recommended_quote_id." : "The other businesses keep quoting; call wait_for_update.";
       const texted = this.d.sms && (await this.notifyTarget(job)) ? " Haggle texts the user these questions and sends their reply to each business, so you can simply leave them." : " Ask the user.";
       return `${n} business question${n === 1 ? "" : "s"} Haggle couldn't answer from the request (open_questions in get_quotes). Answer one with answer_business(job_id, question_id='${pending[0]!.id}', answer) only from the request or what the user told you; never guess a time, an entrance, set-up/serving or any preference.${texted} ${after}`;
     }
     if (job.state === "awaiting_approval") {
       if (suggestion) {
-        return `Quotes are final. Haggle texted the user its recommendation (quote_id ${suggestion.quote_id}; their reply YES <code> approves it; nothing is charged until they text PAY <code> or you call pay). Tell the user they can reply to that text or choose any option on the deal board. To approve a different quote the user picked, call approve(job_id, quote_id): it replaces the texted suggestion. Call wait_for_update with until=approval_decided.`;
+        return `Quotes are final. Haggle texted the user its recommendation (quote_id ${suggestion.quote_id}; their reply YES <code> approves it; ${this.manualPayments ? "then the business confirms the booking and the human pays them directly; Haggle charges nothing" : "nothing is charged until they text PAY <code> or you call pay"}). Tell the user they can reply to that text or choose any option on the deal board. To approve a different quote the user picked, call approve(job_id, quote_id): it replaces the texted suggestion. Call wait_for_update with until=approval_decided.`;
       }
       return "Waiting for the human to approve (a text reply YES <code>, an email reply APPROVE <code>, the approval card or form, whichever they got). Call wait_for_update with until=approval_decided; once approved, call pay(job_id, quote_id).";
     }
@@ -5962,9 +5967,9 @@ export class HaggleEngine {
     if (job.state === "collecting") {
       const waiting = await this.collectionWaiting(job, await this.repo.getBusinesses(job.id));
       const by = `${new Date(job.collect_until).toISOString().slice(11, 16)} UTC`;
-      if (waiting.length) return `Still collecting: waiting for ${waiting.map((b) => b.name).join(", ")}; quotes close as soon as every business has answered, at ${by} at the latest. Call wait_for_update again (cursor from this response).`;
+      if (waiting.length) return `Still collecting: waiting for ${waiting.map((b) => b.name).join(", ")}; quotes close as soon as every business has answered, at ${by} at the latest. Call wait_for_update(job_id) again with the latest cursor you have (wait_for_update returns one).`;
     }
-    return "Still collecting. Call wait_for_update again (cursor from this response).";
+    return "Still collecting. Call wait_for_update(job_id) again with the latest cursor you have (wait_for_update returns one).";
   }
 
   /**
@@ -6118,8 +6123,13 @@ export class HaggleEngine {
     const recommended = recommendOrder.map((id) => boardById.get(id)).find((q) => q?.approvable && q.compliance?.status === "compliant" && fresh(q)) ?? null;
     const bestAvailable = recommended ? null : recommendOrder.map((id) => boardById.get(id)).find((q) => q?.approvable) ?? null;
     const bestValue = nonMoneyCompare(job.request) ? recommended : value.recommendedQuoteId ? boardById.get(value.recommendedQuoteId) ?? null : null;
+    // Current quotes held back by a rule the human can act on (the per-payment ceiling, a missing total):
+    // named with their fix, so a cheaper option isn't hidden just because it can't be approved as is.
+    // Unsafe or rejected quotes stay out.
+    const fixable = out.filter((q) => q.status === "current" && !q.approvable && q.approval_block && q.approval_block.code !== "quote_not_eligible" && q.verdict !== "rejected");
+    const fixableLine = fixable.length ? ` Also, not approvable yet: ${fixable.map((q) => `${q.business}${q.total_usd === null ? "" : ` $${q.total_usd}`} (${q.approval_block!.reason})`).join("; ")}` : "";
     const recommendation_note = bestAvailable
-      ? `No quote meets every requirement, so Haggle recommends none. Closest: ${bestAvailable.business} (${complianceSummary(bestAvailable.compliance!)}). The human may still approve any option knowingly; the caveats go with the approval.`
+      ? `No quote meets every requirement, so Haggle recommends none. Closest: ${bestAvailable.business} (${complianceSummary(bestAvailable.compliance!)}). The human may still approve any option knowingly; the caveats go with the approval.${fixableLine}`
       : bestValue && bestValue !== recommended
       ? `Best value is ${bestValue.business} but it can't be approved yet: ${bestValue.approval_block?.reason ?? (bestValue.compliance?.status !== "compliant" ? complianceSummary(bestValue.compliance!) : "not approvable")}${recommended ? ` Recommended instead: ${recommended.business}, the best quote that can be approved and meets every requirement.` : " No quote can be approved yet."}`
       : undefined;
@@ -6144,7 +6154,7 @@ export class HaggleEngine {
       ? recommended
         ? `Quotes are final. Call approve(job_id, quote_id='${recommended.quote_id}') for ${recommended.business}, the recommended quote the human can approve${recommendation_note ? ` (${bestValue!.business} is better value but blocked: ${bestValue!.approval_block?.code})` : ""}.`
         : bestAvailable
-        ? `Quotes are final, but none meets every requirement, so Haggle recommends none: ${out.filter((q) => q.approvable && q.status === "current").map((q) => `${q.business} ${q.total_usd === null ? "" : `$${q.total_usd}`} (${complianceSummary(q.compliance!)})`).join("; ").slice(0, 600)}. Tell the user and ask which, if any, to approve knowingly (approve(job_id, quote_id) shows the human these caveats); don't pick one for them.`
+        ? `Quotes are final, but none meets every requirement, so Haggle recommends none: ${out.filter((q) => q.approvable && q.status === "current").map((q) => `${q.business} ${q.total_usd === null ? "" : `$${q.total_usd}`} (${complianceSummary(q.compliance!)})`).join("; ").slice(0, 600)}. Tell the user and ask which, if any, to approve knowingly (approve(job_id, quote_id) shows the human these caveats); don't pick one for them.${fixableLine.slice(0, 400)}`
         : `Quotes are final, but none can be approved yet: ${out.filter((q) => q.approval_block && q.status === "current").map((q) => `${q.business}: ${q.approval_block!.reason}`).join(" ").slice(0, 600) || "no priced quote"}. Tell the user; they may ask a business for a firm total or a smaller deposit.`
       : hint;
     return {
@@ -6179,7 +6189,7 @@ export class HaggleEngine {
       ...(purchase ? { purchase } : {}),
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
       payment_ceiling_usd: centsToUsd(Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents)),
-      payments_enabled: this.d.stripe !== undefined || !this.d.payer.disabledReason,
+      payments_enabled: this.paymentsEnabled,
       next: notCompared && job.ready && ["collecting", "negotiating", "awaiting_approval"].includes(job.state) ? `${next} ${notCompared}` : next,
     };
   }
@@ -6495,7 +6505,7 @@ export class HaggleEngine {
       approver: { phone: s.approver_phone ? maskHandle(s.approver_phone) : null, email: s.approver_email ? maskHandle(s.approver_email) : null },
       spend_cap_usd: centsToUsd(s.spending_cap_cents), workspace: { id: workspaceId, name: ws?.name ?? workspaceId, timezone: ws?.timezone ?? "America/Los_Angeles" },
       call_hours: this.d.config.callHours ?? null,
-      next: "Start a deal with deal(...), or set the approver and cap in settings.",
+      next: "Start a deal with deal(...). The approver and the spending cap are the operator's to change, not the agent's: if they're wrong, tell the user.",
     };
   }
 
@@ -6634,8 +6644,8 @@ export class HaggleEngine {
     const approverEmail = job.approver_email ?? (settings.approver_email ? normalizeAddress(settings.approver_email) : null);
     const iMessageApprover = Boolean(this.d.imessage && settings.approver_phone);
     const textTo = await this.notifyTarget(job);
-    if (channel === "email" && !approverEmail) throw new EngineError("no_approver", "No approver email for this job.", "Set the approver email in settings (settings.update approver_email), or approve on the approval card or by text.", "settings");
-    if (channel === "imessage" && !iMessageApprover && !textTo) throw new EngineError("no_imessage_approver", "Text approval isn't available: no number to text (the operator's notify number or the settings approver phone), or texting is off.", "Set the approver phone in settings (and enable SMS or iMessage on the server), or approve on the approval card.", "settings");
+    if (channel === "email" && !approverEmail) throw new EngineError("no_approver", "No approver email for this job.", "Approve by text instead, or ask the operator to set the approver's email (agents can't change the approver).", "settings.read");
+    if (channel === "imessage" && !iMessageApprover && !textTo) throw new EngineError("no_imessage_approver", "Text approval isn't available: no number to text (the operator's notify number or the settings approver phone), or texting is off.", "Ask the operator to set the approver's phone (agents can't change the approver) and enable SMS or iMessage on the server), or approve on the approval card.", "settings.read");
     const emailIt = channel === "email" || Boolean(offer?.email && approverEmail);
     // The settings approver email (set after the deal started) becomes this job's verified approver.
     const sendJob = emailIt && approverEmail && !job.approver_email ? { ...job, approver_email: approverEmail } : job;
@@ -6770,7 +6780,7 @@ export class HaggleEngine {
 
   private async sendApprovalIMessage(job: JobRow, a: ApprovalRow) {
     const to = (await this.getSettings(job.workspace_id)).approver_phone;
-    if (!this.d.imessage || !to) throw new EngineError("no_imessage_approver", "No iMessage approver configured.", "Set the approver phone in settings and enable iMessage.", "settings");
+    if (!this.d.imessage || !to) throw new EngineError("no_imessage_approver", "No iMessage approver configured.", "Ask the operator to set the approver's phone and enable iMessage (agents can't change the approver).", "settings.read");
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === a.business_id)!;
     const key = `imsg:${sendKeys.approvalRequest(a.id)}`;
     if (await this.repo.findMessageByIdempotencyKey(key)) return;
@@ -7042,6 +7052,18 @@ export class HaggleEngine {
     return this.d.config.manualPaymentHandoff === true || this.d.stripe !== undefined || !this.d.payer.disabledReason;
   }
 
+  /** The pilot (HAGGLE_PAYMENTS=manual): no money moves through Haggle; the human pays the business directly. */
+  get manualPayments(): boolean {
+    return this.d.config.manualPaymentHandoff === true;
+  }
+
+  /** What follows the human's YES on this server, for the agent's hints (never "charged" in the pilot). */
+  private afterYes(): string {
+    return this.manualPayments
+      ? "then the business confirms the booking and the human pays them directly (PAID <code>); Haggle charges nothing"
+      : "then their texted PAY <code> or your pay charges it";
+  }
+
   /**
    * Only out-of-band human answers approve (EngineConfig.outOfBandApprovalsOnly; on in live mode): a
    * tool call (the client's form, the card's button) can't prove a human made it, so it never approves.
@@ -7307,7 +7329,7 @@ export class WorkspaceEngine {
 
   private async own(jobId: string): Promise<JobRow> {
     const job = await this.engine.loadJob(jobId);
-    if (job.workspace_id !== this.workspaceId) throw new EngineError("job_not_found", `No job ${jobId}.`, "Check the job_id returned by deal.", "deal");
+    if (job.workspace_id !== this.workspaceId) throw new EngineError("job_not_found", `No job ${jobId}.`, "Use a job_id returned by deal or list_deals; call list_deals to find the deal the user means (a new request is a new deal).", "list_deals");
     return job;
   }
   private async ownApproval(approvalId: string) {
@@ -7322,6 +7344,7 @@ export class WorkspaceEngine {
   get a2aEnabled() { return this.engine.a2aEnabled; }
   get phoneEnabled() { return this.engine.phoneEnabled; }
   get paymentsEnabled() { return this.engine.paymentsEnabled; }
+  get manualPayments() { return this.engine.manualPayments; }
   get outOfBandApprovalsOnly() { return this.engine.outOfBandApprovalsOnly; }
   get brainIsStub() { return this.engine.brainIsStub; }
 
@@ -7416,7 +7439,7 @@ const STRIPE_REFUSALS: Record<StripeGuardCode, [string, string, string]> = {
   APPROVAL_EXPIRED: ["The approval expired or was already used.", "Call approve again for a fresh approval.", "approve"],
   QUOTE_CHANGED: ["The quote changed after the human approved it.", "Call get_quotes, then approve the current quote.", "get_quotes"],
   AMOUNT_MISMATCH: ["The amount no longer matches what the human approved.", "Call get_quotes, then approve again.", "get_quotes"],
-  OVER_SPEND_CAP: ["The deposit is over the spending cap.", "Lower the deposit with the business, or raise the cap in settings.", "get_quotes"],
+  OVER_SPEND_CAP: ["The deposit is over the spending cap.", "Lower the deposit with the business, or ask the operator to raise the cap (agents can't).", "get_quotes"],
   JOB_NOT_READY: ["The job is not ready to pay.", "Call get_quotes to see its state.", "get_quotes"],
   PAYEE_NOT_QUOTED: ["The payee isn't a business that quoted on this job from a verified sender.", "Pick a compliant quote from get_quotes.", "get_quotes"],
 };

@@ -32,6 +32,11 @@ const CATEGORIES: [string, RegExp][] = [
  * oven" is repairs, "catering for a cleaning company" is catering), and a specific trade beats the
  * generic "repairs" ("fix a leaking pipe" is plumbing): food words elsewhere never pull in caterers.
  */
+/** The category a request names explicitly ("fix a leaking pipe" → "plumbing"), or null when it names none of them. */
+export function knownCategory(what: string): string | null {
+  return CATEGORIES.some(([, re]) => re.test(what)) ? requestCategory(what) : null;
+}
+
 export function requestCategory(what: string): string {
   const hits = CATEGORIES.map(([c, re]) => ({ c, at: re.exec(what)?.index ?? -1 })).filter((h) => h.at >= 0).sort((a, b) => a.at - b.at);
   const first = hits[0];

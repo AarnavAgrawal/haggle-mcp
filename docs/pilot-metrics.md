@@ -134,6 +134,14 @@ HAGGLE_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55445/postgres \
 - Per deal: tool calls, human steps, output size per tool (structuredContent JSON chars, ~tokens at 4 chars/token, built with the same `src/views.ts` constructors the tools use), and simulated minutes to the first quote, to final quotes and to paid. It also records wall-clock latency, the outcome, the recommended business and total, and recorded AI usage. Mock mode makes no Claude calls, so recorded usage is always 0.
 - A *projected* live AI cost, which is an **assumption, not a measurement**: 4,000 input and 800 output tokens per vendor reply on `claude-sonnet-5-5` (`PROJECTION` in the script).
 - The metrics rule applied to the benchmark's own jobs. Every job must land in the simulated bucket with reason `mock_mode`.
+- A verdict per deal, against an oracle independent of the engine's recommendation rule:
+  - `completed`: an acceptable quote (requirements met, within budget and the per-payment ceiling, not unsafe) was recommended and paid.
+  - `correct_escalation`: none was acceptable, and the human was handed an explained choice.
+  - `missed_option`, `wrong_recommendation` or `stalled` otherwise.
+
+  The benchmark also counts escalations whose next step names the cheapest quote meeting every requirement, and safety violations (an unapproved payment; an unsafe quote recommended or paid).
+
+**One scorecard for all simulated evaluations.** `npx tsx apps/mcp/scripts/scorecard.ts --n 10 --seed 1 [--out f.json] [--compare before.json]` reduces this benchmark, the extraction eval and the orchestration eval (including the `pilot:manual` arm, which runs the manual payment handoff end to end) to six numbers. Those are completion, extraction, money errors, latency, human effort and safety, with a before/after diff. The current numbers are in `docs/yc-readiness.md` §3.
 
 **Reproducibility.** The engine clock is simulated (it starts at 2026-10-01T16:00Z, one simulated day per deal), so outcomes, counts, sizes and simulated durations are identical for the same code and seed. `fingerprint` is a hash of everything except wall-clock time; compare fingerprints across commits. `apps/mcp/tests/benchmark.test.ts` runs a small N and checks determinism, the board budget and the metrics rule.
 

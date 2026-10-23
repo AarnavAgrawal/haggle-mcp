@@ -104,6 +104,9 @@ describe("SIMULATED: list_deals resumes a deal past approval without a board rea
     const token = await workspace("Resume Co", "America/Los_Angeles", APPROVER, VENDOR);
     const d = await call(token, "deal", { request: { what: "team lunch catering", quantity: 40, date: new Date(Date.now() + 21 * 86_400_000).toISOString().slice(0, 10), area: "San Francisco, CA" }, budget_usd: 2500 });
     const jobId = d.structuredContent.job_id as string;
+    // A manual-payment pilot server never reads as "payments are off" or as charging anything.
+    expect(d.content[0]!.text).toMatch(/No money moves through Haggle: after the human approves a quote, the business confirms the booking and the human pays them directly/);
+    expect(d.content[0]!.text).not.toMatch(/Payments are off/);
     const out = (await repo.listMessages(jobId)).find((m) => m.direction === "out" && m.to_address === VENDOR)!;
     const trusted = (address: string): TrustVerdict => ({ trusted: true, address, reason: "inkbox-same-org", evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } }) as never;
     await engine.ingest({ providerEventId: "ev_r1", eventType: "message.received", providerEmailId: "in_r1", threadId: "th_r", messageId: "<r1@mail.example>", inReplyTo: [out.rfc_message_id!], references: [out.rfc_message_id!], from: VENDOR, to: ["haggle@inkboxmail.test"], subject: `Re: ${out.subject}`, bodyText: "$2,180 total incl tax, 14 vegetarian, delivered by 11:00, $500 deposit.", attachments: [], attachmentsDownloadUrl: null }, trusted);

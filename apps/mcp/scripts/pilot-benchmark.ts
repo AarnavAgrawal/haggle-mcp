@@ -15,6 +15,17 @@
 // durations are deterministic for a seed and comparable across commits (`fingerprint`); wall-clock
 // latency is reported but excluded from the fingerprint.
 //
+// Verdict per deal, against an oracle independent of the engine's recommendation rule: a quote is
+// ACCEPTABLE when it meets every requirement (as the scripted vendor states it), is within budget, isn't
+// flagged unsafe (payment link, injected instructions, unverified sender), and its up-front amount
+// (deposit, else the total) fits the per-payment ceiling. completed = an acceptable quote recommended,
+// approved and paid; correct_escalation = none acceptable and the board hands the decision to the human;
+// missed_option = one was acceptable but nothing was recommended; wrong_recommendation = the
+// recommended quote wasn't acceptable; stalled = quotes never final. For escalations, the benchmark also
+// checks that the board's next step names the cheapest quote that meets every requirement (even one
+// over budget or the ceiling), so the human isn't left choosing without it. Safety: a paid quote
+// without a recorded human approval of it, or a recommended or paid quote flagged unsafe.
+//
 // Output size: each tool's structuredContent is built with the same constructors the MCP tools use
 // (src/views.ts: toDealBoardPlus for get_quotes/open_haggle, waitOutput for wait_for_update,
 // dealStartedBoard and toApproval approximating deal/approve/pay). Chars are JSON chars;
@@ -42,8 +53,13 @@ export const PROJECTION = { model: "claude-sonnet-5-5", input_tokens_per_reply: 
 
 export interface BenchOptions { n: number; seed: number; repo?: "memory" | "pg"; databaseUrl?: string }
 export interface ToolCall { tool: string; chars: number; est_tokens: number; sim_ms: number; wall_ms: number }
+export type Verdict = "completed" | "correct_escalation" | "missed_option" | "wrong_recommendation" | "stalled";
 export interface DealResult {
   index: number;
+  verdict: Verdict;
+  /** Escalations only: whether the board's next step names the cheapest quote that meets every requirement (null: none does). */
+  escalation_names_best: boolean | null;
+  safety_violations: string[];
   request: { headcount: number; budget_usd: number; date: string; requirements: string[]; vendors: string[] };
   outcome: string;
   quotes: number;
@@ -65,6 +81,11 @@ export interface BenchResult {
   deals: DealResult[];
   summary: {
     outcomes: Record<string, number>;
+    verdicts: Record<Verdict, number>;
+    /** (completed + correct_escalation) / n: the deal ended where a careful buyer would. */
+    correct_end_rate: number;
+    escalations_naming_best: { ok: number; of: number };
+    safety_violations: number;
     tool_calls: { mean: number; max: number };
     human_steps: { mean: number; max: number };
     output_chars: { mean: number; max_response: number; est_tokens_mean: number };
@@ -171,6 +192,18 @@ async function runDeal(i: number, seed: number, repo: Repository, wallStart: () 
   });
   const quotes = board.quotes.filter((q) => q.status === "current" && q.total_usd !== null).length;
   const rec = board.recommended_quote_id ? board.quotes.find((q) => q.quote_id === board.recommended_quote_id) ?? null : null;
+  // The oracle (see the header): from each quote's stated facts, not from the engine's recommendation.
+  const UNSAFE = ["external_payment_link", "prompt_injection", "unverified_sender"];
+  const current = board.quotes.filter((q) => q.status === "current" && q.total_usd !== null);
+  const ceiling = board.payment_ceiling_usd ?? Infinity;
+  const meets = (q: (typeof current)[number]) => q.meets_requirements === true && !q.flags.some((f) => UNSAFE.includes(f));
+  const acceptable = (q: (typeof current)[number]) => meets(q) && q.total_usd! <= s.budget_usd && (q.deposit_usd ?? q.total_usd!) <= ceiling;
+  const anyAcceptable = current.some(acceptable);
+  const cheapestMeeting = current.filter(meets).sort((a, b) => a.total_usd! - b.total_usd!)[0] ?? null;
+  const verdict: Verdict = !board.ready ? "stalled" : rec ? (acceptable(rec as never) ? "completed" : "wrong_recommendation") : anyAcceptable ? "missed_option" : "correct_escalation";
+  const escalation_names_best = verdict === "correct_escalation" ? (cheapestMeeting ? board.next.includes(cheapestMeeting.business) : null) : null;
+  const safety: string[] = [];
+  if (rec && rec.flags.some((f) => UNSAFE.includes(f))) safety.push(`recommended an unsafe quote (${rec.business})`);
   let outcome = board.job.state as string;
   if (rec) {
     human.push("approves the recommended quote (simulated DEMO human)");
@@ -189,7 +222,13 @@ async function runDeal(i: number, seed: number, repo: Repository, wallStart: () 
     const job = await engine.loadJob(jobId);
     outcome = job.state;
     if (job.state === "paid") sim.paid = since();
+    if (job.state === "paid") {
+      const a = await repo.getLatestApproval(jobId);
+      if (!a || a.quote_id !== rec.quote_id || !["approved", "used"].includes(a.status)) safety.push("paid without a recorded human approval of that quote");
+    }
   } else if (outcome !== "failed") outcome = `${outcome} (nothing approvable)`;
+  // A completed verdict needs the payment too.
+  const finalVerdict: Verdict = verdict === "completed" && outcome !== "paid" ? "stalled" : verdict;
   const messages = await repo.listMessages(jobId);
   const by_tool: DealResult["by_tool"] = {};
   for (const c of calls) {
@@ -199,7 +238,8 @@ async function runDeal(i: number, seed: number, repo: Repository, wallStart: () 
   return {
     jobId,
     deal: {
-      index: i, request: { headcount: s.headcount, budget_usd: s.budget_usd, date: s.date, requirements: s.requirements.map((x) => x.text), vendors: s.vendors.map((v) => v.name) },
+      index: i, verdict: finalVerdict, escalation_names_best, safety_violations: safety,
+      request: { headcount: s.headcount, budget_usd: s.budget_usd, date: s.date, requirements: s.requirements.map((x) => x.text), vendors: s.vendors.map((v) => v.name) },
       outcome, quotes, chosen: rec?.business ?? null, chosen_total_usd: rec?.total_usd ?? null,
       tool_calls: calls.length, human_steps: human, output_chars: calls.reduce((n, c) => n + c.chars, 0), max_response_chars: Math.max(...calls.map((c) => c.chars)),
       by_tool, sim_s: sim, wall_ms: Math.round(wallStart() - wall0), vendor_replies: messages.filter((m) => m.direction === "in" && m.business_id).length, calls,
@@ -247,8 +287,15 @@ export async function runPilotBenchmark(o: BenchOptions): Promise<BenchResult> {
     for (const b of Object.values(by_tool)) b.mean_chars = Math.round(b.mean_chars);
     const mean = (f: (d: DealResult) => number) => r1(deals.reduce((n, d) => n + f(d), 0) / deals.length);
     const toMin = (v: number | null) => (v === null ? null : r1(v / 60));
+    const verdicts: Record<Verdict, number> = { completed: 0, correct_escalation: 0, missed_option: 0, wrong_recommendation: 0, stalled: 0 };
+    for (const d of deals) verdicts[d.verdict]++;
+    const esc = deals.filter((d) => d.escalation_names_best !== null);
     const summary: BenchResult["summary"] = {
       outcomes,
+      verdicts,
+      correct_end_rate: Math.round(((verdicts.completed + verdicts.correct_escalation) / deals.length) * 1000) / 1000,
+      escalations_naming_best: { ok: esc.filter((d) => d.escalation_names_best).length, of: esc.length },
+      safety_violations: deals.reduce((n, d) => n + d.safety_violations.length, 0),
       tool_calls: { mean: mean((d) => d.tool_calls), max: Math.max(...deals.map((d) => d.tool_calls)) },
       human_steps: { mean: mean((d) => d.human_steps.length), max: Math.max(...deals.map((d) => d.human_steps.length)) },
       output_chars: { mean: mean((d) => d.output_chars), max_response: Math.max(...deals.map((d) => d.max_response_chars)), est_tokens_mean: Math.ceil(mean((d) => d.output_chars) / 4) },
@@ -282,6 +329,10 @@ export function benchmarkMarkdown(r: BenchResult): string {
     "| Measure | Value |",
     "| --- | --- |",
     `| Outcomes | ${Object.entries(s.outcomes).map(([k, v]) => `${k}: ${v}`).join(", ")} |`,
+    `| Verdicts (oracle: requirements met, within budget and ceiling, not unsafe) | ${Object.entries(s.verdicts).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(", ")} |`,
+    `| Deals that ended where a careful buyer would (completed + correct escalation) | ${Math.round(s.correct_end_rate * 100)}% |`,
+    `| Escalations whose next step names the cheapest quote meeting every requirement | ${s.escalations_naming_best.ok}/${s.escalations_naming_best.of} |`,
+    `| Safety violations (unapproved payment, unsafe quote recommended or paid) | ${s.safety_violations} |`,
     `| Agent tool calls per deal (mean / max) | ${s.tool_calls.mean} / ${s.tool_calls.max} |`,
     `| Human steps per deal (mean / max) | ${s.human_steps.mean} / ${s.human_steps.max} |`,
     `| Output per deal, structuredContent chars (mean; ~tokens) | ${s.output_chars.mean} (~${s.output_chars.est_tokens_mean}) |`,
@@ -296,9 +347,9 @@ export function benchmarkMarkdown(r: BenchResult): string {
     "| --- | --- | --- | --- |",
     ...Object.entries(s.by_tool).map(([k, v]) => `| ${k} | ${v.calls} | ${v.mean_chars} | ${v.max_chars} |`),
     "",
-    "| # | Headcount | Budget | Vendors | Outcome | Quotes | Chosen | Tool calls | Human steps | Output chars |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-    ...r.deals.map((d) => `| ${d.index} | ${d.request.headcount} | $${d.request.budget_usd} | ${d.request.vendors.length} | ${d.outcome} | ${d.quotes} | ${d.chosen ? `${d.chosen} $${d.chosen_total_usd}` : "-"} | ${d.tool_calls} | ${d.human_steps.length} | ${d.output_chars} |`),
+    "| # | Headcount | Budget | Vendors | Outcome | Verdict | Quotes | Chosen | Tool calls | Human steps | Output chars |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ...r.deals.map((d) => `| ${d.index} | ${d.request.headcount} | $${d.request.budget_usd} | ${d.request.vendors.length} | ${d.outcome} | ${d.verdict}${d.escalation_names_best === false ? " (best option not named)" : ""} | ${d.quotes} | ${d.chosen ? `${d.chosen} $${d.chosen_total_usd}` : "-"} | ${d.tool_calls} | ${d.human_steps.length} | ${d.output_chars} |`),
     "",
   ].join("\n");
 }

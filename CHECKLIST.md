@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: first staging deployment + consenting-mailbox email trial (`docs/staging-email-trial-runbook.md`); Supabase + Anthropic staging done; waiting on Aarnav's Manufact + Inkbox staging setup (`docs/staging-handoff.md` §3–5), then gates G1–G4 · Aarnav: branch `merged-working-demo` (main + feat/live-demo merged; decisions in `docs/merge-decisions-working-demo.md`; needs Yash's review before it reaches main)
+**Now working on:** Yash: buyer-experience fixes + scorecard done (`docs/yc-readiness.md`); next: staging gates G1–G4 once Aarnav's Manufact + Inkbox staging setup lands (`docs/staging-handoff.md` §3–5), then the Claude extraction eval (needs approval) · Aarnav: branch `merged-working-demo` (main + feat/live-demo merged; decisions in `docs/merge-decisions-working-demo.md`; needs Yash's review before it reaches main)
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -105,6 +105,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-23 · Yash · Buyer-experience audit + fixes: no vendor text in `list_deals` model output; manual-payment pilots no longer read as "payments off"/"charged"; a ceiling-blocked cheaper quote is named when nothing is recommended; hints point to real tools; one clear error for non-catering requests; foreign cursors can't hide updates; approve-early warns. Benchmark: oracle verdicts + safety detectors, `pilot:manual` orchestration arm (6/6 settled), `scripts/scorecard.ts` before/after; `docs/yc-readiness.md`
 - 2026-10-22 · Yash · Staging handoff for two founders (`docs/staging-handoff.md`): owners, shared vault + local env file, Aarnav's Manufact/Inkbox steps and non-secret report, joint go/no-go gates G1–G4; Supabase staging (pooler) and Anthropic key verified; shared-file corrections proposed, not applied
 - 2026-10-22 · Yash · Staging-trial readiness: tests independent of the real date (skewed-clock CI step), email trial hardened (staging-only gates, one-shot send, per-reply Message-ID/token/webhook/quarantine/extraction diagnostics), `ops-report --brief/--fail-on-attention`, carrier opt-out keyword handling, staging email-trial runbook
 
