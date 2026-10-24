@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { buildOpsReport, holdSubject, PROVIDER_KEY_MAX_AGE_MS } from "@haggle/engine";
 import { applySteps, contactCheck, planJobAction, planOps, planRetry } from "../scripts/job-ops.ts";
 import { APPROVER, BUDGET, kit, mail, REQUEST, type Kit } from "../../../packages/engine/tests/helpers/reliabilityKit.ts";
+import { verifyApprover } from "../../../packages/engine/tests/helpers/verifiedApprover.ts";
 
 const VENDOR = "harbor@inkboxmail.test";
 const OTHER = "sunset@inkboxmail.test";
@@ -18,7 +19,8 @@ const jobCmd = (argv: string[]) => planOps([...argv, "--by", "ops"]) as JobCmd;
 /** An RFQ that kept failing until it was given up (bounced): the operator may consider a retry. */
 async function failedRfq(k: Kit, workspaceId?: string) {
   if (workspaceId) {
-    await k.engine.createWorkspace({ id: workspaceId, name: "Acme" } as never);
+    await k.engine.createWorkspace({ id: workspaceId, name: "Acme", settings: { approver_phone: APPROVER } } as never);
+    await verifyApprover(k.repo, workspaceId, APPROVER);
     await k.repo.addWorkspaceVendor({ workspace_id: workspaceId, contact: VENDOR, name: "Harbor Table", consent: "agreed by phone 2026-10-20", added_by: "ops" });
     await k.repo.addWorkspaceVendor({ workspace_id: workspaceId, contact: OTHER, name: "Sunset Kitchen", consent: "agreed by phone 2026-10-20", added_by: "ops" });
   }

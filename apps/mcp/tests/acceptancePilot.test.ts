@@ -144,16 +144,27 @@ describe("SIMULATED pilot acceptance: onboarded workspace → catering request �
     await admin("add-vendor", "--id", plan.workspace.id, "--contact", HARBOR, "--name", "Harbor Table", "--consent", "Maria (owner) agreed by phone");
     await admin("add-vendor", "--id", plan.workspace.id, "--contact", GRILL, "--name", "Golden Grill", "--consent", "Sam agreed by email");
     await admin("add-vendor", "--id", plan.workspace.id, "--contact", SUNSET, "--name", "Sunset Kitchen", "--consent", "Dev agreed in person", "--channel", "text");
+    expect((await admin("show", "--id", plan.workspace.id)).text).toMatch(/\[FAIL\] approver: .*NOT verified/);
+    const LUNCH = { request: { what: "team offsite lunch catering", quantity: "60 people", when: EVENT_WORDS, delivery: "deliver to 500 Howard St by 11:30", dietary: "12 vegetarian" }, budget: "under $2,500" };
+    // Until the operator verifies the approver, the preview says a real deal would be refused, and it is: nothing reaches a vendor.
+    {
+      const pre = await connect(plan.token, "pilot-operator-precheck");
+      expect((await pre.call("deal", { ...LUNCH, dry_run: true })).content[0]!.text).toMatch(/NOT READY \(approver_unverified\).*Nothing was sent/);
+      const refused = await pre.call("deal", LUNCH);
+      expect(refused.isError).toBe(true);
+      expect(refused.content[0]!.text).toMatch(/approver_unverified[\s\S]*Nothing was sent[\s\S]*verify-approver/);
+      expect(emails).toHaveLength(0);
+      expect(texts).toHaveLength(0);
+      toolCalls -= 2;
+    }
+    await admin("verify-approver", "--id", plan.workspace.id, "--phone", APPROVER, "--by", "ops", "--how", "texted a code; read back on a call");
     expect((await admin("show", "--id", plan.workspace.id)).text).toMatch(/Readiness: PASS \(5\/5 checks\)/);
 
     // ── Agent, session A: the user's request, in their words; vendors from the workspace roster. ──
     const a = await connect(plan.token, "pilot-agent-session-a");
     // Without credentials nothing but the handshake runs.
     await expect(rpc("hgw_wrong", "tools/list", {})).rejects.toThrow();
-    const dealRes = await a.call("deal", {
-      request: { what: "team offsite lunch catering", quantity: "60 people", when: EVENT_WORDS, delivery: "deliver to 500 Howard St by 11:30", dietary: "12 vegetarian" },
-      budget: "under $2,500",
-    });
+    const dealRes = await a.call("deal", LUNCH);
     expect(dealRes.isError).toBeFalsy();
     const job = dealRes.structuredContent.job_id as string;
     expect(dealRes.content[0]!.text).toMatch(/^\[LIVE\] Deal .* started: team offsite lunch catering for 60/);

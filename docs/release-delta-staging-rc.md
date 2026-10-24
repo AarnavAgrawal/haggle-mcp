@@ -10,7 +10,8 @@ Non-secret. It compares the frozen staging checkout (`~/Desktop/haggle-staging`,
 | `d212968` | Financial integrity after extraction: stated totals reconciled in cents, charges counted once, deposit shares, approval/ranking/negotiation/payment blocked until the vendor clarifies (`docs/financial-integrity.md`) |
 | `b15cc9c` | `quote.json`'s headcount is the request's, never multiplied into food (caught by CI) |
 | `f05d312` | Vendor alternatives: an offer for another date stays an alternative (never a decline); priced options kept for the human's choice; neither approvable, recommended or cited until confirmed |
-| (head) | The brain learns a price only from a firm, consistent quote |
+| `0e70aaf` | The brain learns a price only from a firm, consistent quote |
+| (head) | Founder-operated pilot: no outreach from a pilot workspace before its approver is verified; operator playbook, templates, readiness report |
 
 The diff is 40 files: engine, MCP tools, tests and docs.
 
@@ -25,6 +26,7 @@ The diff is 40 files: engine, MCP tools, tests and docs.
 | **Stored data** | `quotes.record` is `jsonb`. It gains optional `financial` and `options`, so no schema change is needed. Rows written before this release (none on staging; its DB is empty) are re-checked from their stored parts at approval and payment. |
 | **Tool output** | Same schemas. New values only: block code `numbers_dont_add_up`, payment refusal `payment_refused_quote_inconsistent`, a pending question that now lists the business's priced options, and the flag `conflicting_numbers` (already in the contract) used more often. |
 | **Behaviour an operator will see** | (a) A quote whose figures don't add up shows the business's figure, is held, and the business gets one clarification email. (b) A deal whose only quotes are held alternatives (figures, another date/time, options awaiting a choice) reaches "ready" with the reason instead of failing. (c) "Half up front" becomes a deposit amount; a deposit mentioned without an amount holds approval. |
+| **Pilot workspaces** | A live, operator-created workspace with its own vendors contacts nobody until its approver phone is verified. `deal` is refused with `approver_unverified` or `approver_missing` (no job, nothing sent), and `workspace-admin show` fails its approver check until then. The single-tenant default workspace is unchanged. Run `verify-approver` during onboarding (`docs/pilot-onboarding.md` §4). |
 | **Vendor-facing text** | One new follow-up line in the existing follow-up email: "your correct all-in total (the listed charges add up to $X, but the stated total is $Y)" or "the deposit amount due at booking (…)". It's sent once, only to a quote held for its figures, never to a pay-by-link or injection reply, and never by phone. |
 
 ## 3. Evidence (verified)

@@ -1,6 +1,6 @@
 // Sprint 4 B: the operator's pilot onboarding, end to end over the same code the scripts run
 // (planWorkspace + createWorkspace, planAdmin + runAdmin) against the in-memory store. `show` is a
-// readiness check: approver, cap, ≥1 consented vendor, no suppressed vendor, active credentials.
+// readiness check: a verified approver, cap, ≥1 consented vendor, no suppressed vendor, active credentials.
 // No database, no network.
 import { describe, expect, it } from "vitest";
 import { InMemoryRepository } from "@haggle/engine";
@@ -18,7 +18,7 @@ describe("pilot onboarding (operator)", () => {
     expect(out).toContain(`Bearer token:   ${plan.token}`);
     expect(out).toContain(`claude mcp add --transport http haggle https://haggle.example/mcp --header "Authorization: Bearer ${plan.token}"`);
     expect(out).toMatch(/Connector URL:  https:\/\/haggle\.example\/c\/hgc_[A-Za-z0-9_-]{32}\/mcp/);
-    expect(out).toMatch(/Readiness: FAIL \(4\/5 checks\)/);
+    expect(out).toMatch(/Readiness: FAIL \(3\/5 checks\)/);
     expect(out).toMatch(/\[FAIL\] vendors: none.*Fix: workspace-admin\.ts add-vendor --id ws_bay_events_co/);
     // Only hashes are stored.
     expect((await repo.getWorkspace("ws_bay_events_co"))!.token_hash).toBe(hashSecret(plan.token));
@@ -29,7 +29,12 @@ describe("pilot onboarding (operator)", () => {
     await admin(repo, "add-vendor", "--id", "ws_bay_events_co", "--contact", "orders@goldengrill.example", "--name", "Golden Grill", "--consent", "Sam agreed by email 2026-10-21");
     const added = await admin(repo, "add-vendor", "--id", "ws_bay_events_co", "--contact", "+14155550177", "--name", "Sunset Kitchen", "--consent", "Dev agreed in person 2026-10-21", "--channel", "text");
     expect(added.text).toMatch(/Sunset Kitchen <\+14155550177> authorized by text.*deal\(businesses=\['Sunset Kitchen'\]\)/);
+    // An approver phone nobody confirmed fails it: a live server would contact no vendor for this workspace.
     let show = await admin(repo, "show", "--id", "ws_bay_events_co");
+    expect(show.failed).toBe(true);
+    expect(show.text).toMatch(/\[FAIL\] approver: texts to \+14155550123, NOT verified.*verify-approver --id ws_bay_events_co --phone \+14155550123/);
+    await admin(repo, "verify-approver", "--id", "ws_bay_events_co", "--phone", "+14155550123", "--by", "ops", "--how", "texted a code; read back on a call");
+    show = await admin(repo, "show", "--id", "ws_bay_events_co");
     expect(show.failed).toBe(false);
     expect(show.text).toMatch(/Readiness: PASS \(5\/5 checks\)/);
     expect(show.text).not.toContain(plan.token);
@@ -60,6 +65,7 @@ describe("pilot onboarding (operator)", () => {
     expect(out).toMatch(/\[FAIL\] approver: no approver phone.*set-approver --id ws_no_approver --phone/);
     await admin(repo, "set-approver", "--id", "ws_no_approver", "--phone", "+14155550199");
     await admin(repo, "add-vendor", "--id", "ws_no_approver", "--contact", "a@vendor.example", "--name", "A", "--consent", "agreed by phone");
+    await admin(repo, "verify-approver", "--id", "ws_no_approver", "--phone", "+14155550199", "--by", "ops", "--how", "read back on a call");
     expect((await admin(repo, "show", "--id", "ws_no_approver")).text).toMatch(/Readiness: PASS/);
   });
 });

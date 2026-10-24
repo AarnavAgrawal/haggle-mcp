@@ -97,6 +97,7 @@ Tests:
 
 - Financial integrity and vendor alternatives (`docs/financial-integrity.md`): 0 incorrect financial quotes approvable on the recorded Claude readings (was 3); other-date offers and priced options are kept for the human, never approvable until confirmed.
 - What changes for staging, and what Aarnav must review: `docs/release-delta-staging-rc.md` (no migration, env or shared-contract delta since `396c52f`).
+- Founder-operated pilot: `docs/pilot-operator-playbook.md`, intake/update/KPI templates in `docs/templates/`, and `docs/pilot-readiness-report.md`. A live pilot workspace now contacts no vendor until its approver phone is verified.
 
 ## 6. Remaining blockers to a first real customer
 

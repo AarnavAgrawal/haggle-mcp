@@ -63,6 +63,7 @@ async function workspace(name: string, timezone: string, approver: string, vendo
   const plan = planWorkspace({ name, approverPhone: approver, capUsd: 2500, area: "San Francisco, CA", timezone, baseUrl: "https://haggle.example" });
   await createWorkspace(plan, repo);
   await runAdmin(planAdmin(["add-vendor", "--id", plan.workspace.id, "--contact", vendor, "--name", "Harbor Table", "--consent", "Maria (owner) agreed by phone"]), repo);
+  await runAdmin(planAdmin(["verify-approver", "--id", plan.workspace.id, "--phone", approver, "--by", "ops", "--how", "code read back on a call"]), repo);
   return plan.token;
 }
 

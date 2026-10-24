@@ -454,11 +454,15 @@ export const deal = server.tool(
       if (input.dry_run) {
         const would = preview.filter((p) => p.ready);
         const blocked = preview.filter((p) => !p.ready);
-        const next = blocked.length
+        // A live pilot workspace whose approver isn't verified starts nothing, whoever is selected.
+        const gate = await engine.outreachBlock();
+        const next = gate
+          ? `Dry run: nothing was sent. A real deal would be refused (${gate.code}): ${gate.message} Tell the user; the operator must fix it first.`
+          : blocked.length
           ? `Dry run: nothing was sent. ${blocked.length} selected business(es) can't be contacted (see blocked); a real deal with them selected starts nothing. Ask the user whether to proceed with only: ${would.map((w) => w.name).join(", ") || "nobody"}.`
           : "Dry run: nothing was sent and no deal was started. Call deal again without dry_run to contact exactly these businesses.";
         const v = DealBoardPlus.parse({ ok: true, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode: mode, dry_run: true, would_contact: would, blocked, next });
-        return ok(v, [`DRY RUN (nothing sent): deal would contact exactly ${would.length}: ${would.map((w) => `${w.name} [${w.channel}]`).join(", ") || "nobody"}.`, ...blocked.map((b) => `Can't contact ${b.name} (${b.contact_state.replace(/_/g, " ")}): ${b.reason}`), `next: ${next}`].join("\n"));
+        return ok(v, [`DRY RUN (nothing sent): deal would contact exactly ${would.length}: ${would.map((w) => `${w.name} [${w.channel}]`).join(", ") || "nobody"}.`, ...(gate ? [`NOT READY (${gate.code}): ${gate.message} Fix: ${gate.fix}`] : []), ...blocked.map((b) => `Can't contact ${b.name} (${b.contact_state.replace(/_/g, " ")}): ${b.reason}`), `next: ${next}`].join("\n"));
       }
       const setup = fromRoster ? { ready: businesses.length, total: rosterTotal, blockers } : undefined;
       if (fromRoster && businesses.length === 0) {

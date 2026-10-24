@@ -42,7 +42,7 @@ describe("workspace-create: one-command provisioning", () => {
     expect(r.text).toMatch(/The connector URL IS the credential/);
     expect(r.text).toMatch(/verify-approver --id ws_bay_events_co/);
     expect(r.text.trim().split("\n").filter((l) => !l.startsWith("WARNING")).at(-1)).toMatch(/\[(PASS|FAIL|WARN)\]/); // ends with the readiness check
-    expect(r.text).toMatch(/Readiness: FAIL \(4\/5 checks\)/);
+    expect(r.text).toMatch(/Readiness: FAIL \(3\/5 checks\)/); // no vendors yet, approver not yet verified
     expect(files["/tmp/creds.txt"]).toContain(`Bearer token:   ${p.token}`);
     expect(files["/tmp/creds.txt"]).toContain(p.connectorUrl);
     expect((await repo.getWorkspace("ws_bay_events_co"))!.token_hash).toBe(hashSecret(p.token));

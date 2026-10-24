@@ -76,7 +76,7 @@ import { contactStatusOf, type BusinessContactStatus } from "../inbound/contactS
 /** Contact states the board lists per business (the rest are implied by its status). */
 const NOTABLE_CONTACT = new Set<BusinessContactStatus["contact_status"]>(["bounced", "failed", "opted_out", "quarantined_reply", "scheduled"]);
 import { listQuarantine, rejectQuarantined, releaseQuarantined } from "../inbound/quarantineReview.ts";
-import { runOperatorRequests, workspaceSuspension } from "../ops/operator.ts";
+import { approverVerification, runOperatorRequests, workspaceSuspension } from "../ops/operator.ts";
 
 /** Board text for a reply Haggle couldn't read (never the provider's raw error). */
 export const UNREADABLE_REPLY = "Reply received; Haggle couldn't read a price";
@@ -606,6 +606,8 @@ export class HaggleEngine {
     // Who this workspace may contact: the server's allowlist, plus the vendors the operator authorized
     // for this workspace (workspace_vendors, each with its recorded consent).
     const wsVendors = new Set((await this.repo.listWorkspaceVendors(ws)).map((v) => v.contact));
+    const notReady = await this.outreachBlock(ws, wsVendors.size > 0, approverPhone);
+    if (notReady) throw new EngineError(notReady.code, notReady.message, notReady.fix, "none");
     // Opted out or hard-bounced anywhere: never contacted again.
     const contacts = input.businesses.flatMap((b) => [b.email ? normalizeAddress(b.email) : null, b.phone ? b.phone.replace(/[\s().-]/g, "") : null].filter((c): c is string => !!c));
     const suppressed = new Map((await this.repo.findSuppressions(contacts)).map((x) => [x.contact, x]));
@@ -5926,6 +5928,23 @@ export class HaggleEngine {
     return w;
   }
 
+  /**
+   * Why a live pilot workspace (one with operator-added vendors) may not contact anyone yet, or null.
+   * Real vendors are never asked for quotes that no verified human could approve: the operator must
+   * first confirm the approver phone out of band (workspace-admin verify-approver). Unchanged: mock mode;
+   * the default workspace of a single-tenant server, whose approver is the operator's own configured
+   * notify number (HAGGLE_NOTIFY_PHONE); and live workspaces without their own roster (the allowlist).
+   */
+  async outreachBlock(ws: string, hasOwnVendors?: boolean, approverPhone?: string | null): Promise<{ code: string; message: string; fix: string } | null> {
+    if (this.d.config.mode !== "live" || ws === DEFAULT_WORKSPACE_ID) return null;
+    if (!(hasOwnVendors ?? (await this.repo.listWorkspaceVendors(ws)).length > 0)) return null;
+    const phone = approverPhone === undefined ? (await this.getSettings(ws)).approver_phone : approverPhone;
+    const fix = `Operator: confirm the approver's phone out of band, then run scripts/workspace-admin.ts verify-approver --id ${ws} --phone <approver phone> --by <you> --how "<how>" (docs/pilot-onboarding.md §4).`;
+    if (!phone) return { code: "approver_missing", message: "This workspace has no approver phone, so no purchase could be approved. Nothing was sent to any business.", fix: `Operator: scripts/workspace-admin.ts set-approver --id ${ws} --phone +1... --by <you> --reason "<why>", then verify it. ${fix}` };
+    if (!(await approverVerification(this.repo, ws, phone))) return { code: "approver_unverified", message: "This workspace's approver phone hasn't been verified by the operator yet. Nothing was sent to any business.", fix };
+    return null;
+  }
+
   /** A workspace's suspension (scripts/workspace-admin.ts suspend; ops/operator.ts), or null: the MCP endpoint refuses tools while it is set. */
   async workspaceSuspension(id: string) {
     return workspaceSuspension(this.repo, id);
@@ -7420,6 +7439,8 @@ export class WorkspaceEngine {
   get outOfBandApprovalsOnly() { return this.engine.outOfBandApprovalsOnly; }
   get brainIsStub() { return this.engine.brainIsStub; }
 
+  /** Why this workspace may not contact businesses yet (Engine.outreachBlock), or null. */
+  outreachBlock() { return this.engine.outreachBlock(this.workspaceId); }
   /** The approver comes from the workspace settings (the operator's), never from the agent's input. */
   async deal(input: DealInput) {
     const { approver_email: _ignored, ...rest } = input;

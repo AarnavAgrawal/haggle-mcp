@@ -10,6 +10,7 @@ import { discoveredFor, resolveSelection, type Selection } from "../src/business
 import { historyOnly } from "../src/brain.ts";
 import { buildRoster, findWorkspaceVendors, workspaceVendorList, workspaceVendorReadiness, type ChannelStatus } from "../src/vendors.ts";
 import type { Runtime } from "../src/runtime.ts";
+import { verifyApprover } from "../../../packages/engine/tests/helpers/verifiedApprover.ts";
 
 const CH: ChannelStatus = { email: true, imessage: false, sms: true, phone: false, a2a: false, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false };
 const { budget_usd, ...request } = GOLDEN_REQUEST;
@@ -22,7 +23,11 @@ async function setup() {
     sms: { async send() { return { messageId: `sms_${Math.random()}` }; } },
     config: { mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: "haggle@inkboxmail.test", collectionWindowMs: 30 * 60_000, negotiationWindowMs: 10 * 60_000, approvalTtlMs: 30 * 60_000, globalPaymentCapCents: 500_000, maxRounds: 1, recipientAllowlist: [] },
   });
-  for (const id of ["ws_alpha", "ws_beta"]) await repo.insertWorkspace({ id, name: id, token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles" });
+  for (const [id, phone] of [["ws_alpha", "+14155550171"], ["ws_beta", "+14155550172"]] as const) {
+    await repo.insertWorkspace({ id, name: id, token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles" });
+    await engine.updateSettings({ approver_phone: phone }, id, "operator");
+    await verifyApprover(repo, id, phone);
+  }
   const add = (workspace_id: string, contact: string, name: string, channel?: "email" | "phone" | "imessage") => engine.addWorkspaceVendor({ workspace_id, contact, name, consent: "Owner agreed by phone 2026-10-21", added_by: "operator (test)", ...(channel ? { channel } : {}) });
   await add("ws_alpha", "orders@casalunch.example", "Casa Lunch");
   await add("ws_alpha", "+14155550161", "Casa Lunch", "imessage");

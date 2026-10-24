@@ -8,6 +8,7 @@ import { simulatedStripe, type StripePort } from "../src/payments/stripe.ts";
 import { CALL_TEXT, callbackConsent, pendingCallbackAuths } from "../src/workflow/callbackAuth.ts";
 import { transition } from "../src/workflow/stateMachine.ts";
 import type { Repository } from "../src/store/types.ts";
+import { verifyApprover } from "./helpers/verifiedApprover.ts";
 
 const ALPHA_HUMAN = "+14155550101";
 const BETA_HUMAN = "+14155550202";
@@ -58,6 +59,7 @@ type Env = ReturnType<typeof setup>;
 async function workspace(env: Env, id: string, approver: string) {
   if (!(await env.repo.getWorkspace(id))) await env.repo.insertWorkspace({ id, name: id, token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles" });
   await env.engine.updateSettings({ approver_phone: approver, spending_cap_cents: 500_000 }, id, "operator");
+  await verifyApprover(env.repo, id, approver);
 }
 
 let n = 0;

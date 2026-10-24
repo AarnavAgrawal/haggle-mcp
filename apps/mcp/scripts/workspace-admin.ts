@@ -173,8 +173,10 @@ export function readiness(d: ShowData): { ready: boolean; checks: ReadinessCheck
     w.revoked_at ? { name: "credentials", pass: false, detail: `revoked ${w.revoked_at}`, fix: `workspace-admin.ts rotate --id ${id} (issues new ones)` }
       : !w.token_hash && !w.connector_secret_hash ? { name: "credentials", pass: false, detail: "none issued", fix: `workspace-admin.ts rotate --id ${id}` }
       : { name: "credentials", pass: true, detail: `active (${[w.token_hash ? "bearer token" : null, w.connector_secret_hash ? "connector URL" : null].filter(Boolean).join(" + ")})` },
-    d.settings?.approver_phone ? { name: "approver", pass: true, detail: `texts to ${d.settings.approver_phone} (only their YES <code> approves)` }
-      : { name: "approver", pass: false, detail: "no approver phone: nothing in this workspace can be approved on a live server", fix: `workspace-admin.ts set-approver --id ${id} --phone +1...` },
+    // A live server contacts no vendor for this workspace until the approver is verified (Engine.outreachBlock).
+    !d.settings?.approver_phone ? { name: "approver", pass: false, detail: "no approver phone: nothing in this workspace can be approved on a live server", fix: `workspace-admin.ts set-approver --id ${id} --phone +1...` }
+      : !d.approverVerified ? { name: "approver", pass: false, detail: `texts to ${d.settings.approver_phone}, NOT verified: a live server contacts no vendor for this workspace until it is`, fix: `confirm the phone out of band, then workspace-admin.ts verify-approver --id ${id} --phone ${d.settings.approver_phone} --by <you> --how "<how>"` }
+      : { name: "approver", pass: true, detail: `texts to ${d.settings.approver_phone}, verified (only their YES <code> approves)` },
     d.settings && d.settings.spending_cap_cents > 0 ? { name: "spending cap", pass: true, detail: `$${(d.settings.spending_cap_cents / 100).toFixed(2)} per payment` }
       : { name: "spending cap", pass: false, detail: "no settings row", fix: `workspace-admin.ts set-cap --id ${id} --usd 1500` },
     consented.length ? { name: "vendors", pass: true, detail: `${consented.length} with recorded consent` }

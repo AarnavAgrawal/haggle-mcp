@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { buildOpsReport, formatOpsReport, holdSubject, InMemoryRepository, PostgresRepository, type Repository } from "../src/index.ts";
 import { APPROVER, BUDGET, kit, mail, REQUEST, type Kit } from "./helpers/reliabilityKit.ts";
+import { verifyApprover } from "./helpers/verifiedApprover.ts";
 
 const H = 3_600_000;
 const PG_URL = process.env.HAGGLE_TEST_DATABASE_URL;
@@ -19,6 +20,7 @@ async function scenario(k: Kit, tag: string) {
   const email = (n: string) => `${n}-${tag}@inkboxmail.test`;
   await k.engine.createWorkspace({ id: `ws_acme_${tag}`, name: "Acme", tokenHash: createHash("sha256").update(`t_${tag}`).digest("hex"), connectorSecretHash: createHash("sha256").update(`c_${tag}`).digest("hex"), settings: { approver_phone: APPROVER } as never });
   await k.repo.addWorkspaceVendor({ workspace_id: `ws_acme_${tag}`, contact: email("harbor"), name: "Harbor Table", consent: "phone 2026-10-20", added_by: "ops" });
+  await verifyApprover(k.repo, `ws_acme_${tag}`, APPROVER);
   // 1. Default workspace: a pending approval nobody answers.
   const a = await k.engine.deal({ request: REQUEST, budget_usd: BUDGET, businesses: [{ name: "Sunset Kitchen", email: email("sunset") }] });
   const sb = (await k.repo.getBusinesses(a.job_id))[0]!;
@@ -104,6 +106,7 @@ describe.each(repos)("ops report (%s)", (name, open) => {
       for (const n of ["sunset", "bad"]) await k.repo.addWorkspaceVendor({ workspace_id: wsId, contact: email(n), name: n, consent: "phone 2026-10-20", added_by: "ops" });
       const phone = `+1408555${String(Math.floor(Math.random() * 9000) + 1000)}`;
       await k.repo.addWorkspaceVendor({ workspace_id: wsId, contact: phone, name: "Mission Eats", consent: "phone 2026-10-20", added_by: "ops" });
+      await verifyApprover(k.repo, wsId, approver);
       const d = await ws.deal({ request: REQUEST, budget_usd: BUDGET, businesses: [{ name: "Sunset Kitchen", email: email("sunset") }] } as never);
       await mail(k, (await k.repo.getBusinesses(d.job_id))[0]!, "We can do it: $1,150 total, delivered. $345 deposit.");
       await k.engine.advanceJob(d.job_id);

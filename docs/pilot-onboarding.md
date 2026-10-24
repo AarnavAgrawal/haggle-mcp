@@ -171,6 +171,10 @@ node --env-file=<env> scripts/workspace-admin.ts verify-approver --id ws_bay_eve
   --how "texted a code from my phone; Maria read it back on a call 2026-10-22"
 ```
 
+Until this is recorded, a live server contacts **no** vendor for the workspace: `deal` is refused with
+`approver_unverified` (or `approver_missing`) and nothing is sent, and `deal(dry_run=true)` says so.
+`show` fails its approver check for the same reason.
+
 `--phone` must be the workspace's current approver phone. Any approver change (`set-approver`) needs a
 new verification, even a change back to the old number. `unverify-approver --id <ws> --by <you>
 --reason "<why>"` withdraws one, for example if the phone is lost.
@@ -187,7 +191,7 @@ then the readiness check:
 ```
   Readiness: PASS (5/5 checks)
     [PASS] credentials: active (bearer token + connector URL)
-    [PASS] approver: texts to +14155550123 (only their YES <code> approves)
+    [PASS] approver: texts to +14155550123, verified (only their YES <code> approves)
     [PASS] spending cap: $2500.00 per payment
     [PASS] vendors: 3 with recorded consent
     [PASS] suppressions: no vendor opted out or bounced

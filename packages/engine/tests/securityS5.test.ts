@@ -6,6 +6,7 @@ import { simulatedStripe } from "../src/payments/stripe.ts";
 import { ChannelSendError } from "../src/workflow/ports.ts";
 import { DEFAULT_CONTACT_WINDOW } from "../src/workflow/contactWindow.ts";
 import { checkMessage, citesCompetingOffer } from "../src/negotiation/messageGuard.ts";
+import { verifyApprover } from "./helpers/verifiedApprover.ts";
 
 const ALPHA_PHONE = "+14155550101";
 const BETA_PHONE = "+14155550202";
@@ -51,6 +52,7 @@ async function setup(config: Partial<EngineConfig> = {}, ports: { emailError?: (
   for (const [id, phone] of [["ws_alpha", ALPHA_PHONE], ["ws_beta", BETA_PHONE]] as const) {
     await repo.insertWorkspace({ id, name: id, token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles" });
     await engine.updateSettings({ approver_phone: phone, spending_cap_cents: 150_000 }, id); // the operator
+    await verifyApprover(repo, id, phone);
   }
   return { engine, repo, clock, texts, emails, calls };
 }

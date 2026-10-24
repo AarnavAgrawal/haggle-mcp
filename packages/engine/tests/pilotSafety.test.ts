@@ -9,6 +9,7 @@ import { simulatedStripe, type StripePort } from "../src/payments/stripe.ts";
 import { isOptOut, parseBounce, replyToken } from "../src/inbound/senderAuth.ts";
 import { PostgresRepository } from "../src/store/postgres.ts";
 import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import { verifyApprover } from "./helpers/verifiedApprover.ts";
 
 const APPROVER = "+14155550101";
 const SECRET = "test-reply-token-secret-0123456789";
@@ -333,6 +334,8 @@ describe("opt-outs, bounces and per-workspace vendor authorization", () => {
     const env = setup({ recipientAllowlist: [] });
     for (const id of ["ws_alpha", "ws_beta"]) await env.repo.insertWorkspace({ id, name: id, token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles" });
     await env.engine.addWorkspaceVendor({ workspace_id: "ws_alpha", contact: VENDOR, name: "Real Caterer", consent: "Owner agreed by phone 2026-10-20 to receive quote requests", added_by: "operator" });
+    await env.engine.updateSettings({ approver_phone: "+14155550131" }, "ws_alpha", "operator");
+    await verifyApprover(env.repo, "ws_alpha", "+14155550131");
     const alpha = env.engine.forWorkspace("ws_alpha");
     const beta = env.engine.forWorkspace("ws_beta");
     await expect(alpha.deal({ request, budget_usd, businesses: [{ name: "Real Caterer", email: VENDOR }] })).resolves.toMatchObject({ ok: true });
