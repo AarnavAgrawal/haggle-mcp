@@ -19,6 +19,8 @@ const textExtractor = {
     const sources = [
       ...(total !== null ? [{ field: "total" as const, source: "text", excerpt: `$${total} total` }] : []),
       ...(perHead !== null ? [{ field: "price_per_head" as const, source: "text", excerpt: `$${perHead} per person` }] : []),
+      // Claude cites every figure it sets; an uncited one is dropped (validate.ts).
+      ...(deposit !== null ? [{ field: "deposit" as const, source: "text", excerpt: `$${deposit} deposit` }] : []),
     ];
     return {
       available: true, price_per_head_usd: perHead, headcount: perHead !== null ? 40 : null, subtotal_usd: null, delivery_fee_usd: null, delivery_included: /deliver/i.test(t) ? true : null,
@@ -36,7 +38,7 @@ function demoEngine(config: Record<string, unknown> = {}) {
   const texts: { to: string; text: string; idempotencyKey: string }[] = [];
   const calls: { toNumber: string; reason: string; idempotencyKey: string }[] = [];
   const sms: SmsPort = { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } };
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },

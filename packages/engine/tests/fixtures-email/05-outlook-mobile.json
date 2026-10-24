@@ -1,0 +1,42 @@
+{
+  "name": "outlook-mobile",
+  "client": "Outlook for iOS",
+  "notes": "'Get Outlook for iOS' signature then a header block.",
+  "event": {
+    "agent_identities": []
+  },
+  "detail": {
+    "id": "in_fx_5",
+    "threadId": "thr_ext_5",
+    "messageId": "<CAfx5+abcDEF123@mail.gmail.com>",
+    "fromAddress": "{{VENDOR}}",
+    "fromDisplayName": "Maria at Valley Catering",
+    "toAddresses": [
+      "{{BUYER}}"
+    ],
+    "ccAddresses": null,
+    "subject": "RE: {{RFQ_SUBJECT}}",
+    "snippet": null,
+    "bodyText": "$1,150 total, delivered. $345 deposit. Thanks!\n\nGet Outlook for iOS<https://aka.ms/o0ukef>\n________________________________\nFrom: AI assistant <{{BUYER}}>\nSent: Wednesday, October 21, 2026 10:02:11 AM\nTo: {{VENDOR}} <{{VENDOR}}>\nSubject: {{RFQ_SUBJECT}}\n\nHi Valley Catering,\n\nI'm an AI assistant reaching out on behalf of a customer. Could you quote the following?\n\n- What: {{WHAT}}\n- People: 40\n- Location: {{AREA}}\n- Must have:\n  - 12 vegetarian meals\n\nPlease reply with your total price, what it includes (delivery or travel, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.\n\nThank you!\nAI assistant for a customer\n\nReference: {{TOKEN}} (please keep it when you reply)\n",
+    "bodyHtml": null,
+    "inReplyTo": "{{RFQ_MESSAGE_ID}}",
+    "references": [
+      "{{RFQ_MESSAGE_ID}}"
+    ],
+    "attachmentMetadata": null,
+    "direction": "inbound",
+    "status": "received",
+    "isRead": false,
+    "hasAttachments": false,
+    "sesMessageId": null,
+    "createdAt": "2026-10-21T17:20:00.000Z"
+  },
+  "expect": {
+    "outcome": "stored",
+    "stored_as": "reply",
+    "sender_trusted": true,
+    "trust_reason": "external-reply-token",
+    "quarantine_reason": null,
+    "quote_total_usd": 1150
+  }
+}

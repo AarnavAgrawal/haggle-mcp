@@ -4,8 +4,9 @@
 import postgres from "postgres";
 import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
+import { gatedSql, PoolGate, type PoolStats } from "./poolGate.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction, type AiUsageRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -23,6 +24,8 @@ function row<T>(r: Record<string, unknown> | undefined): T | null {
 const rows = <T>(rs: readonly Record<string, unknown>[]): T[] => rs.map((r) => row<T>(r)!);
 /** bigint columns come back from postgres.js as strings; cents are always numbers in the engine. */
 const settingsRow = (s: SettingsRow | null): SettingsRow | null => (s ? { ...s, spending_cap_cents: Number(s.spending_cap_cents) } : null);
+/** payment_handoffs.amount_cents is bigint (106): a number in the engine, never a string. */
+const handoffRow = (r: Record<string, unknown> | undefined): PaymentHandoffRow | null => { const h = row<PaymentHandoffRow>(r); return h ? { ...h, amount_cents: Number(h.amount_cents) } : null; };
 
 /** A tagged-template query that only reads (a plain SELECT, not the event-appending function). */
 const isReadTemplate = (s: unknown): boolean =>
@@ -61,15 +64,25 @@ export function retryingReads(sql: Sql, delayMs = 300): Sql {
 export class PostgresRepository implements Repository {
   private readonly sql: Sql;
 
-  /** `schema`: where the migrations were applied when not `public` (a database shared with another app). */
-  constructor(url: string, opts: { max?: number; schema?: string; retryDelayMs?: number } = {}) {
+  /** Connection-slot accounting for this repository's pool (store/poolGate.ts). */
+  private readonly gate: PoolGate;
+
+  /**
+   * `schema`: where the migrations were applied when not `public` (a database shared with another app).
+   * `queueTimeoutMs`: how long a query waits for a free pooled connection before failing as transient
+   * (PoolBusyError); `maxQueue`: waiters beyond this fail at once. `applicationName` shows in pg_stat_activity.
+   */
+  constructor(url: string, opts: { max?: number; schema?: string; retryDelayMs?: number; queueTimeoutMs?: number; maxQueue?: number; applicationName?: string } = {}) {
     if (opts.schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(opts.schema)) throw new Error(`invalid database schema name: ${opts.schema}`);
+    const max = opts.max ?? 4;
     // Small pool, idle connections released after 20 s, recycled after 30 min: Supabase's session
-    // pooler caps clients per database (15), shared by every process and reload.
-    this.sql = retryingReads(postgres(url, {
-      max: opts.max ?? 4, idle_timeout: 20, max_lifetime: 30 * 60, connect_timeout: 15, prepare: false, onnotice: () => {},
-      ...(opts.schema ? { connection: { search_path: opts.schema } } : {}),
-    }) as unknown as Sql, opts.retryDelayMs ?? 300);
+    // pooler caps clients per database (15), shared by every process and reload. The gate bounds the
+    // wait for one of them, so polling boards can't queue without limit behind a saturated pool.
+    this.gate = new PoolGate(max, opts.queueTimeoutMs ?? 5_000, opts.maxQueue ?? 500);
+    this.sql = retryingReads(gatedSql(postgres(url, {
+      max, idle_timeout: 20, max_lifetime: 30 * 60, connect_timeout: 15, prepare: false, onnotice: () => {},
+      connection: { application_name: (opts.applicationName ?? "haggle-engine").slice(0, 63), ...(opts.schema ? { search_path: opts.schema } : {}) },
+    }) as unknown as Sql, this.gate), opts.retryDelayMs ?? 300);
   }
 
   async close() {
@@ -91,13 +104,80 @@ export class PostgresRepository implements Repository {
     return row<WorkspaceRow>(r[0])!;
   }
   async getWorkspace(id: string) {
-    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, created_at from workspaces where id = ${id}`)[0]);
+    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at from workspaces where id = ${id}`)[0]);
   }
   async findWorkspaceByTokenHash(hash: string) {
-    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, created_at from workspaces where token_hash = ${hash}`)[0]);
+    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at from workspaces where token_hash = ${hash} and revoked_at is null`)[0]);
   }
   async findWorkspaceBySecretHash(hash: string) {
-    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, created_at from workspaces where connector_secret_hash = ${hash}`)[0]);
+    return row<WorkspaceRow>((await this.sql`select id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at from workspaces where connector_secret_hash = ${hash} and revoked_at is null`)[0]);
+  }
+  async acquireJobLease(jobId: string, owner: string, now: string, ttlMs: number) {
+    const until = new Date(Date.parse(now) + ttlMs).toISOString();
+    const r = await this.sql`
+      insert into job_leases (job_id, owner, expires_at) values (${jobId}, ${owner}, ${until})
+      on conflict (job_id) do update set owner = excluded.owner, expires_at = excluded.expires_at
+      where job_leases.expires_at < ${now} or job_leases.owner = excluded.owner
+      returning job_id`;
+    return r.length > 0;
+  }
+  async releaseJobLease(jobId: string, owner: string) {
+    await this.sql`delete from job_leases where job_id = ${jobId} and owner = ${owner}`;
+  }
+  async claimOutbox(o: { key: string; job_id: string | null; kind: OutboxRow["kind"] }, now: string) {
+    const ins = await this.sql`insert into outbox (key, job_id, kind, status, created_at, updated_at) values (${o.key}, ${o.job_id}, ${o.kind}, 'pending', ${now}, ${now}) on conflict (key) do nothing returning *`;
+    if (ins.length) return { fresh: true, row: row<OutboxRow>(ins[0])! };
+    return { fresh: false, row: row<OutboxRow>((await this.sql`select * from outbox where key = ${o.key}`)[0])! };
+  }
+  async reclaimOutbox(key: string, fromStatuses: OutboxRow["status"][], now: string) {
+    const r = await this.sql`
+      update outbox set status = 'pending', attempts = attempts + 1, updated_at = ${now}
+      where key = ${key} and status = any(${fromStatuses}) and (kind <> 'call' or status = 'not_sent') returning *`;
+    return row<OutboxRow>(r[0]);
+  }
+  async finishOutbox(key: string, status: Exclude<OutboxRow["status"], "pending">, providerRef: string | null, now: string) {
+    await this.sql`update outbox set status = ${status}, provider_ref = coalesce(${providerRef}, provider_ref), updated_at = ${now} where key = ${key} and status <> 'sent'`;
+  }
+  async getOutbox(key: string) {
+    return row<OutboxRow>((await this.sql`select * from outbox where key = ${key}`)[0]);
+  }
+  async addSuppression(s: Omit<SuppressionRow, "created_at">) {
+    await this.sql`insert into vendor_suppressions ${this.sql(this.vals(s as never))} on conflict (contact) do nothing`;
+  }
+  async findSuppressions(contacts: string[]) {
+    if (!contacts.length) return [];
+    return rows<SuppressionRow>(await this.sql`select * from vendor_suppressions where contact = any(${contacts.map((c) => c.toLowerCase())})`);
+  }
+  async addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">) {
+    const r = await this.sql`
+      insert into workspace_vendors ${this.sql(this.vals({ ...v, channel: v.channel ?? null } as never))}
+      on conflict (workspace_id, contact) do update set name = excluded.name, consent = excluded.consent, added_by = excluded.added_by, channel = excluded.channel
+      returning *`;
+    return row<WorkspaceVendorRow>(r[0])!;
+  }
+  async removeWorkspaceVendor(workspaceId: string, contact: string) {
+    return (await this.sql`delete from workspace_vendors where workspace_id = ${workspaceId} and contact = ${contact} returning contact`).length > 0;
+  }
+  async listWorkspaceVendors(workspaceId: string) {
+    return rows<WorkspaceVendorRow>(await this.sql`select * from workspace_vendors where workspace_id = ${workspaceId} order by created_at`);
+  }
+  async insertHandoff(h: Omit<PaymentHandoffRow, "created_at" | "updated_at">) {
+    const r = await this.sql`insert into payment_handoffs ${this.sql(this.vals(h as never))} on conflict (approval_id) do nothing returning *`;
+    return handoffRow(r[0]);
+  }
+  async getHandoffByApproval(approvalId: string) {
+    return handoffRow((await this.sql`select * from payment_handoffs where approval_id = ${approvalId}`)[0]);
+  }
+  async updateHandoff(id: string, fromStatuses: PaymentHandoffRow["status"][], patch: Partial<Pick<PaymentHandoffRow, "status" | "instructions_text" | "instructions_message_id" | "confirmed_by" | "confirmed_at">>) {
+    const r = await this.sql`update payment_handoffs set ${this.sql(this.vals({ ...patch, updated_at: new Date().toISOString() } as never))} where id = ${id} and status = any(${fromStatuses}) returning *`;
+    return handoffRow(r[0]);
+  }
+  async setWorkspaceCredentials(id: string, c: { token_hash?: string | null; connector_secret_hash?: string | null; revoked: boolean }) {
+    const r = await this.sql`
+      update workspaces set token_hash = ${c.token_hash === undefined ? this.sql`token_hash` : c.token_hash}, connector_secret_hash = ${c.connector_secret_hash === undefined ? this.sql`connector_secret_hash` : c.connector_secret_hash},
+        revoked_at = ${c.revoked ? this.sql`now()` : null}
+      where id = ${id} returning id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at`;
+    return row<WorkspaceRow>(r[0]);
   }
 
   async insertJob(job: JobRow) {
@@ -149,13 +229,13 @@ export class PostgresRepository implements Repository {
   async findBusinessCandidates(q: { shortCodes: string[]; threadId: string | null; messageIds: string[] }) {
     const ids = q.messageIds.map(norm);
     const codes = q.shortCodes.map((c) => c.toUpperCase());
+    // One indexed lookup per way of matching (an OR across the join scanned every job_businesses row; 117).
     return rows<JobBusinessRow & { short_code: string }>(await this.sql`
-      select b.*, j.short_code from job_businesses b join jobs j on j.id = b.job_id
-      where j.short_code = any(${codes})
-         or (${q.threadId}::text is not null and b.thread_id = ${q.threadId})
-         or lower(btrim(b.rfq_message_id, '<>')) = any(${ids})
-         or exists (select 1 from messages m where m.direction = 'out' and m.job_id = b.job_id and m.business_id = b.business_id
-                    and lower(btrim(m.rfc_message_id, '<>')) = any(${ids}))`);
+      select b.*, j.short_code from job_businesses b join jobs j on j.id = b.job_id where j.short_code = any(${codes})
+      union select b.*, (select short_code from jobs where id = b.job_id) from job_businesses b where b.thread_id = ${q.threadId}
+      union select b.*, (select short_code from jobs where id = b.job_id) from job_businesses b where lower(btrim(b.rfq_message_id, '<>')) = any(${ids})
+      union select b.*, (select short_code from jobs where id = b.job_id) from messages m join job_businesses b on b.job_id = m.job_id and b.business_id = m.business_id
+        where m.direction = 'out' and lower(btrim(m.rfc_message_id, '<>')) = any(${ids})`);
   }
 
   async insertMessage(m: NewMessage) {
@@ -326,5 +406,201 @@ export class PostgresRepository implements Repository {
       returning spending_cap_cents, approver_phone, approver_email, default_area, settings_updated_at as updated_at`;
     if (!r[0]) throw new Error(`unknown workspace ${workspaceId}`);
     return settingsRow(row<SettingsRow>(r[0]))!;
+  }
+
+  // text routing (migration 108)
+  async recordTextRoute(r: TextRouteRow) {
+    await this.sql`
+      insert into text_routes ${this.sql(this.vals(r as never))}
+      on conflict (line, remote, job_id, purpose) do update set business_id = excluded.business_id, question_id = excluded.question_id,
+        approval_id = excluded.approval_id, last_out_at = greatest(text_routes.last_out_at, excluded.last_out_at), workspace_id = excluded.workspace_id`;
+  }
+  async listTextRoutes(line: string, remote: string) {
+    return rows<TextRouteRow>(await this.sql`select * from text_routes where line = ${line} and remote = ${remote} order by last_out_at desc`);
+  }
+  async holdText(h: Omit<HeldTextRow, "held_at">, keep: number) {
+    await this.sql.begin(async (raw) => {
+      const tx = raw as unknown as Sql;
+      await tx`
+        insert into held_texts ${tx(this.vals(h as never))}
+        on conflict (line, remote, key) do update set text = excluded.text, question_id = excluded.question_id, approval_id = excluded.approval_id, held_at = now()`;
+      await tx`
+        delete from held_texts where line = ${h.line} and remote = ${h.remote} and key not in (
+          select key from held_texts where line = ${h.line} and remote = ${h.remote} order by held_at desc, key desc limit ${keep})`;
+    });
+  }
+  async takeHeldTexts(line: string, remote: string) {
+    return rows<HeldTextRow>(await this.sql`delete from held_texts where line = ${line} and remote = ${remote} returning *`).sort((a, b) => a.held_at.localeCompare(b.held_at));
+  }
+  async isApprovalHeld(approvalId: string) {
+    return (await this.sql`select 1 from held_texts where approval_id = ${approvalId} limit 1`).length > 0;
+  }
+  async removeSuppression(contact: string, removedBy: string, why: string) {
+    const r = await this.sql`
+      with d as (delete from vendor_suppressions where contact = ${contact.toLowerCase()} returning *)
+      insert into suppression_removals (contact, reason, job_id, evidence, suppressed_at, removed_by, why)
+      select contact, reason, job_id, evidence, created_at, ${removedBy}, ${why} from d
+      returning contact, reason, job_id, evidence, suppressed_at, removed_by, why, removed_at`;
+    return row<SuppressionRemovalRow>(r[0]);
+  }
+  async listWorkspacesByApproverPhone(phone: string) {
+    return (await this.sql`select id from workspaces where approver_phone = ${phone} order by id`).map((r) => String(r.id));
+  }
+  // reliability (migration 109)
+  async renewJobLease(jobId: string, owner: string, now: string, ttlMs: number) {
+    const until = new Date(Date.parse(now) + ttlMs).toISOString();
+    return (await this.sql`update job_leases set expires_at = ${until} where job_id = ${jobId} and owner = ${owner} returning job_id`).length > 0;
+  }
+  async listOutbox(q: { jobId?: string; statuses?: OutboxRow["status"][]; updatedBefore?: string; limit?: number }) {
+    const s = this.sql;
+    return rows<OutboxRow>(await s`
+      select * from outbox where true
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+        ${q.statuses ? s`and status = any(${q.statuses})` : s``}
+        ${q.updatedBefore ? s`and updated_at < ${q.updatedBefore}` : s``}
+      order by created_at limit ${q.limit ?? 500}`);
+  }
+  async findOutboxByProviderRef(ref: string) {
+    return row<OutboxRow>((await this.sql`select * from outbox where provider_ref = ${ref} limit 1`)[0]);
+  }
+  async rearmOutbox(key: string, now: string) {
+    const r = await this.sql`
+      update outbox set status = 'not_sent', attempts = 1, updated_at = ${now}
+      where key = ${key} and status <> 'sent' and (kind <> 'call' or status = 'not_sent') returning *`;
+    return row<OutboxRow>(r[0]);
+  }
+  async openReview(r: Pick<OperatorReviewRow, "id" | "job_id" | "kind" | "subject" | "reason" | "attempts" | "last_error">, now: string) {
+    const x = await this.sql`
+      insert into operator_reviews (id, job_id, kind, subject, reason, attempts, last_error, status, created_at, updated_at)
+      values (${r.id}, ${r.job_id}, ${r.kind}, ${r.subject}, ${r.reason}, ${r.attempts}, ${r.last_error}, 'open', ${now}, ${now})
+      on conflict (kind, subject) where status = 'open' do update set
+        reason = excluded.reason, attempts = greatest(operator_reviews.attempts, excluded.attempts),
+        last_error = coalesce(excluded.last_error, operator_reviews.last_error), updated_at = excluded.updated_at
+      returning *, (xmax = 0) as created`;
+    const { created, ...rest } = x[0] as Record<string, unknown>;
+    return { row: row<OperatorReviewRow>(rest)!, created: created === true };
+  }
+  async findOpenReview(kind: OperatorReviewRow["kind"], subject: string) {
+    return row<OperatorReviewRow>((await this.sql`select * from operator_reviews where kind = ${kind} and subject = ${subject} and status = 'open'`)[0]);
+  }
+  async getReview(id: string) {
+    return row<OperatorReviewRow>((await this.sql`select * from operator_reviews where id = ${id}`)[0]);
+  }
+  async listReviews(q: { status?: OperatorReviewRow["status"]; jobId?: string; limit?: number }) {
+    const s = this.sql;
+    return rows<OperatorReviewRow>(await s`
+      select * from operator_reviews where true
+        ${q.status ? s`and status = ${q.status}` : s``}
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+      order by created_at desc limit ${q.limit ?? 100}`);
+  }
+  async resolveReview(id: string, r: { resolution: string; resolved_by: string }, now: string) {
+    const x = await this.sql`
+      update operator_reviews set status = 'resolved', resolution = ${r.resolution.slice(0, 500)}, resolved_by = ${r.resolved_by.slice(0, 120)}, resolved_at = ${now}, updated_at = ${now}
+      where id = ${id} and status = 'open' returning *`;
+    return row<OperatorReviewRow>(x[0]);
+  }
+  // ops (migration 111): read-only, for /ready and the migrations script
+  async listAppliedMigrations() {
+    try {
+      const r = await this.sql<{ name: string; checksum: string | null; applied_at: Date }[]>`select name, checksum, applied_at from engine_migrations order by name`;
+      return r.map((x) => ({ name: x.name, checksum: x.checksum, applied_at: new Date(x.applied_at).toISOString() }));
+    } catch (e) {
+      if ((e as { code?: string }).code === "42P01") return null; // 111 not applied yet
+      throw e;
+    }
+  }
+  // bookings and verified receipts (migration 110); the database's triggers re-check every rule.
+  async insertBooking(b: Omit<BookingRow, "created_at" | "updated_at">) {
+    const r = await this.sql`insert into bookings ${this.sql(this.vals(b as never))} on conflict (approval_id) do nothing returning *`;
+    return row<BookingRow>(r[0]);
+  }
+  async getBookingByApproval(approvalId: string) {
+    return row<BookingRow>((await this.sql`select * from bookings where approval_id = ${approvalId}`)[0]);
+  }
+  async updateBooking(id: string, fromStatuses: BookingRow["status"][], patch: Partial<Pick<BookingRow, "status" | "request_message_id" | "reply_text" | "reply_message_id" | "reply_has_link" | "confirmed_at" | "stalled_at" | "cancel_reason" | "human_attested_at">>) {
+    try {
+      const r = await this.sql`update bookings set ${this.sql(this.vals({ ...patch, updated_at: new Date().toISOString() } as never))} where id = ${id} and status = any(${fromStatuses}) returning *`;
+      return row<BookingRow>(r[0]);
+    } catch (e) {
+      if ((e as { code?: string }).code === "P0001") return null; // the trigger refused (a final booking)
+      throw e;
+    }
+  }
+  async markHandoffStalled(id: string, at: string) {
+    const r = await this.sql`update payment_handoffs set stalled_at = ${at}, updated_at = now() where id = ${id} and stalled_at is null and status in ('instructions_requested','instructions_received') returning *`;
+    return handoffRow(r[0]);
+  }
+  async insertHandoffReceipt(r: Omit<HandoffReceiptRow, "created_at">) {
+    const x = await this.sql`insert into handoff_receipts ${this.sql(this.vals(r as never))} on conflict (handoff_id) do nothing returning *`;
+    return row<HandoffReceiptRow>(x[0]);
+  }
+  async getHandoffReceipt(handoffId: string) {
+    return row<HandoffReceiptRow>((await this.sql`select * from handoff_receipts where handoff_id = ${handoffId}`)[0]);
+  }
+  // inbound review (migration 112)
+  async insertQuarantineResolution(r: Omit<QuarantineResolutionRow, "resolved_at">) {
+    const x = await this.sql`insert into quarantine_resolutions ${this.sql(this.vals(r as never))} on conflict (message_id) do nothing returning *`;
+    return row<QuarantineResolutionRow>(x[0]);
+  }
+  async listQuarantineResolutions(q: { messageId?: string; jobId?: string; limit?: number }) {
+    const s = this.sql;
+    return rows<QuarantineResolutionRow>(await s`
+      select * from quarantine_resolutions where true
+        ${q.messageId !== undefined ? s`and message_id = ${q.messageId}` : s``}
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+      order by resolved_at desc, id desc limit ${q.limit ?? 200}`);
+  }
+  async listQuarantinedMessages(q: { jobId?: string; limit?: number }) {
+    const s = this.sql;
+    return rows<MessageRow>(await s`
+      select * from messages where direction = 'in' and (kind = 'quarantine' or (kind = 'reply' and sender_trusted is not true))
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+      order by created_at desc, id desc limit ${q.limit ?? 100}`);
+  }
+  /** Pool slot usage for /ready: in use, queued, peaks, timeouts (counts only). */
+  poolStats(): PoolStats {
+    return this.gate.stats();
+  }
+  // reconciler high-water marks (migration 117)
+  async getReconcileCursor(scope: string, channel: ReconcileChannel) {
+    const r = await this.sql`select high_water from reconcile_cursors where scope = ${scope} and channel = ${channel}`;
+    const v = r[0]?.high_water as Date | string | undefined;
+    return v === undefined ? null : new Date(v).toISOString();
+  }
+  async advanceReconcileCursor(scope: string, channel: ReconcileChannel, at: string) {
+    await this.sql`
+      insert into reconcile_cursors (scope, channel, high_water) values (${scope}, ${channel}, ${at})
+      on conflict (scope, channel) do update set high_water = greatest(reconcile_cursors.high_water, excluded.high_water), updated_at = now()`;
+  }
+  // operator actions (migration 119): append-only
+  async appendOperatorAction(a: Omit<OperatorActionRow, "at">) {
+    const x = await this.sql`insert into operator_actions (id, workspace_id, job_id, action, operator, reason, detail)
+      values (${a.id}, ${a.workspace_id}, ${a.job_id}, ${a.action}, ${a.operator}, ${a.reason}, ${this.sql.json(a.detail as never)})
+      returning id, workspace_id, job_id, action, operator, reason, detail, at`;
+    return row<OperatorActionRow>(x[0])!;
+  }
+  async listOperatorActions(q: { workspaceId?: string; jobId?: string; actions?: OperatorAction[]; limit?: number }) {
+    const s = this.sql;
+    return rows<OperatorActionRow>(await s`
+      select id, workspace_id, job_id, action, operator, reason, detail, at from operator_actions where true
+        ${q.workspaceId !== undefined ? s`and workspace_id = ${q.workspaceId}` : s``}
+        ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
+        ${q.actions ? s`and action = any(${q.actions})` : s``}
+      order by seq desc limit ${q.limit ?? 200}`);
+  }
+  // per-call AI usage (migration 122)
+  async recordAiUsage(u: Omit<AiUsageRow, "id" | "at"> & { at?: string }) {
+    await this.sql`insert into ai_usage_events ${this.sql(this.vals(u as never))}`;
+  }
+  async listAiUsage(q: { jobIds?: string[]; since?: string; until?: string }) {
+    const s = this.sql;
+    if (q.jobIds && !q.jobIds.length) return [];
+    return rows<AiUsageRow>(await s`
+      select * from ai_usage_events where true
+        ${q.jobIds ? s`and job_id = any(${q.jobIds})` : s``}
+        ${q.since ? s`and at >= ${q.since}` : s``}
+        ${q.until ? s`and at < ${q.until}` : s``}
+      order by at, id`).map((r) => ({ ...r, id: Number(r.id) }));
   }
 }

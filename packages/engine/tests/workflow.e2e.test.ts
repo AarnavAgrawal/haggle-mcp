@@ -214,7 +214,7 @@ describe("v5 channels and deal board (mock mode)", { timeout: 60_000 }, () => {
       name: "Vague Bistro", email: "hi@vague.sim.haggle.dev", delayMs: 1_000,
       reply(t) {
         if (t === "rfq") return { text: "~900ish lmk", extraction: { available: true, price_per_head_usd: null, headcount: 40, subtotal_usd: null, delivery_fee_usd: null, delivery_included: null, tax_usd: null, tax_included: true, total_usd: null, deposit_usd: null, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }], valid_until: null, questions: [], payment_request: "none", instructions_to_agent: false, sources: [], missing_fields: ["total"], confidence: 0.35 } };
-        if (t === "followup") return { text: "$1,070 total delivered, $50 deposit.", extraction: { available: true, price_per_head_usd: null, headcount: 40, subtotal_usd: null, delivery_fee_usd: null, delivery_included: true, tax_usd: null, tax_included: true, total_usd: 1070, deposit_usd: 50, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }], valid_until: null, questions: [], payment_request: "none", instructions_to_agent: false, sources: [{ field: "total", source: "email body", excerpt: "$1,070 total" }], missing_fields: [], confidence: 0.9 } };
+        if (t === "followup") return { text: "$1,070 total delivered, $50 deposit.", extraction: { available: true, price_per_head_usd: null, headcount: 40, subtotal_usd: null, delivery_fee_usd: null, delivery_included: true, tax_usd: null, tax_included: true, total_usd: 1070, deposit_usd: 50, menu_items: [], dietary_coverage: [{ need: "vegetarian", covered: true, count_offered: 12 }], valid_until: null, questions: [], payment_request: "none", instructions_to_agent: false, sources: [{ field: "total", source: "email body", excerpt: "$1,070 total" }, { field: "deposit", source: "email body", excerpt: "$50 deposit" }], missing_fields: [], confidence: 0.9 } };
         return null;
       },
     };
@@ -288,5 +288,5 @@ describe("recipient allowlist (live safety)", () => {
     expect((await repo.getJob(deal.job_id))!.state).toBe("paying");
     expect((await repo.listEvents(deal.job_id)).filter((e) => e.type === "payment" && e.data.reason === "Payments are not enabled yet")).toHaveLength(1); // said once
     await expect(engine.pay(deal.job_id, bay.quote_id)).rejects.toMatchObject({ code: "payments_disabled", message: "Payments are not enabled yet" });
-  });
+  }, 30_000); // ~4 s on Postgres; the 5 s default flaked under load
 });

@@ -29,7 +29,7 @@ describe("contact learning end to end", () => {
   function setup() {
     let t = Date.parse("2026-10-18T00:00:00Z");
     const sent: { to: string }[] = [], texts: { to: string }[] = [];
-    const repo = new InMemoryRepository();
+    const repo = new InMemoryRepository({ now: () => new Date(t) });
     const e = new HaggleEngine({
       repo, now: () => new Date(t), extractor: extractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
       email: { async send(m) { sent.push(m); return { providerId: `em_${sent.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${sent.length}@x>` }; } },

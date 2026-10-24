@@ -1,5 +1,7 @@
 # Pre-kickoff infrastructure readiness
 
+> **Superseded (2026-10-22).** This is the pre-kickoff check of the v3 stack (Primitive email, x402, pnpm spikes), none of which v5 uses. Kept as history. Current checks: `apps/mcp/scripts/pilot-preflight.ts` and `launch-gate.ts`, run per `docs/staging-handoff.md` §7.
+
 First checked 2026-10-17 00:15–00:55 PDT; full re-run 07:38 PDT (Saturday, before 10:30 AM kickoff):
 **18 PASS, 1 BLOCKED (x402)**. Infrastructure only: no
 product code, no migration applied to the hosted project, no email sent, nothing deployed.

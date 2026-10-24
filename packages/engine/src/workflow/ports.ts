@@ -28,11 +28,14 @@ export class ChannelSendError extends Error {
   readonly reason: SendFailureReason;
   readonly retryable: boolean;
   readonly retryAfterMs: number;
-  constructor(reason: SendFailureReason, retryable: boolean, retryAfterMs: number, message: string) {
+  /** The provider may have acted (e.g. a call may be ringing): never retried, never re-sent. */
+  readonly ambiguous: boolean;
+  constructor(reason: SendFailureReason, retryable: boolean, retryAfterMs: number, message: string, ambiguous = false) {
     super(message);
     this.reason = reason;
-    this.retryable = retryable;
+    this.retryable = retryable && !ambiguous;
     this.retryAfterMs = retryAfterMs;
+    this.ambiguous = ambiguous;
   }
 }
 
@@ -195,6 +198,47 @@ export interface EngineConfig {
    * a deal that failed. Their reply answers the open question. Falls back to the settings approver.
    */
   notifyPhone?: string;
+  /**
+   * Only an out-of-band human answer approves: a coded reply from the workspace approver's phone
+   * (or, with emailApprovalByCode, email). The MCP client's form, the approval card's button and
+   * the simulated human are refused, because a tool call can't prove a human made it. Default:
+   * on in live mode, off in mock mode (DEMO).
+   */
+  outOfBandApprovalsOnly?: boolean;
+  /**
+   * The workspace whose open requests the shared Voice AI line may describe to callers (every
+   * workspace shares one buyer identity). Default DEFAULT_WORKSPACE_ID; other workspaces' jobs are
+   * never in the answering instructions.
+   */
+  voiceWorkspaceId?: string;
+  /**
+   * Replies from mailboxes Inkbox can't authenticate (Gmail, Outlook, a vendor's own domain).
+   * "off" (default): never trusted. "reply_token": trusted only from the pinned address, in Haggle's
+   * own thread, quoting the business's reply token (inbound/senderAuth.ts), with no failing
+   * authentication evidence. Needs replyTokenSecret.
+   */
+  externalSenders?: "off" | "reply_token";
+  /** Server secret (>= 16 chars) for reply tokens. Required with externalSenders "reply_token". */
+  replyTokenSecret?: string;
+  /** This process's name in job leases (default: one random id per process). */
+  instanceId?: string;
+  /** How long a job lease lasts without release (default 5 min). */
+  leaseTtlMs?: number;
+  /**
+   * Manual payment handoff: no money moves through Haggle. After the human's approval the business
+   * is asked how it takes payment; its instructions are recorded (untrusted text, never followed);
+   * the human pays it directly and texts PAID <code>. Only then is the business told the customer
+   * reports having paid. Takes precedence over Stripe.
+   */
+  manualPaymentHandoff?: boolean;
+  /** How long a quote stays approvable as is when the business stated no valid-until date (default 7 days); a stale one is re-confirmed first. */
+  quoteValidityMs?: number;
+  /** How long Haggle waits for the business's re-confirmation of a stale quote before telling the human (default 24 h). */
+  reconfirmTimeoutMs?: number;
+  /** Manual handoff: how long the business has to confirm the booking before the human and operator are told (default 24 h). */
+  bookingTimeoutMs?: number;
+  /** Manual handoff: how long the business has to send payment instructions before the human and operator are told (default 48 h). */
+  handoffTimeoutMs?: number;
   /** Wrong approval codes before an approval locks. Default 5. */
   maxApprovalAttempts?: number;
   /**
@@ -212,6 +256,12 @@ export interface EngineConfig {
    * wins): messages to businesses say "I'm an AI assistant ... on behalf of <name>". Default "a customer".
    */
   customerName?: string;
+  /**
+   * When businesses may be contacted unprompted (the first RFQ by email or iMessage, reminders to a
+   * silent business): workflow/contactWindow.ts. Absent = any time and no reminders (mock mode, tests).
+   * Live sets it (default Mon–Sat 08:00–19:00 in the workspace's timezone; contactWindowFromEnv).
+   */
+  contactWindow?: import("./contactWindow.ts").ContactWindowConfig;
 }
 
 export interface EngineDeps {

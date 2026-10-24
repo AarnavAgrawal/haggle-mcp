@@ -101,7 +101,8 @@ export interface AuthEvidence {
 
 export type TrustVerdict =
   // "inkbox-org-identity": a same-org Inkbox identity pinned on the job, outbound not verified (see live/inkbox.ts).
-  | { trusted: true; address: string; reason: "trusted" | "inkbox-org-identity"; evidence: AuthEvidence }
+  // "external-reply-token" / "external-dmarc-aligned": a reply from outside Inkbox proven by inbound/senderAuth.ts.
+  | { trusted: true; address: string; reason: "trusted" | "inkbox-org-identity" | "external-reply-token" | "external-dmarc-aligned"; evidence: AuthEvidence }
   | { trusted: false; retryable: boolean; reason: TrustReason | "no-expected-address" | InkboxTrustReason; evidence: AuthEvidence };
 
 /** Inkbox (v5) verdicts: see live/inkbox.ts `inkboxSenderTrust`. */

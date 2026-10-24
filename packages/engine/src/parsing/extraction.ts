@@ -121,6 +121,8 @@ export type QuoteExtraction = Omit<z.infer<typeof QuoteExtraction>, "answers" | 
   tax_evidence?: string;
   tax_included?: boolean | null;
   requirement_checks?: RequirementCheckExtraction[];
+  /** The headcount is the request's, not one the business stated (quote.json): never multiplied into food. */
+  headcount_assumed?: boolean;
 };
 
 /**
@@ -216,4 +218,18 @@ export interface QuoteRecord {
   fields_missing?: string[];
   /** Claude's per-requirement judgement by requirement id (absent from the keyword fallback). */
   requirement_checks?: Record<string, RequirementCheck>;
+  /**
+   * Terms that don't match the request (parsing/termsCheck.ts): another date, a delivery window that
+   * misses the requested time, a reply signed as another business. Each also sets a flag
+   * (date_mismatch, delivery_window_mismatch, identity_mismatch) that blocks approval.
+   */
+  terms_mismatch?: { offered_date?: string; delivery_window?: string; signed_as?: string; notes: string[] };
+  /**
+   * The deterministic money check (parsing/financialIntegrity.ts): the business's stated total against
+   * its own parts, deposits stated as a share, charges read twice. Any issue blocks approval until the
+   * business clarifies. Absent on records stored before it existed (re-checked from the record).
+   */
+  financial?: import("./financialIntegrity.ts").FinancialCheck;
+  /** Priced options the business offered instead of one total (parsing/options.ts): for the human to choose, never approvable as is. */
+  options?: import("./options.ts").PricedOption[];
 }

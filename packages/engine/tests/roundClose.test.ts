@@ -58,7 +58,7 @@ function gatedStrategist() {
 function world(opts: { strategist?: StrategistPort; config?: Partial<EngineConfig> } = {}) {
   let t = Date.now(); // the in-memory repo stamps rows with the wall clock
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const emails: { to: string; bodyText: string }[] = [];
   const texts: { to: string; text: string }[] = [];
   const calls: { toNumber: string; idempotencyKey: string; reason: string }[] = [];

@@ -136,7 +136,7 @@ describe("Inkbox email loop through the engine", () => {
     expect(board.quotes).toHaveLength(1);
     expect(board.quotes[0]).toMatchObject({ business: "Golden Gate Kitchen", total_usd: 1016, deposit_usd: 304.8, channel: "email", verdict: "compliant" });
     expect(board.quotes[0]!.evidence.deposit_usd).toMatchObject({ source: "pdf p.2" });
-    expect(board.businesses.find((b) => b.name === "QuickCater")!.last_event).toMatch(/unverified sender/);
+    expect(board.businesses.find((b) => b.name === "QuickCater")!.last_event).toMatch(/unverified sender/i);
   });
 
   it("maps a call.ended event to ingestCall input", () => {

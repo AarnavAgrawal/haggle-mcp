@@ -8,7 +8,8 @@
 // Mail from outside Inkbox is stored but never becomes a quote ("unverified-external-sender").
 // Seller content is untrusted data throughout.
 import { CallMode, CallOrigin, Inkbox, InkboxAPIError, InkboxConnectionError, verifyWebhook as sdkVerifyWebhook, type A2AClient, type A2AResolvedTarget, type A2AWireMessage, type A2AWireTask, type MailWebhookPayload } from "@inkbox/sdk";
-import { attachmentKind, imageContentType, MAX_IMAGE_BYTES, MAX_JSON_BYTES, MAX_PDF_BYTES, type ExtractedFile } from "../inbound/attachments.ts";
+import { attachmentKind, imageContentType, MAX_IMAGE_BYTES, MAX_JSON_BYTES, MAX_PDF_BYTES, verifiedKind, type ExtractedFile } from "../inbound/attachments.ts";
+import { htmlToText } from "../inbound/htmlText.ts";
 import { normalizeMessageId } from "../inbound/matching.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
 import { replySubject, type OutboundEmail, type SendOutcome } from "../outbound/primitiveSender.ts";
@@ -24,7 +25,7 @@ export interface InkboxMailApi {
 }
 
 /** A message as `inkbox.messages.list` yields it, newest first (the fields Haggle uses). */
-export type InkboxListedMessage = { id?: string; messageId: string; direction: string; createdAt?: Date | string; fromAddress?: string; toAddresses?: string[] };
+export type InkboxListedMessage = { id?: string; messageId: string; direction: string; createdAt?: Date | string; fromAddress?: string; toAddresses?: string[]; ccAddresses?: string[] | null; status?: string; subject?: string | null; isRead?: boolean };
 
 export interface InkboxMessageDetail {
   id: string;
@@ -32,11 +33,20 @@ export interface InkboxMessageDetail {
   messageId: string;
   fromAddress: string;
   toAddresses: string[];
+  /** Cc recipients (SDK MessageDetail.ccAddresses): a reply-all often puts the buyer here. */
+  ccAddresses?: string[] | null;
   subject: string | null;
   bodyText: string | null;
+  /** HTML part; used only when there is no plain-text part (inbound/htmlText.ts). */
+  bodyHtml?: string | null;
   inReplyTo: string | null;
   references: string[] | null;
   attachmentMetadata: Record<string, unknown>[] | null;
+  /** inbound: received; outbound: queued | sent | delivered | bounced | failed. */
+  status?: string;
+  direction?: string;
+  sesMessageId?: string | null;
+  createdAt?: Date | string;
 }
 
 export function inkboxMailApi(inkbox: Inkbox): InkboxMailApi {
@@ -50,6 +60,15 @@ export function inkboxMailApi(inkbox: Inkbox): InkboxMailApi {
 }
 
 const retryable = (e: unknown) => e instanceof InkboxConnectionError || (e instanceof InkboxAPIError && (e.statusCode === 429 || e.statusCode >= 500));
+
+/** Inkbox refused the call before dialing (capacity or rate limit): safe to try again. */
+const NOT_PLACED_CODES = new Set(["hosted_agent_at_capacity", "hosted_agent_unavailable", "call_capacity_busy", "concurrent_calls_limit"]);
+function callNotPlaced(e: unknown): boolean {
+  if (!(e instanceof InkboxAPIError)) return false;
+  if (e.statusCode === 429) return true;
+  const raw = e.detail && typeof e.detail === "object" ? ((e.detail as { error?: unknown; code?: unknown }).error ?? (e.detail as { code?: unknown }).code) : e.detail;
+  return typeof raw === "string" && [...NOT_PLACED_CODES].some((c) => raw.toLowerCase().includes(c));
+}
 
 /** Bounded retries (3 attempts) with the SAME idempotency key, so a retry can never double-send. */
 async function withRetry<T>(fn: () => Promise<T>, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))): Promise<T> {
@@ -123,6 +142,16 @@ export function verifyInkboxWebhook(rawBody: string, headers: Headers, secret: s
 const lower = (s: string) => s.trim().toLowerCase();
 const str = (v: unknown) => (typeof v === "string" ? v : null);
 
+/**
+ * Is this inbound message (fetched from the buyer mailbox) addressed to the buyer: in To or Cc.
+ * Reply-all from Outlook and Gmail often puts Haggle in Cc when the vendor's own colleague is in To.
+ * Bcc (invisible to other recipients) is not accepted: a vendor's real reply never Bccs Haggle.
+ */
+export function addressedToBuyer(detail: Pick<InkboxMessageDetail, "toAddresses" | "ccAddresses">, buyerMailbox: string): boolean {
+  const me = lower(buyerMailbox);
+  return [...(detail.toAddresses ?? []), ...(detail.ccAddresses ?? [])].some((a) => lower(a) === me);
+}
+
 /** Map an Inkbox `message.received` event + the full message (fetched by id) to the engine's InboundMessage. */
 export function inkboxToInbound(payload: { id: string; event_type: string }, detail: InkboxMessageDetail): InboundMessage {
   const attachments = (detail.attachmentMetadata ?? []).flatMap((a, i) => {
@@ -144,7 +173,8 @@ export function inkboxToInbound(payload: { id: string; event_type: string }, det
     from: detail.fromAddress ? lower(detail.fromAddress) : null,
     to: detail.toAddresses.map(lower),
     subject: detail.subject,
-    bodyText: detail.bodyText,
+    // HTML-only mail (no text part): its text, with <blockquote> history as "> " lines.
+    bodyText: detail.bodyText?.trim() ? detail.bodyText : detail.bodyHtml?.trim() ? htmlToText(detail.bodyHtml) || detail.bodyText : detail.bodyText,
     attachments,
     attachmentsDownloadUrl: null,
   };
@@ -212,7 +242,33 @@ function isHttps(url: string) {
   }
 }
 
-/** AttachmentPort: fetch PDFs, images and JSON parts through Inkbox signed URLs, with size caps and a timeout. */
+/** An attachment download failure carrying the HTTP status, so a 5xx/429 is retried later (parsing/parseErrors.ts) and a 4xx isn't. */
+const downloadError = (what: string, status: number) => Object.assign(new Error(`attachment ${what} failed (${status})`), { status });
+
+/** The body, or null as soon as it exceeds `cap` bytes (Content-Length first, then while streaming): metadata sizes can be 0 or wrong. */
+async function readCapped(res: Response, cap: number): Promise<Buffer | null> {
+  const declared = Number(res.headers.get("content-length") ?? NaN);
+  if (Number.isFinite(declared) && declared > cap) { await res.body?.cancel().catch(() => {}); return null; }
+  if (!res.body) { const b = Buffer.from(await res.arrayBuffer()); return b.byteLength > cap ? null : b; }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) { await reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * AttachmentPort: fetch PDFs, images and JSON parts through Inkbox signed URLs, with size caps (enforced
+ * while downloading, whatever the metadata says), a timeout, and a check that the bytes are what they
+ * claim (a "PDF" that isn't one is skipped rather than failing the whole reply's read). A provider
+ * outage (5xx, 429, network) throws a retryable error; a missing attachment (4xx) a permanent one.
+ */
 export function inkboxAttachments(api: InkboxMailApi, buyerMailbox: string, fetchImpl: typeof fetch = fetch): AttachmentPort {
   return {
     async load(m: MessageRow): Promise<ExtractedFile[]> {
@@ -222,19 +278,29 @@ export function inkboxAttachments(api: InkboxMailApi, buyerMailbox: string, fetc
       let imageBytes = 0;
       for (const a of m.attachments) {
         if (a.content_base64 || !a.filename) continue;
-        const kind = attachmentKind({ tarPath: a.filename, contentType: a.content_type, filename: a.filename });
-        if (!kind) continue;
-        const cap = kind === "pdf" ? MAX_PDF_BYTES - pdfBytes : kind === "image" ? MAX_IMAGE_BYTES - imageBytes : MAX_JSON_BYTES;
+        const declared = attachmentKind({ tarPath: a.filename, contentType: a.content_type, filename: a.filename });
+        if (!declared) continue;
+        const budget = (k: string) => (k === "pdf" ? MAX_PDF_BYTES - pdfBytes : k === "image" ? MAX_IMAGE_BYTES - imageBytes : MAX_JSON_BYTES);
+        const cap = budget(declared);
         if (a.size_bytes > cap) continue;
-        const { url } = await api.getAttachment(buyerMailbox, m.provider_email_id, a.filename);
+        let url: string;
+        try {
+          ({ url } = await api.getAttachment(buyerMailbox, m.provider_email_id, a.filename));
+        } catch (e) {
+          if (e instanceof InkboxAPIError) throw downloadError("link", e.statusCode);
+          if (e instanceof InkboxConnectionError) throw new Error("attachment link: fetch failed (Inkbox unreachable)");
+          throw e;
+        }
         if (!isHttps(url)) throw new Error("attachment URL is not https");
         const res = await fetchImpl(url, { signal: AbortSignal.timeout(20_000), redirect: "follow" });
-        if (!res.ok) throw new Error(`attachment download failed (${res.status})`);
-        const data = Buffer.from(await res.arrayBuffer());
-        if (data.byteLength > cap) continue;
-        if (kind === "pdf") pdfBytes += data.byteLength;
-        if (kind === "image") imageBytes += data.byteLength;
-        files.push({ kind, filename: a.filename, data, ...(kind === "image" ? { contentType: imageContentType(a.content_type, a.filename)! } : {}) });
+        if (!res.ok) { await res.body?.cancel().catch(() => {}); throw downloadError("download", res.status); }
+        const data = await readCapped(res, cap);
+        if (!data) continue;
+        const real = verifiedKind(declared, data);
+        if (!real || data.byteLength > budget(real.kind)) continue;
+        if (real.kind === "pdf") pdfBytes += data.byteLength;
+        if (real.kind === "image") imageBytes += data.byteLength;
+        files.push({ kind: real.kind, filename: a.filename, data, ...(real.kind === "image" ? { contentType: real.contentType ?? imageContentType(a.content_type, a.filename)! } : {}) });
       }
       return files;
     },
@@ -266,6 +332,9 @@ export function mapInkboxError(e: unknown): ChannelSendError {
   if (code && RETRY_CODES[code]) return new ChannelSendError(RETRY_CODES[code]![0], true, RETRY_CODES[code]![1], `${code}: ${msg}`);
   if (code && HARD_CODES[code]) return new ChannelSendError(HARD_CODES[code]!, false, 0, `${code}: ${msg}`);
   if (status === 429) return new ChannelSendError("rate_limited", true, 120_000, msg);
+  // An idempotency-key conflict: an earlier attempt under this key may have been accepted, so the
+  // send is ambiguous (recorded unknown, reviewed, never re-sent), not a bad address.
+  if (status === 409 || /idempotenc/.test(code)) return new ChannelSendError("provider_error", false, 0, msg, true);
   if (status !== undefined && status >= 500) return new ChannelSendError("provider_error", true, 30_000, msg);
   if (status === 400 || status === 404 || status === 422) return new ChannelSendError("invalid_address", false, 0, msg);
   return new ChannelSendError("provider_error", false, 0, msg);
@@ -313,14 +382,27 @@ export type CallOriginChoice = "dedicated_number" | "shared_imessage_number";
 export function inkboxPhone(identity: { placeCall(o: { toNumber: string; origination?: CallOrigin; mode?: CallMode; reason?: string }): Promise<{ id: string }> }, origin: CallOriginChoice = "dedicated_number", sleep?: (ms: number) => Promise<void>): PhonePort {
   return {
     async placeCall(req: PhoneCallRequest) {
-      try {
-        const call = await withRetry(() => identity.placeCall({
-          toNumber: req.toNumber, origination: origin === "shared_imessage_number" ? CallOrigin.SHARED_IMESSAGE_NUMBER : CallOrigin.DEDICATED_NUMBER,
-          mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000),
-        }), sleep);
-        return { callId: call.id };
-      } catch (e) {
-        throw mapInkboxError(e);
+      // placeCall takes no idempotency key, so a failure after Inkbox may have dialed (any 5xx, a lost
+      // connection) is ambiguous: never retried here, never re-placed by the engine (no second ring).
+      // Only an explicit "not placed" refusal (capacity, rate limit) is retried.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const call = await identity.placeCall({
+            toNumber: req.toNumber, origination: origin === "shared_imessage_number" ? CallOrigin.SHARED_IMESSAGE_NUMBER : CallOrigin.DEDICATED_NUMBER,
+            mode: CallMode.HOSTED_AGENT, reason: req.reason.slice(0, 2000),
+          });
+          return { callId: call.id };
+        } catch (e) {
+          const notPlaced = callNotPlaced(e);
+          if (notPlaced && attempt < 2) {
+            await (sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms))))(250 * 2 ** attempt);
+            continue;
+          }
+          const mapped = mapInkboxError(e);
+          const ambiguous = !notPlaced && (e instanceof InkboxConnectionError || (e instanceof InkboxAPIError && e.statusCode >= 500) || /^(send_outcome_ambiguous|idempotency_in_progress):/.test(mapped.message));
+          if (!ambiguous) throw mapped;
+          throw new ChannelSendError(mapped.reason, false, 0, `call outcome unknown: ${mapped.message}`, true);
+        }
       }
     },
   };
@@ -421,10 +503,11 @@ export function inkboxIMessage(identity: { sendIMessage(o: { to: string; text: s
 }
 
 /** An inbound SMS to the buyer's number (Inkbox text.received). */
-export function inkboxTextReceived(payload: { data: Record<string, unknown> }): { messageId: string; from: string; text: string; inbound: boolean } | null {
-  const m = (payload.data as { text_message?: { id?: string; direction?: string; remote_phone_number?: string | null; sender_phone_number?: string | null; text?: string | null } }).text_message;
+export function inkboxTextReceived(payload: { data: Record<string, unknown> }): { messageId: string; from: string; text: string; inbound: boolean; to?: string } | null {
+  const m = (payload.data as { text_message?: { id?: string; direction?: string; local_phone_number?: string | null; remote_phone_number?: string | null; sender_phone_number?: string | null; text?: string | null } }).text_message;
   if (!m?.id) return null;
-  return { messageId: m.id, from: (m.remote_phone_number ?? m.sender_phone_number ?? "").replace(/[\s().-]/g, ""), text: m.text ?? "", inbound: m.direction === "inbound" };
+  // `to`: Haggle's own line the text arrived on, so the engine routes per line (text_routes).
+  return { messageId: m.id, from: (m.remote_phone_number ?? m.sender_phone_number ?? "").replace(/[\s().-]/g, ""), text: m.text ?? "", inbound: m.direction === "inbound", ...(m.local_phone_number ? { to: m.local_phone_number } : {}) };
 }
 
 /** SMS from the buyer identity's own number. NOT wired unless HAGGLE_ENABLE_SMS=true (and the number is SMS-ready). */
@@ -456,6 +539,41 @@ export function inkboxSms(
           },
         }
       : {}),
+  };
+}
+
+/**
+ * The slice of Inkbox the operator's email trial (apps/mcp/scripts/email-trial.ts) uses: the buyer
+ * mailbox's send/list/get, markUnread (get marks inbound mail read), and the webhook subscriptions
+ * (read-only). Not used by the server.
+ */
+export async function connectInkboxTrial(opts: { apiKey: string; handle: string }) {
+  const inkbox = new Inkbox({ apiKey: opts.apiKey });
+  const identity = await inkbox.getIdentity(opts.handle);
+  const buyerMailbox = identity.emailAddress?.toLowerCase();
+  if (!buyerMailbox) throw new Error(`Inkbox identity "${identity.agentHandle}" has no mailbox`);
+  return {
+    buyerMailbox, identityId: (identity as { id?: string }).id ?? null,
+    /** The handle Inkbox returned (the trial refuses to go on if it isn't the one it asked for). */
+    handle: String(identity.agentHandle ?? ""),
+    // "whitelist": only allowed senders' mail is delivered (real vendors and trial mailboxes must be on it).
+    mailInboundFilterMode: String((identity as { mailInboundFilterMode?: unknown }).mailInboundFilterMode ?? "unknown"),
+    send: (o: { to: string[]; subject: string; bodyText: string; idempotencyKey: string }) => inkbox.messages.send(buyerMailbox, o as never) as unknown as Promise<{ id: string; messageId: string; status: string; threadId?: string | null }>,
+    list: (o: { direction: "inbound" | "outbound"; startDatetime: string; pageSize?: number }) => inkbox.messages.list(buyerMailbox, o as never) as unknown as AsyncIterable<InkboxListedMessage & { isRead?: boolean }>,
+    get: (id: string) => inkbox.messages.get(buyerMailbox, id) as unknown as Promise<InkboxMessageDetail>,
+    markUnread: (id: string) => inkbox.messages.markUnread(buyerMailbox, id).then(() => undefined),
+    // The buyer's subscription is identity-owned and mixed (mail + call + iMessage + A2A events): a
+    // plain list() leaves mixed rows out (SDK 0.7.x), so ask for the identity scope first.
+    listSubscriptions: async () => {
+      type Sub = { id: string; url: string; eventTypes: string[]; status?: string; agentIdentityId?: string | null; ownerIdentityId?: string | null };
+      const id = (identity as { id?: string }).id;
+      if (id) {
+        try {
+          return (await inkbox.webhooks.subscriptions.list({ agentIdentityId: id, scope: "identity" })) as unknown as Sub[];
+        } catch { /* a server without identity scope: fall back to the legacy view */ }
+      }
+      return (await inkbox.webhooks.subscriptions.list()) as unknown as Sub[];
+    },
   };
 }
 

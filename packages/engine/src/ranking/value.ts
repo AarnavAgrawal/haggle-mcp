@@ -197,7 +197,8 @@ function explain(win: ValueScore, others: ValueScore[], inputs: ValueInput[]): V
   return {
     winner: `${win.business}: best value ${win.score.toFixed(2)} — ${lead}.`,
     others: others.map((o) => {
-      const better = strongest(win, o).slice(0, 2).map((f) => `${f.name}: ${win.factors.find((x) => x.name === f.name)!.note}`);
+      // Pairwise: the price reason compares these two quotes (the winner's own note is relative to the cheapest overall).
+      const better = strongest(win, o).slice(0, 2).map((f) => f.name === "price" ? `price: ${usd(o.totalCents - win.totalCents)} cheaper than ${o.business}` : `${f.name}: ${win.factors.find((x) => x.name === f.name)!.note}`);
       const own = o.totalCents < win.totalCents ? `${usd(win.totalCents - o.totalCents)} cheaper (${usd(o.totalCents)}${neg(o)}), ` : `${usd(o.totalCents)}${neg(o)}, `;
       return { quote_id: o.quoteId, text: `${o.business}: ${own}value ${o.score.toFixed(2)} vs ${win.score.toFixed(2)}${better.length ? `; ${win.business} is ahead on ${better.join("; ")}` : ""}.` };
     }),

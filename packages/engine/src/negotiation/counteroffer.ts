@@ -30,6 +30,8 @@ export interface CounterQuote {
   depositCents?: number | null;
   /** The business hedged this total ("around $1,300"): cited only as "about $X", never as a firm quote. */
   approximate?: boolean;
+  /** Its own figures don't add up (parsing/financialIntegrity.ts): never cited, never countered. */
+  figuresInconsistent?: boolean;
 }
 
 export interface PlannedCounter {

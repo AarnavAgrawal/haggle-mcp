@@ -389,7 +389,10 @@ describe("approval lockout, waits, workspaces, voice context", { timeout: 120_00
     await expect(beta.cancel(a.job_id)).rejects.toMatchObject({ code: "job_not_found" });
     expect((await alpha.latestJob())!.id).toBe(a.job_id);
     expect((await beta.latestJob())!.id).toBe(b.job_id);
-    await alpha.updateSettings({ default_area: "New York, NY", approver_phone: "+12125550100" });
+    // The approver is the operator's to set (workspace-admin); the agent may set the area, not the approver.
+    await expect(alpha.updateSettings({ approver_phone: "+12125550100" })).rejects.toMatchObject({ code: "approver_change_requires_operator" });
+    await engine.updateSettings({ approver_phone: "+12125550100" }, "ws_alpha");
+    await alpha.updateSettings({ default_area: "New York, NY" });
     expect((await beta.getSettings()).default_area).toBeNull();
     expect(await alpha.identity()).toMatchObject({ workspace: { id: "ws_alpha", name: "Alpha", timezone: "America/New_York" }, approver: { phone: "+1 ••• ••• 0100" } });
     await expect(alpha.deal({ ...one, client_request_id: "x2", businesses: [{ name: "Me", email: "boss@alpha.example", phone: "+12125550100" }] })).rejects.toMatchObject({ code: "reserved_for_approvals" });

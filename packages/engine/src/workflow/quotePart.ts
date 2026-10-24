@@ -97,6 +97,8 @@ export function quotePartToExtraction(raw: unknown, jobId: string, reqs: EngineR
       available: true,
       price_per_head_usd: p.per_unit_usd ?? null,
       headcount: headcount ?? null,
+      // quote.json carries no quantity of its own: this is the request's, never a figure to multiply.
+      headcount_assumed: true,
       subtotal_usd: null,
       delivery_fee_usd: p.delivery_usd ?? null,
       delivery_included: deliveryMet ?? (p.delivery_usd !== undefined ? true : null),

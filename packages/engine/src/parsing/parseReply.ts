@@ -95,9 +95,12 @@ export class ParseError extends Error {
   override name = "ParseError";
 }
 
+/** Every Claude call is bounded: 60 s per attempt, at most 2 SDK retries (the SDK default is 10 minutes). */
+export const CLAUDE_TIMEOUT_MS = 60_000;
+
 export function createAnthropicClient(opts: { apiKey: string; workspaceId?: string }): Anthropic {
   return new Anthropic({
-    apiKey: opts.apiKey,
+    apiKey: opts.apiKey, timeout: CLAUDE_TIMEOUT_MS, maxRetries: 2,
     ...(opts.workspaceId ? { defaultHeaders: { "anthropic-workspace-id": opts.workspaceId } } : {}),
   });
 }
@@ -151,18 +154,18 @@ export async function parseReply(
   model: string,
   input: { request: ExtractionRequest; bodyText: string; pdfs?: PdfFile[]; images?: ImageFile[] },
 ): Promise<QuoteExtraction> {
-  // Two structured calls in parallel (one schema is too large for Claude's grammar limit): the core
-  // quote must succeed; the details are unknown (DETAIL_DEFAULTS) if their call fails. A request with
-  // custom ask fields needs the details (its answers are the quote), so their failure is a parse failure.
+  // Two structured calls in parallel (one schema is too large for Claude's grammar limit). Both must
+  // succeed: without the details (fees, tax, requirement checks) a total would be stored as all-in
+  // when it isn't, so a failed details call fails the whole read (retried when transient).
   const content = buildContent(input.request, input.bodyText, input.pdfs, input.images);
   const ask = <S extends typeof CoreExtraction | typeof ExtractionDetails>(schema: S) =>
     client.messages.parse({ model, max_tokens: 4096, system: SYSTEM, output_config: { effort: "low", format: zodOutputFormat(schema) }, messages: [{ role: "user", content }] });
-  const [response, details] = await Promise.all([ask(CoreExtraction), ask(ExtractionDetails).catch((e: unknown) => (input.request.ask?.length ? Promise.reject(e) : null))]);
+  const [response, details] = await Promise.all([ask(CoreExtraction), ask(ExtractionDetails)]);
 
   if (response.stop_reason === "refusal") throw new ParseError("model refused to extract");
   if (!response.parsed_output) throw new ParseError(`no structured output (stop_reason=${response.stop_reason})`);
-  const extra = details?.stop_reason !== "refusal" ? (details?.parsed_output ?? null) : null;
-  if (!extra && input.request.ask?.length) throw new ParseError("no custom answers (details extraction failed)");
+  if (details.stop_reason === "refusal" || !details.parsed_output) throw new ParseError(`details extraction failed (stop_reason=${details.stop_reason})`);
+  const extra = details.parsed_output;
   const picked = Object.fromEntries(Object.entries(extra ?? {}).filter(([k, v]) => k in ExtractionDetails.shape && v !== undefined));
   return { ...(response.parsed_output as QuoteExtraction), ...DETAIL_DEFAULTS, ...picked };
 }

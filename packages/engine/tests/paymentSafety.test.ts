@@ -43,7 +43,7 @@ async function approved(e: HaggleEngine) {
   await e.advanceJob(deal.job_id);
   const q = (await e.getQuotes(deal.job_id)).quotes[0]!;
   const a = await e.requestApproval(deal.job_id, q.quote_id, "view");
-  await e.decideApproval(a.id, "approve", "view", "human");
+  await e.decideApproval(a.id, "approve", "imessage", "human");
   return { deal, q, a };
 }
 
@@ -82,7 +82,7 @@ describe("payment safety", () => {
   it("an approval past its expiry, or for a revised quote, is never charged", async () => {
     const stripe = countingStripe();
     let t = Date.now();
-    const repo = new InMemoryRepository();
+    const repo = new InMemoryRepository({ now: () => new Date(t) });
     const e = new HaggleEngine({ ...(engine(stripe, repo) as unknown as { d: ConstructorParameters<typeof HaggleEngine>[0] }).d, now: () => new Date(t) });
     const { deal, q } = await approved(e);
     t += 31 * 60_000; // past the 30-minute approval window

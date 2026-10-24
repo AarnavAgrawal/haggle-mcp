@@ -27,9 +27,21 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
  * from, price-checked against or cited as this business's history.
  */
 export function observedOnly(p: Profile | null): Profile | null {
+  return historyOnly(p, (jobId) => !isSeedJob(jobId));
+}
+
+/**
+ * A profile with only the history rows whose deal `keep` accepts, and everything derived from the
+ * others dropped or recomputed (as observedOnly). Profiles are shared across workspaces: an agent is
+ * shown its own workspace's rows only (business_profile), never another tenant's deals or replies.
+ */
+export function historyOnly(p: Profile | null, keep: (jobId: string) => boolean, opts: { exact?: boolean } = {}): Profile | null {
   if (!p) return null;
-  const history = p.history.filter((h) => !isSeedJob(h.job_id));
-  if (history.length === p.history.length) return p;
+  const history = p.history.filter((h) => keep(h.job_id));
+  // `exact` (another workspace may have contributed): the brain keeps only its newest history rows, so
+  // even a profile whose remaining rows are all kept may carry menu, area or reply speed learned from
+  // evicted rows of another tenant. Always rebuilt from the kept rows (S5-D F15).
+  if (history.length === p.history.length && !opts.exact) return p;
   if (!history.length) return null;
   const quotes = history.filter((h) => h.kind === "quote");
   const perUnits = quotes.map((h) => h.per_unit_usd).filter((n): n is number => n !== undefined);
@@ -37,7 +49,10 @@ export function observedOnly(p: Profile | null): Profile | null {
   // Fields the brain accumulated from replies without per-row provenance (menu, minimums, deposit and
   // discount habits, flags) can't be told apart from seed text, so a mixed profile drops them: unknown,
   // never sample. Channels are recomputed from the real rows.
-  const { per_unit_usd: _p, menu: _m, minimum_order_usd: _mo, minimum_quantity: _mq, deposit_pct: _d, discount_pct: _dp, discount_needs_competing_quote: _dn, flags_seen: _f, ...rest } = p;
+  const { per_unit_usd: _p, menu: _m, minimum_order_usd: _mo, minimum_quantity: _mq, deposit_pct: _d, discount_pct: _dp, discount_needs_competing_quote: _dn, flags_seen: _f, ...kept } = p;
+  // Exact: the area (the first request's) and reply speed came from rows that may not be kept either.
+  const { area: _a, median_reply_minutes: _r, ...exact } = kept;
+  const rest = opts.exact ? exact : kept;
   const channels = [...new Set(history.map((h) => h.channel))];
   const counts = new Map<string, number>();
   for (const h of quotes) counts.set(h.channel, (counts.get(h.channel) ?? 0) + 1);

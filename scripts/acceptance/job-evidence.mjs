@@ -1,9 +1,17 @@
 // Read-only: what Supabase holds for one job. Masks phone numbers except the last 4 digits.
+//   node --env-file=<the target's env file> scripts/acceptance/job-evidence.mjs <job id>
+// The database is SUPABASE_DB_URL from the environment: nothing reads .env by default (this script
+// used to read apps/mcp/.env, which may point at production). A production database is refused
+// unless HAGGLE_ENV=production or HAGGLE_ALLOW_PROD_DB=true (apps/mcp/src/config.ts prodDbGuard).
+import { prodDbGuard } from "../../apps/mcp/src/config.ts";
 import postgres from "postgres";
-import fs from "node:fs";
-const url = fs.readFileSync("apps/mcp/.env", "utf8").match(/^SUPABASE_DB_URL=(.*)$/m)[1];
-const sql = postgres(url, { max: 1, prepare: false });
 const job = process.argv[2];
+if (!job || !/^[A-Za-z0-9_-]{1,80}$/.test(job)) { console.error("usage: node --env-file=<env file> scripts/acceptance/job-evidence.mjs <job id>"); process.exit(2); }
+const url = process.env.SUPABASE_DB_URL?.trim();
+if (!url) { console.error("job-evidence: SUPABASE_DB_URL is not set (pass --env-file=<the target's env file>)"); process.exit(2); }
+const refused = prodDbGuard(process.env, ["SUPABASE_DB_URL"]);
+if (refused.length) { console.error(`job-evidence refused: ${refused.join("; ")}`); process.exit(2); }
+const sql = postgres(url, { max: 1, prepare: false });
 const m = (s) => (s == null ? s : String(s).replace(/\+?\d{7,}/g, (x) => "…" + x.slice(-4)));
 const [j] = await sql`select id, state, round, ready, budget_cents, payment_cap_cents, request from jobs where id = ${job}`;
 console.log("JOB", m(JSON.stringify(j)));

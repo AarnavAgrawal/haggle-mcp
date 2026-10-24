@@ -10,6 +10,7 @@
 // - The round waited 15 minutes for a slow email business with the board only saying "Negotiating".
 import { describe, expect, it } from "vitest";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type SmsPort } from "../src/index.ts";
+import { ChannelSendError } from "../src/workflow/ports.ts";
 
 const textExtractor = {
   async extract(i: { bodyText: string }) {
@@ -21,6 +22,8 @@ const textExtractor = {
     const sources = [
       ...(total !== null ? [{ field: "total" as const, source: "text", excerpt: `$${total} total` }] : []),
       ...(perHead !== null ? [{ field: "price_per_head" as const, source: "text", excerpt: `$${perHead} per person` }] : []),
+      // Claude cites every figure it sets; an uncited one is dropped (validate.ts).
+      ...(deposit !== null ? [{ field: "deposit" as const, source: "text", excerpt: `$${deposit} deposit` }] : []),
     ];
     return {
       available: true, price_per_head_usd: perHead, headcount: perHead !== null ? 40 : null, subtotal_usd: null, delivery_fee_usd: null, delivery_included: true,
@@ -43,13 +46,13 @@ function demoEngine(opts: { failCounterCalls?: number; config?: Record<string, u
   const calls: { toNumber: string; reason: string; idempotencyKey: string }[] = [];
   let failures = opts.failCounterCalls ?? 0;
   const sms: SmsPort = { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } };
-  const repo = new InMemoryRepository();
+  const repo = new InMemoryRepository({ now: clock.now });
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },
     phone: {
       async placeCall(r) {
-        if (r.idempotencyKey.startsWith("counter:") && failures > 0) { failures--; throw new Error("503 hosted_agent_at_capacity"); }
+        if (r.idempotencyKey.startsWith("counter:") && failures > 0) { failures--; throw new ChannelSendError("provider_error", true, 20_000, "503 hosted_agent_at_capacity"); } // what the Inkbox port raises
         calls.push(r);
         return { callId: `call_${calls.length}` };
       },
@@ -84,7 +87,7 @@ const summaries = async (repo: InMemoryRepository, jobId: string) => (await repo
 
 describe("negotiation on every channel (live job 7JF6)", () => {
   it("a text business's clarification stays round 1, so it is countered by text; the cheapest phone business is the basis and is told why it gets no call", async () => {
-    const { engine, repo, emails, texts, calls } = demoEngine();
+    const { engine, repo, clock, emails, texts, calls } = demoEngine();
     const deal = await engine.deal({
       request, budget_usd: 5000,
       businesses: [
@@ -100,6 +103,7 @@ describe("negotiation on every channel (live job 7JF6)", () => {
     // all-in total, decision 47); Haggle asks once (by text) for the exact all-in total; it answers.
     await text(engine, deal.job_id, GRILL, "$30 per person plus tax and $50 delivery, $100 deposit");
     expect(texts.some((x) => x.to === GRILL && /exact all-in total/.test(x.text))).toBe(true);
+    clock.advance(60_000); // the answer comes a minute later (the store stamps rows on this clock: no tie with the first quote)
     await text(engine, deal.job_id, GRILL, "yes $3,350 total all-in, $500 deposit");
     const grillQuote = (await repo.listQuotes(deal.job_id)).find((q) => q.status === "current" && q.total_cents === 335_000)!;
     expect(grillQuote.round).toBe(1); // a clarification, not a negotiation round

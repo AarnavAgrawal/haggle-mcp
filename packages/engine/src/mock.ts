@@ -22,7 +22,7 @@ export function createMockEngine(opts: { now?: () => Date; delayScale?: number; 
   const rail = opts.rail ?? (opts.payer ? "x402" : "stripe");
   const stripe = rail === "stripe" ? (opts.stripe ?? simulatedStripe()) : undefined;
   const now = opts.now ?? (() => new Date());
-  const repo = opts.repo ?? new InMemoryRepository();
+  const repo = opts.repo ?? new InMemoryRepository({ now });
   const fleet = new SimFleet({ now, delayScale: opts.delayScale ?? 1, ...(opts.personas ? { personas: opts.personas } : {}) });
   const payerClient = createX402Client({ apiKey: "prim_mock", fetch: (async () => { throw new Error("mock payer has no network"); }) as typeof fetch });
   const engine: HaggleEngine = new HaggleEngine({

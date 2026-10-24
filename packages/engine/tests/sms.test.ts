@@ -10,6 +10,8 @@ import { pickTextDeal } from "../src/workflow/engine.ts";
 import { PostgresRepository } from "../src/store/postgres.ts";
 import type { Repository } from "../src/store/types.ts";
 import { simulatedStripe, type StripePort } from "../src/payments/stripe.ts";
+// Provider message ids are unique per process: suites share one Postgres database in parallel.
+const RUN = Math.random().toString(36).slice(2, 10);
 
 const HUMAN = "+14155550199";
 
@@ -44,9 +46,9 @@ function demoEngine(opts: { sms?: boolean; notifyPhone?: string | null; smsPort?
   const texts: { to: string; text: string; idempotencyKey: string }[] = [];
   const calls: { toNumber: string }[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
-  const sms: SmsPort = opts.smsPort ?? { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}` }; } };
+  const sms: SmsPort = opts.smsPort ?? { async send(r) { texts.push(r); return { messageId: `sms_${texts.length}_${RUN}` }; } };
   // Postgres for the database variant (same port surface; typed as the memory store for the helpers).
-  const repo = (opts.repo ?? new InMemoryRepository()) as InMemoryRepository;
+  const repo = (opts.repo ?? new InMemoryRepository({ now: clock.now })) as InMemoryRepository;
   const engine = new HaggleEngine({
     repo, now: clock.now, extractor: textExtractor as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send(m) { emails.push(m); return { providerId: `em_${emails.length}`, status: "sent", idempotentReplay: false, messageId: `<em_${emails.length}@haggle.test>` }; } },
@@ -147,7 +149,7 @@ describe("SMS updates to the human", () => {
     for (let i = 0; i < 3; i++) { clock.advance(31 * 60_000); await engine.advanceJob(deal.job_id); } // later advances (and the expiry) text nothing more
     const job = (await repo.getJob(deal.job_id))!;
     const ready = texts.filter((x) => x.to === HUMAN && /All quotes are in/.test(x.text));
-    expect(ready.map((x) => x.text)).toEqual([`Haggle: All quotes are in for lunch catering (1 quote). Recommended: Harbor Table $1,150 (deposit $345). See every option in Claude, or reply YES ${a.code} to approve the $345 deposit to Harbor Table (your assistant then pays it). (HG-${job.short_code})`]);
+    expect(ready.map((x) => x.text)).toEqual([`Haggle: All quotes are in for lunch catering, 40 people, Thu, Oct 22 (1 quote). Recommended: Harbor Table $1,150 (deposit $345). See every option in Claude, or reply YES ${a.code} to approve the $345 deposit to Harbor Table (your assistant then pays it). (HG-${job.short_code})`]);
     expect(ready[0]!.text.length).toBeLessThanOrEqual(320);
   });
 
@@ -232,7 +234,7 @@ describe("texting a business over SMS (no iMessage port)", () => {
 });
 
 describe("preferences are soft (budget, requirements); only unsafe quotes are refused", () => {
-  it("every quote over budget: the cheapest is recommended, the others are negotiated, and the human can approve any of them", async () => {
+  it("every quote over budget: none is recommended (the cheapest is best available), the others are negotiated, and the human can approve any of them", async () => {
     const { engine, repo, clock, emails } = demoEngine({ notifyPhone: null });
     const deal = await engine.deal({ request, budget_usd: 1000, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Sunset Kitchen", email: "sunset@inkboxmail.test" }] });
     const reply = async (name: string, n: number, bodyText: string) => {
@@ -244,7 +246,10 @@ describe("preferences are soft (budget, requirements); only unsafe quotes are re
     for (let i = 0; i < 4; i++) { clock.advance(31 * 60_000); await engine.advanceJob(deal.job_id); }
     const board = await engine.getQuotes(deal.job_id);
     const by = (n: string) => board.quotes.find((q) => q.business === n)!;
-    expect(board.recommended_quote_id).toBe(by("Harbor Table").quote_id);
+    // Workstream D: a quote over the buyer's budget never wins by default; the closest is named, not recommended.
+    expect(board.recommended_quote_id).toBeUndefined();
+    expect(board.best_available_quote_id).toBe(by("Harbor Table").quote_id);
+    expect(board.recommendation_note).toMatch(/No quote meets every requirement.*Harbor Table.*over the \$1,000 budget/);
     expect(board.rejected).toEqual([]);
     expect(by("Sunset Kitchen")).toMatchObject({ eligible: true });
     expect(by("Sunset Kitchen").flags).toContain("over_budget");
@@ -307,7 +312,7 @@ describe("text budget (Inkbox pauses a number after 10 texts with no reply)", ()
     await engine.ingestText({ messageId: "in_back", from: HUMAN, text: "hello?", inbound: true });
     const a = (await repo.getLatestApproval(deal.job_id))!;
     expect(a.status).toBe("pending");
-    expect(ink.sent.filter((x) => x.to === HUMAN).map((x) => x.text)).toEqual(expect.arrayContaining([expect.stringMatching(new RegExp(`All quotes are in for lunch catering .*Recommended: Harbor Table \\$1,150.*reply YES ${a.code}`))]));
+    expect(ink.sent.filter((x) => x.to === HUMAN).map((x) => x.text)).toEqual(expect.arrayContaining([expect.stringMatching(new RegExp(`All quotes are in for lunch catering, 40 people, Thu, Oct 22 .*Recommended: Harbor Table \\$1,150.*reply YES ${a.code}`))]));
   });
 
   it("a held 'all quotes are in' approval that expired before the human texted back: they still hear quotes are final (no code)", async () => {
@@ -323,7 +328,7 @@ describe("text budget (Inkbox pauses a number after 10 texts with no reply)", ()
     ink.replied(HUMAN);
     await engine.ingestText({ messageId: "in_late", from: HUMAN, text: "hi", inbound: true });
     const late = ink.sent.filter((x) => x.to === HUMAN).map((x) => x.text);
-    expect(late).toEqual([expect.stringMatching(/^Haggle: All quotes are in for lunch catering \(1 quote\)\. Recommended: Harbor Table \$1,150 \(deposit \$345\)\. See every option and choose on the deal board in Claude\./)]);
+    expect(late).toEqual([expect.stringMatching(/^Haggle: All quotes are in for lunch catering, 40 people, Thu, Oct 22 \(1 quote\)\. Recommended: Harbor Table \$1,150 \(deposit \$345\)\. See every option and choose on the deal board in Claude\./)]);
     expect(late[0]).not.toContain(a.code);
   });
 
@@ -370,7 +375,7 @@ describe("approval by text (SMS)", () => {
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     const ask = texts.at(-1)!;
     expect(ask.to).toBe(HUMAN);
-    expect(ask.text).toMatch(new RegExp(`^Haggle: Approve \\$345 deposit to Harbor Table for lunch catering \\(total \\$1,150\\)\\? Reply YES ${a.code} or NO ${a.code}\\.`));
+    expect(ask.text).toMatch(new RegExp(`^Haggle: Approve \\$345 deposit to Harbor Table for lunch catering \\(40 people, Thu, Oct 22\\) \\(total \\$1,150\\)\\? Reply YES ${a.code} or NO ${a.code}\\.`));
     expect(await engine.approvalOffers(a.id)).toMatchObject({ text: true, email: false });
     expect(await engine.ingestText({ messageId: "sms_yes", from: HUMAN, text: `yes ${a.code}`, inbound: true })).toMatchObject({ jobId, outcome: "approved" });
     expect(await repo.getApproval(a.id)).toMatchObject({ status: "approved", approver: HUMAN });
@@ -413,7 +418,7 @@ describe("approval by text (SMS)", () => {
 
   // Live 2026-10-18: the card approved first; "YES 3845" arrived 12 s later and was sent to Sunset Kitchen as an answer.
   it("YES <code> after the card already approved is never sent to a business; the human is told it's done", async () => {
-    const { engine, repo, texts, emails, jobId, quoteId } = await quoted();
+    const { engine, repo, texts, emails, jobId, quoteId } = await quoted({ config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const sunset = (await repo.getBusinesses(jobId)).find((b) => b.name === "Sunset Kitchen")!;
     await engine.ingest({ providerEventId: "eq", eventType: "message.received", providerEmailId: "in_q", threadId: "tq", messageId: "<in_q@x>", inReplyTo: [sunset.rfq_message_id!], references: [sunset.rfq_message_id!], from: sunset.email!, to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "Do you need plates, cutlery and napkins, or just the food?", attachments: [], attachmentsDownloadUrl: null }, trusted);
     await engine.advanceJob(jobId);
@@ -459,7 +464,7 @@ describe("approval by text (SMS)", () => {
   // "nothing more to do", and the job sat in paying until the model called pay at 6:46:35.
   it("approving on the card records the approval; after pay, a late YES <code> is told it's paid", async () => {
     const stripe = simulatedStripe();
-    const { engine, repo, texts, emails, jobId, quoteId } = await quoted({ stripe });
+    const { engine, repo, texts, emails, jobId, quoteId } = await quoted({ stripe, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     expect((await engine.approveWithViewCode(a.id, a.code)).status).toBe("approved");
     expect(stripe.charges).toHaveLength(0); // approval alone charges nothing (decision 2)
@@ -482,7 +487,7 @@ describe("approval by text (SMS)", () => {
     const charges: { amountCents: number; idempotencyKey: string }[] = [];
     const script = [{ ok: false as const, reason: "stripe_unreachable", retryable: true }, { ok: false as const, reason: "stripe_http_503", retryable: true }];
     const flaky: StripePort = { simulated: true, async charge(r) { charges.push(r); return script.shift() ?? { ok: true, paymentIntentId: "pi_DEMOlate" }; } };
-    const { engine, repo, texts, jobId, quoteId } = await quoted({ stripe: flaky });
+    const { engine, repo, texts, jobId, quoteId } = await quoted({ stripe: flaky, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     await engine.approveWithViewCode(a.id, a.code);
     expect(charges).toHaveLength(0); // approval alone charges nothing (decision 2)
@@ -503,7 +508,7 @@ describe("approval by text (SMS)", () => {
 
   it("a declined charge after approval is told to the human, never 'nothing to do'", async () => {
     const stripe = simulatedStripe({ decline: "card_declined" });
-    const { engine, texts, jobId, quoteId } = await quoted({ stripe });
+    const { engine, texts, jobId, quoteId } = await quoted({ stripe, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     await engine.approveWithViewCode(a.id, a.code);
     await engine.pay(jobId, quoteId).catch(() => undefined);
@@ -515,7 +520,7 @@ describe("approval by text (SMS)", () => {
 
   it("a revised quote while the human is deciding voids the approval: a late tap or YES charges nothing", async () => {
     const stripe = simulatedStripe();
-    const { engine, repo, jobId, quoteId } = await quoted({ stripe });
+    const { engine, repo, jobId, quoteId } = await quoted({ stripe, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const a = await engine.requestApproval(jobId, quoteId, "view", undefined, { text: true });
     await emailReply(engine, repo, jobId, 2, "Correction: $1,250 total, 12 vegetarian, delivered. $375 deposit.");
     expect((await repo.getApproval(a.id))!.status).toBe("expired");
@@ -562,7 +567,8 @@ describe("approval by email", () => {
   async function emailed(config: Partial<EngineConfig>) {
     const env = await quoted({ config });
     await env.engine.updateSettings({ approver_email: "boss@gmail.test" });
-    expect(await env.engine.approvalReach(env.jobId)).toEqual({ text: true, email: true });
+    // Live: an emailed code from an unauthenticated mailbox counts as a way to approve only when the operator enabled it.
+    expect(await env.engine.approvalReach(env.jobId)).toEqual({ text: true, email: config.emailApprovalByCode === true });
     const a = await env.engine.requestApproval(env.jobId, env.quoteId, "view", undefined, { email: true });
     const outId = (await env.repo.getApproval(a.id))!.outbound_message_id!;
     const reply = (n: number, from: string, bodyText: string) => env.engine.ingest({ providerEventId: `ea${n}`, eventType: "message.received", providerEmailId: `ain_${n}`, threadId: "ta", messageId: `<ain_${n}@x>`, inReplyTo: [outId], references: [outId], from, to: ["haggle@inkboxmail.test"], subject: "Re: approve", bodyText, attachments: [], attachmentsDownloadUrl: null }, untrusted);
@@ -622,7 +628,7 @@ describe("all quotes are in: the texted recommendation, approvable by reply, nev
     expect(textsWhileNegotiating).toBe(0); // nothing while counteroffers are out
     const a = (await repo.getLatestApproval(jobId))!;
     expect(a).toMatchObject({ status: "pending", quote_id: by("Sunset Kitchen").quote_id, payment_cents: 20_000 });
-    expect(ready().map((x) => x.text)).toEqual([expect.stringMatching(new RegExp(`^Haggle: All quotes are in for lunch catering \\(2 quotes\\)\\. Recommended: Sunset Kitchen \\$1,100 \\(deposit \\$200\\)\\. See every option in Claude, or reply YES ${a.code} to approve the \\$200 deposit to Sunset Kitchen \\(your assistant then pays it\\)\\.`))]);
+    expect(ready().map((x) => x.text)).toEqual([expect.stringMatching(new RegExp(`^Haggle: All quotes are in for lunch catering, 40 people, Thu, Oct 22 \\(2 quotes\\)\\. Recommended: Sunset Kitchen \\$1,100 \\(deposit \\$200\\)\\. See every option in Claude, or reply YES ${a.code} to approve the \\$200 deposit to Sunset Kitchen \\(your assistant then pays it\\)\\.`))]);
     expect(board.approval).toMatchObject({ approval_id: a.id, status: "pending", replaceable: true });
     expect(board.next).toMatch(/Haggle texted the user its recommendation .*approve\(job_id, quote_id\): it replaces the texted suggestion/);
     expect(board.negotiation).toEqual([expect.objectContaining({ business: "Sunset Kitchen", target_total_usd: 1150, outcome_total_usd: 1100, from_total_usd: 1250, channel: "email" })]);
@@ -648,7 +654,7 @@ describe("all quotes are in: the texted recommendation, approvable by reply, nev
     const a = (await repo.getLatestApproval(jobId))!;
     const short = (await repo.getJob(jobId))!.short_code;
     const [text] = ready().map((x) => x.text);
-    expect(text).toBe(`Haggle: All quotes are in for lunch catering (2 quotes). Recommended: Sunset Kitchen $1,100 (deposit $200). See every option in Claude, or reply YES ${a.code} to approve the $200 deposit to Sunset Kitchen, then PAY ${a.code} to charge it. (HG-${short})`);
+    expect(text).toBe(`Haggle: All quotes are in for lunch catering, 40 people, Thu, Oct 22 (2 quotes). Recommended: Sunset Kitchen $1,100 (deposit $200). See every option in Claude, or reply YES ${a.code} to approve the $200 deposit to Sunset Kitchen, then PAY ${a.code} to charge it. (HG-${short})`);
     expect(text!.length).toBeLessThanOrEqual(320);
     expect((await engine.ingestText({ messageId: "yes_r", from: HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
     expect(texts.at(-1)!.text).toBe(`Haggle: approved: Sunset Kitchen $200 deposit. Reply PAY ${a.code} to charge it now. (HG-${short})`);
@@ -659,7 +665,7 @@ describe("all quotes are in: the texted recommendation, approvable by reply, nev
 
   it("choosing another quote on the board replaces the suggestion (one pending approval); a late YES for the old code pays nothing", async () => {
     const stripe = simulatedStripe();
-    const { engine, repo, texts, jobId, by } = await finalQuotes({ stripe });
+    const { engine, repo, texts, jobId, by } = await finalQuotes({ stripe, config: { outOfBandApprovalsOnly: false } /* the card button approves: demo policy (live accepts only the coded text) */ });
     const suggested = (await repo.getLatestApproval(jobId))!;
     const chosen = await engine.requestApproval(jobId, by("Harbor Table").quote_id, "view", undefined, { text: false, email: false }); // choose_in_view
     expect(chosen).toMatchObject({ status: "pending", quote_id: by("Harbor Table").quote_id });
@@ -899,7 +905,9 @@ describe.skipIf(!PG_URL)("pay by text on Postgres", { timeout: 60_000 }, () => {
     const pg = new PostgresRepository(PG_URL!);
     try {
       const run = Math.random().toString(36).slice(2, 10);
-      const GRILL = "+14085550177";
+      // A number of its own: other suites share this database in parallel, and a fleet number on open
+      // deals in several workspaces is (correctly) held as ambiguous rather than routed here.
+      const GRILL = `+14087${String(Math.floor(Math.random() * 1e6)).padStart(6, "0")}`;
       const stripe = simulatedStripe();
       const { engine, repo, texts } = demoEngine({ stripe, repo: pg });
       const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: GRILL, channel: "imessage" }] });

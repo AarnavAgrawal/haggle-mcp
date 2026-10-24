@@ -53,10 +53,13 @@ describe("parseReply", () => {
     expect(out).toEqual({ ...core, ...DEFAULTS, ...det });
   });
 
-  it("a failed details call never loses the quote: details are just unknown", async () => {
+  it("a failed details call fails the read (fees and tax unknown would make a total look all-in)", async () => {
     let n = 0;
     const client = { messages: { parse: async () => { n++; if (n === 2) throw new Error("400 compiled grammar is too large"); return { stop_reason: "end_turn", parsed_output: { available: true, total_usd: 1300 } }; } } } as unknown as ParserClient;
-    expect(await parseReply(client, "m", { request, bodyText: "prolly around 1300 total bucks" })).toEqual({ available: true, total_usd: 1300, ...DEFAULTS });
+    await expect(parseReply(client, "m", { request, bodyText: "prolly around 1300 total bucks" })).rejects.toThrow(/grammar/);
+    const refused = { messages: { parse: async () => ({ stop_reason: ++n % 2 ? "end_turn" : "refusal", parsed_output: { available: true, total_usd: 1300 } }) } } as unknown as ParserClient;
+    n = 0;
+    await expect(parseReply(refused, "m", { request, bodyText: "x" })).rejects.toBeInstanceOf(ParseError);
   });
 
   it("details carry the tax judgement, custom answers and requirement checks; images are sent", async () => {

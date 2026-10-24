@@ -30,7 +30,8 @@ export interface ApprovedPaymentInput {
     status: string;
     expires_at: string;
   } | null;
-  quote: { id: string; business_id: string; total_cents: number | null; deposit_cents: number | null; status: string } | null;
+  /** figures_consistent false: the business's own figures don't add up (parsing/financialIntegrity.ts); absent = not checked by the caller. */
+  quote: { id: string; business_id: string; total_cents: number | null; deposit_cents: number | null; status: string; figures_consistent?: boolean } | null;
   existingPayment: { id: string; status: string } | null;
   spendCapCents: number;
   now: Date;
@@ -38,7 +39,7 @@ export interface ApprovedPaymentInput {
 
 export type ApprovedPaymentCode =
   | "APPROVAL_NOT_FOUND" | "PAYMENT_IN_FLIGHT" | "APPROVAL_PENDING" | "APPROVAL_DECLINED" | "APPROVAL_EXPIRED"
-  | "QUOTE_CHANGED" | "AMOUNT_MISMATCH" | "OVER_SPEND_CAP" | "JOB_NOT_READY";
+  | "QUOTE_CHANGED" | "QUOTE_INCONSISTENT" | "AMOUNT_MISMATCH" | "OVER_SPEND_CAP" | "JOB_NOT_READY";
 
 export type ApprovedPaymentResult =
   | { ok: true; existingPayment?: { id: string; status: string } }
@@ -74,6 +75,8 @@ export function checkApprovedPayment(i: ApprovedPaymentInput, inFlight: Set<stri
   if (i.now.getTime() >= Date.parse(approval.expires_at)) return deny("APPROVAL_EXPIRED"); // expired AT expires_at
   // 5. Exactly the quote revision, business, and amounts the human saw.
   if (!quote || quote.id !== approval.quote_id || quote.business_id !== approval.business_id || quote.status !== "current") return deny("QUOTE_CHANGED");
+  // 5b. Never money on figures the business's own numbers contradict (approved before the check, or re-read since).
+  if (quote.figures_consistent === false) return deny("QUOTE_INCONSISTENT");
   // The payment is the quote's deposit; a quote with no deposit is paid in full (exactly its total).
   const due = quote.deposit_cents && quote.deposit_cents > 0 ? quote.deposit_cents : quote.total_cents;
   if (quote.total_cents !== approval.quote_total_cents || due !== approval.payment_cents || approval.payment_cents <= 0) return deny("AMOUNT_MISMATCH");
@@ -120,6 +123,7 @@ export type X402GuardCode =
   | "PAYMENT_IN_FLIGHT"
   | "APPROVAL_PENDING"
   | "APPROVAL_DECLINED"
+  | "QUOTE_INCONSISTENT"
   | "APPROVAL_EXPIRED"
   | "QUOTE_CHANGED"
   | "AMOUNT_MISMATCH"
@@ -171,4 +175,18 @@ export function checkX402PaymentAllowed(i: X402GuardInput): X402GuardResult {
   if (Date.parse(challenge.expires_at) - i.now.getTime() < MIN_SETTLEMENT_HEADROOM_SEC * 1000) return deny("CHALLENGE_EXPIRED");
 
   return { ok: true, amountBaseUnits };
+}
+
+/** What an approval binds: never changed after it is written (migration 121 enforces the same in Postgres). */
+const APPROVAL_TERMS = ["id", "job_id", "quote_id", "business_id", "quote_total_cents", "payment_cents", "cap_cents", "action", "created_at"] as const;
+/** The only ways an approval's status moves up; anything may expire. A decided approval never becomes pending or approved again. */
+const APPROVAL_STATUS_FROM: Record<string, readonly string[]> = { approved: ["pending"], declined: ["pending"], locked: ["pending"], used: ["approved"], pending: [] };
+
+/** Why this update to a stored approval is refused (S5-D F14), or null when it only records a decision. */
+export function approvalUpdateViolation(row: { status: string }, change: object): string | null {
+  const old = row as Record<string, unknown> & { status: string }, patch = change as Record<string, unknown>;
+  for (const k of APPROVAL_TERMS) if (patch[k] !== undefined && patch[k] !== old[k]) return `an approval's terms are immutable (${k})`;
+  const to = patch.status;
+  if (typeof to === "string" && to !== old.status && to !== "expired" && !(APPROVAL_STATUS_FROM[to] ?? []).includes(old.status)) return `approval status can't go from ${old.status} to ${to}`;
+  return null;
 }

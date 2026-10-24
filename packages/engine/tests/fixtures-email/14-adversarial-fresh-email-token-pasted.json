@@ -1,0 +1,39 @@
+{
+  "name": "adversarial-fresh-email-token-pasted",
+  "client": "Gmail web (new message)",
+  "notes": "A brand-new email (not a reply) from the vendor's address with the token pasted: not in Haggle's thread.",
+  "event": {
+    "agent_identities": []
+  },
+  "detail": {
+    "id": "in_fx_14",
+    "threadId": "thr_new_14",
+    "messageId": "<CAfx14+abcDEF123@mail.gmail.com>",
+    "fromAddress": "{{VENDOR}}",
+    "fromDisplayName": "Maria at Valley Catering",
+    "toAddresses": [
+      "{{BUYER}}"
+    ],
+    "ccAddresses": null,
+    "subject": "[HG-{{SHORT_CODE}}] our quote {{TOKEN}}",
+    "snippet": null,
+    "bodyText": "Hi, quote for your lunch: $1,150 total. Ref {{TOKEN}}",
+    "bodyHtml": null,
+    "inReplyTo": null,
+    "references": null,
+    "attachmentMetadata": null,
+    "direction": "inbound",
+    "status": "received",
+    "isRead": false,
+    "hasAttachments": false,
+    "sesMessageId": null,
+    "createdAt": "2026-10-21T17:20:00.000Z"
+  },
+  "expect": {
+    "outcome": "quarantined:identity_unverified",
+    "stored_as": "quarantine",
+    "sender_trusted": false,
+    "quarantine_reason": "identity_unverified:not_in_our_thread",
+    "quote_total_usd": null
+  }
+}
