@@ -925,7 +925,7 @@ export const callBack = server.tool(
     title: "Negotiate by phone (callback)",
     description:
       "Ask the human to authorize ONE Voice AI callback to a phone vendor to negotiate, citing a real, cheaper, eligible competing quote from this deal. " +
-      "Only for a business listed in get_quotes `callbacks` (Haggle offers one only when the evidence justifies it and a negotiation round is left; otherwise it refuses with no_rounds_left). The human decides (in DEMO: the approval form or the board's button; on a live server only the workspace approver's own text reply, CALL <code>, to the request Haggle texts them); calling this is never the go-ahead by itself, and only a vendor that agreed to be called is ever called. " +
+      "Only for a business listed in get_quotes `callbacks` (Haggle offers one only when the evidence justifies it and a negotiation round is left; otherwise it refuses with no_rounds_left). The human decides (in DEMO: the approval form or the board's button; on a live server only the workspace approver's own text reply, CALL <code>, to the request Haggle texts them, or the signed-in owner authorizing it in the Haggle web app); calling this is never the go-ahead by itself, and only a vendor that agreed to be called is ever called. " +
       "Don't use to place first calls (deal does) or to call anyone else. Next: wait_for_update for the call's result.",
     inputSchema: z.object({ job_id: jobId, business_id: z.string().min(3).max(64).describe("business_id from get_quotes callbacks") }),
     outputSchema: callbackOut,

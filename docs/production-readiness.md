@@ -59,7 +59,7 @@ Each new engine test was run and seen failing before its fix.
   - The discovered-businesses cache is process-global.
   - `lastSms`, notify dedupe, held texts, reconciler state and callback codes are in memory.
 - **Medium:**
-  - `call_back` still accepts the board or form authorization, so a model can relay a callback code and place a negotiation call (no money moves).
+  - ~~`call_back` still accepts the board or form authorization, so a model can relay a callback code and place a negotiation call (no money moves).~~ **Resolved** (`2adea66`, `e42d1b8`): on a live server (or with `HAGGLE_APPROVALS=out_of_band`) `call_back` only texts the approver a one-time code. Only their `CALL <code>` reply, the signed-in owner in the web app (`/internal/callbacks/authorize`) or an operator places the call, and `call_back_in_view` refuses with `callback_not_authorized`. Tested in `packages/engine/tests/security.test.ts` and `apps/mcp/tests/security.tenancy.e2e.test.ts`.
   - Resuming a `charging` payment row skips the guard (the Stripe idempotency key covers it).
   - No durable job lease: two replicas can still double-parse.
   - Real (non-Inkbox) vendor mail is still never trusted.
@@ -122,7 +122,7 @@ New suite: `packages/engine/tests/pilotSafety.test.ts` (in-memory plus Postgres)
 - **Still open from pass 1, Yash's lane:**
   - One shared Inkbox identity and phone.
   - In-memory `lastSms` reply routing and held texts. Notify dedupe is now durable through the outbox.
-  - `call_back` still trusts a board or form authorization.
+  - ~~`call_back` still trusts a board or form authorization.~~ **Resolved** (`2adea66`, `e42d1b8`): see pass 1 "Medium" above.
   - Named lookup of workspace vendors: the agent must pass the vendor's contact; name-only resolution still uses the server roster.
 - **Still open, Aarnav's lane:** the brain tenancy and simulated-learning items listed under pass 1.
 

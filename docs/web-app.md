@@ -203,6 +203,6 @@ All of these tests call no external service. The e2e test starts a local server 
 
 - **No browser end-to-end test yet.** Pages and components are checked by hand. The automated coverage is the pure logic, the routes and one server-level approval e2e.
 - **Rate limits are per process.** The chat's 20 turns per 10 minutes, the approval routes' 30 actions per minute and double-click joining all live in memory. With several instances or serverless functions, each instance counts on its own.
-- **All web traffic shares one MCP rate-limit bucket.** The MCP server's tool-call limiter (`apps/mcp/src/limits.ts`, on by default in live mode) keys on the bearer token or connector secret. Service-token requests carry neither, so every web workspace (and every open deal page's long-poll) counts against the same bucket.
+- **The MCP tool-call limiter is per process too.** The limiter (`apps/mcp/src/limits.ts`, on by default in live mode) gives web traffic one bucket per workspace: service-token requests are keyed on the token plus `x-haggle-workspace` (tested in `apps/mcp/tests/limits.test.ts`). Like the web caps, those buckets live in each MCP replica's memory.
 - **Workspace settings are read-only in the app.** Changing the approver or raising the cap is the operator's job.
 - **One workspace per user.** `requireHaggle` uses the user's first membership, and there is no workspace switcher or invite flow.

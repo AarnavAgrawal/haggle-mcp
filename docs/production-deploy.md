@@ -343,7 +343,6 @@ The criteria for rolling back are in [runbook-incidents.md](runbook-incidents.md
 ## 12. What's still not production-grade
 
 - **Per-process, in-memory limits.** The chat's per-user and daily caps, the approval-route limits, double-click joining, the vendor-addition limits, the AI usage counters and the alert rate limits all live in each process's memory. With several web instances (serverless functions scale out) or several MCP replicas, each counts on its own, so the effective limit is multiplied. Run **one** MCP replica. Treat the web caps as approximate until they move to a shared store (Postgres or Redis).
-- **All web traffic shares one MCP rate-limit bucket.** Service-token requests carry no per-workspace credential ([web-app.md](web-app.md) "Known limitations").
 - **The service token is a root credential** for every web workspace. It lives only on the two servers. Rotate it (set the new value on both, server first) if it may have leaked.
 - **Legal.** Terms, Privacy and Acceptable Use are drafts, and the calling and texting rules above need counsel's sign-off.
 - **No browser end-to-end tests** of the web app. Pages are checked by hand. The CSP uses `'unsafe-inline'` for Next's inline scripts and styles (no nonces yet).
