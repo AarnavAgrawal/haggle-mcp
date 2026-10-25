@@ -9,7 +9,8 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { membership, sessionUser } from "@/lib/workspace";
 import { runChatTurn, type ChatEvent } from "@/lib/chat/agent";
 import { historyWindow } from "@/lib/chat/history";
-import { chatConfig, takeDailyTurn, takeTurn } from "@/lib/chat/limits";
+import { chatConfig } from "@/lib/chat/limits";
+import { limiters } from "@/lib/limiters";
 import { appendMessages, createThread, loadMessages, setThreadJob, type Owner } from "@/lib/chat/store";
 
 export const runtime = "nodejs";
@@ -39,13 +40,14 @@ export async function POST(request: Request): Promise<Response> {
   if (!parsed.success) return json(400, "invalid_input", parsed.error.issues[0]?.message ?? "Send { message } (1 to 4,000 characters).");
   const { thread_id, message } = parsed.data;
 
-  const limit = takeTurn(user.id);
-  if (!limit.ok) {
-    return json(429, "rate_limited", `You've sent a lot of messages in the last 10 minutes. Try again in about ${Math.ceil(limit.retryAfterS / 60)} minute(s).`, { retry_after_s: limit.retryAfterS }, { "retry-after": String(limit.retryAfterS) });
+  // The site-wide daily cap first, so a turn the cap refuses doesn't use one of the user's turns.
+  if (!(await limiters.chatDaily.take("site")).ok) {
+    return json(429, "daily_limit", "The demo has reached today's chat limit. Try again tomorrow, or browse the deals already started.");
   }
 
-  if (!takeDailyTurn().ok) {
-    return json(429, "daily_limit", "The demo has reached today's chat limit. Try again tomorrow, or browse the deals already started.");
+  const limit = await limiters.chatTurns.take(user.id);
+  if (!limit.ok) {
+    return json(429, "rate_limited", `You've sent a lot of messages in the last 10 minutes. Try again in about ${Math.ceil(limit.retryAfterS / 60)} minute(s).`, { retry_after_s: limit.retryAfterS }, { "retry-after": String(limit.retryAfterS) });
   }
 
   const owner: Owner = { userId: user.id, workspaceId };

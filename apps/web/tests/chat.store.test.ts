@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import { CONTEXT_PREFIX, userTurn } from "../lib/chat/agent.ts";
 import { applyEvent } from "../lib/chat/events.ts";
 import { historyWindow, titleFrom, toDisplay } from "../lib/chat/history.ts";
-import { turnLimiter } from "../lib/chat/limits.ts";
+import { TURN_LIMIT, TURN_WINDOW_S } from "../lib/chat/limits.ts";
+import { memoryLimiter } from "../lib/rateLimit.ts";
 import { isThreadId, ownsThread } from "../lib/chat/store.ts";
 
 describe("chat store logic", () => {
@@ -77,14 +78,17 @@ describe("chat store logic", () => {
     ]);
   });
 
-  it("allows 20 turns per user per 10 minutes", () => {
-    const take = turnLimiter(20, 600_000);
+  it("allows 20 turns per user per 10 minutes", async () => {
+    expect([TURN_LIMIT, TURN_WINDOW_S]).toEqual([20, 600]);
+    let t = 0;
+    const l = memoryLimiter(TURN_LIMIT, TURN_WINDOW_S * 1000, { now: () => t });
     const t0 = 1_000_000;
-    for (let i = 0; i < 20; i++) expect(take("u1", t0 + i).ok).toBe(true);
-    const refused = take("u1", t0 + 100);
+    const take = (user: string, at: number) => { t = at; return l.take(user); };
+    for (let i = 0; i < 20; i++) expect((await take("u1", t0 + i)).ok).toBe(true);
+    const refused = await take("u1", t0 + 100);
     expect(refused.ok).toBe(false);
     expect(refused.ok === false && refused.retryAfterS).toBeGreaterThan(0);
-    expect(take("u2", t0 + 100).ok).toBe(true);
-    expect(take("u1", t0 + 600_001).ok).toBe(true);
+    expect((await take("u2", t0 + 100)).ok).toBe(true);
+    expect((await take("u1", t0 + 600_001)).ok).toBe(true);
   });
 });

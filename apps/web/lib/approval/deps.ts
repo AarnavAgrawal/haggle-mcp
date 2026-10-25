@@ -3,6 +3,7 @@
 // decision is recorded on the server as web:<actor>: the user's email, else their account id.
 import { haggleConfig } from "@/lib/env";
 import { callService, haggleClient } from "@/lib/haggle";
+import { limiters } from "@/lib/limiters";
 import { membership, sessionUser } from "@/lib/workspace";
 import type { ApprovalClient } from "./flow.ts";
 import type { RouteDeps } from "./route.ts";
@@ -23,4 +24,5 @@ export const routeDeps: RouteDeps = {
       service: (path, body) => callService(cfg, path, { workspaceId, actor, body }),
     };
   },
+  limiter: limiters.approval,
 };

@@ -3,7 +3,8 @@
 // preview then decide, the per-user rate limit, a double click joining the first request, and error
 // statuses. No network, no Next, no Supabase.
 import { describe, expect, it } from "vitest";
-import { handleAction, handlePurchaseStatus, RateLimiter, statusOf, type RouteDeps } from "../lib/approval/route.ts";
+import { handleAction, handlePurchaseStatus, statusOf, type RouteDeps } from "../lib/approval/route.ts";
+import { memoryLimiter } from "../lib/rateLimit.ts";
 import type { ApprovalClient } from "../lib/approval/flow.ts";
 import { HaggleError, type ToolResult } from "../lib/haggle.ts";
 
@@ -32,7 +33,7 @@ function deps(over: Partial<RouteDeps> = {}, client?: Partial<ApprovalClient>): 
       actors.push(actor);
       return { callTool: tool, service, ...client };
     },
-    limiter: new RateLimiter(30, 60_000),
+    limiter: memoryLimiter(30, 60_000),
     ...over,
   };
 }
@@ -94,7 +95,7 @@ describe("approval routes", () => {
   });
 
   it("rate limits per user", async () => {
-    const d = deps({ limiter: new RateLimiter(2, 60_000) });
+    const d = deps({ limiter: memoryLimiter(2, 60_000) });
     expect((await handleAction("pay", post({ quote_id: "q_1" }), "job_1", d)).status).toBe(200);
     expect((await handleAction("pay", post({ quote_id: "q_1" }), "job_1", d)).status).toBe(200);
     const third = await handleAction("pay", post({ quote_id: "q_1" }), "job_1", d);
@@ -103,13 +104,22 @@ describe("approval routes", () => {
     expect((await handleAction("pay", post({ quote_id: "q_1" }), "job_1", { ...d, auth: async () => ({ userId: "u2", workspaceId: "ws_u_2", actor: "b@example.com" }) })).status).toBe(200);
   });
 
-  it("a window resets after a minute", () => {
+  it("a window resets after a minute", async () => {
     let t = 0;
-    const l = new RateLimiter(1, 60_000, () => t);
-    expect(l.take("u")).toBe(true);
-    expect(l.take("u")).toBe(false);
+    const l = memoryLimiter(1, 60_000, { now: () => t });
+    expect((await l.take("u")).ok).toBe(true);
+    expect((await l.take("u")).ok).toBe(false);
     t = 60_000;
-    expect(l.take("u")).toBe(true);
+    expect((await l.take("u")).ok).toBe(true);
+  });
+
+  it("a malformed request is refused before it uses one of the user's actions", async () => {
+    const d = deps({ limiter: memoryLimiter(1, 60_000) });
+    expect((await handleAction("pay", post({ nope: 1 }), "job_1", d)).status).toBe(400);
+    expect((await handleAction("pay", post("not json"), "job_1", d)).status).toBe(400);
+    expect((await handleAction("pay", post({ quote_id: "q_1" }), "bad id!", d)).status).toBe(400);
+    expect((await handleAction("pay", post({ quote_id: "q_1" }), "job_1", d)).status).toBe(200);
+    expect((await handleAction("pay", post({ quote_id: "q_1" }), "job_1", d)).status).toBe(429);
   });
 
   it("tool refusals are 422 with the fix; server not-found 404, wrong stage 409; unreachable or a refused credential 502", async () => {

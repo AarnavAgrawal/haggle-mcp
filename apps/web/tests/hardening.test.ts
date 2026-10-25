@@ -5,7 +5,8 @@ import { buildCsp, isValidNonce } from "../lib/csp.ts";
 import { securityHeaders } from "../next.config.ts";
 import { GUEST_REFUSED_PATH, isAllowedUser } from "../lib/account/gate.ts";
 import { healthReport, REQUIRED_ENV } from "../lib/account/health.ts";
-import { Limiter, sameOrigin } from "../lib/account/request.ts";
+import { sameOrigin } from "../lib/account/request.ts";
+import { memoryLimiter } from "../lib/rateLimit.ts";
 
 const directive = (csp: string, name: string) => csp.split("; ").find((d) => d.startsWith(`${name} `)) ?? null;
 
@@ -110,12 +111,13 @@ describe("account route guards", () => {
     expect(sameOrigin(req({}))).toBe(false);
   });
 
-  it("rate-limits per user in a sliding window", () => {
+  it("rate-limits per user in a fixed window", async () => {
     let t = 0;
-    const l = new Limiter(2, 1000, () => t);
-    expect([l.take("a"), l.take("a"), l.take("a"), l.take("b")]).toEqual([true, true, false, true]);
+    const l = memoryLimiter(2, 1000, { now: () => t });
+    const ok = async (k: string) => (await l.take(k)).ok;
+    expect([await ok("a"), await ok("a"), await ok("a"), await ok("b")]).toEqual([true, true, false, true]);
     t = 1001;
-    expect(l.take("a")).toBe(true);
+    expect(await ok("a")).toBe(true);
   });
 });
 

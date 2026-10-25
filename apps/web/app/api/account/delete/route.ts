@@ -3,14 +3,14 @@
 // Same-origin JSON only; 401 signed out; 3 attempts per user per 10 minutes. Never a redirect.
 import { z } from "zod";
 import { DELETE_CONFIRMATION, deleteAccount } from "@/lib/account/delete";
-import { accountError, accountJson, Limiter, sameOrigin } from "@/lib/account/request";
+import { accountError, accountJson, sameOrigin } from "@/lib/account/request";
 import { deleteDeps } from "@/lib/account/server";
+import { limiters } from "@/lib/limiters";
 import { membership, sessionUser } from "@/lib/workspace";
 
 export const runtime = "nodejs";
 
 const Body = z.object({ confirm: z.literal(DELETE_CONFIRMATION) });
-const limiter = new Limiter(3, 10 * 60_000);
 
 export async function POST(request: Request): Promise<Response> {
   if (!sameOrigin(request) || !request.headers.get("content-type")?.includes("application/json")) {
@@ -19,7 +19,7 @@ export async function POST(request: Request): Promise<Response> {
   const user = await sessionUser().catch(() => null);
   if (!user) return accountError(401, "signed_out", "You're signed out.", "Sign in again.");
   if (!Body.safeParse(await request.json().catch(() => null)).success) return accountError(400, "not_confirmed", `Type ${DELETE_CONFIRMATION} to confirm.`, `Send { "confirm": "${DELETE_CONFIRMATION}" }.`);
-  if (!limiter.take(user.id)) return accountError(429, "rate_limited", "Too many attempts.", "Wait a few minutes, then try again.");
+  if (!(await limiters.accountDelete.take(user.id)).ok) return accountError(429, "rate_limited", "Too many attempts.", "Wait a few minutes, then try again.");
 
   let m: Awaited<ReturnType<typeof membership>>;
   let deps: ReturnType<typeof deleteDeps>;

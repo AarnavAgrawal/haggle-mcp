@@ -31,6 +31,8 @@ import {
   type OperatorActionRow,
   type OperatorAction,
   type AiUsageRow,
+  type RateSlot,
+  rateSlotProblem,
 } from "./types.ts";
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -630,5 +632,36 @@ export class InMemoryRepository implements Repository {
   }
   async listAiUsage(q: { jobIds?: string[]; since?: string; until?: string }) {
     return this.aiUsage.filter((r) => (!q.jobIds || (r.job_id !== null && q.jobIds.includes(r.job_id))) && (!q.since || r.at >= q.since) && (!q.until || r.at < q.until)).map(clone);
+  }
+  // shared rate limits (migration 124): the same fixed, epoch-aligned windows as take_rate_slot.
+  // Bounded: past 10,000 keys, windows that have ended are dropped (then not again until the map doubles,
+  // so a sweep costs O(1) per take); past 50,000 live keys, all are.
+  private rateSlots = new Map<string, { start: number; windowMs: number; n: number }>();
+  private rateSlotsSweepAt = 10_000;
+  private rateWindow(windowS: number) {
+    const t = Date.parse(this.stamp());
+    const windowMs = windowS * 1000;
+    return { t, windowMs, start: Math.floor(t / windowMs) * windowMs };
+  }
+  async takeRateSlot(bucket: string, key: string, windowS: number, max: number): Promise<RateSlot> {
+    const problem = rateSlotProblem(bucket, key, windowS, max);
+    if (problem) throw new Error(problem);
+    const { t, windowMs, start } = this.rateWindow(windowS);
+    if (this.rateSlots.size > this.rateSlotsSweepAt) {
+      for (const [k, v] of this.rateSlots) if (v.start + v.windowMs <= t) this.rateSlots.delete(k);
+      if (this.rateSlots.size > 50_000) this.rateSlots.clear();
+      this.rateSlotsSweepAt = Math.max(10_000, this.rateSlots.size * 2);
+    }
+    const k = `${bucket}\u0000${key}\u0000${windowS}`;
+    const cur = this.rateSlots.get(k);
+    const n = cur && cur.start === start ? cur.n : 0;
+    if (n >= max) return { allowed: false, used: n, retryAfterS: Math.max(1, Math.ceil((start + windowMs - t) / 1000)) };
+    this.rateSlots.set(k, { start, windowMs, n: n + 1 });
+    return { allowed: true, used: n + 1, retryAfterS: 0 };
+  }
+  async rateSlotUsed(bucket: string, key: string, windowS: number): Promise<number> {
+    const { start } = this.rateWindow(windowS);
+    const cur = this.rateSlots.get(`${bucket}\u0000${key}\u0000${windowS}`);
+    return cur && cur.start === start ? cur.n : 0;
   }
 }

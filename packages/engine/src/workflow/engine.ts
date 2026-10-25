@@ -68,7 +68,7 @@ import { decideTextScope, inTextScope, jobCodeIn, lastRoute, withoutJobCode, typ
 import { CALL_TEXT, CALLBACK_AUTH_TTL_MS, CANCEL_TEXT, callbackCodeHash, callbackConsent, codeMatches, MAX_CALLBACK_CODE_ATTEMPTS, newCallbackCode, pendingCallbackAuths, type CallbackConsent } from "./callbackAuth.ts";
 import { closeSubject, decideChargeResume, decideClaim, holdSubject, redactError } from "./deadLetter.ts";
 import { planRecovery, type StuckFinding } from "./recovery.ts";
-import type { OperatorReviewRow, OutboxRow } from "../store/types.ts";
+import type { OperatorReviewRow, OutboxRow, RateSlot } from "../store/types.ts";
 import { DEFAULT_CONTACT_TIMEZONE, decideFirstContact, decideFollowUp, localLabel } from "./contactWindow.ts";
 import { contactStatusOf, type BusinessContactStatus } from "../inbound/contactStatus.ts";
 /** Contact states the board lists per business (the rest are implied by its status). */
@@ -828,6 +828,18 @@ export class HaggleEngine {
   /** The vendors the operator authorized for this workspace (deal by name resolves against them). */
   async workspaceVendors(workspaceId: string) {
     return this.repo.listWorkspaceVendors(workspaceId);
+  }
+
+  /**
+   * One slot of a rate limit shared by every process on this store (Repository.takeRateSlot, migration
+   * 124); null when the store has none, and the caller keeps its own per-process count.
+   */
+  async takeRateSlot(bucket: string, key: string, windowS: number, max: number): Promise<RateSlot | null> {
+    return this.repo.takeRateSlot ? this.repo.takeRateSlot(bucket, key, windowS, max) : null;
+  }
+  /** Slots taken in the current window of a shared limit; null when the store has no shared limits. */
+  async rateSlotUsed(bucket: string, key: string, windowS: number): Promise<number | null> {
+    return this.repo.rateSlotUsed ? this.repo.rateSlotUsed(bucket, key, windowS) : null;
   }
 
   /** An authorized absolute ceiling (budget_kind "limit"), else null. */

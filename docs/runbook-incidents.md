@@ -107,7 +107,7 @@ The schema stays on rollback. `/ready` lists the newer migrations under `unexpec
 - `/ready` → `ai.daily_budget_reached: true`.
 
 1. **By design, nothing becomes an approvable quote without Claude.** Replies that couldn't be read are held for a human ("couldn't read a price"), questions wait for the user, and the strategist falls back to truthful rules. No action is needed for safety.
-2. **Budget reached:** decide whether the spend is expected (`/ready` → `ai.calls` and `tokens_*`). To raise it, change `HAGGLE_AI_DAILY_TOKEN_BUDGET` deliberately and redeploy or restart. Counters are per process and per UTC day.
+2. **Budget reached:** decide whether the spend is expected (`/ready` → `ai.calls` and `tokens_*`). To raise it, change `HAGGLE_AI_DAILY_TOKEN_BUDGET` deliberately and redeploy or restart. Counters are per UTC day; a restart doesn't reset them (they are rehydrated from `ai_usage_events`), so restarting alone won't lift a spent budget.
 3. **Anthropic outage:** check status.anthropic.com. Calls fail as transient. Held replies are re-read when a human reviews them, or on the next reply.
 
 ### 3.5 Stuck jobs

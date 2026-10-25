@@ -4,7 +4,7 @@
 // the MCP server's own 4xx (with its fix) passed through, 502 when the server can't be reached.
 import { z } from "zod";
 import { HaggleError } from "../haggle.ts";
-import { RateLimiter } from "../approval/route.ts";
+import { memoryLimiter, type Limiter } from "../rateLimit.ts";
 import { toDiscoverResult } from "./discover.ts";
 import { validateVendorForm } from "./form.ts";
 import type { VendorList } from "./types.ts";
@@ -18,13 +18,14 @@ export interface VendorDeps {
   discover(workspaceId: string, args: { category: string; area?: string; count: number }): Promise<Record<string, unknown>>;
   /** A demo site (mock server): guests may add vendors there, since nothing real is contacted. */
   demo: boolean;
-  writeLimiter?: RateLimiter;
-  discoverLimiter?: RateLimiter;
+  /** Per user: 20 vendor changes and 10 searches a minute, shared by every instance in production (lib/limiters.ts). */
+  writeLimiter?: Limiter;
+  discoverLimiter?: Limiter;
 }
 
-// Per user, in memory (one server process): 20 vendor changes and 10 searches a minute.
-const sharedWrites = new RateLimiter(20, 60_000);
-const sharedDiscover = new RateLimiter(10, 60_000);
+// Without injected limiters (tests), a per-process count with the same sizes.
+const fallbackWrites = memoryLimiter(20, 60_000);
+const fallbackDiscover = memoryLimiter(10, 60_000);
 
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 const refuse = (status: number, code: string, message: string, fix: string, extra: Record<string, unknown> = {}) => json({ ok: false, error: { code, message, fix }, ...extra }, status);
@@ -73,7 +74,7 @@ export async function handleAdd(req: Request, deps: VendorDeps): Promise<Respons
   const who = await caller(deps);
   if (who instanceof Response) return who;
   if (who.guest && !deps.demo) return refuse(403, "guest_account", "Guest accounts can't add real businesses.", "Sign in with your email to add the businesses you work with.");
-  if (!(deps.writeLimiter ?? sharedWrites).take(who.userId)) return refuse(429, "rate_limited", "Too many vendor changes in a minute.", "Wait a minute, then try again.");
+  if (!(await (deps.writeLimiter ?? fallbackWrites).take(who.userId)).ok) return refuse(429, "rate_limited", "Too many vendor changes in a minute.", "Wait a minute, then try again.");
   const raw = await body(req);
   if (raw instanceof Response) return raw;
   const form = validateVendorForm((raw ?? {}) as Record<string, unknown>);
@@ -91,7 +92,7 @@ const RemoveBody = z.object({ contact: z.string().trim().min(3).max(254) });
 export async function handleRemove(req: Request, deps: VendorDeps): Promise<Response> {
   const who = await caller(deps);
   if (who instanceof Response) return who;
-  if (!(deps.writeLimiter ?? sharedWrites).take(who.userId)) return refuse(429, "rate_limited", "Too many vendor changes in a minute.", "Wait a minute, then try again.");
+  if (!(await (deps.writeLimiter ?? fallbackWrites).take(who.userId)).ok) return refuse(429, "rate_limited", "Too many vendor changes in a minute.", "Wait a minute, then try again.");
   const raw = await body(req);
   if (raw instanceof Response) return raw;
   const b = RemoveBody.safeParse(raw);
@@ -109,7 +110,7 @@ const DiscoverBody = z.object({ category: z.string().trim().min(2).max(100), are
 export async function handleDiscover(req: Request, deps: VendorDeps): Promise<Response> {
   const who = await caller(deps);
   if (who instanceof Response) return who;
-  if (!(deps.discoverLimiter ?? sharedDiscover).take(who.userId)) return refuse(429, "rate_limited", "Too many searches in a minute.", "Wait a minute, then search again.");
+  if (!(await (deps.discoverLimiter ?? fallbackDiscover).take(who.userId)).ok) return refuse(429, "rate_limited", "Too many searches in a minute.", "Wait a minute, then search again.");
   const raw = await body(req);
   if (raw instanceof Response) return raw;
   const b = DiscoverBody.safeParse(raw);

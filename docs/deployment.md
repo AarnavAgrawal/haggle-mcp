@@ -193,6 +193,7 @@ npx tsx apps/mcp/scripts/migrations.ts verify
 | `112_engine_inbound_review` (A), `113_engine_purchasing` (B), `114_engine_deploy` (C, only if added), `115_engine_security` (D), `116_engine_analytics` (E), `117_engine_ops` (F) | Sprint 4 workstreams | **Each on 100–111 alone**: none may depend on another sprint-4 file | Must be additive (the reviewer checks each one for `drop`/`rename`/narrowed checks) | Per file, in its header |
 | `118_engine_booking` (A), `119_engine_pilot` (B), `120_engine_release` (C, not added), `121_engine_security2` (D), `122_engine_metrics` (E) | Sprint 5 workstreams | **Each on 100–117 alone** | As above | Per file, in its header |
 | `123_engine_web_approvals` | Web app: approvals decided by the signed-in account owner (channel `web`) | On 100–122 | Additive; safe to re-run | In its header |
+| `124_engine_rate_limits` | Shared rate limits: `rate_limit_slots` and `take_rate_slot()` (security definer, service_role only). Used by the web app's chat, approval, vendor and account limits and the MCP server's vendor additions | Nothing (applies alone on 100–117) | Additive; safe to re-run. Until it is applied, both apps fall back to per-process counts and log `rate_limit_fallback` / `vendor_daily_limit_fallback` | Table and function can stay; older code ignores them |
 
 **The brain's migrations** (applied to the database the brain's `SUPABASE_URL` points at; not engine files, so not in the ledger and `migrations.ts verify` ignores them):
 
@@ -351,7 +352,7 @@ It never changes a job; recovery is the engine's.
 | Question answering | The question waits for the human |
 | Strategist | Falls back to the truthful rules |
 
-Counters are per process and per UTC day. With several replicas, each one enforces its own share.
+Counters are per UTC day and enforced in each process's memory, but rehydrated from `ai_usage_events` at start-up and every 60 s (the larger of memory and the database), so a restart keeps today's usage and replicas converge within a minute; between hydrates each replica can overshoot by its own calls.
 
 **`/internal/tick`.** `POST` with `Authorization: Bearer $HAGGLE_TICK_SECRET` advances every open deal, for an external cron. The live server also ticks itself.
 
@@ -359,7 +360,7 @@ Counters are per process and per UTC day. With several replicas, each one enforc
 
 - **Operator scripts: plain `node` or `npx tsx`.** The operator scripts now load under Node 22's type stripping: `workspace-admin`, `workspace-create`, `job-ops`, `migrations`, `launch-gate`, `env-manifest`, `secret-scan`, `smoke` and `staging-release`. `apps/mcp/tests/scriptsPlainNode.test.ts` checks this, and `releaseStaging.test.ts` checks `staging-release`. Engine code must therefore avoid TypeScript-only syntax such as parameter properties and enums. `npx tsx` keeps working. Pass the env file explicitly (`--env-file=<file>`): never the production `.env` from a laptop by habit.
 - **The ledger doesn't apply migrations.** Applying stays a manual, reviewed step.
-- **Per-process state.** AI usage counters and alert rate limits live in each process's memory.
+- **Per-process state.** Alert dedupe and rate limits, the MCP tool-call bucket and the AI counters between hydrates (every 60 s) live in each process's memory. The web limits and the vendor-addition limit are shared through the database (`124_engine_rate_limits`).
 - **Not verified here.** Nothing above was run against the hosted server or a live database (2026-10-22): the deploy steps come from the 2026-10-17 deploy notes. `/ready` on calm-spark will report `migrations.ok: false` until 111 is applied and backfilled.
 
 ## 9. Setting up staging, and the first CI run

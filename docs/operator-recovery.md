@@ -102,7 +102,7 @@ Then run `ops-report.ts` and work through it top to bottom.
 
 ## 6. Limits that refuse requests
 
-These are set in `apps/mcp/src/limits.ts`. They are per process, in memory.
+These are set in `apps/mcp/src/limits.ts` (the AI limits in `packages/engine/src/live/aiUsage.ts`). The body and tool-call limits are per process, in memory. The AI limits are enforced in memory but rehydrated from `ai_usage_events` at start-up and every 60 s, so a restart keeps today's usage. The vendor-addition limit (25 per workspace per UTC day) is shared through the database (`take_rate_slot`, migration 124).
 
 | What | Default | When it's hit |
 | --- | --- | --- |

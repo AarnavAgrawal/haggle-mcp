@@ -2,7 +2,7 @@
 // 401/403, form validation before anything is sent, the attesting actor passed on, guests refused on a
 // live site, server refusals passed through with their fix, rate limits, and discover mapped safely.
 import { describe, expect, it } from "vitest";
-import { RateLimiter } from "../lib/approval/route.ts";
+import { memoryLimiter } from "../lib/rateLimit.ts";
 import { HaggleError } from "../lib/haggle.ts";
 import { handleAdd, handleDiscover, handleList, handleRemove, type VendorCaller, type VendorDeps } from "../lib/vendors/route.ts";
 
@@ -19,7 +19,7 @@ function deps(over: Partial<VendorDeps> = {}) {
     },
     discover: async () => ({ mode: "mock", public_discovery: { status: "ok", message: "1 found" }, found: [{ name: "Casa Lunch", business_ref: "gp_1", website: "javascript:x", phone_published: false, contact_state: "discovered", contact_summary: "" }] }),
     demo: false,
-    writeLimiter: new RateLimiter(100), discoverLimiter: new RateLimiter(100),
+    writeLimiter: memoryLimiter(100, 60_000), discoverLimiter: memoryLimiter(100, 60_000),
     ...over,
   };
   return { d, calls };
@@ -79,7 +79,7 @@ describe("/api/vendors", () => {
   });
 
   it("removes by contact, and rate-limits changes per user", async () => {
-    const { d, calls } = deps({ writeLimiter: new RateLimiter(1) });
+    const { d, calls } = deps({ writeLimiter: memoryLimiter(1, 60_000) });
     expect((await handleRemove(req({ contact: " orders@casalunch.com " }), d)).status).toBe(200);
     expect(calls[0]).toEqual({ path: "/internal/vendors/remove", opts: { workspaceId: "ws_u_1", actor: "ada@example.com (u1)", body: { contact: "orders@casalunch.com" } } });
     const limited = await handleRemove(req({ contact: "orders@casalunch.com" }), d);
@@ -96,7 +96,7 @@ describe("/api/vendors", () => {
     expect(args).toEqual({ ws: "ws_u_1", category: "caterer", count: 8 });
     const body = await out.json();
     expect(body.found[0]).not.toHaveProperty("website");
-    const once = deps({ discoverLimiter: new RateLimiter(1) }).d;
+    const once = deps({ discoverLimiter: memoryLimiter(1, 60_000) }).d;
     expect((await handleDiscover(req({ category: "caterer" }), once)).status).toBe(200);
     expect((await handleDiscover(req({ category: "caterer" }), once)).status).toBe(429);
   });

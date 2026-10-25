@@ -343,7 +343,16 @@ The criteria for rolling back are in [runbook-incidents.md](runbook-incidents.md
 
 ## 12. What's still not production-grade
 
-- **Per-process, in-memory limits.** The chat's per-user and daily caps, the approval-route limits, double-click joining, the vendor-addition limits, the AI usage counters and the alert rate limits all live in each process's memory. With several web instances (serverless functions scale out) or several MCP replicas, each counts on its own, so the effective limit is multiplied. Run **one** MCP replica. Treat the web caps as approximate until they move to a shared store (Postgres or Redis).
+- **Limits: mostly shared, some still per process.** Since migration `124_engine_rate_limits` these are counted in the shared database (`take_rate_slot`), so every web instance and MCP replica counts together:
+  - the chat's per-user turns (20 per 10 minutes) and the site-wide daily cap (`WEB_CHAT_DAILY_CAP`);
+  - the approval routes (30 actions per user per minute);
+  - the web vendor routes (20 changes and 10 searches per user per minute);
+  - the account routes (3 deletion attempts and 5 exports per user per 10 minutes);
+  - the MCP server's vendor additions (25 per workspace per UTC day).
+
+  The windows are fixed and aligned to the clock (a 10-minute window starts on the 10-minute mark; the day is the UTC day). If the database can't answer (124 not applied, an outage, more than 2 s), each instance falls back to its own memory count and logs `rate_limit_fallback` (web) or `vendor_daily_limit_fallback` (MCP) once per outage; a database hiccup never refuses a user.
+  The AI budget (`HAGGLE_AI_DAILY_TOKEN_BUDGET`, `HAGGLE_AI_MAX_CALLS_PER_JOB`) is still enforced in memory, but each replica rehydrates it from `ai_usage_events` at start-up and every 60 s, so a restart doesn't reset it and replicas converge within a minute (between hydrates each can overshoot by its own calls).
+  **Still per process:** double-click joining on the approval routes (a repeat reaching another instance is safe: approval transitions are compare-and-set and sends are idempotent by key), the alert dedupe and rate limit (a duplicate alert across replicas is acceptable) and the MCP tool-call bucket (`apps/mcp/src/limits.ts`). So still run **one** MCP replica.
 - **The service token is a root credential** for every web workspace. It lives only on the two servers. Rotate it (set the new value on both, server first) if it may have leaked.
 - **Legal.** Terms, Privacy and Acceptable Use are drafts, and the calling and texting rules above need counsel's sign-off.
 - **Browser tests are partial.** Playwright covers the public pages under the nonce CSP (in CI) and a demo guest's deal → approve → pay against a local Supabase and a scripted fake Claude (local only, needs Docker): [web-app.md "Browser tests"](web-app.md#browser-tests-playwright). Signed-in email/Google flows, a live (non-demo) deal and real Claude replies are still checked by hand.

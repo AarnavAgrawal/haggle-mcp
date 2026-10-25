@@ -6,7 +6,7 @@ import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import { gatedSql, PoolGate, type PoolStats } from "./poolGate.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction, type AiUsageRow,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction, type AiUsageRow, type RateSlot,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -602,5 +602,23 @@ export class PostgresRepository implements Repository {
         ${q.since ? s`and at >= ${q.since}` : s``}
         ${q.until ? s`and at < ${q.until}` : s``}
       order by at, id`).map((r) => ({ ...r, id: Number(r.id) }));
+  }
+  // shared rate limits (migration 124): take_rate_slot is one atomic upsert in the database.
+  async takeRateSlot(bucket: string, key: string, windowS: number, max: number): Promise<RateSlot> {
+    // Written as a CTE, not a plain SELECT: retryingReads re-runs a plain read after a transient error,
+    // and a take re-run after its first attempt committed would count twice.
+    const r = await this.sql`
+      with t as (select * from take_rate_slot(${bucket}::text, ${key}::text, ${windowS}::integer, ${max}::integer))
+      select allowed, used, retry_after_s from t`;
+    const x = r[0] as { allowed: boolean; used: number | null; retry_after_s: number } | undefined;
+    if (!x) throw new Error("take_rate_slot returned no row");
+    return { allowed: x.allowed === true, used: Number(x.used ?? max), retryAfterS: Number(x.retry_after_s) };
+  }
+  async rateSlotUsed(bucket: string, key: string, windowS: number) {
+    const r = await this.sql`
+      select n from rate_limit_slots
+      where bucket = ${bucket} and key = ${key}
+        and window_start = to_timestamp(floor(extract(epoch from now()) / ${windowS}::integer) * ${windowS}::integer)`;
+    return r[0] ? Number(r[0].n) : 0;
   }
 }

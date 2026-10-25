@@ -6,8 +6,11 @@ import { disabledPayer, HaggleEngine, InMemoryRepository, StubBrain } from "@hag
 import type { ServiceApp, ServiceContext, ServiceHandler } from "../src/service/http.ts";
 import { consentBasisOf, consentProblem, consentText, DailyAdds, MAX_VENDORS, registerVendorRoutes } from "../src/service/vendors.ts";
 
-async function setup(mode: "mock" | "live" = "live", now = () => new Date("2026-10-22T18:00:00Z")) {
-  const repo = new InMemoryRepository();
+/** `slots`: the store's shared rate slots ("shared", migration 124), none (an older store), or failing (the table missing). */
+async function setup(mode: "mock" | "live" = "live", now = () => new Date("2026-10-22T18:00:00Z"), slots: "shared" | "none" | "failing" = "shared") {
+  const repo = new InMemoryRepository({ now });
+  if (slots === "none") Object.assign(repo, { takeRateSlot: undefined, rateSlotUsed: undefined });
+  if (slots === "failing") Object.assign(repo, { takeRateSlot: async () => { throw new Error('relation "rate_limit_slots" does not exist'); }, rateSlotUsed: async () => { throw new Error('relation "rate_limit_slots" does not exist'); } });
   const engine = new HaggleEngine({
     repo, extractor: { async extract() { throw new Error("unused"); } } as never, attachments: { load: async () => [] }, brain: new StubBrain(), payer: disabledPayer("off"),
     email: { async send() { throw new Error("unused"); } },
@@ -15,27 +18,32 @@ async function setup(mode: "mock" | "live" = "live", now = () => new Date("2026-
   });
   for (const id of ["ws_alpha", "ws_beta"]) await repo.insertWorkspace({ id, name: id, token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles" });
   await engine.updateSettings({ approver_phone: "+14155550999" }, "ws_alpha", "operator");
-  const routes = new Map<string, ServiceHandler>();
-  const app: ServiceApp = { get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) };
-  const daily = new DailyAdds(25, now);
-  registerVendorRoutes(app, {
-    daily, now,
-    guard: async (c) => {
-      const ws = c.req.header("x-haggle-workspace") ?? null;
-      if (!ws || !(await repo.getWorkspace(ws))) return Response.json({ ok: false, error: { code: "UNAUTHORIZED" } }, { status: 401 });
-      return { rt: { engine, mode }, workspaceId: ws, actor: c.req.header("x-haggle-actor") ?? null };
-    },
-  });
-  async function call(method: "GET" | "POST", path: string, body?: unknown, headers: Record<string, string> = { "x-haggle-workspace": "ws_alpha", "x-haggle-actor": "user-1" }) {
-    const c: ServiceContext = {
-      req: { header: (n) => headers[n.toLowerCase()], json: async () => body, param: () => undefined, query: () => undefined },
-      json: (b, status = 200) => Response.json(b, { status }),
-    };
-    const res = await routes.get(`${method} ${path}`)!(c);
-    return { status: res.status, body: (await res.json()) as any };
+  /** One server process's routes (its own in-memory fallback count) over the shared engine and store. */
+  function server(daily: DailyAdds) {
+    const routes = new Map<string, ServiceHandler>();
+    const app: ServiceApp = { get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) };
+    registerVendorRoutes(app, {
+      daily, now,
+      guard: async (c) => {
+        const ws = c.req.header("x-haggle-workspace") ?? null;
+        if (!ws || !(await repo.getWorkspace(ws))) return Response.json({ ok: false, error: { code: "UNAUTHORIZED" } }, { status: 401 });
+        return { rt: { engine, mode }, workspaceId: ws, actor: c.req.header("x-haggle-actor") ?? null };
+      },
+    });
+    async function call(method: "GET" | "POST", path: string, body?: unknown, headers: Record<string, string> = { "x-haggle-workspace": "ws_alpha", "x-haggle-actor": "user-1" }) {
+      const c: ServiceContext = {
+        req: { header: (n) => headers[n.toLowerCase()], json: async () => body, param: () => undefined, query: () => undefined },
+        json: (b, status = 200) => Response.json(b, { status }),
+      };
+      const res = await routes.get(`${method} ${path}`)!(c);
+      return { status: res.status, body: (await res.json()) as any };
+    }
+    const add = (b: Record<string, unknown>, headers?: Record<string, string>) => call("POST", "/internal/vendors", b, headers);
+    return { call, add };
   }
-  const add = (b: Record<string, unknown>, headers?: Record<string, string>) => call("POST", "/internal/vendors", b, headers);
-  return { repo, engine, call, add, daily };
+  const daily = new DailyAdds(25, now);
+  const { call, add } = server(daily);
+  return { repo, engine, call, add, daily, server };
 }
 
 describe("consent helpers", () => {
@@ -134,4 +142,40 @@ describe("/internal/vendors (in process)", () => {
     expect(again.status).toBe(200);
     expect(again.body.replaced).toBe(true);
   });
+
+  it("re-authorizing an existing vendor never takes one of the day's additions", async () => {
+    const { add, call } = await setup();
+    for (let i = 0; i < 24; i++) expect((await add({ name: `V${i}`, contact: `v${i}@vendors.com`, consent_basis: "business_agreed" })).status).toBe(201);
+    for (let i = 0; i < 3; i++) expect((await add({ name: "V0", contact: "v0@vendors.com", consent_basis: "existing_relationship" })).status).toBe(200);
+    expect((await call("GET", "/internal/vendors")).body.limits.added_today).toBe(24);
+    expect((await add({ name: "V24", contact: "v24@vendors.com", consent_basis: "business_agreed" })).status).toBe(201);
+    expect((await add({ name: "V25", contact: "v25@vendors.com", consent_basis: "business_agreed" })).body.error.code).toBe("DAILY_LIMIT");
+    // At the limit, re-authorizing still works.
+    expect((await add({ name: "V1", contact: "v1@vendors.com", consent_basis: "existing_relationship" })).status).toBe(200);
+  });
+
+  it("the daily count is shared by every server process on the store, and concurrent adds never overshoot it", async () => {
+    const { add, call, server } = await setup();
+    const other = server(new DailyAdds(25, () => new Date("2026-10-22T18:00:00Z")));
+    const results = await Promise.all(Array.from({ length: 30 }, (_, i) => (i % 2 ? add : other.add)({ name: `V${i}`, contact: `v${i}@vendors.com`, consent_basis: "business_agreed" })));
+    expect(results.filter((r) => r.status === 201)).toHaveLength(25);
+    expect(results.filter((r) => r.status === 429).every((r) => r.body.error.code === "DAILY_LIMIT" && r.body.error.message === "This workspace added 25 vendors today (the daily limit).")).toBe(true);
+    expect((await call("GET", "/internal/vendors")).body.limits.added_today).toBe(25);
+    expect((await other.call("GET", "/internal/vendors")).body.limits.added_today).toBe(25);
+    expect((await call("GET", "/internal/vendors")).body.vendors).toHaveLength(25);
+  });
+
+  for (const slots of ["none", "failing"] as const) {
+    it(`a store ${slots === "none" ? "without shared rate slots" : "whose rate slots fail"}: each process counts in memory, with the same limit`, async () => {
+      let t = new Date("2026-10-22T18:00:00Z");
+      const { add, call, daily } = await setup("live", () => t, slots);
+      for (let i = 0; i < 25; i++) expect((await add({ name: `V${i}`, contact: `v${i}@vendors.com`, consent_basis: "business_agreed" })).status).toBe(201);
+      expect((await add({ name: "V0", contact: "v0@vendors.com", consent_basis: "existing_relationship" })).status).toBe(200);
+      expect((await add({ name: "V25", contact: "v25@vendors.com", consent_basis: "business_agreed" })).body.error.code).toBe("DAILY_LIMIT");
+      expect(daily.used("ws_alpha")).toBe(25);
+      expect((await call("GET", "/internal/vendors")).body.limits.added_today).toBe(25);
+      t = new Date("2026-10-23T00:00:01Z");
+      expect((await add({ name: "V25", contact: "v25@vendors.com", consent_basis: "business_agreed" })).status).toBe(201);
+    });
+  }
 });

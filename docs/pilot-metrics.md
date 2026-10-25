@@ -97,8 +97,8 @@ To override prices for one run, pass `scripts/metrics.ts --prices '{"claude-sonn
 
 **How usage is recorded.**
 - The live server meters every Claude call (`live/aiUsage.ts`) in memory, to enforce `HAGGLE_AI_MAX_CALLS_PER_JOB` and `HAGGLE_AI_DAILY_TOKEN_BUDGET`.
-- Since migration 122 the meter can also persist each call: job, workspace, purpose, model and the four token counts. The meter does this through `AiMeterOptions.sink` (`aiUsageSink(repo)`). No prompt or reply text is stored. A failed write is logged and never fails the call.
-- **Not yet wired:** `apps/mcp/src/live.ts` (workstream C) must pass `sink: aiUsageSink(repo)` to its `AiUsageMeter` before live usage rows exist (see the sprint 5 E report). Until then, real AI cost reads as 0 calls.
+- Since migration 122 the meter also persists each call: job, workspace, purpose, model and the four token counts. `apps/mcp/src/live.ts` passes `sink: aiUsageSink(repo)` to its `AiUsageMeter`. No prompt or reply text is stored. A failed write is logged and never fails the call.
+- Those rows also feed the limits back: at start-up and every 60 s the live server rehydrates the meter from today's rows (`hydrateAiMeter`, the larger of memory and the database per count), so a restart keeps today's usage and replicas converge within a minute.
 
 ## 5. How to run
 

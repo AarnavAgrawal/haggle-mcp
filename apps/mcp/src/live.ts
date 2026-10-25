@@ -7,7 +7,7 @@
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
   businessIdForContact, MAX_ROUNDS, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
-  withHeuristicFallback, AiUsageMeter, aiUsageSink, aiLimitsFromEnv, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
+  withHeuristicFallback, AiUsageMeter, aiUsageSink, aiLimitsFromEnv, hydrateAiMeter, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
 } from "@haggle/engine";
 import { haggleEnv } from "./config.ts";
 import { makeBrain } from "./brain.ts";
@@ -183,9 +183,15 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // advance the same jobs (live 2026-10-18: both parsed one reply).
   // The previous runtime's database pool is closed too: each reload's new pool would otherwise
   // keep its connections and exhaust Supabase's session pool (EMAXCONNSESSION, pool_size 15).
-  const g = globalThis as { __haggleTick?: ReturnType<typeof setInterval>; __haggleRepo?: PostgresRepository; __haggleStall?: ReturnType<typeof setInterval> };
+  const g = globalThis as { __haggleTick?: ReturnType<typeof setInterval>; __haggleRepo?: PostgresRepository; __haggleStall?: ReturnType<typeof setInterval>; __haggleAiHydrate?: ReturnType<typeof setInterval> };
   if (g.__haggleTick) clearInterval(g.__haggleTick);
   if (g.__haggleStall) clearInterval(g.__haggleStall);
+  if (g.__haggleAiHydrate) clearInterval(g.__haggleAiHydrate);
+  // AI limits across restarts and replicas: today's persisted usage (ai_usage_events) raises the meter's
+  // counts now and every 60 s (the max of memory and the store; admit stays synchronous). Best effort.
+  const hydrateAi = () => hydrateAiMeter(ai, repo).then(() => undefined, (e) => logger.warn("ai_usage_hydrate_failed", { error: (e as Error)?.message?.slice(0, 200) ?? String(e) }));
+  void hydrateAi();
+  g.__haggleAiHydrate = setInterval(() => void hydrateAi(), 60_000).unref();
   const previousRepo = g.__haggleRepo;
   g.__haggleRepo = repo;
   if (previousRepo && previousRepo !== repo) void previousRepo.close().catch(() => {});

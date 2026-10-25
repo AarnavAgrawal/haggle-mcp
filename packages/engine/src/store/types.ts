@@ -594,6 +594,28 @@ export interface Repository {
   recordAiUsage?(u: Omit<AiUsageRow, "id" | "at"> & { at?: string }): Promise<void>;
   /** Usage rows, oldest first; only these jobs' when given. */
   listAiUsage?(q: { jobIds?: string[]; since?: string; until?: string }): Promise<AiUsageRow[]>;
+  // shared rate limits (migration 124), appended; optional so a repository without them still runs
+  // (callers then keep their own per-process count)
+  /**
+   * Takes one slot of `max` in the fixed `windowS` window (aligned to the epoch: 86400 = the UTC day)
+   * for this bucket and key, atomically across every process on the store. A refused take doesn't count.
+   * Throws on a bad window (1..86400 s) or max (> 0).
+   */
+  takeRateSlot?(bucket: string, key: string, windowS: number, max: number): Promise<RateSlot>;
+  /** Slots taken in the current window (0 when none). Read-only. */
+  rateSlotUsed?(bucket: string, key: string, windowS: number): Promise<number>;
+}
+
+/** One take_rate_slot answer: granted or not, the window's count, and the seconds until it ends when refused (0 when granted). */
+export interface RateSlot { allowed: boolean; used: number; retryAfterS: number }
+
+/** What take_rate_slot (migration 124) refuses, or null: the same checks for the in-memory store. */
+export function rateSlotProblem(bucket: string, key: string, windowS: number, max: number): string | null {
+  if (!(bucket.length >= 1 && bucket.length <= 64)) return "rate slot bucket must be 1-64 characters";
+  if (!(key.length >= 1 && key.length <= 200)) return "rate slot key must be 1-200 characters";
+  if (!(Number.isInteger(windowS) && windowS >= 1 && windowS <= 86_400)) return "rate slot window must be 1-86400 seconds";
+  if (!(Number.isInteger(max) && max >= 1 && max <= 2_147_483_647)) return "rate slot max must be a positive integer";
+  return null;
 }
 
 /** What an operator did, from the scripts (migration 119). */

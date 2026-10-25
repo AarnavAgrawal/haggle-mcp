@@ -6,8 +6,10 @@
 //   POST /internal/vendors/remove   { contact } (x-haggle-actor required)
 // Consent rules: a public listing allows email only (no calls or texts to a business that only has a
 // public listing); a call or text needs an existing relationship or the business's agreement.
-// Limits: at most MAX_VENDORS per workspace and MAX_ADDS_PER_DAY additions per workspace per UTC day,
-// the daily count in memory per server process (several instances each count on their own).
+// Limits: at most MAX_VENDORS per workspace and MAX_ADDS_PER_DAY additions per workspace per UTC day.
+// The daily count is shared by every server process on the database (take_rate_slot, migration 124);
+// on a store without it, or while it fails, each process counts in memory. The slot is taken before
+// the insert (concurrent adds can't overshoot); re-authorizing an existing vendor takes none.
 import { z } from "zod";
 import { simulatedContact, type Channel, type HaggleEngine } from "@haggle/engine";
 import { engineError, fail, serviceGuard, type ServiceApp, type ServiceContext } from "./http.ts";
@@ -17,8 +19,11 @@ export const MAX_ADDS_PER_DAY = 25;
 export const CONSENT_BASES = ["existing_relationship", "business_agreed", "public_listing_email"] as const;
 export type ConsentBasis = (typeof CONSENT_BASES)[number];
 type VendorChannel = "email" | "phone" | "imessage";
+/** The shared limit's bucket and window (the UTC day). */
+const ADDS_BUCKET = "vendor_adds";
+const DAY_S = 86_400;
 
-/** Additions per workspace per UTC day, in memory (one server process). */
+/** Additions per workspace per UTC day, in memory (one server process): the fallback when the store has no shared slots. */
 export class DailyAdds {
   private counts = new Map<string, { day: string; n: number }>();
   constructor(private readonly max = MAX_ADDS_PER_DAY, private readonly now: () => Date = () => new Date()) {}
@@ -27,15 +32,39 @@ export class DailyAdds {
     const c = this.counts.get(ws);
     return c && c.day === this.today() ? c.n : 0;
   }
-  allowed(ws: string): boolean { return this.used(ws) < this.max; }
-  record(ws: string): void {
+  /** Takes one addition if under the limit (check and count in one synchronous step). */
+  take(ws: string): boolean {
+    const n = this.used(ws);
+    if (n >= this.max) return false;
     if (this.counts.size > 50_000) this.counts.clear();
-    this.counts.set(ws, { day: this.today(), n: this.used(ws) + 1 });
+    this.counts.set(ws, { day: this.today(), n: n + 1 });
+    return true;
   }
 }
 
 /** The engine calls these routes make (HaggleEngine in production; tests may pass the same). */
-type VendorEngine = Pick<HaggleEngine, "workspaceVendors" | "addWorkspaceVendor" | "removeWorkspaceVendor" | "contactSuppressions" | "getSettings">;
+type VendorEngine = Pick<HaggleEngine, "workspaceVendors" | "addWorkspaceVendor" | "removeWorkspaceVendor" | "contactSuppressions" | "getSettings"> & Partial<Pick<HaggleEngine, "takeRateSlot" | "rateSlotUsed">>;
+
+/** The day's additions: the store's shared slots when it has them, else (or while they fail) this process's count. */
+function dailyAdds(daily: DailyAdds) {
+  let warned = false;
+  const fallback = (e: unknown) => {
+    if (!warned) console.error(JSON.stringify({ level: "warn", event: "vendor_daily_limit_fallback", error: String((e as Error)?.message ?? e).slice(0, 200), hint: "apply supabase/migrations/124_engine_rate_limits.sql; until then each server process counts vendor additions on its own" }));
+    warned = true;
+    return null;
+  };
+  return {
+    async take(engine: VendorEngine, ws: string): Promise<boolean> {
+      const slot = engine.takeRateSlot ? await engine.takeRateSlot(ADDS_BUCKET, ws, DAY_S, MAX_ADDS_PER_DAY).catch(fallback) : null;
+      if (slot) { warned = false; return slot.allowed; }
+      return daily.take(ws);
+    },
+    async used(engine: VendorEngine, ws: string): Promise<number> {
+      const n = engine.rateSlotUsed ? await engine.rateSlotUsed(ADDS_BUCKET, ws, DAY_S).catch(fallback) : null;
+      return n ?? daily.used(ws);
+    },
+  };
+}
 export interface VendorRouteOptions {
   guard?: (c: ServiceContext, opts: { workspace?: boolean }) => Promise<{ rt: { engine: VendorEngine; mode: "mock" | "live" }; workspaceId: string | null; actor: string | null } | Response>;
   daily?: DailyAdds;
@@ -72,7 +101,7 @@ export const consentBasisOf = (consent: string): ConsentBasis | "operator_record
 
 export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions = {}) {
   const guard = opts.guard ?? (serviceGuard as unknown as NonNullable<VendorRouteOptions["guard"]>);
-  const daily = opts.daily ?? new DailyAdds();
+  const daily = dailyAdds(opts.daily ?? new DailyAdds());
   const now = opts.now ?? (() => new Date());
 
   app.get("/internal/vendors", async (c) => {
@@ -91,7 +120,7 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
     });
     return c.json({
       ok: true, mode: g.rt.mode, vendors,
-      limits: { max_vendors: MAX_VENDORS, adds_per_day: MAX_ADDS_PER_DAY, added_today: daily.used(ws) },
+      limits: { max_vendors: MAX_VENDORS, adds_per_day: MAX_ADDS_PER_DAY, added_today: await daily.used(g.rt.engine, ws) },
       next: vendors.length ? "Start a deal from the chat; Haggle contacts these vendors by name." : "Add the businesses you work with (POST /internal/vendors) before starting a deal.",
     });
   });
@@ -125,13 +154,13 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
     const existing = await g.rt.engine.workspaceVendors(ws);
     const replacing = existing.some((v) => v.contact === b.contact);
     if (!replacing && existing.length >= MAX_VENDORS) return fail(c, 409, "VENDOR_LIMIT", `This workspace already has ${existing.length} vendors (the limit is ${MAX_VENDORS}).`, "Remove vendors you no longer use, then add this one.");
-    if (!daily.allowed(ws)) return fail(c, 429, "DAILY_LIMIT", `This workspace added ${MAX_ADDS_PER_DAY} vendors today (the daily limit).`, "Try again tomorrow (UTC).");
+    // A new vendor takes one of the day's additions before it is stored; re-authorizing one takes none.
+    if (!replacing && !(await daily.take(g.rt.engine, ws))) return fail(c, 429, "DAILY_LIMIT", `This workspace added ${MAX_ADDS_PER_DAY} vendors today (the daily limit).`, "Try again tomorrow (UTC).");
     try {
       const row = await g.rt.engine.addWorkspaceVendor({
         workspace_id: ws, contact: b.contact, name: b.name, channel: channel as Channel,
         consent: consentText(b.consent_basis, b.note || undefined, g.actor, now()), added_by: `web:${g.actor}`.slice(0, 120),
       });
-      daily.record(ws);
       return c.json({
         ok: true, replaced: replacing,
         vendor: { name: row.name, contact: row.contact, channel: row.channel ?? channel, consent: { basis: b.consent_basis, text: row.consent }, added_by: row.added_by, added_at: row.created_at, contactable: true },

@@ -7,7 +7,9 @@
 // caller turns into its safe path: an extraction fails the read (the reply is kept and shown as
 // "couldn't read a price" for the human; never a heuristic or approvable quote), a question waits for
 // the human, and the strategist falls back to the truthful rules. Nothing is ever auto-accepted.
-// Counters are per process (in memory): with several replicas each enforces its own share.
+// Counters live in memory, so admit() stays synchronous; live mode rehydrates them from ai_usage_events
+// (hydrateAiMeter, at start-up and every 60 s), so a restart keeps today's usage and replicas see each
+// other's calls within a minute (between hydrates each replica can overshoot by its own calls).
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ExtractorPort } from "../workflow/ports.ts";
 import type { Logger } from "./log.ts";
@@ -187,6 +189,27 @@ export class AiUsageMeter {
     this.byWorkspace.set(ws, t);
   }
 
+  /**
+   * Raises today's counts to the persisted ones (`tallyAiUsage` over ai_usage_events): each field takes
+   * the larger of memory and the store, so a restart doesn't reset the budget and replicas converge on
+   * every hydrate. Never lowers a count; refusals stay per process. False (and nothing changes) when the
+   * tallies are for another UTC day than the meter's.
+   */
+  hydrate(t: AiUsageTallies): boolean {
+    this.roll();
+    if (t.day !== this.day) return false;
+    const raise = (into: Tally, from: AiUsageTally) => {
+      into.calls = Math.max(into.calls, from.calls);
+      into.tokensIn = Math.max(into.tokensIn, from.tokensIn);
+      into.tokensOut = Math.max(into.tokensOut, from.tokensOut);
+      return into;
+    };
+    raise(this.total, t.total);
+    for (const [id, x] of Object.entries(t.byJob)) this.byJob.set(id, raise(this.byJob.get(id) ?? empty(), x));
+    for (const [id, x] of Object.entries(t.byWorkspace)) this.byWorkspace.set(id, raise(this.byWorkspace.get(id) ?? empty(), x));
+    return true;
+  }
+
   /** Per job / workspace tallies for operators (logs, scripts); /ready shows only the totals. */
   usage(): { day: string; total: Tally; jobs: Record<string, Tally>; workspaces: Record<string, Tally> } {
     this.roll();
@@ -205,6 +228,40 @@ export class AiUsageMeter {
       jobs_at_call_limit: maxCallsPerJob === undefined ? 0 : [...this.byJob.values()].filter((t) => t.calls >= maxCallsPerJob).length,
     };
   }
+}
+
+/** Calls and tokens (input includes cache creation and cache reads, as the meter counts them). */
+export interface AiUsageTally { calls: number; tokensIn: number; tokensOut: number }
+/** One UTC day's persisted usage, in total, per job and per workspace (AiUsageMeter.hydrate). */
+export interface AiUsageTallies { day: string; total: AiUsageTally; byJob: Record<string, AiUsageTally>; byWorkspace: Record<string, AiUsageTally> }
+type UsageRowLike = Pick<AiUsageRecord, "job_id" | "workspace_id" | "input_tokens" | "output_tokens" | "cache_creation_input_tokens" | "cache_read_input_tokens"> & { at: string };
+
+/** Sums ai_usage_events rows (one per Claude call) of one UTC day (`YYYY-MM-DD`); other days' rows are ignored. */
+export function tallyAiUsage(rows: readonly UsageRowLike[], day: string): AiUsageTallies {
+  const zero = (): AiUsageTally => ({ calls: 0, tokensIn: 0, tokensOut: 0 });
+  const out: AiUsageTallies = { day, total: zero(), byJob: {}, byWorkspace: {} };
+  for (const r of rows) {
+    const at = new Date(r.at);
+    if (Number.isNaN(at.getTime()) || at.toISOString().slice(0, 10) !== day) continue;
+    const tin = (r.input_tokens || 0) + (r.cache_creation_input_tokens || 0) + (r.cache_read_input_tokens || 0);
+    const tout = r.output_tokens || 0;
+    const add = (t: AiUsageTally) => { t.calls++; t.tokensIn += tin; t.tokensOut += tout; };
+    add(out.total);
+    if (r.job_id) add((out.byJob[r.job_id] ??= zero()));
+    if (r.workspace_id) add((out.byWorkspace[r.workspace_id] ??= zero()));
+  }
+  return out;
+}
+
+/**
+ * Hydrates the meter from today's persisted usage (repository.listAiUsage over ai_usage_events, 122).
+ * Live mode runs it at start-up and every 60 s; false when the store has no usage table to read.
+ */
+export async function hydrateAiMeter(meter: AiUsageMeter, repo: { listAiUsage?: (q: { since?: string }) => Promise<readonly UsageRowLike[]> }): Promise<boolean> {
+  if (!repo.listAiUsage) return false;
+  const day = meter.usage().day;
+  const rows = await repo.listAiUsage({ since: `${day}T00:00:00.000Z` });
+  return meter.hydrate(tallyAiUsage(rows, day));
 }
 
 /** The slice of the Anthropic client the extractor, answerer and strategist use. */

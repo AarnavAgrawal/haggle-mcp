@@ -4,6 +4,7 @@ import type { User } from "@supabase/supabase-js";
 import { DEMO } from "@/lib/demo";
 import { haggleConfig } from "@/lib/env";
 import { callService, haggleClient, type HaggleConfig } from "@/lib/haggle";
+import { limiters } from "@/lib/limiters";
 import { membership, sessionUser } from "@/lib/workspace";
 import type { VendorDeps } from "./route.ts";
 
@@ -36,4 +37,6 @@ export const vendorDeps: VendorDeps = {
     return (await haggleClient(haggleConfig(), workspaceId).callTool<Record<string, unknown>>("discover", args)).data;
   },
   demo: DEMO,
+  writeLimiter: limiters.vendorWrites,
+  discoverLimiter: limiters.vendorDiscover,
 };

@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { autoOnboard, chatExamples, DEMO_EXAMPLES } from "../lib/demo.ts";
 import { dailyCap } from "../lib/chat/limits.ts";
+import { memoryLimiter } from "../lib/rateLimit.ts";
 
 describe("demo site", () => {
   it("guests always skip the onboarding form; on a demo site everyone does", () => {
@@ -19,16 +20,18 @@ describe("demo site", () => {
 
 describe("site-wide daily chat cap", () => {
   const DAY = 24 * 3600 * 1000;
-  it("allows up to the cap per UTC day, then refuses until the next day", () => {
-    const take = dailyCap(3);
+  it("allows up to the cap per UTC day, then refuses until the next day", async () => {
+    let t = 0;
+    const cap = dailyCap(3, (max, windowS) => memoryLimiter(max, windowS * 1000, { now: () => t }));
+    const take = (at: number) => { t = at; return cap.take("site"); };
     const t0 = Date.UTC(2026, 9, 22, 10);
-    expect([take(t0), take(t0 + 1), take(t0 + 2)].every((r) => r.ok)).toBe(true);
-    expect(take(t0 + 3)).toMatchObject({ ok: false });
-    expect(take(t0 + DAY).ok).toBe(true);
+    expect([await take(t0), await take(t0 + 1), await take(t0 + 2)].every((r) => r.ok)).toBe(true);
+    expect(await take(t0 + 3)).toMatchObject({ ok: false });
+    expect((await take(t0 + DAY)).ok).toBe(true);
   });
 
-  it("no cap configured: unlimited", () => {
-    const take = dailyCap(0);
-    for (let i = 0; i < 1000; i++) expect(take(i).ok).toBe(true);
+  it("no cap configured: unlimited", async () => {
+    const cap = dailyCap(0, () => { throw new Error("no limiter for no cap"); });
+    for (let i = 0; i < 1000; i++) expect((await cap.take("site")).ok).toBe(true);
   });
 });

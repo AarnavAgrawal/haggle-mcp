@@ -2,7 +2,7 @@
 // job and per UTC day; over a limit the call never reaches Anthropic and the reply is held for a
 // human (a failed read), never a keyword or approvable quote. Fake clients only.
 import { describe, expect, it } from "vitest";
-import { AiBudgetExceeded, AiUsageMeter, aiLimitsFromEnv, claudeExtractor, claudeStrategist, disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, meteredClient, meteredExtractor, StubBrain, UNREADABLE_REPLY, withHeuristicFallback, type ParserClient } from "../src/index.ts";
+import { AiBudgetExceeded, AiUsageMeter, aiLimitsFromEnv, hydrateAiMeter, tallyAiUsage,claudeExtractor, claudeStrategist, disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, meteredClient, meteredExtractor, StubBrain, UNREADABLE_REPLY, withHeuristicFallback, type ParserClient } from "../src/index.ts";
 
 const { budget_usd, ...request } = GOLDEN_REQUEST;
 const trusted = (expected: string) => ({ trusted: true as const, address: expected, reason: "trusted" as const, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
@@ -129,5 +129,59 @@ describe("over a limit, a reply is held for a human (engine path)", () => {
     expect(seen).toHaveLength(0);
     expect((await engine.getQuotes(jobId)).quotes).toHaveLength(0);
     expect((await repo.listEvents(jobId)).some((e) => e.type === "parse_failed")).toBe(true);
+  });
+});
+
+// Rehydration from ai_usage_events (migration 122): a restart, or another replica's calls, count
+// toward today's budget. admit() stays synchronous; hydrate takes the max of memory and the store.
+describe("rehydrating the meter from persisted usage", () => {
+  const row = (job_id: string | null, workspace_id: string | null, input_tokens: number, output_tokens: number, at: string, extra: Partial<{ cache_creation_input_tokens: number; cache_read_input_tokens: number }> = {}) =>
+    ({ job_id, workspace_id, purpose: "extract", model: "m", input_tokens, output_tokens, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, ...extra, at });
+
+  it("tallies one UTC day's rows per job and workspace (cache tokens count as input, as the meter counts them)", () => {
+    const t = tallyAiUsage([
+      row("job_a", "ws_1", 100, 20, "2026-10-22T01:00:00Z", { cache_read_input_tokens: 50 }),
+      row("job_a", "ws_1", 100, 20, "2026-10-22T02:00:00Z"),
+      row(null, null, 10, 1, "2026-10-22T03:00:00Z"),
+      row("job_b", "ws_1", 999, 999, "2026-10-21T23:59:59Z"), // yesterday: ignored
+    ], "2026-10-22");
+    expect(t.total).toEqual({ calls: 3, tokensIn: 260, tokensOut: 41 });
+    expect(t.byJob).toEqual({ job_a: { calls: 2, tokensIn: 250, tokensOut: 40 } });
+    expect(t.byWorkspace).toEqual({ ws_1: { calls: 2, tokensIn: 250, tokensOut: 40 } });
+  });
+
+  it("after a restart, the persisted usage counts: admit refuses past the daily budget and the per-job limit", async () => {
+    const now = () => new Date("2026-10-22T15:00:00Z");
+    const repo = new InMemoryRepository({ now });
+    for (let i = 0; i < 3; i++) await repo.recordAiUsage(row("job_a", "ws_1", 400, 100, "2026-10-22T10:00:00Z"));
+    const meter = new AiUsageMeter({ limits: { dailyTokenBudget: 1_500, maxCallsPerJob: 3 }, now });
+    expect(() => meter.admit({ jobId: "job_z" })).not.toThrow(); // fresh process: memory alone says fine
+    expect(await hydrateAiMeter(meter, repo)).toBe(true);
+    expect(() => meter.admit({ jobId: "job_z" })).toThrow(AiBudgetExceeded);
+    expect(meter.snapshot()).toMatchObject({ tokens_in: 1_200, tokens_out: 300, daily_budget_reached: true });
+    const roomy = new AiUsageMeter({ limits: { maxCallsPerJob: 3 }, now });
+    await hydrateAiMeter(roomy, repo);
+    expect(() => roomy.admit({ jobId: "job_a" })).toThrow(/call limit/);
+    expect(() => roomy.admit({ jobId: "job_b" })).not.toThrow();
+  });
+
+  it("max semantics: a smaller store tally never lowers what this process counted; another day's tally is ignored", () => {
+    const meter = new AiUsageMeter({ now: () => new Date("2026-10-22T15:00:00Z") });
+    meter.admit({ jobId: "job_a" });
+    meter.record({ jobId: "job_a" }, { input_tokens: 500, output_tokens: 50 });
+    meter.admit({ jobId: "job_a" });
+    expect(meter.hydrate({ day: "2026-10-22", total: { calls: 1, tokensIn: 100, tokensOut: 900 }, byJob: { job_a: { calls: 1, tokensIn: 100, tokensOut: 900 }, job_b: { calls: 4, tokensIn: 1, tokensOut: 1 } }, byWorkspace: { ws_1: { calls: 4, tokensIn: 1, tokensOut: 1 } } })).toBe(true);
+    const u = meter.usage();
+    expect(u.total).toMatchObject({ calls: 2, tokensIn: 500, tokensOut: 900 });
+    expect(u.jobs.job_a).toMatchObject({ calls: 2, tokensIn: 500, tokensOut: 900 });
+    expect(u.jobs.job_b).toMatchObject({ calls: 4 });
+    expect(u.workspaces.ws_1).toMatchObject({ calls: 4 });
+    expect(meter.hydrate({ day: "2026-10-21", total: { calls: 99, tokensIn: 99_999, tokensOut: 0 }, byJob: {}, byWorkspace: {} })).toBe(false);
+    expect(meter.usage().total.tokensIn).toBe(500);
+  });
+
+  it("a store without listAiUsage hydrates nothing", async () => {
+    const meter = new AiUsageMeter();
+    expect(await hydrateAiMeter(meter, {})).toBe(false);
   });
 });

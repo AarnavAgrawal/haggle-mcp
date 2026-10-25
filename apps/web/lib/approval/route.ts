@@ -14,6 +14,7 @@ import {
   authorizeCallback, decideApproval, payQuote, previewApproval, purchaseAction, purchaseStatus,
   type ApprovalClient, type FlowError,
 } from "./flow.ts";
+import { memoryLimiter, type Limiter } from "../rateLimit.ts";
 
 /** The signed-in user, their workspace, and who decisions are recorded as (their email, else their id). */
 export type Caller = { userId: string; workspaceId: string; actor: string };
@@ -21,29 +22,16 @@ export interface RouteDeps {
   /** The signed-in user and their workspace, or why not. */
   auth(): Promise<Caller | { status: 401 | 403 }>;
   client(workspaceId: string, actor: string): ApprovalClient;
-  limiter?: RateLimiter;
+  /** 30 clicks per user per minute: shared by every instance in production (lib/limiters.ts). */
+  limiter?: Limiter;
 }
 
-// ── rate limit: a fixed one-minute window per user, in memory (one server process) ──
-export class RateLimiter {
-  private hits = new Map<string, { start: number; n: number }>();
-  constructor(private readonly max = 30, private readonly windowMs = 60_000, private readonly now = () => Date.now()) {}
-  /** True if this key may act now (and counts the hit). */
-  take(key: string): boolean {
-    const t = this.now();
-    if (this.hits.size > 10_000) for (const [k, v] of this.hits) if (t - v.start >= this.windowMs) this.hits.delete(k);
-    const h = this.hits.get(key);
-    if (!h || t - h.start >= this.windowMs) {
-      this.hits.set(key, { start: t, n: 1 });
-      return true;
-    }
-    h.n += 1;
-    return h.n <= this.max;
-  }
-}
-const sharedLimiter = new RateLimiter();
+// Without an injected limiter (tests), a per-process count with the same size.
+const fallbackLimiter = memoryLimiter(30, 60_000);
 
 // ── one action at a time per user + deal + target: a double click joins the first request ──
+// In memory on purpose: a repeat that reaches another instance is still safe, because the server's
+// approval transitions are compare-and-set and its sends and charges are idempotent by key.
 const inFlight = new Map<string, Promise<{ body: unknown; status: number }>>();
 async function once(key: string, run: () => Promise<{ body: unknown; status: number }>) {
   const running = inFlight.get(key);
@@ -101,8 +89,6 @@ const out = (r: { ok: true } | FlowError) => (r.ok ? { body: r, status: 200 } : 
 export async function handleAction(kind: ActionKind, req: Request, jobIdParam: string, deps: RouteDeps): Promise<Response> {
   const who = await authorize(deps);
   if (who instanceof Response) return who;
-  if (!(deps.limiter ?? sharedLimiter).take(who.userId)) return refuse(429, "rate_limited", "Too many actions in a minute.", "Wait a minute, then try again.");
-
   const jobId = id.safeParse(jobIdParam);
   if (!jobId.success) return refuse(400, "bad_job_id", "That deal id isn't valid.", "Open the deal from your deals list.");
   let raw: unknown;
@@ -113,6 +99,8 @@ export async function handleAction(kind: ActionKind, req: Request, jobIdParam: s
   }
   const parsed = Bodies[kind].safeParse(raw);
   if (!parsed.success) return refuse(400, "bad_body", "The request is missing or has invalid fields.", `Send ${FIELDS[kind]}.`);
+  // Counted only once the request is well formed: a malformed one never uses up the user's clicks.
+  if (!(await (deps.limiter ?? fallbackLimiter).take(who.userId)).ok) return refuse(429, "rate_limited", "Too many actions in a minute.", "Wait a minute, then try again.");
 
   const haggle = deps.client(who.workspaceId, who.actor);
   const job = jobId.data;
