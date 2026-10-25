@@ -13,7 +13,10 @@ import { hashSecret, outOfBandApprovals } from "./workspace.ts";
 export type Runtime = {
   mode: "mock" | "live";
   engine: HaggleEngine;
-  /** The real brain (via the engine's adapter); warm-path tools use `brain.core` and its view mappers. */
+  /**
+   * The real brain (via the engine's adapter), one per workspace: tools get `brain.forWorkspace(ws)`
+   * (index.ts run()); `brain.core` alone is only the default workspace's.
+   */
   brain: BrainAdapter;
   /** Mock mode: the simulated fleet's delivery pump (the engine also pumps on every wait). */
   tick?: () => Promise<number>;

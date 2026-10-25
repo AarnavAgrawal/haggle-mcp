@@ -17,7 +17,7 @@ Tick an item only when it has been done on the real system, not in tests. `[YOU]
 - [ ] [YOU] Separate Anthropic key with a spending limit; Slack incoming webhook for alerts; Manufact staging server (never calm-spark).
 - [ ] [YOU] Local staging env file (never committed): `HAGGLE_ENV=staging`, `HAGGLE_MODE=live`, `HAGGLE_PAYMENTS=manual`, `HAGGLE_PROD_DB_HOSTS` set.
 - [ ] [SCRIPT] `staging-release.ts` plan → `--execute` (backup, migrations through 122 with the ledger, launch gate, read-only smoke) → `--deploy`. `/health` must report the expected `build_sha`.
-- [ ] [SCRIPT] `pilot-preflight --check-webhooks` on staging: every check PASS (WARN acceptable only for brain tenancy, until Aarnav's change lands).
+- [ ] [SCRIPT] `pilot-preflight --check-webhooks` on staging: every check PASS (brain tenancy included; `202_brain_tenancy.sql` applied to the brain's database first, which preflight can't see).
 
 ## C. Real-channel evidence (staging, consenting people only)
 - [ ] [YOU] Consenting Gmail and Outlook mailboxes; [SCRIPT] `email-trial.ts` validate → dry-run → send → replies → collect (`docs/email-trial-checklist.md`). Pass condition: the send-time Message-ID matches what replies reference, and real replies become token-verified quotes.

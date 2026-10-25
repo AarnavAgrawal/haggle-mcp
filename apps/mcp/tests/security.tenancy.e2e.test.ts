@@ -226,3 +226,46 @@ describe("two workspaces, the same simulated vendors, interleaved event streams 
     expect(lb).not.toContain(ja);
   });
 });
+
+describe("brain tenancy (HTTP): what alpha's deal teaches Haggle stays in alpha", { timeout: 180_000 }, () => {
+  // A server of its own, so nothing but alpha's one deal can teach the brain between the reads.
+  let base = "";
+  beforeAll(async () => {
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    await startServer(port);
+  }, 30_000);
+
+  it("beta's ask, check_price and business_profile are the same before and after alpha's deal; alpha's ask learned from it", async () => {
+    const alpha = as(ALPHA, base);
+    const beta = as(BETA, base);
+    const asked = { what: "lunch catering", quantity: 40, area: "San Francisco, CA" };
+    const priced = { ...asked, total_usd: 1400 };
+    const counts = (r: { structuredContent: { estimates: { business: string; n_quotes: number }[] } }) => Object.fromEntries(r.structuredContent.estimates.map((e) => [e.business, e.n_quotes]));
+    const [askA0, askB0, priceB0, profileB0] = await Promise.all([alpha("ask", asked), beta("ask", asked), beta("check_price", priced), beta("business_profile", { business: "Harbor Table" })]);
+    expect(Object.keys(counts(askB0)).length, "mock workspaces start from the labelled seed samples").toBeGreaterThan(0);
+
+    const deal = await alpha("deal", { request: request(40, "kumquat brain"), budget_usd: 1200, client_request_id: "brain-tenancy" });
+    const job = deal.structuredContent.job_id as string;
+    let cursor = "0";
+    for (let i = 0; i < 60; i++) {
+      cursor = (await alpha("wait_for_update", { job_id: job, cursor, timeout_s: 1 })).structuredContent.cursor;
+      const board = (await alpha("get_quotes", { job_id: job })).structuredContent;
+      if (board.ready) break;
+    }
+
+    // Alpha learned from its own deal (otherwise the rest proves nothing).
+    const askA1 = await alpha("ask", asked);
+    const [a0, a1] = [counts(askA0), counts(askA1)];
+    expect(Object.keys(a1).some((b) => (a1[b] ?? 0) > (a0[b] ?? 0)), JSON.stringify({ a0, a1 })).toBe(true);
+
+    // Beta sees exactly what it saw before: no count, price sample or history row from alpha's deal.
+    const [askB1, priceB1, profileB1] = await Promise.all([beta("ask", asked), beta("check_price", priced), beta("business_profile", { business: "Harbor Table" })]);
+    expect(counts(askB1)).toEqual(counts(askB0));
+    expect(askB1.structuredContent.estimates).toEqual(askB0.structuredContent.estimates);
+    expect(priceB1.structuredContent.sample_size).toBe(priceB0.structuredContent.sample_size);
+    expect(priceB1.structuredContent.verdict).toBe(priceB0.structuredContent.verdict);
+    expect(profileB1.structuredContent.history).toEqual(profileB0.structuredContent.history);
+    for (const r of [askB1, priceB1, profileB1]) expect(JSON.stringify(r)).not.toMatch(new RegExp(`${job}|kumquat`));
+  });
+});

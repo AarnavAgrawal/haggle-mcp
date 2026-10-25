@@ -30,14 +30,44 @@ import {
   slug,
   unitLabel,
 } from "./normalize.ts";
-import { MemoryStore, type ProfileStore } from "./store.ts";
+import { checkWorkspaceId, MemoryStore, type ProfileStore } from "./store.ts";
 
 export interface BrainOptions {
   store?: ProfileStore;
   directory?: DirectoryEntry[];
   /** Replay fixtures/brain/seed-replies.json into an empty store so warm asks work from minute one. */
   seed?: boolean;
+  /**
+   * Live (observed) brains: a reply from a simulated business (meta.simulated) never teaches the
+   * brain. The engine already skips simulated replies on live jobs; this is the brain's own guard.
+   * Mock brains leave it off: the warm `ask` demo learns from the simulated fleet.
+   */
+  dropSimulated?: boolean;
   now?: () => Date;
+}
+
+export type WorkspaceBrain = Brain & { ready: Promise<void> };
+
+/**
+ * One brain per workspace over that workspace's view of one store (ProfileStore.forWorkspace), so
+ * estimates, price checks, hints, profiles and discovery ranking read only that workspace's profiles.
+ * The core Brain contract is unchanged: tenancy is by instance, not by argument. Instances are cached
+ * for the life of the process (one per workspace id; ids come from authenticated credentials or job
+ * rows, never from tool input), so each keeps its own per-business write lock. Seeding (mock) runs
+ * per workspace on first use.
+ */
+export function createWorkspaceBrains(options: Omit<BrainOptions, "store"> & { store: ProfileStore }): { forWorkspace(workspaceId: string): WorkspaceBrain } {
+  const { store, ...rest } = options;
+  if (typeof store.forWorkspace !== "function") throw new Error("brain: this profile store can't be scoped per workspace (no forWorkspace)");
+  const brains = new Map<string, WorkspaceBrain>();
+  return {
+    forWorkspace(workspaceId: string) {
+      const ws = checkWorkspaceId(workspaceId);
+      let brain = brains.get(ws);
+      if (!brain) brains.set(ws, (brain = createBrain({ ...rest, store: store.forWorkspace!(ws) })));
+      return brain;
+    },
+  };
 }
 
 type Baseline = { category: string; area?: string; low: number; typical: number; high: number };
@@ -60,7 +90,11 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
 
   async function learnFromReply(businessId: string, parsed: ParsedReply, meta: ReplyMeta): Promise<Profile> {
     return withLock(businessId, async () => {
-      const next = applyReply(await store.get(businessId), businessId, parsed, meta, now());
+      const prev = await store.get(businessId);
+      // Dropped: nothing is written; the caller gets what is stored (or, with nothing stored, the
+      // reading as it would have been learned, unsaved: the contract always returns a Profile).
+      if (options.dropSimulated && meta.simulated === true) return prev ?? applyReply(null, businessId, parsed, meta, now());
+      const next = applyReply(prev, businessId, parsed, meta, now());
       await store.put(next);
       return next;
     });
@@ -94,6 +128,7 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
     await seeded();
     const direct = await store.get(business);
     if (direct) return direct;
+    // By name: this store's (this workspace's) profiles only.
     const key = slug(business);
     return (await store.list()).find((p) => slug(p.name) === key || slug(p.business_id) === key) ?? null;
   }

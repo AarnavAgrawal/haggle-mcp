@@ -134,7 +134,10 @@ const viewOnly = (mode: Mode) =>
   fail(mode, "view_only", "This is a button on Haggle's deal board or approval card; it only runs from a client that shows those views, and only the human taps it.",
     "To ask the human, call approve(job_id, quote_id) (or call_back for a callback); they decide on the card, the board, a form, or by replying to Haggle's text/email.", "approve");
 
-/** Everything a handler needs: the engine scoped to this connection's workspace. */
+/**
+ * Everything a handler needs: the engine and the brain scoped to this connection's workspace (`brain`
+ * holds only this workspace's learned profiles; tools never reach the default workspace's rt.brain).
+ */
 type Scope = { rt: Runtime; mode: Mode; engine: WorkspaceEngine; brain: Runtime["brain"]; workspaceId: string };
 
 /** The workspace the middleware bound to this request (default workspace when auth is open). */
@@ -154,7 +157,7 @@ async function run<T>(ctx: unknown, body: (s: Scope) => Promise<T>, onInternal: 
   }
   const workspaceId = workspaceOf(ctx);
   try {
-    return await body({ rt, mode: rt.mode, engine: rt.engine.forWorkspace(workspaceId), brain: rt.brain, workspaceId });
+    return await body({ rt, mode: rt.mode, engine: rt.engine.forWorkspace(workspaceId), brain: rt.brain.forWorkspace(workspaceId), workspaceId });
   } catch (e) {
     if (e instanceof EngineError) return fail(rt.mode, e.code, e.message, e.fix, e.next);
     console.error(JSON.stringify({ level: "error", event: "tool_failed", error: (e as Error).message }));
@@ -1311,7 +1314,8 @@ export const businessProfile = server.tool(
       const hint = { name, ...(contact.email ? { email: contact.email } : {}), ...(contact.phone ? { phone: contact.phone } : {}) };
       const shared = engineId ? (await brain.coreProfile(engineId, hint)) ?? (vendor ? await byName(vendor.name) : null)
         : !found ? (await brain.core.getProfile(business)) ?? (await brain.core.getProfile(brain.brainIdFor(business))) : null;
-      // Brain profiles are shared across workspaces: only this workspace's own deals (and labelled seed samples) are shown.
+      // `brain` is this workspace's (profiles are scoped per workspace, 202_brain_tenancy). Second guard, and for
+      // rows learned before tenancy: only this workspace's own deals (and labelled seed samples) are shown.
       const own = shared ? await engine.ownJobIds(shared.history.map((h) => h.job_id)) : new Set<string>();
       const p = historyOnly(shared, (jobId) => isSeedJob(jobId) || own.has(jobId), { exact: true });
       if (!vendor && !found && !p) {

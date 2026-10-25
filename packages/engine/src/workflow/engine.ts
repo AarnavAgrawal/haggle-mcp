@@ -16,7 +16,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type {
-  ApprovalRecord, AskField, Business, DealResult, JobState, JobUpdate, PaymentStatus, Profile, Quote, QuotesResult, Request, WaitResult,
+  ApprovalRecord, AskField, Brain, Business, DealResult, JobState, JobUpdate, PaymentStatus, Profile, Quote, QuotesResult, Request, WaitResult,
 } from "../contract.ts";
 import { businessIdForContact, newApprovalCode, newId, newShortCode, normalizeBusinessName, slugify } from "../ids.ts";
 import { cleanEmailBody } from "../inbound/emailBody.ts";
@@ -594,13 +594,15 @@ export class HaggleEngine {
     // Opted out or hard-bounced anywhere: never contacted again.
     const contacts = input.businesses.flatMap((b) => [b.email ? normalizeAddress(b.email) : null, b.phone ? b.phone.replace(/[\s().-]/g, "") : null].filter((c): c is string => !!c));
     const suppressed = new Map((await this.repo.findSuppressions(contacts)).map((x) => [x.contact, x]));
-    // What Haggle has learned about reaching each business (stated preference, observed replies).
+    // What Haggle has learned about reaching each business (stated preference, observed replies), from
+    // this workspace's own deals: the routing reason quotes the business's words, never another tenant's.
+    // (Opt-outs and bounces are global: the suppression list above.)
     const learned = await Promise.all(input.businesses.map(async (b) => {
       const email = b.email ? normalizeAddress(b.email) : null;
       const phone = b.phone ? b.phone.replace(/[\s().-]/g, "") : null;
       if (!email && !phone && !b.a2a_card_url) return null;
       const id = businessIdForContact({ email, phone, a2a_card_url: b.a2a_card_url?.trim() || null }, b.name);
-      return this.contactLearning(id, await this.businessAliases({ business_id: id, name: b.name, email, phone })).catch(() => null);
+      return this.contactLearning(id, await this.businessAliases({ business_id: id, name: b.name, email, phone }), ws).catch(() => null);
     }));
     const seen = new Set<string>();
     const planned = input.businesses.map((b, i) => {
@@ -760,7 +762,7 @@ export class HaggleEngine {
     const dietary = this.requirements(job).filter((r) => r.kind === "dietary" && r.need);
     const inputs: ValueInput[] = [];
     // Haggle's track record with each business, read in parallel (the brain may be a remote store).
-    const tracker = this.d.brain as { trackRecord?: (id: string, excludeJobId: string) => Promise<ValueInput["reliability"]> };
+    const tracker = this.brainFor(job.workspace_id) as { trackRecord?: (id: string, excludeJobId: string) => Promise<ValueInput["reliability"]> };
     const records = await Promise.all(eligible.map((q) => (typeof tracker.trackRecord === "function" ? tracker.trackRecord(byId.get(q.business_id)!.business_id, job.id).catch(() => null) : Promise.resolve(null))));
     for (const [i, q] of eligible.entries()) {
       const b = byId.get(q.business_id)!;
@@ -5470,15 +5472,16 @@ export class HaggleEngine {
     // batched follow-up: the missing answers plus the total ask (exact, firm or all-in), once.
     if (missing.length) await this.sendMissingFollowUp(job, { ...b, status }, missing, totalAsk && followupsBefore < 1 ? { totalAsk, firmTotal: firmAsk !== null } : {});
     else if (!needExact && totalAsk && chase && followupsBefore < 1) await this.sendMissingFollowUp(job, { ...b, status }, [], { totalAsk, firmTotal: firmAsk !== null });
-    // Partner's brain learns from every parsed reply; a brain failure never blocks the deal. Profiles are
-    // shared across workspaces (until the brain is tenant-scoped), so only trustworthy readings teach
-    // it: never an unverified sender, a keyword-fallback reading, or a simulated reply on a live job.
+    // Partner's brain learns from every parsed reply; a brain failure never blocks the deal. It learns
+    // into this job's workspace's brain only (brainFor; 202_brain_tenancy), and only from trustworthy
+    // readings: never an unverified sender, a keyword-fallback reading, or a simulated reply on a live
+    // job (the live brain also drops any simulated business's reply itself: dropSimulated).
     const teaches = msg.sender_trusted === true && !heuristicReading(record) && !(job.mode === "live" && msg.simulated);
     if (teaches) try {
       const contractQuote = quoteRow ? toContractQuote(quoteRow, b, { budgetCents: job.budget_cents }) : null;
       // A revised quote answers a counter: did that counter cite a real competing quote?
       const counter = quoteRow && quoteRow.round >= 2 ? (await this.repo.listEvents(job.id)).filter((e) => e.type === "counteroffer" && e.data.business_id === b.business_id && Number(e.data.round) === quoteRow!.round).at(-1) : undefined;
-      await this.d.brain.learnFromReply(b.business_id, toParsedReply(x, contractQuote, questionIds), {
+      await this.brainFor(job.workspace_id).learnFromReply(b.business_id, toParsedReply(x, contractQuote, questionIds), {
         job_id: job.id, business_id: b.business_id, business_name: b.name, business_email: b.email ?? `tel:${b.phone ?? ""}`, message_id: msg.id, thread_id: msg.thread_id ?? "",
         received_at: msg.created_at, rfq_sent_at: b.contacted_at ?? job.created_at, channel: kind === "quote.json" ? "quote.json" : kind === "pdf" ? "pdf" : kind === "a2a task" ? "a2a" : kind === "call transcript" ? "transcript" : "text", reply_channel: msg.channel,
         sender_trusted: msg.sender_trusted === true, sender_trust_reason: msg.trust_reason ?? "unknown", request: job.request, simulated: b.simulated,
@@ -6062,11 +6065,13 @@ export class HaggleEngine {
     const order = new Map(ranking.ranked.map((r, i) => [r.quoteId, i]));
     const rejectedBy = new Map(ranking.rejected.map((r) => [r.quoteId, r.reason]));
     const sorted = [...quotes].sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9) || (a.total_cents ?? 1e12) - (b.total_cents ?? 1e12));
-    // The brain's price check for every priced quote, in parallel (optional: a failure shows none).
+    // The brain's price check for every priced quote, in parallel (optional: a failure shows none),
+    // against this workspace's own prices only.
+    const brain = this.brainFor(job.workspace_id);
     const priceChecks = await Promise.all(sorted.map(async (q): Promise<Quote["price_check"]> => {
       if (q.total_cents === null) return undefined;
       try {
-        const v = await this.d.brain.checkPrice({ business_id: q.business_id, request: { what: job.request.what, quantity: job.request.quantity, area: job.request.area, date: job.request.date }, total_usd: centsToUsd(q.total_cents) });
+        const v = await brain.checkPrice({ business_id: q.business_id, request: { what: job.request.what, quantity: job.request.quantity, area: job.request.area, date: job.request.date }, total_usd: centsToUsd(q.total_cents) });
         return v.verdict !== "unknown" ? v.verdict : undefined;
       } catch { return undefined; /* brain optional */ }
     }));
@@ -6211,7 +6216,8 @@ export class HaggleEngine {
     const finalNext = job.ready && !TERMINAL.has(job.state) && (job.state === "collecting" || job.state === "negotiating") && !pendingQuestions;
     // The slower parts (cross-job contact learning, callback evidence, the next hint) run together.
     const [contactLearning, callbacks, hint, paymentOut] = await Promise.all([
-      Promise.all(businesses.map(async (b) => [b.business_id, await this.contactLearning(b.business_id, await this.businessAliases(b)).catch(() => ({ channels: {} }))] as const)),
+      // This workspace's own jobs only: the board shows counts and the business's own words (stated preference).
+      Promise.all(businesses.map(async (b) => [b.business_id, await this.contactLearning(b.business_id, await this.businessAliases(b), job.workspace_id).catch(() => ({ channels: {} }))] as const)),
       this.callbackProposals(jobId),
       finalNext ? Promise.resolve("") : this.nextHint(job),
       payment ? this.withReceipt(jobId, paymentStatus(payment), events) : this.handoffFor(job, events),
@@ -7136,15 +7142,23 @@ export class HaggleEngine {
   get brainIsStub(): boolean {
     return (this.d.brain as { stub?: boolean }).stub === true;
   }
-  async ask(req: Request) {
-    const estimates = await this.d.brain.estimate(req);
+  /**
+   * The brain as this workspace sees it (its own learned profiles only). Every brain call goes through
+   * here with the job's or caller's workspace; a brain without forWorkspace (the stub) is shared.
+   */
+  private brainFor(workspaceId: string | undefined): Brain {
+    const brain = this.d.brain;
+    return typeof brain.forWorkspace === "function" ? brain.forWorkspace(workspaceId ?? DEFAULT_WORKSPACE_ID) : brain;
+  }
+  async ask(req: Request, workspaceId?: string) {
+    const estimates = await this.brainFor(workspaceId).estimate(req);
     return { estimates, note: "estimates, not quotes" as const, brain: this.brainIsStub ? "stub (not learning yet)" : "connected" };
   }
-  async discover(category: string, area: string, count: number) {
-    return this.d.brain.discover(category, area, Math.min(Math.max(count, 1), 12));
+  async discover(category: string, area: string, count: number, workspaceId?: string) {
+    return this.brainFor(workspaceId).discover(category, area, Math.min(Math.max(count, 1), 12));
   }
-  async checkPrice(input: Parameters<import("../contract.ts").Brain["checkPrice"]>[0]) {
-    return this.d.brain.checkPrice(input);
+  async checkPrice(input: Parameters<import("../contract.ts").Brain["checkPrice"]>[0], workspaceId?: string) {
+    return this.brainFor(workspaceId).checkPrice(input);
   }
   async quoteForCheck(jobId: string, quoteId: string) {
     const job = await this.loadJob(jobId);
@@ -7190,7 +7204,7 @@ export class HaggleEngine {
     const needle = ref.trim().toLowerCase();
     const known = await this.knownBusinesses("", 50, workspaceId);
     const business = known.find((b) => b.business_id === needle || b.slug === needle || b.name.toLowerCase() === needle || b.email === needle) ?? null;
-    const reader = this.d.brain as Partial<ProfileReader>;
+    const reader = this.brainFor(workspaceId) as Partial<ProfileReader>;
     if (typeof reader.getProfile !== "function") return { profile: null, business };
     const profile = await reader.getProfile(business?.business_id ?? needle);
     return { profile, business };
@@ -7207,7 +7221,7 @@ export class HaggleEngine {
         if (!seen.has(b.business_id)) seen.set(b.business_id, { business_id: b.business_id, slug: slugify(b.name), name: b.name, email: b.email ?? "", source: b.source, simulated: b.simulated });
       }
     }
-    if (this.brainIsStub) for (const b of await this.d.brain.discover("", "", 12).catch(() => [] as Business[])) if (!seen.has(b.business_id)) seen.set(b.business_id, b);
+    if (this.brainIsStub) for (const b of await this.brainFor(workspaceId).discover("", "", 12).catch(() => [] as Business[])) if (!seen.has(b.business_id)) seen.set(b.business_id, b);
     const known = [...seen.values()];
     return known.filter((b) => !q || b.name.toLowerCase().includes(q) || b.slug.includes(q)).slice(0, limit);
   }
@@ -7597,9 +7611,10 @@ export class WorkspaceEngine {
   knownBusinesses(query: string, limit?: number) { return this.engine.knownBusinesses(query, limit, this.workspaceId); }
   businessProfile(ref: string) { return this.engine.businessProfile(ref, this.workspaceId); }
   identity() { return this.engine.identity(this.workspaceId); }
-  ask(req: Request) { return this.engine.ask(req); }
-  discover(category: string, area: string, count: number) { return this.engine.discover(category, area, count); }
-  checkPrice(input: Parameters<HaggleEngine["checkPrice"]>[0]) { return this.engine.checkPrice(input); }
+  // The brain as this workspace sees it: its own learned profiles only (brain tenancy, 202_brain_tenancy).
+  ask(req: Request) { return this.engine.ask(req, this.workspaceId); }
+  discover(category: string, area: string, count: number) { return this.engine.discover(category, area, count, this.workspaceId); }
+  checkPrice(input: Parameters<HaggleEngine["checkPrice"]>[0]) { return this.engine.checkPrice(input, this.workspaceId); }
   // Main's tools, workspace-scoped (decision 7).
   recentDeals(limit?: number) { return this.engine.recentDeals(limit, this.workspaceId); }
   async callbackProposals(jobId: string) { await this.own(jobId); return this.engine.callbackProposals(jobId); }

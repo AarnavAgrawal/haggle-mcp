@@ -59,7 +59,8 @@ describe("pilot preflight", () => {
     expect(fails).toEqual([]);
     expect(r.deployment.filter((c) => c.status === "BLOCKED").map((c) => c.name)).toEqual(["webhook subscriptions"]);
     expect(r.exitCode).toBe(3);
-    expect(check(r, "brain tenancy")).toBe("WARN");
+    expect(check(r, "brain tenancy")).toBe("PASS");
+    expect(r.deployment.find((c) => c.name === "brain tenancy")!.detail).toMatch(/scoped per workspace \(202_brain_tenancy\)/);
     expect(r.workspaces[0]!.checks.map((c) => `${c.name}:${c.status}`)).toEqual(["credentials:PASS", "active:PASS", "approver:PASS", "approver verified:PASS", "spending cap:PASS", "vendors:PASS", "default area:PASS", "approver email:PASS"]);
     const out = formatPreflight(r) + JSON.stringify(r);
     expect(out).not.toMatch(SECRETS);

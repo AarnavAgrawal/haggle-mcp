@@ -49,6 +49,47 @@ describe("live memory = observed quotes only", () => {
   });
 });
 
+describe("workspace-scoped memory (makeBrain)", () => {
+  it("observedStore over a workspace view still strips seeds, and stays inside that workspace", async () => {
+    const base = new MemoryStore();
+    await createBrain({ store: base.forWorkspace("ws_alpha"), seed: true }).ready;
+    const alpha = observedStore(base).forWorkspace!("ws_alpha");
+    expect(await base.forWorkspace("ws_alpha").get("biz_mission_eats")).not.toBeNull(); // the raw seed row
+    expect(await alpha.get("biz_mission_eats")).toBeNull(); // seed-only: invisible
+    const r = reply("job_real_ws", 7000, 200);
+    await createBrain({ store: alpha }).learnFromReply("biz_mission_eats", r.parsed, r.meta);
+    expect((await alpha.get("biz_mission_eats"))?.history.map((h) => h.job_id)).toEqual(["job_real_ws"]);
+    expect(await observedStore(base).forWorkspace!("ws_beta").get("biz_mission_eats")).toBeNull();
+    expect(await observedStore(base).get("biz_mission_eats")).toBeNull(); // ws_default
+  });
+
+  it("live (observed): each workspace's brain learns only its own real replies and drops simulated ones", async () => {
+    const brain = makeBrain([], { HAGGLE_BRAIN_STORE: "memory" }, { observed: true });
+    const a = brain.forWorkspace("ws_alpha");
+    const b = brain.forWorkspace("ws_beta");
+    const real = reply("job_real_a", 7000, 200);
+    await a.core.learnFromReply("biz_mission_eats", real.parsed, real.meta);
+    const sim = reply("job_sim_a", 5000, 200);
+    await a.core.learnFromReply("biz_golden_grill", sim.parsed, { ...sim.meta, business_name: "Golden Grill", simulated: true });
+    expect((await a.core.getProfile("biz_mission_eats"))?.n_quotes).toBe(1);
+    expect(await a.core.getProfile("biz_golden_grill")).toBeNull();
+    expect(await b.core.getProfile("biz_mission_eats")).toBeNull();
+    expect(await b.core.estimate({ what: "catering", quantity: 200, area: "San Francisco" })).toEqual([]);
+    expect(await brain.core.getProfile("biz_mission_eats")).toBeNull(); // ws_default
+  });
+
+  it("mock: every workspace gets the labelled samples and learns from simulated replies, apart from the others", async () => {
+    const brain = makeBrain([], { HAGGLE_BRAIN_STORE: "memory" });
+    const a = brain.forWorkspace("ws_alpha");
+    const b = brain.forWorkspace("ws_beta");
+    const seeded = (await b.core.getProfile("biz_mission_eats"))!.n_quotes;
+    const sim = reply("job_sim_mock", 7000, 200);
+    await a.core.learnFromReply("biz_mission_eats", sim.parsed, { ...sim.meta, simulated: true });
+    expect((await a.core.getProfile("biz_mission_eats"))!.n_quotes).toBe(seeded + 1);
+    expect((await b.core.getProfile("biz_mission_eats"))!.n_quotes).toBe(seeded);
+  });
+});
+
 describe("one identity from profile to deal", () => {
   it("a configured vendor finds its memory under the older contact-only id; a different business on the same phone does not", async () => {
     const base = new MemoryStore();

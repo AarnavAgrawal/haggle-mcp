@@ -51,7 +51,7 @@ Each new engine test was run and seen failing before its fix.
 - Mock or demo servers keep the old card, form and simulated flows (labelled DEMO) unless `HAGGLE_APPROVALS=out_of_band`.
 
 **Still open after pass 1:**
-- **High, shared resources needing Aarnav (not changed here):** brain profiles are shared across workspaces (no `workspace_id`; `ask`, `business_profile` and `check_price` mix tenants), and simulated quotes are learned as real.
+- **High, shared resources needing Aarnav (not changed here):** brain profiles are shared across workspaces (no `workspace_id`; `ask`, `business_profile` and `check_price` mix tenants), and simulated quotes are learned as real. **Done (hardening, 2026-10-25):** profiles are scoped per workspace (`202_brain_tenancy`, one brain per workspace through the engine and the MCP tools), and the live brain drops simulated replies (`dropSimulated`); mock still learns from the simulated fleet.
 - **Shared, server-wide (Yash's, still to do):**
   - One Inkbox buyer identity, mailbox and phone for every workspace.
   - One Stripe customer and card.
@@ -69,8 +69,8 @@ Each new engine test was run and seen failing before its fix.
 
 **Needs Aarnav or a shared-contract decision:**
 1. `apps/mcp/views/deal-board` and `views/approval` should show the live state ("approve by replying YES to Haggle's text") when no ticket comes back. Today they degrade to "Approval is pending."
-2. Brain tenancy (`2xx` migration adding `workspace_id`, or aggregate-only sharing).
-3. Skip learning from `meta.simulated` and keyword-fallback quotes.
+2. ~~Brain tenancy (`2xx` migration adding `workspace_id`, or aggregate-only sharing).~~ Done: `202_brain_tenancy`, per-workspace brain instances (no `packages/core` change).
+3. Skip learning from `meta.simulated` and keyword-fallback quotes. Done for simulated (engine gate on live jobs, plus the live brain's `dropSimulated`) and keyword-fallback (engine gate); `ReplyMeta.extraction` is still a `packages/core` proposal.
 4. Optionally add `unreliable_extraction` to `QUOTE_FLAGS` / view schemas in `packages/core`, so views can show it as a flag rather than only as the approval block reason.
 
 ### Pass 2: toward a real-vendor pilot (2026-10-21)
@@ -124,7 +124,7 @@ New suite: `packages/engine/tests/pilotSafety.test.ts` (in-memory plus Postgres)
   - In-memory `lastSms` reply routing and held texts. Notify dedupe is now durable through the outbox.
   - ~~`call_back` still trusts a board or form authorization.~~ **Resolved** (`2adea66`, `e42d1b8`): see pass 1 "Medium" above.
   - Named lookup of workspace vendors: the agent must pass the vendor's contact; name-only resolution still uses the server roster.
-- **Still open, Aarnav's lane:** the brain tenancy and simulated-learning items listed under pass 1.
+- **Still open, Aarnav's lane:** the brain tenancy and simulated-learning items listed under pass 1 (since done: see pass 1).
 
 **Changes needing Aarnav or a shared-contract decision:**
 1. The views should show the handoff. The board's `payment` line already carries rail `manual` and statuses `awaiting_invoice` / `invoice_received` / `settled`, plus a reason. Useful additions: a "pay the business directly, then reply PAID <code>" state, and the business's instructions shown as untrusted text, with links not clickable.
@@ -169,7 +169,7 @@ Verified on the fully merged tree:
 - Inkbox exposes no Authentication-Results. Ask for them, per message; `AuthEvidence` already consumes them.
 - The live webhook subscription lacks `message.bounced` and `message.failed`.
 - No staging environment. Live migrations 103–111 aren't applied, and the CI workflow has never run on GitHub.
-- The views and `packages/core` don't show the booking/handoff stages yet (Aarnav, §11 of the sprint report). Brain tenancy is still open.
+- The views and `packages/core` don't show the booking/handoff stages yet (Aarnav, §11 of the sprint report). Brain tenancy was still open then (since done: `202_brain_tenancy`).
 
 ### Pass 4: sprint 4, pilot readiness (2026-10-22)
 
@@ -205,7 +205,7 @@ Verified on the fully merged tree:
 - Inkbox gives no sender-authentication results.
 - No staging environment; live migrations 103–117 not applied.
 - Sprint-4 push blocked pending your decision (GitHub push protection on synthetic test secrets).
-- Views and `packages/core` don't show the new stages yet; brain tenancy is still open (Aarnav).
+- Views and `packages/core` don't show the new stages yet; brain tenancy was still open then (Aarnav; since done: `202_brain_tenancy`).
 
 ### Pass 5: sprint 5, release candidate (2026-10-22)
 

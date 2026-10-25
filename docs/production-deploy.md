@@ -347,4 +347,4 @@ The criteria for rolling back are in [runbook-incidents.md](runbook-incidents.md
 - **Legal.** Terms, Privacy and Acceptable Use are drafts, and the calling and texting rules above need counsel's sign-off.
 - **No browser end-to-end tests** of the web app. Pages are checked by hand. The CSP uses `'unsafe-inline'` for Next's inline scripts and styles (no nonces yet).
 - **The container image was built only in CI**, not on a production host yet. The Vercel cron and the alternatives in §5.1 haven't been run against a production server.
-- **Brain tenancy.** Business profiles learned from one workspace's deals inform estimates for others: see `pilot-preflight`'s brain-tenancy WARN.
+- **Brain tenancy: fixed in code; one operator step.** Business profiles are scoped per workspace (`202_brain_tenancy`): one workspace's deals never inform another's estimates, price checks or profiles. Apply `supabase/migrations/202_brain_tenancy.sql` to the brain's database **before** deploying that build (`docs/deployment.md` §4); `pilot-preflight` reports PASS from the build alone and can't see whether 202 was applied. Profiles learned before 202 stay under `ws_default`.

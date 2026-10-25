@@ -13,7 +13,7 @@
 // migration ledger read-only, the production-database guard), plus the pilot's own: manual payments
 // only, the vendor-contact window, webhook signing secret and Inkbox identity configured (presence
 // only: nothing is called), HAGGLE_ALLOWED_RECIPIENTS not wider than named contacts, an alert
-// webhook, no simulated vendors configured on production, and the known brain-tenancy gap.
+// webhook, no simulated vendors configured on production, and brain tenancy (per-workspace profiles).
 // Workspace checks: exists, credentials active, not suspended, approver set and verified, cap,
 // at least 3 vendors with valid contacts and recorded consent (not suppressed, not simulated), area.
 // Reads the database only. Never calls Stripe, Anthropic or the MCP server; Inkbox only with
@@ -121,7 +121,9 @@ export function deploymentChecks(env: Env, target: HaggleEnv): PreflightCheck[] 
   add(!demo.length
     ? { name: "simulated vendors", status: "PASS", detail: "no demo vendors configured" }
     : { name: "simulated vendors", status: prod ? "FAIL" : "WARN", detail: `${demo.length} demo vendor contact(s) configured (HAGGLE_DEMO_VENDORS / HAGGLE_DEMO_FLEET)`, fix: "remove them from a pilot deployment; real vendors go on each workspace with consent" });
-  add({ name: "brain tenancy", status: "WARN", detail: "known gap: learned business profiles are shared across workspaces (ask, check_price, price checks, negotiation hints)", fix: "packages/core + brain change (Aarnav, docs/sprint-4-report.md §9); with one pilot workspace the effect is nil" });
+  // This build scopes the brain per workspace; the check has no database handle for brain_profiles, so
+  // it can't see whether 202 was applied (the brain's 2xx files are outside the engine ledger).
+  add({ name: "brain tenancy", status: "PASS", detail: "learned profiles are scoped per workspace (202_brain_tenancy); this build's code only: apply 202_brain_tenancy.sql to the brain's database before deploying it (not checked here)" });
   return out;
 }
 

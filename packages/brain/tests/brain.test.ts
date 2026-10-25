@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BusinessProfile, Estimate, Estimates, Hints, PriceVerdict, Business, Profile } from "@haggle/core";
-import { createBrain, createStubBrain, MemoryStore, toBusinessProfileView, toEstimatesView } from "../index.ts";
+import { createBrain, createStubBrain, createWorkspaceBrains, MemoryStore, toBusinessProfileView, toEstimatesView } from "../index.ts";
 
 const seeded = async () => {
   const brain = createBrain({ store: new MemoryStore(), seed: true, now: () => new Date("2026-10-17T12:00:00-07:00") });
@@ -134,5 +134,88 @@ describe("brain (seeded from fixtures/brain/seed-replies.json)", () => {
     expect(view.note).toMatch(/not quotes/);
     expect(view.next).toMatch(/^To get confirmed prices, call deal\(/);
     expect(toEstimatesView({ what: "movers" }, []).next).toMatch(/discover=true/);
+  });
+});
+
+// ── tenancy: one brain instance per workspace over a workspace-scoped store view ──
+
+const harborQuote = (job_id: string, total_usd: number, simulated = false) => ({
+  parsed: { kind: "quote" as const, total_usd, quantity: 40, items: ["Mediterranean buffet"], confidence: 0.9 },
+  meta: { job_id, business_name: "Harbor Table", channel: "email" as const, contacted_at: "2026-10-17T10:00:00Z", received_at: "2026-10-17T10:20:00Z", round: 1, request: { what: "lunch catering", quantity: 40, area: "San Francisco" }, simulated },
+});
+
+describe("workspace brains (createWorkspaceBrains)", () => {
+  it("what workspace A learns never reaches workspace B: estimate, checkPrice, getProfile, hints, discover ranking", async () => {
+    const brains = createWorkspaceBrains({ store: new MemoryStore() });
+    const a = brains.forWorkspace("ws_alpha");
+    const b = brains.forWorkspace("ws_beta");
+    expect(brains.forWorkspace("ws_alpha")).toBe(a); // one instance per workspace
+
+    // Discover ranks learned businesses first: pick one a fresh brain ranks last.
+    const fresh = await createBrain({ store: new MemoryStore() }).discover("catering", "San Francisco", 6);
+    const target = fresh.at(-1)!;
+    for (const [i, total] of [1120, 1160, 1200].entries()) {
+      const r = harborQuote(`job_alpha_${i}`, total);
+      await a.learnFromReply(target.id, r.parsed, { ...r.meta, business_name: target.name });
+    }
+
+    const req = { what: "lunch catering", quantity: 40, area: "San Francisco" };
+    expect((await a.estimate(req)).map((e) => e.business_id)).toEqual([target.id]);
+    expect(await b.estimate(req)).toEqual([]);
+
+    expect(await a.getProfile(target.id)).toMatchObject({ n_quotes: 3 });
+    expect(await b.getProfile(target.id)).toBeNull();
+    expect(await b.getProfile(target.name)).toBeNull(); // the name-scan fallback reads B's own list only
+
+    const price = { total_usd: 1400, quantity: 40, area: "San Francisco", category: "catering" };
+    expect((await a.checkPrice(price)).sample_size).toBe(3);
+    expect((await b.checkPrice(price)).sample_size).toBe(0); // baseline only
+
+    expect((await a.negotiationHints(target.id, req)).business_id).toBe(target.id);
+    expect((await b.negotiationHints(target.id, req)).confidence).toBeLessThan(0.5);
+
+    expect((await a.discover("catering", "San Francisco", 6))[0]!.id).toBe(target.id);
+    expect((await b.discover("catering", "San Francisco", 6)).map((x) => x.id)).toEqual(fresh.map((x) => x.id));
+  });
+
+  it("seeding (mock) runs per workspace: each gets the samples, and learning in A leaves B's samples as they were", async () => {
+    const brains = createWorkspaceBrains({ store: new MemoryStore(), seed: true });
+    const a = brains.forWorkspace("ws_alpha");
+    const b = brains.forWorkspace("ws_beta");
+    await Promise.all([a.ready, b.ready]);
+    const before = (await b.getProfile("biz_harbor_table"))!.n_quotes;
+    expect((await a.getProfile("biz_harbor_table"))!.n_quotes).toBe(before);
+    const r = harborQuote("job_alpha_x", 1150);
+    await a.learnFromReply("biz_harbor_table", r.parsed, r.meta);
+    expect((await a.getProfile("biz_harbor_table"))!.n_quotes).toBe(before + 1);
+    expect((await b.getProfile("biz_harbor_table"))!.n_quotes).toBe(before);
+    expect((await b.getProfile("biz_harbor_table"))!.history.map((h) => h.job_id)).not.toContain("job_alpha_x");
+  });
+
+  it("refuses an empty workspace id instead of falling back to a shared view", () => {
+    expect(() => createWorkspaceBrains({ store: new MemoryStore() }).forWorkspace("")).toThrow(/workspace/);
+  });
+});
+
+describe("dropSimulated (the live, observed brain)", () => {
+  it("ignores a simulated reply: the profile is unchanged; a real reply still teaches it", async () => {
+    const store = new MemoryStore();
+    const brain = createBrain({ store, dropSimulated: true });
+    const sim = harborQuote("job_sim", 900, true);
+    await brain.learnFromReply("biz_harbor_table", sim.parsed, sim.meta);
+    expect(await store.get("biz_harbor_table")).toBeNull();
+    const real = harborQuote("job_real", 1150);
+    await brain.learnFromReply("biz_harbor_table", real.parsed, real.meta);
+    const learned = await store.get("biz_harbor_table");
+    expect(learned?.n_quotes).toBe(1);
+    await brain.learnFromReply("biz_harbor_table", sim.parsed, sim.meta);
+    expect(await store.get("biz_harbor_table")).toEqual(learned);
+  });
+
+  it("without it (mock) a simulated reply still teaches the brain: the warm ask demo depends on it", async () => {
+    const store = new MemoryStore();
+    const sim = harborQuote("job_sim", 900, true);
+    await createBrain({ store }).learnFromReply("biz_harbor_table", sim.parsed, sim.meta);
+    expect((await store.get("biz_harbor_table"))?.n_quotes).toBe(1);
   });
 });

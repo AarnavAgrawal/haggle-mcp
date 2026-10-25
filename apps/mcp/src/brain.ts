@@ -1,12 +1,13 @@
 // The real brain (@haggle/brain) behind the engine's adapter. Profiles go to Supabase when
-// SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set (needs migration 200_brain_profiles), else to
-// HAGGLE_BRAIN_FILE / memory (see .env.example). Seeded so warm asks work from minute one.
+// SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set (needs migrations 200-202: 202_brain_tenancy keys
+// them by workspace), else to HAGGLE_BRAIN_FILE / memory (see .env.example). Each workspace has its
+// own brain over its own profiles. Mock is seeded so warm asks work from minute one.
 //
 // Resilience: HAGGLE_BRAIN_STORE=memory always wins (storeFromEnv prefers Supabase whenever its
 // keys exist), and a failing start-up (seed / profile load, e.g. Supabase unreachable or missing
 // grants) is logged instead of crashing the MCP server: brain calls then fail per request and the
 // engine keeps working (learnFromReply failures never block a deal).
-import { createBrain, loadDirectory, storeFromEnv, type ProfileStore } from "@haggle/brain";
+import { createWorkspaceBrains, DEFAULT_WORKSPACE_ID, loadDirectory, storeFromEnv, type ProfileStore } from "@haggle/brain";
 import type { Profile } from "@haggle/core";
 import { BrainAdapter, type BrainAdapterOptions, type EngineContact } from "@haggle/engine";
 
@@ -32,8 +33,9 @@ export function observedOnly(p: Profile | null): Profile | null {
 
 /**
  * A profile with only the history rows whose deal `keep` accepts, and everything derived from the
- * others dropped or recomputed (as observedOnly). Profiles are shared across workspaces: an agent is
- * shown its own workspace's rows only (business_profile), never another tenant's deals or replies.
+ * others dropped or recomputed (as observedOnly). Profiles are scoped per workspace (202_brain_tenancy);
+ * business_profile still keeps only its own workspace's rows as a second guard (and for profiles
+ * learned before tenancy), never another tenant's deals or replies.
  */
 export function historyOnly(p: Profile | null, keep: (jobId: string) => boolean, opts: { exact?: boolean } = {}): Profile | null {
   if (!p) return null;
@@ -65,26 +67,40 @@ export function historyOnly(p: Profile | null, keep: (jobId: string) => boolean,
   };
 }
 
-/** Live: the store seen through observedOnly. A learn step reads the cleaned profile, so it writes it back clean. */
+/**
+ * Live: the store seen through observedOnly. A learn step reads the cleaned profile, so it writes it
+ * back clean. A workspace view of it is the cleaned view of that workspace's rows.
+ */
 export function observedStore(store: ProfileStore): ProfileStore {
   return {
     get: async (id) => observedOnly(await store.get(id)),
     list: async () => (await store.list()).map(observedOnly).filter((p): p is Profile => p !== null),
     put: (p) => store.put(p),
+    ...(store.forWorkspace ? { forWorkspace: (ws: string) => observedStore(store.forWorkspace!(ws)) } : {}),
   };
 }
 
 /**
- * `observed: true` (live): synthetic seed samples are never replayed and never read back. Mock keeps
- * them so simulated demos have warm estimates from minute one (always labelled as samples).
+ * One brain per workspace (createWorkspaceBrains over workspace views of the store, migration
+ * 202_brain_tenancy): what one workspace's deals teach Haggle is never estimated from, price-checked
+ * against, ranked by or shown to another. `brain.core` is the default workspace's (ws_default);
+ * tools use `brain.forWorkspace(ws)` (index.ts run() hands each tool its workspace's adapter).
+ * `observed: true` (live): synthetic seed samples are never replayed and never read back, and a
+ * simulated business's reply never teaches it (dropSimulated). Mock keeps the samples, per workspace,
+ * so simulated demos have warm estimates from minute one (always labelled as samples), and learns
+ * from the simulated fleet (the warm `ask` demo).
  */
 export function makeBrain(fleet: EngineContact[], env: NodeJS.ProcessEnv = process.env, extra: Pick<BrainAdapterOptions, "discovery"> & { observed?: boolean } = {}): BrainAdapter {
   const { observed = false, ...rest } = extra;
   const base = storeFromEnv(brainStoreEnv(env));
-  const core = createBrain({ store: observed ? observedStore(base) : base, seed: !observed });
-  core.ready.catch((e: unknown) => {
-    console.error(JSON.stringify({ level: "warn", event: "brain_start_failed", error: String((e as Error)?.message ?? e).slice(0, 200), hint: "check SUPABASE_URL and grants on brain_profiles, or set HAGGLE_BRAIN_STORE=memory" }));
-  });
+  const brains = createWorkspaceBrains({ store: observed ? observedStore(base) : base, seed: !observed, dropSimulated: observed });
+  const coreFor = (ws: string) => {
+    const core = brains.forWorkspace(ws);
+    core.ready.catch((e: unknown) => {
+      console.error(JSON.stringify({ level: "warn", event: "brain_start_failed", workspace_id: ws, error: String((e as Error)?.message ?? e).slice(0, 200), hint: "check SUPABASE_URL, migration 202_brain_tenancy and grants on brain_profiles, or set HAGGLE_BRAIN_STORE=memory" }));
+    });
+    return core;
+  };
   // The default directory is the synthetic seed set: live identities never map onto it.
-  return new BrainAdapter({ brain: core, directory: observed ? [] : loadDirectory(), fleet, ...rest });
+  return new BrainAdapter({ brain: coreFor(DEFAULT_WORKSPACE_ID), coreFor, directory: observed ? [] : loadDirectory(), fleet, ...rest });
 }

@@ -317,7 +317,7 @@ Flakiness seen during the sprint:
 5. **High: live database far behind.** Migrations 103–117 aren't applied to the live database, and there's no verified backup or point-in-time-recovery plan.
 6. **High: push blocked.** Sprint-4 code can't reach GitHub or CI until the push-protection hits are resolved (§11).
 7. **Medium: views and shared contracts.** They don't show the new stages yet: booking awaiting confirmation, `BOOKED`, `handoff_refused`, selection reasons, flags (Aarnav, §9).
-8. **Medium: brain tenancy.** Profiles are still shared across workspaces: `ask`, `check_price`, the board's price check and negotiation hints mix tenants (Aarnav).
+8. **Medium: brain tenancy.** Profiles are still shared across workspaces: `ask`, `check_price`, the board's price check and negotiation hints mix tenants (Aarnav). *Since fixed (2026-10-25): `202_brain_tenancy`, one brain per workspace, no `contracts.ts` change.*
 9. **Medium: one shared Inkbox identity and phone line for every workspace.** Routing is safe but ambiguous texts are held. A held text can be released by an operator only through the engine; there's no CLI yet.
 10. **Low: per-process limits and counters.** Rate limits, AI limits and alert dedupe aren't shared across replicas.
 
@@ -334,7 +334,7 @@ Flakiness seen during the sprint:
   - DealBoard gains `selection`, `vendor_contact` and `purchase.{order, must_haves, confirm_only}`.
   - `QUOTE_FLAGS` gains `date_mismatch`, `delivery_window_mismatch`, `identity_mismatch` and `fees_unclear`.
   - `ReplyMeta.extraction: "claude" | "heuristic"`.
-- [ ] **Brain tenancy:**
+- [x] **Brain tenancy** (done 2026-10-25 as option (a), `202_brain_tenancy`; scoped by brain instance per workspace instead of a `workspaceId` argument, so no `contracts.ts` change):
   - Add a `workspaceId` argument to `learnFromReply`, `estimate`, `checkPrice`, `negotiationHints` and `getProfile` (a `contracts.ts` change).
   - Then either `brain_profiles.workspace_id` keyed `(workspace_id, business_id)` in a 2xx migration, or per-workspace profiles plus a numbers-only aggregate used only when at least 3 workspaces contribute.
   - The engine already skips unverified, heuristic and simulated-on-live replies. The brain should honour `meta.extraction` too.

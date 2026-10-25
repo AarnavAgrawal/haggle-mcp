@@ -255,6 +255,12 @@ export interface Brain {
   checkPrice(q: QuoteLike): Promise<PriceVerdict>;
   negotiationHints(businessId: string, req: Request): Promise<Hints>;
   discover(category: string, area: string, count: number): Promise<Business[]>;
+  /**
+   * Engine-internal (not packages/core): this brain as one workspace sees it, learning from and
+   * answering with that workspace's profiles only. Absent = one brain shared by every workspace
+   * (the stub). The engine always goes through it with the job's / caller's workspace.
+   */
+  forWorkspace?(workspaceId: string): Brain;
 }
 
 /* ───────────────────────── email JSON parts (application/json attachments) ───────────────────────── */

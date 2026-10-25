@@ -223,7 +223,7 @@ line. BLOCKED means the fix is outside the session: a provider dashboard, or the
   - `HAGGLE_ALLOWED_RECIPIENTS` has no whole-domain entries;
   - an alert webhook is set;
   - no demo vendors are configured;
-  - the known brain-tenancy gap (always WARN until Aarnav's change lands).
+  - brain tenancy (PASS: learned profiles are scoped per workspace; apply `202_brain_tenancy.sql` before deploying, which this check can't see).
 - **Each workspace:**
   - credentials active, and not suspended;
   - an approver phone, and that phone verified;

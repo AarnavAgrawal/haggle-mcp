@@ -194,6 +194,17 @@ npx tsx apps/mcp/scripts/migrations.ts verify
 | `118_engine_booking` (A), `119_engine_pilot` (B), `120_engine_release` (C, not added), `121_engine_security2` (D), `122_engine_metrics` (E) | Sprint 5 workstreams | **Each on 100–117 alone** | As above | Per file, in its header |
 | `123_engine_web_approvals` | Web app: approvals decided by the signed-in account owner (channel `web`) | On 100–122 | Additive; safe to re-run | In its header |
 
+**The brain's migrations** (applied to the database the brain's `SUPABASE_URL` points at; not engine files, so not in the ledger and `migrations.ts verify` ignores them):
+
+| File | What | Depends on | Compatibility with code already running | Rollback limit |
+|---|---|---|---|---|
+| `200_brain_profiles`, `201_brain_profiles_grants` | Learned business profiles; service-role-only grants | – | – | Restore only |
+| `202_brain_tenancy` | `brain_profiles.workspace_id` (existing rows backfilled to `ws_default`), key `(workspace_id, business_id)`, index `(workspace_id, category, area)`. No foreign key to `workspaces` (it may apply before 103) | 200 | **Apply before deploying the build that scopes the brain per workspace** (that build filters every brain query by `workspace_id` and upserts on `(workspace_id, business_id)`; before 202 those queries fail and `ask` / `check_price` error). Older code still runs after 202 (its writes land in `ws_default` through the default and the primary key), but its reads aren't filtered: they mix workspaces again, and a business with rows in several workspaces makes its one-row read fail. Don't run old and new builds side by side. Safe to re-run | Dropping the column needs the old single-column key back: restore only. Profiles learned before 202 stay under `ws_default`: if one pilot workspace produced them, an operator may move them with `update brain_profiles set workspace_id = 'ws_<id>' where workspace_id = 'ws_default'` |
+
+  ```bash
+  psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -1 -f supabase/migrations/202_brain_tenancy.sql
+  ```
+
 **Checks on every CI run:**
 - **`scripts/verify-migrations.sh`:**
   - applies every file in order and runs the SQL assertions;

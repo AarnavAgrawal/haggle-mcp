@@ -34,34 +34,75 @@ export interface EngineContact {
 }
 
 export interface BrainAdapterOptions {
+  /** The default workspace's brain (ws_default), or the only brain when `coreFor` is absent. */
   brain: CoreBrain;
+  /**
+   * Tenancy: the brain of one workspace (createWorkspaceBrains().forWorkspace). With it, forWorkspace()
+   * gives each workspace an adapter over its own brain; without it, every workspace shares `brain`.
+   */
+  coreFor?: (workspaceId: string) => CoreBrain;
   directory?: DirectoryContact[];
   fleet?: EngineContact[];
   /** Mock mode: discover offers only these (the simulated fleet the mock email port can play). */
   discovery?: Business[];
 }
 
+type AliasFn = (b: { business_id: string; name: string; email?: string | null; phone?: string | null }) => Promise<string[]>;
+
 const norm = (s: string | undefined | null) => (s ?? "").trim().toLowerCase();
+const DEFAULT_WORKSPACE = "ws_default"; // store/types.ts DEFAULT_WORKSPACE_ID (kept import-free here)
 
 export class BrainAdapter implements Brain {
-  /** The real brain, for callers (MCP warm-path tools) that speak the v5 contract directly. */
+  /**
+   * The real brain of the default workspace (ws_default), for callers that speak the v5 contract
+   * directly. A multi-tenant caller uses forWorkspace(ws).core instead: this one never sees another
+   * workspace's profiles, and other workspaces never see its.
+   */
   readonly core: CoreBrain;
   private readonly directory: DirectoryContact[];
   private readonly engine = new Map<string, EngineContact>();
   private readonly discovery: Business[] | undefined;
+  private readonly coreFor: ((workspaceId: string) => CoreBrain) | undefined;
+  /** The adapter forWorkspace() was called on (children delegate aliases and forWorkspace to it). */
+  private readonly root: BrainAdapter | undefined;
+  private readonly children = new Map<string, BrainAdapter>();
   /** Older ids of a business from Haggle's own job records (engine.businessAliases); see useAliases. */
-  private aliases: ((b: { business_id: string; name: string; email?: string | null; phone?: string | null }) => Promise<string[]>) | null = null;
+  private aliases: AliasFn | null = null;
 
-  /** Wire the engine's record-based aliases (the brain is built before the engine). */
-  useAliases(fn: (b: { business_id: string; name: string; email?: string | null; phone?: string | null }) => Promise<string[]>): void {
-    this.aliases = fn;
+  /** Wire the engine's record-based aliases (the brain is built before the engine). Workspace adapters use the root's. */
+  useAliases(fn: AliasFn): void {
+    (this.root ?? this).aliases = fn;
   }
 
-  constructor(opts: BrainAdapterOptions) {
+  constructor(opts: BrainAdapterOptions, root?: BrainAdapter) {
     this.core = opts.brain;
+    this.coreFor = opts.coreFor;
+    this.root = root;
     this.directory = opts.directory ?? [];
     for (const b of opts.fleet ?? []) this.engine.set(b.business_id, b);
     this.discovery = opts.discovery;
+  }
+
+  /**
+   * This brain as one workspace sees it: an adapter over that workspace's own brain (cached), so
+   * learning, estimates, price checks, hints, profiles, track records and discovery ranking stay in
+   * the workspace. ws_default is this adapter. Without `coreFor` every workspace gets this adapter
+   * (one shared brain: the pre-tenancy behaviour, kept for single-brain callers and tests).
+   */
+  forWorkspace(workspaceId: string): BrainAdapter {
+    if (this.root) return this.root.forWorkspace(workspaceId);
+    if (!this.coreFor || workspaceId === DEFAULT_WORKSPACE) return this;
+    let child = this.children.get(workspaceId);
+    if (!child) {
+      // Its own copy of the known contacts (discover adds to it), the same directory and discovery list.
+      child = new BrainAdapter({ brain: this.coreFor(workspaceId), directory: this.directory, fleet: [...this.engine.values()], ...(this.discovery ? { discovery: this.discovery } : {}) }, this);
+      this.children.set(workspaceId, child);
+    }
+    return child;
+  }
+
+  private get aliasFn(): AliasFn | null {
+    return this.root ? this.root.aliases : this.aliases;
   }
 
   /** Brain (directory) id for an engine business id. */
@@ -99,8 +140,11 @@ export class BrainAdapter implements Brain {
     if (!name || !(email || phone)) return id;
     // Haggle's own records first: the same name on the same contact in an earlier job is the same
     // business, whatever name the brain profile carries (e.g. a mailbox's old display name).
-    if (this.aliases) {
-      for (const alias of (await this.aliases({ business_id: engineId, name, email: email ?? null, phone: phone ?? null }).catch(() => [])).filter((a) => a !== engineId)) {
+    // (Aliases come from job rows of any workspace, but only pick a key: the profile under it is read
+    // from this workspace's brain, so another tenant's memory is never reached through them.)
+    const aliases = this.aliasFn;
+    if (aliases) {
+      for (const alias of (await aliases({ business_id: engineId, name, email: email ?? null, phone: phone ?? null }).catch(() => [])).filter((a) => a !== engineId)) {
         const p = await this.core.getProfile(alias);
         if (p && p.business_id === alias) return alias;
       }
