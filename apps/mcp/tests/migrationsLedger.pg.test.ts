@@ -10,9 +10,10 @@ import { planMigrations, selectForRecord } from "../scripts/migrations.ts";
 
 const URL_ = process.env.HAGGLE_TEST_DATABASE_URL;
 const files = repoMigrations(findMigrationsDir(import.meta.dirname)!);
-const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
+// tsx through node: the .bin shim can't be spawned without a shell on Windows.
+const TSX_CLI = join(import.meta.dirname, "..", "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
 const SCRIPT = join(import.meta.dirname, "..", "scripts", "migrations.ts");
-const cli = (...args: string[]) => spawnSync(TSX, [SCRIPT, ...args], { env: { PATH: process.env.PATH ?? "", SUPABASE_DB_URL: URL_! }, encoding: "utf8", timeout: 60_000 });
+const cli = (...args: string[]) => spawnSync(process.execPath, [TSX_CLI, SCRIPT, ...args], { env: { PATH: process.env.PATH ?? "", SUPABASE_DB_URL: URL_! }, encoding: "utf8", timeout: 60_000 });
 
 describe.skipIf(!URL_)("migration ledger on Postgres", () => {
   const sql = URL_ ? ledgerClient(URL_) : null!;
