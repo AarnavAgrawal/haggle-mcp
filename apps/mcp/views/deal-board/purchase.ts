@@ -65,6 +65,23 @@ export function keepPolling(jobState: string, purchase: Pick<PurchaseLike, "stag
   return jobState === "paid" && purchase?.rail === "manual" && !purchaseSettled(purchase.stage);
 }
 
+/** Pause between live-update ticks of an active job (each tick is a wait_for_update long-poll of up to 20 s). */
+export const POLL_MS = 4_000;
+/** After a failed tick. */
+export const RETRY_MS = 10_000;
+/**
+ * A "paid" job whose manual payment is only reported (or a cancel asked after paying): the server's
+ * wait_for_update returns at once for a terminal job, so there is no long-poll; check this often.
+ */
+export const SETTLING_POLL_MS = 30_000;
+
+/** Milliseconds until the board's next live-update tick, or null to stop (nothing more can happen). */
+export function nextPollDelay(jobState: string, purchase: Pick<PurchaseLike, "stage" | "rail"> | null | undefined, failures: number): number | null {
+  if (!keepPolling(jobState, purchase)) return null;
+  if (TERMINAL_STATES.has(jobState)) return SETTLING_POLL_MS; // errors never make it faster
+  return failures > 0 ? RETRY_MS : POLL_MS;
+}
+
 const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
 
 /** "the $200 deposit" or "the $995 total". */

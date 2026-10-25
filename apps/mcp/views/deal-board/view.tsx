@@ -22,13 +22,11 @@ import { formatField, parseToolError } from "../_shared/format.ts";
 import { EntryList, Reply, mergeEntries } from "../conversation/thread.tsx";
 import { approvalBlock, boardContext, choiceFor, choosableCount, isUnsafe, negotiationLine, negotiationWarning, replaceableApproval, type Choice } from "./options.ts";
 import {
-  CONFIRM_ONLY_NOTE, LINK_WARNING, STEP_LABELS, TERMINAL_STATES, amountWords, isManual, keepPolling, payStepSub, purchaseDone, purchaseHeadline, purchaseStep, vendorWordsLabel, yourStep, type PurchaseLike,
+  CONFIRM_ONLY_NOTE, LINK_WARNING, POLL_MS, STEP_LABELS, TERMINAL_STATES, amountWords, isManual, keepPolling, nextPollDelay, payStepSub, purchaseDone, purchaseHeadline, purchaseStep, vendorWordsLabel, yourStep, type PurchaseLike,
 } from "./purchase.ts";
 import "./view.css";
 
 const TERMINAL = TERMINAL_STATES;
-const POLL_MS = 4000;
-const RETRY_MS = 10_000;
 
 type Sync = { at: number | null; trouble: boolean };
 
@@ -92,6 +90,9 @@ export default function DealBoardView() {
   // Under the manual handoff a "paid" job means the customer reports paying: keep polling until the
   // business confirms it received the money.
   const active = board ? keepPolling(board.job.state, board.purchase) : false;
+  // The poll reads the latest board's state and purchase stage for its cadence (nextPollDelay).
+  const pollState = useRef<{ state: string; purchase: DealBoard["purchase"] }>({ state: "", purchase: undefined });
+  pollState.current = { state: board?.job.state ?? "", purchase: board?.purchase };
 
   const reload = useCallback(async (id: string) => {
     const next = await refresh.callTool({ job_id: id });
@@ -105,7 +106,9 @@ export default function DealBoardView() {
   }, [jobId, reload]);
 
   // Live updates: wait for a change, then re-read the board. Runs in every non-terminal state
-  // (awaiting approval included) and keeps retrying after host errors. Stops when the job ends.
+  // (awaiting approval included) and keeps retrying after host errors. Stops when the job ends. A
+  // "paid" job still awaiting the vendor's receipt (manual handoff) gets no long-poll from the server
+  // (wait_for_update returns at once for a terminal job), so it is checked every 30 s instead.
   useEffect(() => {
     if (!jobId || !active) return;
     let stopped = false;
@@ -124,9 +127,10 @@ export default function DealBoardView() {
         failures++;
         if (!stopped && failures >= 2) setSync((s) => ({ ...s, trouble: true }));
       }
-      if (!stopped) timer = window.setTimeout(tick, failures ? RETRY_MS : POLL_MS);
+      const delay = nextPollDelay(pollState.current.state, pollState.current.purchase, failures);
+      if (!stopped && delay !== null) timer = window.setTimeout(tick, delay);
     };
-    timer = window.setTimeout(tick, POLL_MS);
+    timer = window.setTimeout(tick, nextPollDelay(pollState.current.state, pollState.current.purchase, 0) ?? POLL_MS);
     return () => {
       stopped = true;
       window.clearTimeout(timer);

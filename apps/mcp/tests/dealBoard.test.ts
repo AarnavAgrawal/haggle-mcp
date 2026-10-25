@@ -11,7 +11,7 @@ import { DealBoard } from "@haggle/core";
 import fixture from "../../../fixtures/views/deal-board.json" with { type: "json" };
 import manualFixture from "../../../fixtures/views/deal-board-manual.json" with { type: "json" };
 import { DealBoardPlus } from "../src/views.ts";
-import { CONFIRM_ONLY_NOTE, LINK_WARNING, STEP_LABELS, isManual, keepPolling, purchaseDone, purchaseHeadline, purchaseSettled, purchaseStep, vendorWordsLabel, yourStep } from "../views/deal-board/purchase.ts";
+import { CONFIRM_ONLY_NOTE, LINK_WARNING, POLL_MS, RETRY_MS, STEP_LABELS, isManual, keepPolling, nextPollDelay, purchaseDone, purchaseHeadline, purchaseSettled, purchaseStep, vendorWordsLabel, yourStep } from "../views/deal-board/purchase.ts";
 import { activeApproval, approvalBlock, approveLabel, boardContext, choiceFor, choosableCount, chosenApproval, isUnsafe, negotiationLine, negotiationWarning, payNow, replaceableApproval } from "../views/deal-board/options.ts";
 
 const base = DealBoard.parse(fixture);
@@ -269,6 +269,25 @@ describe("manual payment handoff (purchase stages)", () => {
     expect(keepPolling("confirmed", at("order_confirmed"))).toBe(false);
     expect(keepPolling("cancelled", at("cancelled"))).toBe(false);
     expect(keepPolling("collecting", undefined)).toBe(true);
+  });
+
+  it("poll cadence: active jobs long-poll every few seconds; a 'paid' job awaiting the vendor's receipt backs off to >= 30 s (wait_for_update returns at once for it); settled stops", () => {
+    const at = (stage: string) => ({ ...p, stage });
+    // Active: wait_for_update long-polls (20 s), then POLL_MS between waits; errors back off.
+    expect(nextPollDelay("collecting", undefined, 0)).toBe(POLL_MS);
+    expect(nextPollDelay("paying", at("instructions_received"), 0)).toBe(POLL_MS);
+    expect(nextPollDelay("collecting", undefined, 2)).toBe(RETRY_MS);
+    // Terminal "paid", manual, only reported (or a cancel asked after paying): no long-poll is possible.
+    for (const stage of ["human_reported_paid", "cancel_requested_after_payment"]) {
+      expect(nextPollDelay("paid", at(stage), 0)).toBeGreaterThanOrEqual(30_000);
+      expect(nextPollDelay("paid", at(stage), 3)).toBeGreaterThanOrEqual(30_000); // never faster on errors
+    }
+    expect(POLL_MS).toBeLessThan(30_000);
+    // Nothing more can happen: stop.
+    expect(nextPollDelay("paid", at("settled_verified"), 0)).toBeNull();
+    expect(nextPollDelay("paid", at("cancelled"), 0)).toBeNull();
+    expect(nextPollDelay("paid", undefined, 0)).toBeNull();
+    expect(nextPollDelay("cancelled", at("cancelled"), 0)).toBeNull();
   });
 
   it("one headline per stage, in the human's terms; nothing says paid before the vendor confirmed it", () => {
