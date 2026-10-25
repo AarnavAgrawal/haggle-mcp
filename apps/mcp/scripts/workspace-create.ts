@@ -29,7 +29,7 @@ import "./dbGuard.ts"; // refuses a production database outside HAGGLE_ENV=produ
 import { PostgresRepository, type Repository } from "@haggle/engine";
 import { hashSecret, newSecret } from "../src/workspace.ts";
 import { unlinkSync, writeFileSync } from "node:fs";
-import { recordOperatorAction } from "@haggle/engine";
+import { recordOperatorAction, RESERVED_WORKSPACE_IDS } from "@haggle/engine";
 import { connectionLines, readiness, readinessText, sharedApproverProblem, showData, type AdminRepo } from "./workspace-admin.ts";
 
 export interface WorkspaceArgs {
@@ -49,6 +49,7 @@ export function planWorkspace(a: WorkspaceArgs) {
   if (!a.name?.trim()) throw new Error("--name is required");
   const id = a.id ?? `ws_${a.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 32) || "workspace"}`;
   if (!/^ws_[a-z0-9_]{3,40}$/.test(id)) throw new Error(`workspace id must look like ws_acme (got ${id})`);
+  if (RESERVED_WORKSPACE_IDS.includes(id)) throw new Error(`workspace id ${id} is reserved (the brain's pre-tenancy profiles, 202_brain_tenancy); pass another --id`);
   if (a.approverPhone && !/^\+[1-9]\d{6,14}$/.test(a.approverPhone)) throw new Error("--approver-phone must be E.164, e.g. +14155550123");
   if (a.approverEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a.approverEmail)) throw new Error("--approver-email is not an email address");
   if (a.capUsd !== undefined && !(a.capUsd > 0)) throw new Error("--cap must be a positive amount in USD");
@@ -77,6 +78,7 @@ export type CreateRepo = AdminRepo & Pick<Repository, "insertWorkspace">;
  * details, the readiness check and the next steps).
  */
 export async function createWorkspace(plan: ReturnType<typeof planWorkspace>, repo: CreateRepo, opts: { allowSharedApprover?: boolean } = {}): Promise<string> {
+  if (RESERVED_WORKSPACE_IDS.includes(plan.workspace.id)) throw new Error(`workspace id ${plan.workspace.id} is reserved; pass another --id`);
   if (await repo.getWorkspace(plan.workspace.id)) throw new Error(`workspace ${plan.workspace.id} already exists (use workspace-admin.ts to change it)`);
   const problem = sharedApproverProblem(plan.settings.approver_phone, plan.workspace.id, plan.settings.approver_phone ? await repo.listWorkspacesByApproverPhone(plan.settings.approver_phone) : [], opts.allowSharedApprover);
   if (problem) throw new Error(problem);
@@ -150,6 +152,7 @@ const writeSecretFile = (path: string, text: string) => writeFileSync(path, text
  */
 export async function provisionWorkspace(plan: ReturnType<typeof planWorkspace>, repo: CreateRepo, opts: ProvisionOptions): Promise<{ text: string; created: boolean }> {
   const id = plan.workspace.id;
+  if (RESERVED_WORKSPACE_IDS.includes(id)) throw new Error(`workspace id ${id} is reserved; pass another --id`);
   const base = plan.mcpUrl.replace(/\/mcp$/, "");
   const envLabel = opts.env ?? "development";
   const notes = [

@@ -1,6 +1,7 @@
 // Readiness (/ready): can this server do its job right now? Checks the configuration, that the
 // database answers, that every engine migration in this build is recorded in the migration ledger
-// with a matching checksum, which providers are configured, the AI usage meter and stalled jobs.
+// with a matching checksum, that the brain's table has 202_brain_tenancy's column (outside the ledger),
+// which providers are configured, the AI usage meter and stalled jobs.
 // Liveness stays /health. Output carries booleans, counts and migration file names only: never a
 // value of any variable, a URL, an address or a job's contents. Results are cached briefly so an
 // unauthenticated caller can't turn /ready into database load.
@@ -19,6 +20,11 @@ export interface RuntimeOps {
   /** Postgres pool slot usage (PostgresRepository.poolStats): counts only. */
   pool?: () => PoolStats;
   providers: { inkbox: boolean; anthropic: boolean; payments: "disabled" | "stripe_test" | "manual"; alerts: boolean };
+  /**
+   * The brain's profile store, when it has a database schema (SupabaseStore.checkSchema: read-only, no
+   * rows). Its 2xx migrations are outside the engine ledger, so this is the only check that 202 is there.
+   */
+  brain?: { checkSchema(): Promise<{ ok: true } | { ok: false; reason: "schema_missing" | "unreachable" }> };
 }
 
 export interface ReadyCheck { ok: boolean; [k: string]: unknown }
@@ -27,7 +33,21 @@ export interface ReadyReport {
   service: "haggle-mcp";
   env: HaggleEnv;
   mode: "mock" | "live";
-  checks: { config: ReadyCheck; database: ReadyCheck; migrations: ReadyCheck; providers: ReadyCheck; ai: ReadyCheck; stalled_jobs: ReadyCheck };
+  checks: { config: ReadyCheck; database: ReadyCheck; migrations: ReadyCheck; brain: ReadyCheck; providers: ReadyCheck; ai: ReadyCheck; stalled_jobs: ReadyCheck };
+}
+
+/** The brain's schema (202_brain_tenancy): reason and fix only, never the store's error text or URL. */
+export async function brainCheck(brain: RuntimeOps["brain"]): Promise<ReadyCheck> {
+  if (!brain) return { ok: true, schema: "not_applicable" };
+  try {
+    const r = await withTimeout(brain.checkSchema(), 3_000);
+    if (r.ok) return { ok: true, schema: "ok" };
+    return r.reason === "schema_missing"
+      ? { ok: false, reason: "schema_missing", fix: "apply supabase/migrations/202_brain_tenancy.sql to the brain's database (docs/deployment.md §4)" }
+      : { ok: false, reason: "unreachable" };
+  } catch (e) {
+    return { ok: false, reason: (e as Error)?.message === "timed out" ? "timed_out" : "unreachable" };
+  }
 }
 
 const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
@@ -99,7 +119,8 @@ export async function readiness(input: { mode: "mock" | "live"; ops: RuntimeOps 
     : { ok: false, reason: "not_started" };
   const last = ops?.stalled?.lastReport() ?? null;
   const stalled: ReadyCheck = { ok: true, monitored: !!ops?.stalled, ...(last ? { checked_at: last.at, count: last.count, by_reason: last.jobs.reduce<Record<string, number>>((m, j) => ((m[j.reason] = (m[j.reason] ?? 0) + 1), m), {}) } : {}) };
-  const checks = { config, database, migrations, providers, ai: aiCheck(ops?.ai?.snapshot() ?? null), stalled_jobs: stalled };
+  const brain: ReadyCheck = ops ? await brainCheck(ops.brain) : { ok: false, reason: "not_started" };
+  const checks = { config, database, migrations, brain, providers, ai: aiCheck(ops?.ai?.snapshot() ?? null), stalled_jobs: stalled };
   return { ready: Object.values(checks).every((c) => c.ok), service: "haggle-mcp", env: ops?.env ?? haggleEnv(env), mode: input.mode, checks };
 }
 

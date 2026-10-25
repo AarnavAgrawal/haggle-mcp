@@ -10,7 +10,8 @@ import {
   withHeuristicFallback, AiUsageMeter, aiUsageSink, aiLimitsFromEnv, hydrateAiMeter, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
 } from "@haggle/engine";
 import { haggleEnv } from "./config.ts";
-import { makeBrain } from "./brain.ts";
+import { storeFromEnv } from "@haggle/brain";
+import { brainStoreEnv, makeBrain, probeBrainSchema } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
 import { liveTimings } from "./timings.ts";
 import { emailApprovalByCode } from "./workspace.ts";
@@ -83,7 +84,10 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     const name = c.name ?? DEMO_VENDORS.find((v) => v.key === key)?.name;
     return name && (c.email || c.phone) ? [{ business_id: businessIdForContact({ email: c.email ?? null, phone: c.phone ?? null, a2a_card_url: c.a2a_card_url ?? null }, name), name, ...(c.email ? { email: c.email } : {}), ...(c.phone ? { phone: c.phone } : {}), simulated: true }] : [];
   });
-  const brain = makeBrain([...fleet.map((b) => ({ business_id: b.business_id, name: b.name, email: b.email, simulated: b.simulated })), ...vendorIdentities], env, { observed: true });
+  // One profile store: the brain's, and the one /ready and the start-up probe check for 202_brain_tenancy.
+  const brainStore = storeFromEnv(brainStoreEnv(env));
+  const brain = makeBrain([...fleet.map((b) => ({ business_id: b.business_id, name: b.name, email: b.email, simulated: b.simulated })), ...vendorIdentities], env, { observed: true, store: brainStore });
+  void probeBrainSchema(brainStore, logger);
   // Engine and reconciler events that need a person (operator review, lease lost, send not recorded…) also alert.
   const log = alertingLog(logger.engine, alerts);
   // AI usage controls (HAGGLE_AI_MAX_CALLS_PER_JOB, HAGGLE_AI_DAILY_TOKEN_BUDGET): every Claude call is
@@ -225,6 +229,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   if (vendorConfig.errors.length) logger.warn("demo_vendors_config", { errors: vendorConfig.errors });
   const ops = {
     env: deployEnv, repo, database: "postgres" as const, ai, alerts, stalled, pool: () => repo.poolStats(),
+    ...(brainStore.checkSchema ? { brain: { checkSchema: () => brainStore.checkSchema!() } } : {}),
     providers: { inkbox: true, anthropic: true, payments: env.HAGGLE_PAYMENTS === "manual" ? "manual" as const : stripe ? "stripe_test" as const : "disabled" as const, alerts: alerts.enabled },
   };
   return { mode: "live", engine, brain, missing: [], roster, channels, configErrors: vendorConfig.errors, ops, ...(env.GOOGLE_PLACES_API_KEY ? { placesKey: env.GOOGLE_PLACES_API_KEY } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript }, ...(reconciler ? { reconciler } : {}) };

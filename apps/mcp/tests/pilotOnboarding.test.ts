@@ -11,6 +11,15 @@ import { hashSecret } from "../src/workspace.ts";
 const admin = (repo: InMemoryRepository, ...argv: string[]) => runAdmin(planAdmin(argv), repo);
 
 describe("pilot onboarding (operator)", () => {
+  it("the legacy pooled brain workspace (202_brain_tenancy's pre-tenancy rows) can't be created, chosen or derived", async () => {
+    expect(() => planWorkspace({ name: "x", id: "ws_legacy_pooled" })).toThrow(/reserved/);
+    expect(() => planWorkspace({ name: "Legacy Pooled" })).toThrow(/reserved/);
+    const repo = new InMemoryRepository();
+    const plan = planWorkspace({ name: "Fine" });
+    await expect(createWorkspace({ ...plan, workspace: { ...plan.workspace, id: "ws_legacy_pooled" } }, repo)).rejects.toThrow(/reserved/);
+    expect(await repo.getWorkspace("ws_legacy_pooled")).toBeNull();
+  });
+
   it("create prints the credentials and client details once; show fails until the workspace is ready, then passes", async () => {
     const repo = new InMemoryRepository();
     const plan = planWorkspace({ name: "Bay Events Co", approverPhone: "+14155550123", capUsd: 2500, area: "San Francisco, CA", timezone: "America/Los_Angeles", baseUrl: "https://haggle.example" });

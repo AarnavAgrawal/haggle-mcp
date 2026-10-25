@@ -112,3 +112,36 @@ describe("/ready under a database outage and a database ahead of the build", () 
     expect(await migrationsCheck(ops(), files)).toMatchObject({ ok: true, unexpected: [] });
   });
 });
+
+describe("/ready: the brain's schema (202_brain_tenancy is outside the engine ledger)", () => {
+  it("a store without 202 makes the server unready, says which migration to apply, and leaks nothing", async () => {
+    const r = await readiness({ mode: "live", ops: ops({ brain: { checkSchema: async () => ({ ok: false, reason: "schema_missing" }) } }) }, LIVE_ENV);
+    expect(r.ready).toBe(false);
+    expect(r.checks.brain).toEqual({ ok: false, reason: "schema_missing", fix: expect.stringMatching(/202_brain_tenancy\.sql/) });
+    expect(JSON.stringify(r)).not.toMatch(/SECRETVALUE|hunter2pw|devref|postgres:\/\/|supabase\.co/);
+  });
+
+  it("schema present: ready, brain ok; unreachable or throwing: unready with a reason only", async () => {
+    expect((await readiness({ mode: "live", ops: ops({ brain: { checkSchema: async () => ({ ok: true }) } }) }, LIVE_ENV)).checks.brain).toEqual({ ok: true, schema: "ok" });
+    expect((await readiness({ mode: "live", ops: ops({ brain: { checkSchema: async () => ({ ok: true }) } }) }, LIVE_ENV)).ready).toBe(true);
+    expect((await readiness({ mode: "live", ops: ops({ brain: { checkSchema: async () => ({ ok: false, reason: "unreachable" }) } }) }, LIVE_ENV)).checks.brain).toEqual({ ok: false, reason: "unreachable" });
+    const thrown = await readiness({ mode: "live", ops: ops({ brain: { checkSchema: async () => { throw new Error("https://devref.supabase.co hunter2pw"); } } }) }, LIVE_ENV);
+    expect(thrown.checks.brain).toEqual({ ok: false, reason: "unreachable" });
+    expect(JSON.stringify(thrown)).not.toMatch(/hunter2pw|devref/);
+  });
+
+  it("a probe that hangs is unready within the 3 s budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const p = readiness({ mode: "live", ops: ops({ brain: { checkSchema: () => new Promise(() => {}) } }) }, LIVE_ENV);
+      await vi.advanceTimersByTimeAsync(3_100);
+      expect((await p).checks.brain).toEqual({ ok: false, reason: "timed_out" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("no schema to check (memory or file brain): not applicable, ok", async () => {
+    expect((await readiness({ mode: "live", ops: ops() }, LIVE_ENV)).checks.brain).toEqual({ ok: true, schema: "not_applicable" });
+  });
+});

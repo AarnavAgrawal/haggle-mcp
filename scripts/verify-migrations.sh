@@ -51,4 +51,40 @@ for f in "$ROOT"/supabase/migrations/1*_engine_*.sql; do
   iso=$((iso + 1))
 done
 [ "$iso" -gt 0 ] || echo "no engine migration after the first isolation base to check"
+
+# 202_brain_tenancy on a brain database that already has profiles (and no engine tables, so no
+# public.workspaces): pre-tenancy rows go to the reserved 'ws_legacy_pooled' (pooled from every
+# workspace, read by none), later inserts default to 'ws_default', and a re-run moves nothing.
+db="haggle_brain_upgrade_$$"
+echo "create database \"$db\"" | pg_sql
+for f in "$ROOT"/supabase/migrations/200_brain_*.sql "$ROOT"/supabase/migrations/201_brain_*.sql; do pg_sql_on "$db" < "$f"; done
+pg_sql_on "$db" <<'SQL'
+insert into public.brain_profiles (business_id, name, category, area, profile) values
+  ('biz_pre_a', 'Pre A', 'catering', 'SF', '{}'), ('biz_pre_b', 'Pre B', 'catering', 'SF', '{}');
+SQL
+pg_sql_on "$db" < "$ROOT/supabase/migrations/202_brain_tenancy.sql"
+pg_sql_on "$db" <<'SQL'
+do $$ begin
+  if to_regclass('public.workspaces') is not null then raise exception 'test setup: workspaces should not exist here'; end if;
+  if (select count(*) from public.brain_profiles where workspace_id = 'ws_legacy_pooled') <> 2 then raise exception 'pre-tenancy rows were not parked in ws_legacy_pooled'; end if;
+  if exists (select 1 from public.brain_profiles where workspace_id <> 'ws_legacy_pooled') then raise exception 'a pre-tenancy row landed in a real workspace'; end if;
+end $$;
+-- After 202: a writer without a workspace lands in ws_default; the brain's scoped writes in their own.
+insert into public.brain_profiles (business_id, name, category, profile) values ('biz_post_default', 'Post', 'catering', '{}');
+insert into public.brain_profiles (workspace_id, business_id, name, category, profile) values ('ws_alpha', 'biz_pre_a', 'Pre A', 'catering', '{}');
+SQL
+pg_sql_on "$db" < "$ROOT/supabase/migrations/202_brain_tenancy.sql"
+pg_sql_on "$db" <<'SQL'
+do $$ begin
+  if (select string_agg(workspace_id || ':' || business_id, ',' order by workspace_id, business_id) from public.brain_profiles)
+     <> 'ws_alpha:biz_pre_a,ws_default:biz_post_default,ws_legacy_pooled:biz_pre_a,ws_legacy_pooled:biz_pre_b' then
+    raise exception 're-running 202 moved rows: %', (select string_agg(workspace_id || ':' || business_id, ',' order by workspace_id, business_id) from public.brain_profiles);
+  end if;
+  if (select column_default from information_schema.columns where table_schema = 'public' and table_name = 'brain_profiles' and column_name = 'workspace_id') not like '''ws_default''%' then
+    raise exception 'workspace_id default is not ws_default after a re-run';
+  end if;
+end $$;
+SQL
+echo "drop database \"$db\" with (force)" | pg_sql
+echo "202_brain_tenancy on a populated brain: old rows to ws_legacy_pooled, new rows default to ws_default, re-run moves nothing"
 echo "migrations OK"

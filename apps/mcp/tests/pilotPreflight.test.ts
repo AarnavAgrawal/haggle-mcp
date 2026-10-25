@@ -60,7 +60,11 @@ describe("pilot preflight", () => {
     expect(r.deployment.filter((c) => c.status === "BLOCKED").map((c) => c.name)).toEqual(["webhook subscriptions"]);
     expect(r.exitCode).toBe(3);
     expect(check(r, "brain tenancy")).toBe("PASS");
-    expect(r.deployment.find((c) => c.name === "brain tenancy")!.detail).toMatch(/scoped per workspace \(202_brain_tenancy\)/);
+    const brainDetail = r.deployment.find((c) => c.name === "brain tenancy")!.detail;
+    expect(brainDetail).toMatch(/scoped per workspace \(202_brain_tenancy\)/);
+    // The PASS is about this build's code: it says plainly that the database isn't verified, and where it is.
+    expect(brainDetail).toMatch(/code only.*does NOT verify the database/i);
+    expect(brainDetail).toMatch(/GET \/ready.*checks\.brain/);
     expect(r.workspaces[0]!.checks.map((c) => `${c.name}:${c.status}`)).toEqual(["credentials:PASS", "active:PASS", "approver:PASS", "approver verified:PASS", "spending cap:PASS", "vendors:PASS", "default area:PASS", "approver email:PASS"]);
     const out = formatPreflight(r) + JSON.stringify(r);
     expect(out).not.toMatch(SECRETS);

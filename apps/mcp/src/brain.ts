@@ -6,8 +6,10 @@
 // Resilience: HAGGLE_BRAIN_STORE=memory always wins (storeFromEnv prefers Supabase whenever its
 // keys exist), and a failing start-up (seed / profile load, e.g. Supabase unreachable or missing
 // grants) is logged instead of crashing the MCP server: brain calls then fail per request and the
-// engine keeps working (learnFromReply failures never block a deal).
-import { createWorkspaceBrains, DEFAULT_WORKSPACE_ID, loadDirectory, storeFromEnv, type ProfileStore } from "@haggle/brain";
+// engine keeps working (learnFromReply failures never block a deal). Because those failures are
+// otherwise quiet, live probes the schema at start-up (probeBrainSchema: one error log) and /ready
+// reports it (checks.brain), so a database without 202 is visible, not a silent stop in learning.
+import { createWorkspaceBrains, DEFAULT_WORKSPACE_ID, loadDirectory, storeFromEnv, type ProfileStore, type SchemaCheck } from "@haggle/brain";
 import type { Profile } from "@haggle/core";
 import { BrainAdapter, type BrainAdapterOptions, type EngineContact } from "@haggle/engine";
 
@@ -33,9 +35,10 @@ export function observedOnly(p: Profile | null): Profile | null {
 
 /**
  * A profile with only the history rows whose deal `keep` accepts, and everything derived from the
- * others dropped or recomputed (as observedOnly). Profiles are scoped per workspace (202_brain_tenancy);
- * business_profile still keeps only its own workspace's rows as a second guard (and for profiles
- * learned before tenancy), never another tenant's deals or replies.
+ * others dropped or recomputed (as observedOnly). Profiles are scoped per workspace (202_brain_tenancy;
+ * profiles learned before it sit under the reserved ws_legacy_pooled, which no brain reads);
+ * business_profile still keeps only its own workspace's rows as a second guard (e.g. for rows an
+ * operator reassigned from the legacy pool), never another tenant's deals or replies.
  */
 export function historyOnly(p: Profile | null, keep: (jobId: string) => boolean, opts: { exact?: boolean } = {}): Profile | null {
   if (!p) return null;
@@ -77,7 +80,23 @@ export function observedStore(store: ProfileStore): ProfileStore {
     list: async () => (await store.list()).map(observedOnly).filter((p): p is Profile => p !== null),
     put: (p) => store.put(p),
     ...(store.forWorkspace ? { forWorkspace: (ws: string) => observedStore(store.forWorkspace!(ws)) } : {}),
+    ...(store.checkSchema ? { checkSchema: () => store.checkSchema!() } : {}),
   };
+}
+
+const BRAIN_SCHEMA_FIX = "apply supabase/migrations/202_brain_tenancy.sql (after 200 and 201) to the brain's database (docs/deployment.md §4); until then the brain can't read or learn profiles";
+
+/**
+ * Live start-up: probe the brain's table read-only (ProfileStore.checkSchema) and log one structured
+ * error when it lacks what this build queries (202_brain_tenancy) or can't be reached, because brain
+ * failures are otherwise swallowed per request (learning would silently stop). null: nothing to check
+ * (memory or file store). /ready repeats the probe (health.ts checks.brain).
+ */
+export async function probeBrainSchema(store: ProfileStore, log: { error(event: string, data: Record<string, unknown>): void }): Promise<SchemaCheck | null> {
+  if (!store.checkSchema) return null;
+  const r: SchemaCheck = await store.checkSchema().catch(() => ({ ok: false as const, reason: "unreachable" as const }));
+  if (!r.ok) log.error("brain_schema_check_failed", { reason: r.reason, fix: r.reason === "schema_missing" ? BRAIN_SCHEMA_FIX : `the brain's database didn't answer; check SUPABASE_URL and the service-role key, then ${BRAIN_SCHEMA_FIX}` });
+  return r;
 }
 
 /**
@@ -90,9 +109,10 @@ export function observedStore(store: ProfileStore): ProfileStore {
  * so simulated demos have warm estimates from minute one (always labelled as samples), and learns
  * from the simulated fleet (the warm `ask` demo).
  */
-export function makeBrain(fleet: EngineContact[], env: NodeJS.ProcessEnv = process.env, extra: Pick<BrainAdapterOptions, "discovery"> & { observed?: boolean } = {}): BrainAdapter {
-  const { observed = false, ...rest } = extra;
-  const base = storeFromEnv(brainStoreEnv(env));
+export function makeBrain(fleet: EngineContact[], env: NodeJS.ProcessEnv = process.env, extra: Pick<BrainAdapterOptions, "discovery"> & { observed?: boolean; store?: ProfileStore } = {}): BrainAdapter {
+  const { observed = false, store, ...rest } = extra;
+  // `store`: the caller's (live passes the one it probes for /ready); else from the environment.
+  const base = store ?? storeFromEnv(brainStoreEnv(env));
   const brains = createWorkspaceBrains({ store: observed ? observedStore(base) : base, seed: !observed, dropSimulated: observed });
   const coreFor = (ws: string) => {
     const core = brains.forWorkspace(ws);

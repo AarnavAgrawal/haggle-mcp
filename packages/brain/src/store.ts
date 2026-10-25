@@ -16,12 +16,24 @@ import { Profile } from "@haggle/core";
 /** The workspace of single-tenant servers and of the unscoped store API (the engine's DEFAULT_WORKSPACE_ID). */
 export const DEFAULT_WORKSPACE_ID = "ws_default";
 
+/**
+ * Where 202_brain_tenancy parks the profiles learned before tenancy (pooled from every workspace's
+ * deals, so no one tenant may read them). Reserved: no store view or brain is ever built for it, and
+ * the engine never creates a workspace with this id (the engine's LEGACY_POOLED_WORKSPACE_ID).
+ */
+export const LEGACY_POOLED_WORKSPACE_ID = "ws_legacy_pooled";
+
+/** The brain's table answers what this build queries (SupabaseStore.checkSchema; reasons only, never error text). */
+export type SchemaCheck = { ok: true } | { ok: false; reason: "schema_missing" | "unreachable" };
+
 export interface ProfileStore {
   get(businessId: string): Promise<Profile | null>;
   list(): Promise<Profile[]>;
   put(profile: Profile): Promise<void>;
   /** The same store seen as one workspace's profiles only (reads and writes). */
   forWorkspace?(workspaceId: string): ProfileStore;
+  /** Stores with a database schema: a read-only probe that it has what this build queries (/ready). */
+  checkSchema?(): Promise<SchemaCheck>;
 }
 
 /** A workspace id is required, never defaulted: an empty one would silently share the default view. */
@@ -29,8 +41,15 @@ export function checkWorkspaceId(workspaceId: string): string {
   if (typeof workspaceId !== "string" || !workspaceId.trim() || workspaceId.length > 64) {
     throw new Error(`brain: a workspace id is required (got ${JSON.stringify(workspaceId)})`);
   }
+  if (workspaceId === LEGACY_POOLED_WORKSPACE_ID) {
+    throw new Error(`brain: ${LEGACY_POOLED_WORKSPACE_ID} is reserved for the profiles pooled before tenancy (202_brain_tenancy); no workspace reads it`);
+  }
   return workspaceId;
 }
+
+// PostgREST / Postgres codes for "the table or column this build queries isn't there":
+// undefined_column, undefined_table, and PostgREST's schema-cache misses for a column and a table.
+const SCHEMA_MISSING = new Set(["42703", "42P01", "PGRST204", "PGRST205"]);
 
 type Tenants = Map<string, Map<string, Profile>>;
 
@@ -175,6 +194,20 @@ export class SupabaseStore implements ProfileStore {
   }
   forWorkspace(workspaceId: string): SupabaseStore {
     return new SupabaseStore("", "", this.schema, { client: this.db, workspaceId });
+  }
+  /**
+   * Read-only: selects workspace_id (202_brain_tenancy's column) with limit 0, so no row is returned.
+   * A missing column or table is schema_missing; any other failure is unreachable (the error text,
+   * which can carry a URL, is not passed on).
+   */
+  async checkSchema(): Promise<SchemaCheck> {
+    try {
+      const { error } = await this.db.from(TABLE).select("workspace_id").limit(0);
+      if (!error) return { ok: true };
+      return { ok: false, reason: SCHEMA_MISSING.has(String((error as { code?: unknown }).code ?? "")) ? "schema_missing" : "unreachable" };
+    } catch {
+      return { ok: false, reason: "unreachable" };
+    }
   }
 }
 

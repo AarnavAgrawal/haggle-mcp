@@ -122,8 +122,9 @@ export function deploymentChecks(env: Env, target: HaggleEnv): PreflightCheck[] 
     ? { name: "simulated vendors", status: "PASS", detail: "no demo vendors configured" }
     : { name: "simulated vendors", status: prod ? "FAIL" : "WARN", detail: `${demo.length} demo vendor contact(s) configured (HAGGLE_DEMO_VENDORS / HAGGLE_DEMO_FLEET)`, fix: "remove them from a pilot deployment; real vendors go on each workspace with consent" });
   // This build scopes the brain per workspace; the check has no database handle for brain_profiles, so
-  // it can't see whether 202 was applied (the brain's 2xx files are outside the engine ledger).
-  add({ name: "brain tenancy", status: "PASS", detail: "learned profiles are scoped per workspace (202_brain_tenancy); this build's code only: apply 202_brain_tenancy.sql to the brain's database before deploying it (not checked here)" });
+  // it can't see whether 202 was applied (the brain's 2xx files are outside the engine ledger). The
+  // running server probes it: GET /ready checks.brain (src/health.ts), and a brain_schema_check_failed log.
+  add({ name: "brain tenancy", status: "PASS", detail: "code only: learned profiles are scoped per workspace (202_brain_tenancy) in this build. This does NOT verify the database: apply 202_brain_tenancy.sql to the brain's database before deploying, then confirm GET /ready shows checks.brain ok (schema_missing means 202 isn't applied)" });
   return out;
 }
 

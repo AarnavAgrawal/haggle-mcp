@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Profile } from "@haggle/core";
-import { DEFAULT_WORKSPACE_ID, FileStore, MemoryStore, SupabaseStore, storeFromEnv, type ProfileStore } from "../index.ts";
+import { createWorkspaceBrains, DEFAULT_WORKSPACE_ID, FileStore, LEGACY_POOLED_WORKSPACE_ID, MemoryStore, SupabaseStore, storeFromEnv, type ProfileStore } from "../index.ts";
 
 const supabase = { SUPABASE_URL: "https://example.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "service-role-key" };
 
@@ -112,5 +112,52 @@ describe("workspace-scoped stores", () => {
     calls.length = 0;
     await root.list();
     expect(calls).toContainEqual(["eq", "workspace_id", DEFAULT_WORKSPACE_ID]);
+  });
+
+  it("the legacy pooled workspace (202's pre-tenancy rows) is reserved: no store view or brain can read it", async () => {
+    expect(LEGACY_POOLED_WORKSPACE_ID).toBe("ws_legacy_pooled");
+    expect(LEGACY_POOLED_WORKSPACE_ID).toMatch(/^ws_[a-z0-9_]{3,40}$/); // 202's check constraint
+    expect(() => new MemoryStore().forWorkspace(LEGACY_POOLED_WORKSPACE_ID)).toThrow(/reserved/);
+    expect(() => new MemoryStore(LEGACY_POOLED_WORKSPACE_ID)).toThrow(/reserved/);
+    expect(() => new FileStore("unused.json").forWorkspace(LEGACY_POOLED_WORKSPACE_ID)).toThrow(/reserved/);
+    expect(() => new SupabaseStore("", "", "public", { client: {} as never }).forWorkspace(LEGACY_POOLED_WORKSPACE_ID)).toThrow(/reserved/);
+    expect(() => createWorkspaceBrains({ store: new MemoryStore() }).forWorkspace(LEGACY_POOLED_WORKSPACE_ID)).toThrow(/reserved/);
+  });
+});
+
+// ── schema probe (/ready): does the brain's table have what this build queries? ──
+
+describe("SupabaseStore.checkSchema", () => {
+  const fake = (result: { error: unknown } | Error) => {
+    const calls: unknown[][] = [];
+    const query = {
+      select: (...a: unknown[]) => { calls.push(["select", ...a]); return query; },
+      limit: (...a: unknown[]) => { calls.push(["limit", ...a]); return query; },
+      then: (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => (result instanceof Error ? reject(result) : resolve({ data: [], ...result })),
+    };
+    const client = { from: (t: string) => { calls.push(["from", t]); return query; } };
+    return { calls, store: new SupabaseStore("", "", "public", { client: client as never }) };
+  };
+
+  it("reads no rows: selects workspace_id with limit 0, unscoped (a schema question, not a tenant's data)", async () => {
+    const { calls, store } = fake({ error: null });
+    expect(await store.checkSchema()).toEqual({ ok: true });
+    expect(calls).toEqual([["from", "brain_profiles"], ["select", "workspace_id"], ["limit", 0]]);
+    expect(await store.forWorkspace("ws_alpha").checkSchema()).toEqual({ ok: true });
+  });
+
+  it("a missing column or table (202 or 200 not applied) is schema_missing; anything else is unreachable; never the error text", async () => {
+    expect(await fake({ error: { code: "42703", message: "column brain_profiles.workspace_id does not exist" } }).store.checkSchema()).toEqual({ ok: false, reason: "schema_missing" });
+    expect(await fake({ error: { code: "PGRST204", message: "Could not find the 'workspace_id' column" } }).store.checkSchema()).toEqual({ ok: false, reason: "schema_missing" });
+    expect(await fake({ error: { code: "PGRST205", message: "Could not find the table 'public.brain_profiles'" } }).store.checkSchema()).toEqual({ ok: false, reason: "schema_missing" });
+    expect(await fake({ error: { code: "42P01", message: "relation does not exist" } }).store.checkSchema()).toEqual({ ok: false, reason: "schema_missing" });
+    expect(await fake({ error: { code: "", message: "TypeError: fetch failed https://secret.supabase.co" } }).store.checkSchema()).toEqual({ ok: false, reason: "unreachable" });
+    expect(await fake({ error: { code: "42501", message: "permission denied for table brain_profiles" } }).store.checkSchema()).toEqual({ ok: false, reason: "unreachable" });
+    expect(await fake(new Error("socket hang up")).store.checkSchema()).toEqual({ ok: false, reason: "unreachable" });
+  });
+
+  it("memory and file stores have no schema to check", () => {
+    expect((new MemoryStore() as ProfileStore).checkSchema).toBeUndefined();
+    expect((new FileStore("unused.json") as ProfileStore).checkSchema).toBeUndefined();
   });
 });

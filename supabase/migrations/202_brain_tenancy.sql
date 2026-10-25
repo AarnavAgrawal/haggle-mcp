@@ -3,15 +3,31 @@
 -- board's price check and business_profile mixed customers' data. Each row now carries its
 -- workspace and is keyed (workspace_id, business_id); packages/brain SupabaseStore filters every
 -- read and write by it (one brain per workspace: createWorkspaceBrains).
---   * Existing rows are backfilled to 'ws_default' (the column default), like 103_engine_parity's
---     jobs.workspace_id. They stay visible only to the default workspace.
+--   * Existing rows were learned from EVERY workspace's deals, so they belong to no one tenant: they
+--     are backfilled, exactly once (when the column is added), to the reserved sentinel workspace
+--     'ws_legacy_pooled', which no brain reads (packages/brain LEGACY_POOLED_WORKSPACE_ID; the engine
+--     and workspace-create refuse to create a workspace with that id). The column default is then
+--     'ws_default', for an older writer that doesn't name a workspace. A re-run never moves a row.
+--     Operator note: a single-tenant deployment (all those deals were one customer's) may hand them
+--     to that workspace with one statement:
+--       update public.brain_profiles set workspace_id = 'ws_<id>' where workspace_id = 'ws_legacy_pooled';
+--     (fails on a business that already has a row in ws_<id>; delete or merge that one first.)
 --   * No foreign key to public.workspaces: scripts/migration-compat.sh applies the brain's 2xx files
 --     on databases at every engine checkpoint, from 100 on, before 103 creates `workspaces`. The
 --     check constraint enforces the workspace id format instead (103's workspaces.id check).
---   * Deploy order: apply this before the server build that scopes the brain (it queries workspace_id).
+--   * Deploy order: apply this before the server build that scopes the brain (it queries workspace_id;
+--     that build's /ready reports checks.brain schema_missing until it is applied).
 -- Safe to re-run: the column, check, key and index steps are each guarded.
 
-alter table public.brain_profiles add column if not exists workspace_id text not null default 'ws_default';
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                  where table_schema = 'public' and table_name = 'brain_profiles' and column_name = 'workspace_id') then
+    -- Adding the column with this default fills every existing row with the sentinel (and nothing else).
+    alter table public.brain_profiles add column workspace_id text not null default 'ws_legacy_pooled';
+    alter table public.brain_profiles alter column workspace_id set default 'ws_default';
+  end if;
+end $$;
 
 do $$
 begin

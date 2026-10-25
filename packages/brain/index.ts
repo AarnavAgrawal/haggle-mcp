@@ -14,6 +14,6 @@
 export { createBrain, createWorkspaceBrains, type BrainOptions, type WorkspaceBrain } from "./src/brain.ts";
 export { createStubBrain } from "./src/stub.ts";
 export { applyReply } from "./src/learn.ts";
-export { DEFAULT_WORKSPACE_ID, FileStore, MemoryStore, SupabaseStore, storeFromEnv, type ProfileStore } from "./src/store.ts";
+export { DEFAULT_WORKSPACE_ID, FileStore, LEGACY_POOLED_WORKSPACE_ID, MemoryStore, SupabaseStore, storeFromEnv, type ProfileStore, type SchemaCheck } from "./src/store.ts";
 export { loadDirectory, routeChannel, DirectoryEntry } from "./src/directory.ts";
 export { toBusinessProfileView, toEstimatesView } from "./src/views.ts";

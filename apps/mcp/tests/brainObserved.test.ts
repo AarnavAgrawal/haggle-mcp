@@ -3,10 +3,34 @@
 // real memory is found by the same identity deal uses, including quotes learned under the older
 // contact-only id. Claude.ai regression: business_profile("Mission Eats") showed only the Oct 11 $675
 // seed sample (48%) while its four real call quotes sat under another id. No network.
-import { createBrain, MemoryStore } from "@haggle/brain";
+import { createBrain, MemoryStore, type ProfileStore } from "@haggle/brain";
 import { businessIdForContact } from "@haggle/engine";
 import { describe, expect, it } from "vitest";
-import { makeBrain, observedOnly, observedStore } from "../src/brain.ts";
+import { makeBrain, observedOnly, observedStore, probeBrainSchema } from "../src/brain.ts";
+
+describe("brain schema probe (202_brain_tenancy applied?)", () => {
+  type Probe = Awaited<ReturnType<NonNullable<ProfileStore["checkSchema"]>>>;
+  const store = (check: () => Promise<Probe>): ProfileStore => ({ get: async () => null, list: async () => [], put: async () => {}, checkSchema: check });
+
+  it("observedStore passes the probe through; stores without a schema have none", async () => {
+    expect(await observedStore(store(async () => ({ ok: false, reason: "schema_missing" }))).checkSchema!()).toEqual({ ok: false, reason: "schema_missing" });
+    expect(observedStore(new MemoryStore()).checkSchema).toBeUndefined();
+  });
+
+  it("start-up: one structured error naming the migration when the schema is missing or unreachable; nothing when fine", async () => {
+    const logged: [string, Record<string, unknown>][] = [];
+    const log = { error: (event: string, data: Record<string, unknown>) => void logged.push([event, data]) };
+    expect(await probeBrainSchema(store(async () => ({ ok: true })), log)).toEqual({ ok: true });
+    expect(logged).toEqual([]);
+    expect(await probeBrainSchema(store(async () => ({ ok: false, reason: "schema_missing" })), log)).toEqual({ ok: false, reason: "schema_missing" });
+    expect(logged).toEqual([["brain_schema_check_failed", { reason: "schema_missing", fix: expect.stringMatching(/202_brain_tenancy\.sql/) }]]);
+    logged.length = 0;
+    expect(await probeBrainSchema(store(async () => { throw new Error("postgres://u:hunter2pw@db"); }), log)).toEqual({ ok: false, reason: "unreachable" });
+    expect(logged).toHaveLength(1);
+    expect(JSON.stringify(logged)).not.toMatch(/hunter2pw/);
+    expect(await probeBrainSchema(new MemoryStore(), log)).toBeNull(); // nothing to check
+  });
+});
 
 const PHONE = "+14085550199";
 const reply = (job_id: string, total_usd: number, quantity: number, business_name = "Mission Eats") => ({

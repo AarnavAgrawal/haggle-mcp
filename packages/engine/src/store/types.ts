@@ -15,6 +15,15 @@ export type Mode = "mock" | "live";
 export const DEFAULT_WORKSPACE_ID = "ws_default";
 
 /**
+ * The brain's sentinel for profiles learned before tenancy (supabase/migrations/202_brain_tenancy.sql;
+ * @haggle/brain's LEGACY_POOLED_WORKSPACE_ID): pooled from every workspace's deals, so no workspace
+ * may ever have this id. createWorkspace (and every path through it) and workspace-create refuse it.
+ */
+export const LEGACY_POOLED_WORKSPACE_ID = "ws_legacy_pooled";
+/** Workspace ids no workspace can be created with. */
+export const RESERVED_WORKSPACE_IDS: readonly string[] = [LEGACY_POOLED_WORKSPACE_ID];
+
+/**
  * A tenant: one buyer (agent + human approver). Jobs, settings and approvals are scoped to it; an
  * MCP connection is bound to one workspace by its bearer token or connector secret (stored only as
  * SHA-256 hashes). Ported from haggle-testing src/comms/workspace.ts; the Inkbox buyer identity

@@ -2,7 +2,8 @@
 // x-haggle-workspace header selects a workspace, only with the right token, only an existing,
 // unrevoked one; and service onboarding creates one workspace per owner. In-memory store, no network.
 import { describe, expect, it } from "vitest";
-import { createMockEngine, InMemoryRepository } from "@haggle/engine";
+import { createMockEngine, InMemoryRepository, LEGACY_POOLED_WORKSPACE_ID, RESERVED_WORKSPACE_IDS } from "@haggle/engine";
+import { LEGACY_POOLED_WORKSPACE_ID as BRAIN_LEGACY_POOLED_WORKSPACE_ID } from "@haggle/brain";
 import { planServiceWorkspace, resolveWorkspace, serviceTokenValid } from "../src/workspace.ts";
 import type { Runtime } from "../src/runtime.ts";
 
@@ -55,5 +56,15 @@ describe("service credential", () => {
     expect(both.map((r) => r.workspace.id)).toEqual([plan.id, plan.id]);
     expect(both.map((r) => r.created).sort()).toEqual([false, true]);
     expect(await engine.forWorkspace(plan.id).getSettings()).toMatchObject({ spending_cap_cents: 70_000 });
+  });
+
+  it("the legacy pooled brain workspace id is reserved: the engine never creates it (same id as the brain's)", async () => {
+    const { engine } = await runtime();
+    expect(LEGACY_POOLED_WORKSPACE_ID).toBe(BRAIN_LEGACY_POOLED_WORKSPACE_ID);
+    expect(RESERVED_WORKSPACE_IDS).toContain(LEGACY_POOLED_WORKSPACE_ID);
+    const base = { name: "x", tokenHash: "t".repeat(64), connectorSecretHash: "c".repeat(64) };
+    await expect(engine.createWorkspace({ id: LEGACY_POOLED_WORKSPACE_ID, ...base })).rejects.toMatchObject({ code: "workspace_id_reserved" });
+    await expect(engine.provisionWorkspace({ id: LEGACY_POOLED_WORKSPACE_ID, ...base, settings: {} })).rejects.toMatchObject({ code: "workspace_id_reserved" });
+    expect(await engine.workspaceById(LEGACY_POOLED_WORKSPACE_ID)).toBeNull();
   });
 });

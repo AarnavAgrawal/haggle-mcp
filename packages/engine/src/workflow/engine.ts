@@ -58,7 +58,7 @@ import { mustHaveLine, normalizeRequirements } from "./requestNormalize.ts";
 import { purchasePaymentLine, purchaseView, type PurchaseStage, type PurchaseView } from "../payments/purchase.ts";
 import { scoreQuotes, type ValueInput, type ValueRanking } from "../ranking/value.ts";
 import { chooseChannel, learnContact, type ContactLearning } from "../routing/channelStats.ts";
-import { DEFAULT_WORKSPACE_ID, type ApprovalRow, type BookingRow, type Channel, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentHandoffRow, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow } from "../store/types.ts";
+import { DEFAULT_WORKSPACE_ID, RESERVED_WORKSPACE_IDS, type ApprovalRow, type BookingRow, type Channel, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentHandoffRow, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow } from "../store/types.ts";
 import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
 import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
@@ -96,6 +96,13 @@ export class EngineError extends Error {
     this.code = code;
     this.fix = fix;
     this.next = next;
+  }
+}
+
+/** Refuses an id no workspace may have (store/types.ts RESERVED_WORKSPACE_IDS: the brain's legacy pool). */
+function refuseReservedWorkspaceId(id: string): void {
+  if (RESERVED_WORKSPACE_IDS.includes(id)) {
+    throw new EngineError("workspace_id_reserved", `The workspace id ${id} is reserved and can't be created.`, "Choose another workspace id.", "none");
   }
 }
 
@@ -5839,6 +5846,7 @@ export class HaggleEngine {
    * workspace-create, an approver phone that already approves for another workspace is refused.
    */
   async provisionWorkspace(w: { id: string; name: string; tokenHash: string; connectorSecretHash: string; timezone?: string; settings: Partial<Omit<SettingsRow, "updated_at">> }) {
+    refuseReservedWorkspaceId(w.id);
     const existing = await this.repo.getWorkspace(w.id);
     if (existing) return { workspace: existing, created: false };
     const phone = w.settings.approver_phone;
@@ -5858,6 +5866,7 @@ export class HaggleEngine {
 
   /** Create a workspace (scripts/workspace-create.ts); credentials are stored only as hashes. */
   async createWorkspace(w: { id: string; name: string; tokenHash: string; connectorSecretHash: string; timezone?: string; settings?: Partial<Omit<SettingsRow, "updated_at">> }) {
+    refuseReservedWorkspaceId(w.id);
     const row = await this.repo.insertWorkspace({ id: w.id, name: w.name, token_hash: w.tokenHash, connector_secret_hash: w.connectorSecretHash, timezone: w.timezone ?? "America/Los_Angeles" });
     if (w.settings) await this.updateSettings(w.settings, row.id);
     return row;

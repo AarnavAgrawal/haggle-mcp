@@ -16,8 +16,18 @@ set role service_role;
 insert into public.brain_profiles (business_id, name, category, area, profile) values ('biz_assert_brain', 'Assert', 'catering', 'SF', '{}');
 update public.brain_profiles set area = 'San Francisco' where business_id = 'biz_assert_brain';
 do $$ begin if (select count(*) from public.brain_profiles where business_id = 'biz_assert_brain') <> 1 then raise exception 'service_role cannot read'; end if; end $$;
--- 202: an insert without a workspace (an older writer) lands in the default workspace.
+-- 202: an insert without a workspace (an older writer) lands in the default workspace, never in the
+-- reserved pool of pre-tenancy rows (that default applied only to rows that existed when 202 ran;
+-- scripts/verify-migrations.sh checks that upgrade path and its re-run on a populated brain database).
 do $$ begin if (select workspace_id from public.brain_profiles where business_id = 'biz_assert_brain') <> 'ws_default' then raise exception 'workspace_id did not default to ws_default'; end if; end $$;
+do $$ begin
+  if (select column_default from information_schema.columns where table_schema = 'public' and table_name = 'brain_profiles' and column_name = 'workspace_id') not like '''ws_default''%' then
+    raise exception 'workspace_id column default is not ws_default';
+  end if;
+end $$;
+-- The sentinel is a valid id for the check constraint (pre-tenancy rows must be storable there).
+insert into public.brain_profiles (workspace_id, business_id, name, category, profile) values ('ws_legacy_pooled', 'biz_assert_brain', 'Assert', 'catering', '{}');
+delete from public.brain_profiles where workspace_id = 'ws_legacy_pooled' and business_id = 'biz_assert_brain';
 -- 202: the same business in two workspaces is two rows, each read back by its own workspace.
 insert into public.brain_profiles (workspace_id, business_id, name, category, area, profile) values
   ('ws_assert_alpha', 'biz_assert_brain', 'Assert', 'catering', 'SF', '{"typical": 20}'),
