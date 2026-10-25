@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { buildFunnel, jobMilestone, loadFunnel, loadTraction, markTest, STOP_REASON, TRACTION_METRICS, tractionText, type FunnelEvent } from "../src/ops/traction.ts";
 import { CORPUS_REQUEST } from "../eval/corpus.ts";
 import { makeEnv, trusted } from "../eval/harness.ts";
-import { heuristicExtractor } from "../src/live/adapters.ts";
+import { heuristicExtractor } from "../src/live/extractors.ts";
 
 const ev = (type: string, data: Record<string, unknown> = {}): FunnelEvent => ({ type, data });
 const created = [ev("state", { from: null, to: "created" })];

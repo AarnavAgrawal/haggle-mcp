@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 import { disabledPayer, HaggleEngine, InMemoryRepository, StubBrain, type ExtractorPort } from "../src/index.ts";
 import { replyToken } from "../src/inbound/senderAuth.ts";
 import { vendorOwnWords } from "../src/approvals/bookingReply.ts";
-import type { InboundAttachmentMeta, TrustVerdict } from "../src/inbound/primitive.ts";
+import type { InboundAttachmentMeta, TrustVerdict } from "../src/inbound/types.ts";
 import type { MessageRow } from "../src/store/types.ts";
 
 const APPROVER = "+14155550101";

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type ExtractorPort } from "../src/index.ts";
 import { replyToken } from "../src/inbound/senderAuth.ts";
 import { EXPLAINED_QUARANTINE_REASONS, explainQuarantine } from "../src/inbound/quarantineReasons.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 
 const SECRET = "test-reply-token-secret-0123456789";
 const A = "orders@realcaterer.example";

@@ -10,7 +10,7 @@
 // When a provider supplies an aligned DMARC pass (or aligned DKIM) for the pinned domain, that
 // stands in for the token. Anything else is quarantined: "identity_unverified".
 import { createHmac } from "node:crypto";
-import type { AuthEvidence } from "./primitive.ts";
+import type { AuthEvidence } from "./types.ts";
 import { normalizeAddress, normalizeMessageId } from "./matching.ts";
 
 const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I/L

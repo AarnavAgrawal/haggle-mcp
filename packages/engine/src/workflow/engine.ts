@@ -25,7 +25,7 @@ import { CONTINUITY_ONLY_REASONS, CONTINUITY_ONLY_WARNING, provesSenderIdentity,
 import { explainQuarantine, quarantineEventData } from "../inbound/quarantineReasons.ts";
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
 import { isCarrierOptOut, isDsnSender, isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
-import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
+import type { InboundMessage, TrustVerdict } from "../inbound/types.ts";
 import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
 import { planCounteroffers, type PlannedCounter } from "../negotiation/counteroffer.ts";
 import { applyStrategy, type StrategyContext } from "../negotiation/strategist.ts";
@@ -33,7 +33,7 @@ import { imessageFailureReason } from "../outbound/imessageErrors.ts";
 import { amountsIn, checkMessage, citesCompetingOffer, findDollarAmounts } from "../negotiation/messageGuard.ts";
 import { buildRfqEmail, eventPlace, eventWhen, humanTime, quantityText } from "../outbound/rfq.ts";
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
-import { sendKeys, type OutboundAttachment } from "../outbound/primitiveSender.ts";
+import { sendKeys, type OutboundAttachment } from "../outbound/email.ts";
 import type { FieldValue, QuoteRecord } from "../parsing/extraction.ts";
 import { answeredSomething, dropAgentOnlyAmounts } from "../parsing/callSafety.ts";
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";

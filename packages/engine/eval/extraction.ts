@@ -6,7 +6,7 @@
 // measures nothing about a reader). The Claude extractor runs ONLY with HAGGLE_EVAL_LIVE=1,
 // ANTHROPIC_API_KEY and a HAGGLE_EVAL_MAX_USD cap (liveBudget.ts); it calls the Anthropic API and is
 // never run by tests. Every summary carries the extractor that produced it.
-import { claudeExtractor, heuristicExtractor } from "../src/live/adapters.ts";
+import { claudeExtractor, heuristicExtractor } from "../src/live/extractors.ts";
 import { counterofferText } from "../src/negotiation/counteroffer.ts";
 import { scoreFields, summarizeFields, type FieldScore, type FieldSummary } from "./fields.ts";
 import { EvalBudget, liveAnthropicClient, liveEvalConfig } from "./liveBudget.ts";

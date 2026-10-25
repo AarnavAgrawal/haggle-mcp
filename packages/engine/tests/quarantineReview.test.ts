@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { bindingTermsTrust, CONTINUITY_ONLY_REASONS, provesSenderIdentity } from "../src/inbound/trustStrength.ts";
 import { PostgresRepository } from "../src/store/postgres.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 import { BUYER, dealWith, liveEngine, vendorReply, type LiveEnv } from "./helpers/liveEngine.ts";
 
 const V = { name: "Valley Catering", email: "orders@valley.example" };

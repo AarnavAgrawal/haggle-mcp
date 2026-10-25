@@ -7,7 +7,7 @@ import { confirmsReceipt, readBookingReply, vendorOwnWords } from "../src/approv
 import { assessCompliance } from "../src/ranking/compliance.ts";
 import { quoteFreshness } from "../src/ranking/validity.ts";
 import { normalizeRequirements } from "../src/workflow/requestNormalize.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 
 describe("readBookingReply: only an explicit yes in the vendor's own words books", () => {
   const ctx = { agreedCents: [218_000, 50_000], quantity: 60 };

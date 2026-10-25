@@ -1,5 +1,7 @@
 # Haggle buyer runbook (Yash's lane)
 
+> **Historical:** the Primitive email path described here was removed from the code (Inkbox is the only email provider). Kept as a record; do not follow its Primitive steps.
+
 ## What runs today
 
 | Capability | Mock mode (default) | Live mode |

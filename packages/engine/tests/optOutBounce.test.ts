@@ -7,7 +7,7 @@ import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBr
 import { isOptOut, parseBounce, replyToken } from "../src/inbound/senderAuth.ts";
 import { heuristicExtract } from "../src/parsing/heuristic.ts";
 import { findDollarAmounts } from "../src/parsing/callSafety.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 
 const SECRET = "test-reply-token-secret-0123456789";
 const V = "orders@realcaterer.example";

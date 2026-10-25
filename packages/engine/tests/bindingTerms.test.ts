@@ -6,7 +6,7 @@
 // bindingTermsTrustFor(trustReason) into the hook. Real engine, fakes, no network.
 import { describe, expect, it } from "vitest";
 import { bindingTermsTrustFor } from "../src/inbound/trustStrength.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 import { APPROVER, dealWith, liveEngine, vendorReply } from "./helpers/liveEngine.ts";
 
 const V = { name: "Real Caterer", email: "orders@realcaterer.example" };

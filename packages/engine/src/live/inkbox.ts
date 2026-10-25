@@ -11,8 +11,8 @@ import { CallMode, CallOrigin, Inkbox, InkboxAPIError, InkboxConnectionError, ve
 import { attachmentKind, imageContentType, MAX_IMAGE_BYTES, MAX_JSON_BYTES, MAX_PDF_BYTES, verifiedKind, type ExtractedFile } from "../inbound/attachments.ts";
 import { htmlToText } from "../inbound/htmlText.ts";
 import { normalizeMessageId } from "../inbound/matching.ts";
-import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
-import { replySubject, type OutboundEmail, type SendOutcome } from "../outbound/primitiveSender.ts";
+import type { InboundMessage, TrustVerdict } from "../inbound/types.ts";
+import { replySubject, type OutboundEmail, type SendOutcome } from "../outbound/email.ts";
 import type { MessageRow } from "../store/types.ts";
 import { ChannelSendError, inlineAttachments, type A2AAgentMessage, type A2APort, type A2ATaskView, type AttachmentPort, type EmailPort, type IMessagePort, type PhoneCallRequest, type PhonePort, type SendFailureReason, type SmsPort, type VoiceContextPort } from "../workflow/ports.ts";
 

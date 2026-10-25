@@ -4,7 +4,7 @@
 // Mock (labelled DEMO everywhere): SimFleet (email + simulated calls), inline attachments, StubBrain.
 import type { Brain } from "../contract.ts";
 import { imageContentType, type ExtractedFile, type ImageFile, type PdfFile } from "../inbound/attachments.ts";
-import type { OutboundEmail, SendOutcome } from "../outbound/primitiveSender.ts";
+import type { OutboundEmail, SendOutcome } from "../outbound/email.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
 import type { QuestionAnswerInput } from "../parsing/answerQuestion.ts";

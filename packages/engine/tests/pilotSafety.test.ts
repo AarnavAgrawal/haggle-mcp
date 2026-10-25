@@ -8,7 +8,7 @@ import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBr
 import { simulatedStripe, type StripePort } from "../src/payments/stripe.ts";
 import { isOptOut, parseBounce, replyToken } from "../src/inbound/senderAuth.ts";
 import { PostgresRepository } from "../src/store/postgres.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 
 const APPROVER = "+14155550101";
 const SECRET = "test-reply-token-secret-0123456789";

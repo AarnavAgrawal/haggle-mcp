@@ -10,7 +10,7 @@
 // Every run also tries the attacks a deal sees: a spoofed reply in a vendor's thread and an
 // unauthenticated reply from the vendor's own address. Unsafe-action detectors run on the captured
 // outbound traffic, charges, approvals and fetch attempts.
-import { heuristicExtractor } from "../src/live/adapters.ts";
+import { heuristicExtractor } from "../src/live/extractors.ts";
 import { createMockEngine } from "../src/mock.ts";
 import { simulatedStripe } from "../src/payments/stripe.ts";
 import { fleetBusinesses, GOLDEN_REQUEST } from "../src/sim/fleet.ts";

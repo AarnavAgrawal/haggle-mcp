@@ -1,14 +1,15 @@
 // Module-chain integration test (NOT a product end-to-end test): the six v3 golden-scenario
-// replies, as SDK-signed webhook events, through every engine module in order. The LLM step is a
+// replies, as signed Inkbox webhook events, through every engine module in order. The LLM step is a
 // fixed extraction per business (what a correct parse would return); there is no persistence, no
 // job driver and no MCP tool yet. It proves the modules compose, not that the workflow runs.
 // Numbers marked PROPOSED in docs/v3-prekickoff-readiness.md §7F still need Partner approval.
-import { describe, expect, it } from "vitest";
-import { signWebhookPayload } from "@primitivedotdev/sdk/webhook";
+import { beforeAll, describe, expect, it } from "vitest";
 import { createX402Client } from "@primitivedotdev/sdk/x402";
-import { buildEvent } from "./helpers/primitiveEvent.ts";
+import { FakeInkbox, SECRET, signed } from "./helpers/fakeInkbox.ts";
 import {
   evaluateRequirements,
+  inkboxSenderTrust,
+  inkboxToInbound,
   jobInboxAddress,
   matchInbound,
   meetsHardRequirements,
@@ -16,11 +17,10 @@ import {
   planCounteroffers,
   preparePayment,
   rankQuotes,
-  senderTrust,
-  toInbound,
+  trustForSender,
   validateQuote,
   verifyApproval,
-  verifyWebhook,
+  verifyInkboxWebhook,
   type BusinessCandidate,
   type CounterQuote,
   type EngineRequirement,
@@ -29,8 +29,7 @@ import {
   type RankableQuote,
 } from "../src/index.ts";
 
-const SECRET = "whsec_chain_test";
-const DOMAIN = "brave-dog.primitive.email";
+const DOMAIN = "brave-dog.inkboxmail.test";
 const INBOX = jobInboxAddress("7F3K", DOMAIN);
 // Anchored to the wall clock: the x402 SDK checks challenge expiry against real time, so fixed
 // dates would expire the fixtures (they did on 2026-10-17 at 21:05Z).
@@ -43,12 +42,12 @@ const REQS: EngineRequirement[] = [
 
 const biz = (id: string, email: string): BusinessCandidate => ({ businessId: id, jobId: "job-1", shortCode: "7F3K", email, threadId: null, outboundMessageId: null });
 const BUSINESSES = [
-  biz("b-bay", "quotes@bay-catering.primitive.email"),
-  biz("b-harbor", "orders@harbor-table.primitive.email"),
-  biz("b-mission", "hi@mission-eats.primitive.email"),
-  biz("b-grill", "sales@golden-grill.primitive.email"),
-  biz("b-sunset", "events@sunset-kitchen.primitive.email"),
-  biz("b-deli", "deals@quickquote-deli.primitive.email"),
+  biz("b-bay", "quotes@bay-catering.inkboxmail.test"),
+  biz("b-harbor", "orders@harbor-table.inkboxmail.test"),
+  biz("b-mission", "hi@mission-eats.inkboxmail.test"),
+  biz("b-grill", "sales@golden-grill.inkboxmail.test"),
+  biz("b-sunset", "events@sunset-kitchen.inkboxmail.test"),
+  biz("b-deli", "deals@quickquote-deli.inkboxmail.test"),
 ];
 const NAMES: Record<string, string> = { "b-bay": "Bay Catering", "b-harbor": "Harbor Table", "b-mission": "Mission Eats", "b-grill": "Golden Grill", "b-sunset": "Sunset Kitchen", "b-deli": "QuickQuote Deli" };
 
@@ -73,36 +72,49 @@ const ROUND1: Record<string, QuoteExtraction> = {
   "b-deli": priced(700, null, "email body", { payment_request: "external_link", instructions_to_agent: true }),
 };
 
-function signedInbound(from: string, body: string, opts: { auth?: "pass" | "fail"; threadId?: string } = {}) {
-  const raw = JSON.stringify(buildEvent({ from, to: INBOX, bodyText: body, endpointId: "ep_buyer", ...opts }));
-  const headers = new Headers({ "primitive-signature": signWebhookPayload(raw, SECRET, Math.floor(Date.now() / 1000)).header });
-  return { raw, headers };
+const inkbox = new FakeInkbox();
+let evt = 0;
+
+/** A seller identity mails the job inbox. auth "fail": its own mailbox never sent it (Inkbox can't verify it). */
+function signedInbound(from: string, body: string, opts: { auth?: "pass" | "fail" } = {}) {
+  const detail = inkbox.reply(from, "", body, [], { recordOutbound: opts.auth !== "fail" });
+  detail.toAddresses = [INBOX];
+  const raw = JSON.stringify({ id: `evt_${++evt}`, event_type: "message.received", data: { message: { id: detail.id }, agent_identities: [{ bucket: "from", address: from }] } });
+  return { raw, headers: signed(raw) };
 }
 
 /** Webhook bytes -> verified, mapped, matched, trusted, validated, requirement-checked quote. */
-function ingest(raw: string, headers: Headers, extraction: QuoteExtraction, round = 1) {
-  const v = verifyWebhook(raw, headers, { secret: SECRET, endpointId: "ep_buyer" });
+async function ingest(raw: string, headers: Headers, extraction: QuoteExtraction, round = 1) {
+  const v = verifyInkboxWebhook(raw, headers, SECRET);
   if (!v.ok) throw new Error(v.reason);
-  const m = toInbound(v.event);
+  const payload = v.payload as { id: string; event_type: string; data: { message: { id: string } } };
+  const detail = await inkbox.get(INBOX, payload.data.message.id);
+  const m = inkboxToInbound(payload, detail);
   const match = matchInbound({ to: m.to, threadId: m.threadId, inReplyTo: m.inReplyTo, references: m.references, subject: m.subject, from: m.from ?? "" }, BUSINESSES, [], DOMAIN);
   if (match.kind !== "business") return { match };
   const snapshot = BUSINESSES.find((b) => b.businessId === match.businessId)!.email;
-  const trust = senderTrust(v.event, snapshot);
+  const trust = trustForSender(await inkboxSenderTrust(inkbox, payload as never, detail), m.from)(snapshot);
   const record = validateQuote(extraction, 40);
   const results = evaluateRequirements(record, REQS, 40);
   return { match, trust, record, compliant: meetsHardRequirements(results, REQS), round, quoteId: `q-${match.businessId}-${round}` };
 }
+type Ingested = Required<Awaited<ReturnType<typeof ingest>>>;
 
 describe("golden scenario through the engine modules", () => {
-  const round1 = BUSINESSES.map((b) => {
-    const { raw, headers } = signedInbound(b.email, `reply from ${NAMES[b.businessId]}`);
-    const r = ingest(raw, headers, ROUND1[b.businessId]!);
-    if (r.match.kind !== "business") throw new Error(`unmatched ${b.businessId}`);
-    return r as Required<typeof r>;
+  let round1: Ingested[] = [];
+  let byId: Record<string, Ingested> = {};
+  beforeAll(async () => {
+    round1 = await Promise.all(BUSINESSES.map(async (b) => {
+      const { raw, headers } = signedInbound(b.email, `reply from ${NAMES[b.businessId]}`);
+      const r = await ingest(raw, headers, ROUND1[b.businessId]!);
+      if (r.match.kind !== "business") throw new Error(`unmatched ${b.businessId}`);
+      return r as Ingested;
+    }));
+    byId = Object.fromEntries(round1.map((r) => [(r.match as { businessId: string }).businessId, r]));
   });
-  const byId = Object.fromEntries(round1.map((r) => [(r.match as { businessId: string }).businessId, r]));
 
   it("matches and trusts every authenticated reply on the job inbox", () => {
+    expect(round1).toHaveLength(6);
     for (const r of round1) expect(r.trust.trusted).toBe(true);
   });
 
@@ -115,7 +127,7 @@ describe("golden scenario through the engine modules", () => {
     expect(byId["b-deli"]!.record.flags).toEqual(expect.arrayContaining(["external_payment_link", "prompt_injection"]));
   });
 
-  const toRankable = (r: (typeof round1)[number], status: RankableQuote["status"] = "current"): RankableQuote => ({
+  const toRankable = (r: Ingested, status: RankableQuote["status"] = "current"): RankableQuote => ({
     quoteId: r.quoteId, businessId: (r.match as { businessId: string }).businessId, totalCents: r.record.total_cents, available: r.record.available,
     compliant: r.compliant, senderTrusted: r.trust.trusted, status, confidence: r.record.confidence, flags: r.record.flags,
   });
@@ -129,7 +141,7 @@ describe("golden scenario through the engine modules", () => {
     expect(ranking.ranked.at(-1)!.businessId).toBe("b-grill"); // cheapest, but listed after the quotes that meet everything
   });
 
-  it("negotiation cites Harbor's real quote to Bay; Bay's real $995 revision then wins", () => {
+  it("negotiation cites Harbor's real quote to Bay; Bay's real $995 revision then wins", async () => {
     const counters = planCounteroffers(round1.map((r): CounterQuote => ({
       quoteId: r.quoteId, businessId: (r.match as { businessId: string }).businessId, businessName: NAMES[(r.match as { businessId: string }).businessId]!,
       totalCents: r.record.total_cents, available: r.record.available, compliant: r.compliant, senderTrusted: r.trust.trusted, round: 1,
@@ -139,14 +151,14 @@ describe("golden scenario through the engine modules", () => {
 
     // Bay replies in-thread with a revision. The revision is a received email, not something the engine computes.
     const { raw, headers } = signedInbound(BUSINESSES[0]!.email, "We can do $995 total, $5 deposit.");
-    const rev = ingest(raw, headers, priced(995, 5), 2) as Required<ReturnType<typeof ingest>>;
+    const rev = (await ingest(raw, headers, priced(995, 5), 2)) as Ingested;
     const ranking = rankQuotes([...round1.filter((r) => r !== byId["b-bay"]).map((r) => toRankable(r)), toRankable(byId["b-bay"]!, "superseded"), toRankable(rev)], 120000);
     expect(ranking.recommendedQuoteId).toBe("q-b-bay-2");
   });
 
-  it("a spoofed revision in Bay's name is not trusted and can't win", () => {
+  it("a spoofed revision in Bay's name is not trusted and can't win", async () => {
     const { raw, headers } = signedInbound(BUSINESSES[0]!.email, "Now $10 total!", { auth: "fail" });
-    const fake = ingest(raw, headers, priced(10, 5), 2) as Required<ReturnType<typeof ingest>>;
+    const fake = (await ingest(raw, headers, priced(10, 5), 2)) as Ingested;
     expect(fake.trust.trusted).toBe(false);
     expect(rankQuotes([toRankable(fake)], 120000).rejected[0]!.reason).toBe("unverified_sender");
   });
@@ -156,7 +168,7 @@ describe("golden scenario through the engine modules", () => {
     expect(verifyApproval(approval, { from: "yash@example.com", senderTrusted: true, threadMatched: true, bodyText: "APPROVE 4821" }, NOW)).toEqual({ decision: "approve" });
 
     const part = JSON.stringify({
-      interaction_version: 1, interaction_id: "5f0c1b9e-2d3a-4c5b-9e8f-7a6b5c4d3e2f@bay-catering.primitive.email", protocol: "x402.payment",
+      interaction_version: 1, interaction_id: "5f0c1b9e-2d3a-4c5b-9e8f-7a6b5c4d3e2f@bay-catering.inkboxmail.test", protocol: "x402.payment",
       protocol_version: 1, step: "challenge", step_id: "0b6d7f2e-1a2b-4c3d-8e9f-0a1b2c3d4e5f", prev_step_id: null, expires_at: at(5),
       payload: { challenge_nonce: "b".repeat(64), payment_requirements: { scheme: "exact", network: "base-sepolia", maxAmountRequired: "5000000",
         payTo: "0x1111111111111111111111111111111111111111", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", extra: { name: "USDC", version: "2" } } },

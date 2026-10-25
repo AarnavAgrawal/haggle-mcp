@@ -1,5 +1,7 @@
 # Buyer-side progress (actual status only)
 
+> **Historical:** the Primitive email path described here was removed from the code (Inkbox is the only email provider). Kept as a record; do not follow its Primitive steps.
+
 ## 2026-10-16 (Friday, pre-event)
 
 | Item | Status | Evidence |

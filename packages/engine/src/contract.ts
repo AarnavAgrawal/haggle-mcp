@@ -174,7 +174,7 @@ export interface ReplyMeta {
   /** The name the buyer used for this business on the job (businesses outside the directory). */
   business_name?: string;
   business_email: string;          // snapshot used for this job
-  message_id: string;              // Primitive email id
+  message_id: string;              // provider (Inkbox) message id
   thread_id: string;
   received_at: IsoDateTime;
   rfq_sent_at: IsoDateTime;        // lets the brain learn reply speed

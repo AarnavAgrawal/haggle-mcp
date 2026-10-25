@@ -2,7 +2,7 @@
 // clock, reply tokens on (HAGGLE_EXTERNAL_SENDERS=reply_token), any repository. No network.
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type EngineConfig, type ExtractorPort, type Repository } from "../../src/index.ts";
 import { replyToken } from "../../src/inbound/senderAuth.ts";
-import type { InboundMessage, TrustVerdict } from "../../src/inbound/primitive.ts";
+import type { InboundMessage, TrustVerdict } from "../../src/inbound/types.ts";
 // Provider message ids are unique per process: suites share one Postgres database in parallel.
 const RUN = Math.random().toString(36).slice(2, 10);
 

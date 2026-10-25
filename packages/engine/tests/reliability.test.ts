@@ -7,7 +7,7 @@ import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBr
 import { simulatedStripe, type StripePort } from "../src/payments/stripe.ts";
 import { PostgresRepository } from "../src/store/postgres.ts";
 import { ChannelSendError, type A2APort, type PhonePort } from "../src/workflow/ports.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 import type { Repository } from "../src/store/types.ts";
 import { decideChargeResume, decideClaim, isObligationKey, redactError } from "../src/workflow/deadLetter.ts";
 import { planRecovery } from "../src/workflow/recovery.ts";

@@ -5,7 +5,7 @@
 // clock, lease loss on demand and a way to run a side effect inside an advance. No network.
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type EngineConfig, type ExtractorPort } from "../../src/index.ts";
 import { ChannelSendError, type A2APort, type PhonePort, type SmsPort, type IMessagePort } from "../../src/workflow/ports.ts";
-import type { TrustVerdict } from "../../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../../src/inbound/types.ts";
 import type { Repository } from "../../src/store/types.ts";
 import { BUYER, FakeInkbox } from "./fakeInkbox.ts";
 

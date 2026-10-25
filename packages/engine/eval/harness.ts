@@ -6,10 +6,10 @@ import { HaggleEngine } from "../src/workflow/engine.ts";
 import type { EngineConfig, ExtractorPort } from "../src/workflow/ports.ts";
 import { InMemoryRepository } from "../src/store/memory.ts";
 import { StubBrain } from "../src/brain/stubBrain.ts";
-import { disabledPayer } from "../src/live/adapters.ts";
+import { disabledPayer } from "../src/payments/disabledPayer.ts";
 import { inlineAttachments } from "../src/workflow/ports.ts";
 import { simulatedStripe } from "../src/payments/stripe.ts";
-import type { InboundMessage, TrustVerdict } from "../src/inbound/primitive.ts";
+import type { InboundMessage, TrustVerdict } from "../src/inbound/types.ts";
 import { EVAL_START } from "./corpus.ts";
 
 export const BUYER_INBOX = "haggle@inkboxmail.test";

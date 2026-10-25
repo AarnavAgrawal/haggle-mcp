@@ -7,7 +7,7 @@ import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, ParseE
 import { replyToken } from "../src/inbound/senderAuth.ts";
 import { CONTINUITY_ONLY_WARNING, provesSenderIdentity } from "../src/inbound/trustStrength.ts";
 import { inlineAttachments } from "../src/workflow/ports.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 
 const APPROVER = "+14155550101";
 const SECRET = "test-reply-token-secret-0123456789";

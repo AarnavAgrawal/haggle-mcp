@@ -3,7 +3,7 @@
 // suppression list once, whether they arrive by webhook, by the reconciler's sweep, or both.
 import { describe, expect, it } from "vitest";
 import { PostgresRepository } from "../src/store/postgres.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 import { dealWith, liveEngine, vendorReply, type LiveEnv } from "./helpers/liveEngine.ts";
 
 const V = { name: "Valley Catering", email: "orders@valley.example" };

@@ -1,9 +1,8 @@
-// x402 challenge processing (guard before signing) and the outbound sender, with fakes only.
+// x402 challenge processing (guard before signing), with fakes only.
 // The real SDK X402Client is used with a fetch that throws, proving payEmailChallenge is local.
 import { describe, expect, it } from "vitest";
 import { createX402Client } from "@primitivedotdev/sdk/x402";
 import { parseChallengePart, preparePayment, type PayerClient } from "../src/payments/x402Challenge.ts";
-import { replySubject, sendEmail, sendKeys, SendRejected, type SenderClient } from "../src/outbound/primitiveSender.ts";
 
 // Anchored to the wall clock: the x402 SDK checks challenge expiry against real time, so fixed
 // dates would expire the fixtures (they did on 2026-10-17 at 21:05Z).
@@ -101,48 +100,5 @@ describe("preparePayment when the SDK refuses to sign", () => {
     expect(await preparePayment(payer, stubSigner, parsed.parsed, guardBase())).toMatchObject({ ok: false, guard: { code: "CHALLENGE_EXPIRED" } });
     const other: PayerClient = { payEmailChallenge: async () => { throw new Error("bad signer"); } };
     expect(await preparePayment(other, stubSigner, parsed.parsed, guardBase())).toMatchObject({ ok: false, guard: { code: "SIGNING_REFUSED" } });
-  });
-});
-
-describe("sendEmail", () => {
-  function fake(result = { id: "se_1", status: "queued", accepted: ["x@y"], rejected: [] as string[], idempotentReplay: false }) {
-    const calls: any[] = [];
-    const client: SenderClient = { send: async (input, opts) => (calls.push({ input, opts }), result) };
-    return { client, calls };
-  }
-
-  it("sends from the job inbox with the idempotency key and inline JSON parts", async () => {
-    const { client, calls } = fake();
-    const out = await sendEmail(client, {
-      from: "job-7f3k@brave-dog.primitive.email", to: "quotes@bay-catering.primitive.email", subject: "[HG-7F3K] Quote request",
-      bodyText: "hi", idempotencyKey: sendKeys.rfq("job-1", "b-bay"),
-      attachments: [{ filename: "rfq.json", contentType: "application/json", content: new TextEncoder().encode('{"a":1}') }],
-    }, async () => "<m1@primitive.email>");
-    expect(out).toEqual({ providerId: "se_1", status: "queued", idempotentReplay: false, messageId: "<m1@primitive.email>" });
-    expect(calls[0].opts.idempotencyKey).toBe("rfq:job-1:b-bay");
-    expect(calls[0].input.attachments[0]).toEqual({ filename: "rfq.json", content_type: "application/json", content_base64: Buffer.from('{"a":1}').toString("base64") });
-    expect(calls[0].input.thread).toBeUndefined();
-  });
-
-  it("in-thread replies go to the pinned address with explicit threading and a single Re:", async () => {
-    const { client, calls } = fake();
-    await sendEmail(client, {
-      from: "job-7f3k@brave-dog.primitive.email", to: "quotes@bay-catering.primitive.email", subject: "Re: [HG-7F3K] Quote request",
-      bodyText: "counter", idempotencyKey: sendKeys.counter("job-1", "b-bay", 2), thread: { inReplyTo: "<in-1@bay>", references: ["<out-1@hg>", "<in-1@bay>"] },
-    });
-    expect(calls[0].input).toMatchObject({ to: "quotes@bay-catering.primitive.email", subject: "Re: [HG-7F3K] Quote request", thread: { inReplyTo: "<in-1@bay>" } });
-    expect(replySubject("[HG-7F3K] x")).toBe("Re: [HG-7F3K] x");
-  });
-
-  it("refuses a missing or unsafe idempotency key and surfaces full rejection", async () => {
-    const { client } = fake();
-    await expect(sendEmail(client, { from: "a@b", to: "c@d", subject: "s", bodyText: "b", idempotencyKey: "" })).rejects.toThrow(TypeError);
-    const rejected = fake({ id: "se_2", status: "failed", accepted: [], rejected: ["c@d"], idempotentReplay: false });
-    await expect(sendEmail(rejected.client, { from: "a@b", to: "c@d", subject: "s", bodyText: "b", idempotencyKey: "rfq:job-1:b-x" })).rejects.toBeInstanceOf(SendRejected);
-  });
-
-  it("idempotency keys are deterministic per logical send", () => {
-    expect(sendKeys.payment("step-1")).toBe("pay:step-1");
-    expect(sendKeys.counter("j", "b", 2)).toBe(sendKeys.counter("j", "b", 2));
   });
 });

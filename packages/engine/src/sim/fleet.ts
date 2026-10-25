@@ -7,8 +7,8 @@
 import type { Business } from "../contract.ts";
 import { businessIdForContact } from "../ids.ts";
 import { subjectShortCode } from "../inbound/matching.ts";
-import type { InboundMessage, TrustVerdict } from "../inbound/primitive.ts";
-import type { OutboundEmail, SendOutcome } from "../outbound/primitiveSender.ts";
+import type { InboundMessage, TrustVerdict } from "../inbound/types.ts";
+import type { OutboundEmail, SendOutcome } from "../outbound/email.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
 import type { A2APort, EmailPort, ExtractorPort, PhoneCallRequest, PhonePort } from "../workflow/ports.ts";
 
@@ -178,7 +178,7 @@ export class SimFleet implements EmailPort, ExtractorPort, PhonePort {
   private extractions = new Map<string, QuoteExtraction>();
   private counts = new Map<string, number>();
   private seq = 0;
-  /** Provider ids are globally unique in Primitive; make simulated ones unique per fleet instance too. */
+  /** Provider message ids are globally unique; make simulated ones unique per fleet instance too. */
   private readonly prefix = Math.random().toString(36).slice(2, 8);
   private deliver: Deliver | null = null;
 

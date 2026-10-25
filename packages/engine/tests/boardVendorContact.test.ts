@@ -3,7 +3,7 @@
 // from inbound/contactStatus.ts. Real engine, in-memory store, fake ports.
 import { describe, expect, it } from "vitest";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain } from "../src/index.ts";
-import type { TrustVerdict } from "../src/inbound/primitive.ts";
+import type { TrustVerdict } from "../src/inbound/types.ts";
 
 const noEvidence = { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] };
 const trusted = (e: string): TrustVerdict => ({ trusted: true, address: e, reason: "trusted", evidence: noEvidence });
