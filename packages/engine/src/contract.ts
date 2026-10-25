@@ -296,17 +296,8 @@ export interface CounterPart {
   basis_quote_total_usd?: Usd;     // required when basis = competing_quote; must be a real recorded quote
 }
 
-/** (D9) Sent in-thread after human approval; asks the winner for the x402 invoice. */
-export interface AcceptPart {
-  haggle: "accept/1";
-  job_id: string;
-  quote_total_usd: Usd;
-  deposit_usd: Usd;                // amount the payer will pay now via x402
-  network: "base-sepolia";
-  payer: string;                   // job inbox address the challenge must be sent to
-  conditional: true;               // acceptance is conditional on payment settling
-}
-// Payment itself uses Primitive's own interaction.json (x402.payment challenge / payment / receipt).
+// (D9) The v3 accept.json / interaction.json payment exchange is retired: money moves only through
+// Stripe or the manual handoff, and a business's interaction.json is flagged, never paid.
 
 /* ───────────────────────── MCP tool results ───────────────────────── */
 

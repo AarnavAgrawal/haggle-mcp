@@ -1,6 +1,7 @@
 // Every external dependency of the engine is a port, so mock mode and live mode run the same
-// workflow code. Live (v5): Inkbox email + attachments, Claude extractor, Partner's brain, x402
-// payer; phone/A2A ports are absent until enabled, so those businesses are reported "unavailable".
+// workflow code. Live (v5): Inkbox email + attachments, Claude extractor, Partner's brain, Stripe
+// test mode or the manual handoff; phone/A2A ports are absent until enabled, so those businesses are
+// reported "unavailable".
 // Mock (labelled DEMO everywhere): SimFleet (email + simulated calls), inline attachments, StubBrain.
 import type { Brain } from "../contract.ts";
 import { imageContentType, type ExtractedFile, type ImageFile, type PdfFile } from "../inbound/attachments.ts";
@@ -8,7 +9,6 @@ import type { OutboundEmail, SendOutcome } from "../outbound/email.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
 import type { QuestionAnswerInput } from "../parsing/answerQuestion.ts";
-import type { PayerClient } from "../payments/x402Challenge.ts";
 import type { StripePort } from "../payments/stripe.ts";
 import type { MessageRow, Mode, Repository } from "../store/types.ts";
 
@@ -120,13 +120,17 @@ export interface AttachmentPort {
   load(message: MessageRow): Promise<ExtractedFile[]>;
 }
 
+/**
+ * What the engine knows about payments when there is no Stripe port. Money only moves through
+ * Stripe (test mode, or its labelled simulation in mock mode) or not at all (the manual handoff:
+ * the human pays the business directly). Without Stripe, a charge is refused with `disabledReason`
+ * (or a generic "no payment rail" reason): approval records it once and asks no business for an invoice.
+ */
 export interface PayerPort {
-  client: PayerClient;
-  signer: unknown;
-  /** True when payments are simulated (no real signing key, receipts are DEMO). */
-  simulated: boolean;
-  /** Set when no payment rail is enabled: approval records a refused payment and asks no seller for an invoice. */
+  /** Why payments are off on this server (shown to the agent and recorded once per approval). */
   disabledReason?: string;
+  /** Mock mode: the payment-status placeholder is labelled simulated. */
+  simulated?: boolean;
 }
 
 export interface EngineConfig {
@@ -290,7 +294,8 @@ export interface EngineDeps {
   payer: PayerPort;
   /**
    * v5 payment rail: Stripe test mode (live) or its labelled simulation (mock). When present it is
-   * THE rail: approval no longer emails an x402 invoice request; pay() charges the approved deposit.
+   * THE rail: pay() charges the approved deposit. Without it (and without the manual handoff) no
+   * payment can be made.
    */
   stripe?: StripePort;
   config: EngineConfig;

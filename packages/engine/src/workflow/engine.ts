@@ -9,7 +9,8 @@
 //   - every outbound email has a deterministic idempotency key and is recorded once.
 // v3 additions: per-job inbox and pinned recipients, quote.json fast path, questions and
 // answer_seller, totals-based honest negotiation, brain.learnFromReply after every parse,
-// approval (elicitation / verified email / simulated in mock mode) and the x402 payer.
+// approval (elicitation / verified email / simulated in mock mode). The v3 x402 payer is retired:
+// money moves only through Stripe (test mode / simulated) or the manual handoff.
 // v5 additions: channel routing (A2A card > email > phone; a channel without an enabled port is
 // "unavailable", never faked), Voice AI call results via ingestCall, one shared Inkbox mailbox,
 // the deal-board read model, approval from the approval view, settings, and the launcher.
@@ -26,7 +27,7 @@ import { explainQuarantine, quarantineEventData } from "../inbound/quarantineRea
 import { matchInbound, jobInboxAddress, jobInboxCode, normalizeAddress, normalizeMessageId, subjectShortCode } from "../inbound/matching.ts";
 import { isCarrierOptOut, isDsnSender, isOptOut, parseBounce, replyToken, verifyExternalReply } from "../inbound/senderAuth.ts";
 import type { InboundMessage, TrustVerdict } from "../inbound/types.ts";
-import { centsToUsd, usdToCents, centsToUsdcBaseUnits } from "../money.ts";
+import { centsToUsd, usdToCents } from "../money.ts";
 import { planCounteroffers, type PlannedCounter } from "../negotiation/counteroffer.ts";
 import { applyStrategy, type StrategyContext } from "../negotiation/strategist.ts";
 import { imessageFailureReason } from "../outbound/imessageErrors.ts";
@@ -46,7 +47,6 @@ import type { ExtractionRequest } from "../parsing/parseReply.ts";
 import { groundedAnswer } from "../parsing/answerQuestion.ts";
 import { firstReplyLine, verifyApproval } from "../approvals/verifyApproval.ts";
 import { isUnansweredLimitError, TextBudget } from "./textBudget.ts";
-import { parseChallengePart, preparePayment } from "../payments/x402Challenge.ts";
 import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
 import { rankQuotes, rejectReason, softTierOf, type RankableQuote, type Ranking } from "../ranking/rank.ts";
 import { assessCompliance, complianceSummary, type Compliance } from "../ranking/compliance.ts";
@@ -4124,33 +4124,16 @@ export class HaggleEngine {
     const quote = await this.repo.getQuote(approval.quote_id);
     const b = (await this.repo.getBusinesses(job.id)).find((x) => x.business_id === approval.business_id);
     if (!quote || !b) return;
-    if (this.d.payer.disabledReason) {
-      // No payment rail on this server: record it once; no payment row (the approval stays usable once
-      // payments are enabled), never ask the seller for an invoice we can't pay.
-      const said = (await this.repo.listEvents(job.id)).some((e) => e.type === "payment" && e.data.reason === this.d.payer.disabledReason && e.data.approval_id === approval.id);
-      if (!said) await this.repo.appendEvent(job.id, "payment", { status: "failed", reason: this.d.payer.disabledReason, approval_id: approval.id });
-      return;
-    }
-    await this.repo.insertPayment({
-      id: newId("pay"), job_id: job.id, approval_id: approval.id, business_id: b.business_id, status: "awaiting_invoice", rail: "x402", idempotency_key: null, stripe_payment_intent_id: null,
-      amount_cents: approval.payment_cents, amount_base_units: centsToUsdcBaseUnits(approval.payment_cents), network: "base-sepolia",
-      challenge_json: null, challenge_step_id: null, challenge_message_id: null, challenge_trusted: false, challenge_thread_matched: false,
-      pay_to: null, interaction_json: null, settle_tx: null, simulated: this.d.payer.simulated, reason: this.d.payer.disabledReason ?? null,
-      ...(this.d.payer.disabledReason ? { status: "failed" as const } : {}),
-    });
-    if (this.d.payer.disabledReason) {
-      // No payment rail: never ask the seller for an invoice we can't pay.
-      await this.repo.appendEvent(job.id, "payment", { status: "failed", reason: this.d.payer.disabledReason });
-      return;
-    }
-    const accept = { haggle: "accept/1", job_id: job.id, quote_total_usd: centsToUsd(approval.quote_total_cents), deposit_usd: centsToUsd(approval.payment_cents), network: "base-sepolia", payer: job.inbox, conditional: true };
-    const text = [
-      `Hi ${b.name},`, "",
-      `We'd like to go ahead with your quote of $${centsToUsd(approval.quote_total_cents).toFixed(2)} total, conditional on the deposit settling.`,
-      `Please send an x402 payment request for the $${centsToUsd(approval.payment_cents).toFixed(2)} deposit (USDC on base-sepolia) in this thread.`, "", "Thank you!",
-    ].join("\n");
-    await this.sendRecorded(job, b, "accept", sendKeys.accept(approval.id), { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, bodyText: text, attachments: [jsonPart("accept.json", accept)], inThread: true });
-    await this.repo.appendEvent(job.id, "payment", { status: "awaiting_invoice" });
+    // No payment rail on this server (the v3 x402 rail is retired): record it once; no payment row
+    // (the approval stays usable once payments are enabled), never ask the seller for an invoice.
+    const reason = this.paymentsOffReason;
+    const said = (await this.repo.listEvents(job.id)).some((e) => e.type === "payment" && e.data.reason === reason && e.data.approval_id === approval.id);
+    if (!said) await this.repo.appendEvent(job.id, "payment", { status: "failed", reason, approval_id: approval.id });
+  }
+
+  /** Why a charge can't be made here: Stripe isn't configured. The operator's reason when given. */
+  private get paymentsOffReason(): string {
+    return this.d.payer.disabledReason ?? "No payment rail is configured on this server (Stripe test mode or the manual handoff); nothing was charged.";
   }
 
   /**
@@ -5200,7 +5183,7 @@ export class HaggleEngine {
         const files = await this.d.attachments.load(msg);
         const interaction = files.find((f) => f.kind === "json" && /interaction\.json$/i.test(f.filename));
         if (interaction) {
-          await this.handleInteraction(job, b, msg, interaction.data);
+          await this.flagPaymentRequestPart(job, b);
           await this.repo.updateMessage(msg.id, { parse_status: "done" });
           continue;
         }
@@ -5680,100 +5663,20 @@ export class HaggleEngine {
     }
   }
 
-  // ───────────────────────────── x402 ─────────────────────────────
+  // ───────────────────────────── payment requests from businesses ─────────────────────────────
 
-  private async handleInteraction(job: JobRow, b: JobBusinessRow, msg: MessageRow, data: Uint8Array) {
-    const pay = await this.repo.getPaymentForJob(job.id);
-    let envelope: { step?: string; payload?: Record<string, unknown>; prev_step_id?: string | null } = {};
-    try {
-      envelope = JSON.parse(Buffer.from(data).toString("utf8"));
-    } catch {
-      await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "conflicting_numbers", summary: "interaction.json is not valid JSON" });
-      return;
-    }
-    if (!pay || pay.business_id !== b.business_id) {
-      await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "external_payment_link", summary: "payment request from a business that wasn't approved; ignored" });
-      return;
-    }
-    const threadMatched = msg.matched_via === "thread" || msg.matched_via === "message_id" || (msg.to_address ?? "") === job.inbox;
-    if (envelope.step === "challenge") {
-      const parsed = parseChallengePart(data);
-      if (!parsed.ok) {
-        await this.repo.appendEvent(job.id, "payment", { status: "invoice_rejected", reason: parsed.reason });
-        return;
-      }
-      if (pay.status !== "awaiting_invoice" && pay.status !== "expired") return; // duplicate or late challenge: stored, not paid
-      const updated = await this.repo.transitionPayment(pay.id, ["awaiting_invoice", "expired"], {
-        status: "invoice_received", challenge_json: Buffer.from(data).toString("utf8"), challenge_step_id: parsed.parsed.stepId, challenge_message_id: msg.id,
-        challenge_trusted: provesSenderIdentity(msg), challenge_thread_matched: threadMatched, pay_to: parsed.parsed.payTo, // a thread-only (reply token) sender never names a payee
-      });
-      if (updated) await this.repo.appendEvent(job.id, "payment", { status: "invoice_received" });
-      return;
-    }
-    if (envelope.step === "receipt") {
-      // NOT VERIFIED against a live receipt: accept only a trusted, in-thread receipt for our step with a tx hash.
-      const p = envelope.payload ?? {};
-      const tx = typeof p.settle_tx === "string" ? p.settle_tx : typeof p.transaction === "string" ? p.transaction : null;
-      const ok = provesSenderIdentity(msg) && threadMatched && pay.status === "sent" && tx !== null && p.status !== "rejected";
-      if (ok) {
-        const done = await this.repo.transitionPayment(pay.id, ["sent"], { status: "settled", settle_tx: tx, simulated: pay.simulated || msg.simulated });
-        if (done) await this.repo.appendEvent(job.id, "payment", { status: "settled", settle_tx: tx, simulated: done.simulated });
-      } else if (pay.status === "sent" && p.status === "rejected") {
-        await this.repo.transitionPayment(pay.id, ["sent"], { status: "rejected", reason: typeof p.reason === "string" ? p.reason.slice(0, 200) : "rejected" });
-        await this.repo.appendEvent(job.id, "payment", { status: "rejected" });
-      }
-    }
-  }
-
-  /** Called from POST /inbound for Primitive's signed payment.settled webhook. */
-  async recordSettlement(jobId: string, challengeStepId: string, settleTx: string) {
-    const pay = await this.repo.getPaymentForJob(jobId);
-    if (!pay || pay.challenge_step_id !== challengeStepId) return false;
-    const done = await this.repo.transitionPayment(pay.id, ["sent"], { status: "settled", settle_tx: settleTx });
-    if (done) await this.repo.appendEvent(jobId, "payment", { status: "settled", settle_tx: settleTx, simulated: done.simulated });
-    return done !== null;
+  /**
+   * A business sent a payment protocol part (interaction.json: an x402 challenge or receipt, or any
+   * other payment step). Haggle never pays on a business's request: money moves only through Stripe
+   * or the manual handoff, after a human's approval. The part is flagged and never acted on; the
+   * message is not read as a quote. (The v3 x402 rail that once answered these is retired.)
+   */
+  private async flagPaymentRequestPart(job: JobRow, b: JobBusinessRow) {
+    await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: "external_payment_link", summary: `${b.name} sent a payment request (interaction.json); ignored: Haggle never pays on a business's request` });
   }
 
   private async processPayment(jobId: string) {
-    if (this.d.stripe) {
-      await this.processStripePayment(jobId);
-      return;
-    }
-    const job = await this.repo.getJob(jobId);
-    if (!job || job.state !== "paying") return;
-    const pay = await this.repo.getPaymentForJob(jobId);
-    if (!pay) return;
-    const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === pay.business_id);
-    if (!b) return;
-    if (pay.status === "signed" && pay.interaction_json) {
-      // Crash between sign and send: resend the identical bytes under the same key.
-      await this.sendPaymentStep(job, b, pay, new TextEncoder().encode(pay.interaction_json));
-      return;
-    }
-    if (pay.status !== "invoice_received" || !job.pay_intent || !pay.challenge_json) return;
-    const approval = await this.repo.getApproval(pay.approval_id);
-    const quote = approval ? await this.repo.getQuote(approval.quote_id) : null;
-    const parsed = parseChallengePart(pay.challenge_json);
-    if (!parsed.ok) return;
-    const prepared = await preparePayment(this.d.payer.client, this.d.payer.signer, parsed.parsed, {
-      job: { id: job.id, state: job.state },
-      approval: approval ? { id: approval.id, job_id: approval.job_id, quote_id: approval.quote_id, business_id: approval.business_id, quote_total_cents: approval.quote_total_cents, payment_cents: approval.payment_cents, status: approval.status, expires_at: approval.expires_at } : null,
-      quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
-      knownPayTo: null, existingPayment: null, spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, (await this.getSettings(job.workspace_id)).spending_cap_cents), now: this.now(),
-      challengeEmail: { business_id: pay.business_id, sender_trusted: pay.challenge_trusted, thread_matched: pay.challenge_thread_matched },
-    });
-    if (!prepared.ok) {
-      const code = prepared.guard.code;
-      const status = code === "CHALLENGE_EXPIRED" ? "expired" : "failed";
-      await this.repo.transitionPayment(pay.id, ["invoice_received"], { status, reason: code });
-      await this.repo.appendEvent(job.id, "payment", { status, reason: code });
-      return;
-    }
-    const signed = await this.repo.transitionPayment(pay.id, ["invoice_received"], { status: "signed", interaction_json: Buffer.from(prepared.interactionJson).toString("utf8") });
-    if (!signed) return;
-    await this.repo.transitionApproval(pay.approval_id, "approved", { status: "used" });
-    await this.repo.appendEvent(job.id, "payment", { status: "signed" });
-    await this.sendPaymentStep(job, b, signed, prepared.interactionJson);
+    if (this.d.stripe) await this.processStripePayment(jobId);
   }
 
   /**
@@ -5854,21 +5757,6 @@ export class HaggleEngine {
       await this.repo.appendEvent(jobId, "payment", { status: "failed", rail: "stripe", reason: r.reason.slice(0, 200) });
     }
     return {};
-  }
-
-  private async sendPaymentStep(job: JobRow, b: JobBusinessRow, pay: PaymentRow, bytes: Uint8Array) {
-    try {
-      await this.sendRecorded(job, b, "payment", sendKeys.payment(pay.challenge_step_id!), {
-        to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
-        bodyText: `Payment for the approved $${centsToUsd(pay.amount_cents).toFixed(2)} deposit is attached (x402, ${pay.network}).`,
-        attachments: [{ filename: "interaction.json", contentType: "application/json", content: bytes }],
-      });
-      const sent = await this.repo.transitionPayment(pay.id, ["signed"], { status: "sent" });
-      if (sent) await this.repo.appendEvent(job.id, "payment", { status: "sent" });
-    } catch (err) {
-      // Stays `signed`; the next advance resends the same bytes with the same key.
-      this.log("payment_send_failed", { job_id: job.id, error: (err as Error).message });
-    }
   }
 
   // ───────────────────────────── agent operations ─────────────────────────────
@@ -6045,7 +5933,7 @@ export class HaggleEngine {
       return "Waiting for the human to approve (a text reply YES <code>, an email reply APPROVE <code>, the approval card or form, whichever they got). Call wait_for_update with until=approval_decided; once approved, call pay(job_id, quote_id).";
     }
     if (job.state === "paying") {
-      if (!this.d.stripe && this.d.payer.disabledReason) return "Approved. Payments are off on this server, so nothing can be charged yet; tell the user. The approval stays valid until it expires.";
+      if (!this.d.stripe) return "Approved. Payments are off on this server, so nothing can be charged yet; tell the user. The approval stays valid until it expires.";
       const p = await this.repo.getPaymentForJob(job.id);
       if (p && ["charging", "signed", "sent", "awaiting_invoice", "invoice_received"].includes(p.status)) return "Payment in progress. Call wait_for_update.";
       if (p && ["failed", "rejected", "expired"].includes(p.status)) return `The payment didn't go through (${p.reason ?? p.status}); see get_quotes. Call pay(job_id, quote_id) to retry.`;
@@ -6282,7 +6170,7 @@ export class HaggleEngine {
       ...(purchase ? { purchase } : {}),
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
       payment_ceiling_usd: centsToUsd(Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents)),
-      payments_enabled: this.d.stripe !== undefined || !this.d.payer.disabledReason,
+      payments_enabled: this.d.stripe !== undefined,
       next: notCompared && job.ready && ["collecting", "negotiating", "awaiting_approval"].includes(job.state) ? `${next} ${notCompared}` : next,
     };
   }
@@ -7114,27 +7002,14 @@ export class HaggleEngine {
       }
       return line;
     }
-    if (!this.d.stripe && this.d.payer.disabledReason) throw new EngineError("payments_disabled", this.d.payer.disabledReason, "Nothing was charged. The operator must enable Stripe test mode (HAGGLE_ENABLE_PAYMENTS=true with STRIPE_* set); the approval stays valid until it expires.", "get_quotes");
+    if (!this.d.stripe) throw new EngineError("payments_disabled", this.paymentsOffReason, "Nothing was charged. The operator must enable Stripe test mode (HAGGLE_ENABLE_PAYMENTS=true with STRIPE_* set); the approval stays valid until it expires.", "get_quotes");
     if (!job.pay_intent) await this.repo.touchJob(jobId, { pay_intent: true });
-    if (this.d.stripe) {
-      const { refused } = await this.processStripePayment(jobId);
-      if (refused) throw stripeRefusal(refused);
-      await this.advanceJob(jobId); // a settled charge moves the job to paid
-      const p = await this.repo.getPaymentForJob(jobId);
-      if (!p) throw new EngineError("payment_not_started", "The payment didn't start.", "Call get_quotes to check the job, then pay again.", "get_quotes");
-      return this.withReceipt(jobId, paymentStatus(p));
-    }
-    const p0 = await this.repo.getPaymentForJob(jobId);
-    if (p0?.status === "expired") {
-      // The invoice expired before payment: ask once more for a fresh one (bounded by the idempotency key).
-      const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === p0.business_id)!;
-      const again = await this.repo.transitionPayment(p0.id, ["expired"], { status: "awaiting_invoice", challenge_json: null, challenge_step_id: null });
-      if (again) await this.sendRecorded(job, b, "accept", `reissue:${p0.id}`, { to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true, bodyText: `Hi ${b.name},\n\nThe payment request expired before we could pay it. Could you send a fresh one in this thread?` });
-    }
-    await this.d.onTick?.();
-    await this.advanceJob(jobId);
+    const { refused } = await this.processStripePayment(jobId);
+    if (refused) throw stripeRefusal(refused);
+    await this.advanceJob(jobId); // a settled charge moves the job to paid
     const p = await this.repo.getPaymentForJob(jobId);
-    return p ? paymentStatus(p) : { status: "awaiting_invoice", rail: "x402", network: "base-sepolia", simulated: this.d.payer.simulated };
+    if (!p) throw new EngineError("payment_not_started", "The payment didn't start.", "Call get_quotes to check the job, then pay again.", "get_quotes");
+    return this.withReceipt(jobId, paymentStatus(p));
   }
 
   // ───────────────────────────── brain-backed (Partner's brain via the contract) ─────────────────────────────
@@ -7143,12 +7018,14 @@ export class HaggleEngine {
   private noPayment(): EnginePaymentStatus {
     return this.d.stripe
       ? { status: "awaiting_approval", rail: "stripe", network: STRIPE_NETWORK, simulated: this.d.stripe.simulated }
-      : { status: "awaiting_approval", rail: "x402", network: "base-sepolia", simulated: this.d.payer.simulated };
+      // No Stripe rail: a placeholder status only (nothing can be charged). Its legacy rail/network
+      // labels are kept so the board output doesn't change shape.
+      : { status: "awaiting_approval", rail: "x402", network: "base-sepolia", simulated: this.d.payer.simulated ?? false };
   }
 
-  /** True when a payment rail can actually charge (Stripe configured, or a signing x402 payer). */
+  /** True when payments can go ahead: Stripe configured, or the manual handoff (the human pays directly). */
   get paymentsEnabled(): boolean {
-    return this.d.config.manualPaymentHandoff === true || this.d.stripe !== undefined || !this.d.payer.disabledReason;
+    return this.d.config.manualPaymentHandoff === true || this.d.stripe !== undefined;
   }
 
   /**

@@ -1,6 +1,6 @@
 # Pre-kickoff infrastructure readiness
 
-> **Historical:** the Primitive email path described here was removed from the code (Inkbox is the only email provider). Kept as a record; do not follow its Primitive steps.
+> **Historical:** Primitive/x402 removed. The Primitive email path and the x402 payment rail described here are gone from the code (email is Inkbox; payments are Stripe test mode or the manual handoff). Kept as a record; do not follow its Primitive or x402 steps.
 
 First checked 2026-10-17 00:15–00:55 PDT; full re-run 07:38 PDT (Saturday, before 10:30 AM kickoff):
 **18 PASS, 1 BLOCKED (x402)**. Infrastructure only: no

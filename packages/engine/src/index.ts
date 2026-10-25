@@ -32,7 +32,6 @@ export * from "./routing/channelStats.ts";
 export * from "./reputation/places.ts";
 export * from "./reputation/website.ts";
 export * from "./outbound/email.ts";
-export * from "./payments/x402Challenge.ts";
 export * from "./ids.ts";
 export * from "./store/types.ts";
 export * from "./store/memory.ts";

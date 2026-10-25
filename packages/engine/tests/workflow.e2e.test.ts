@@ -1,6 +1,6 @@
 // End-to-end (MOCK MODE): the real engine, in-memory persistence, the simulated golden fleet and a
 // controllable clock, from deal to a settled DEMO payment. Everything external is simulated and
-// labelled; this proves the buyer workflow, not live Inkbox / Claude / x402 behaviour.
+// labelled; this proves the buyer workflow, not live Inkbox / Claude / Stripe behaviour.
 // v5 fleet (PLAN §8): Mission Eats only answers the phone, so its quote comes from a simulated
 // Voice AI call transcript; every job shares one buyer mailbox, as with Inkbox.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -14,7 +14,7 @@ afterAll(async () => { for (const r of pgRepos) await r.close(); });
 let makeRepo: (() => Repository) | undefined;
 
 function setup(extra: Partial<Parameters<typeof createMockEngine>[0]> = {}) {
-  let t = Date.now(); // anchored to real time: the x402 SDK checks challenge expiry against the wall clock
+  let t = Date.now(); // anchored to real time
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const m = createMockEngine({ now: clock.now, ...(makeRepo ? { repo: makeRepo() } : {}), ...extra });
   return { ...m, clock };
@@ -43,8 +43,8 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
   beforeAll(() => {
     makeRepo = backend === "postgres" ? () => { const r = new PostgresRepository(PG_URL!, { max: 2 }); pgRepos.push(r); return r; } : undefined;
   });
-  it("deal → replies → follow-up → question → negotiation → Bay $995 wins → approval → x402 → DEMO receipt", async () => {
-    const { engine, fleet, clock, repo } = setup({ rail: "x402" }); // the v3 x402 rail (Stripe is covered in stripe.test.ts)
+  it("deal → replies → follow-up → question → negotiation → Bay $995 wins → approval → simulated Stripe → DEMO receipt", async () => {
+    const { engine, fleet, clock, repo } = setup(); // the simulated Stripe rail (Stripe test mode details are in stripe.test.ts)
     const deal = await startDeal(engine);
     expect(deal).toMatchObject({ ok: true, mode: "mock", state: "collecting" });
     expect(deal.contacted).toHaveLength(6);
@@ -92,17 +92,15 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
 
     await engine.pay(deal.job_id, bay.quote_id);
     const paid = await runUntil(engine, clock, deal.job_id, (q) => q.state === "paid");
-    expect(paid.payment).toMatchObject({ status: "settled", simulated: true, amount_usdc_base_units: "5000000", network: "base-sepolia" });
-    expect(paid.payment!.settle_tx).toMatch(/^DEMO-/);
-    expect(paid.payment!.explorer_url).toBeUndefined(); // never a fake explorer link
-    const step = fleet.sent.find((s) => s.idempotencyKey.startsWith("pay:"))!;
-    const env = JSON.parse(new TextDecoder().decode(step.attachments![0]!.content));
-    expect(env).toMatchObject({ protocol: "x402.payment", step: "payment" });
+    expect(paid.payment).toMatchObject({ status: "settled", simulated: true, rail: "stripe", amount_usd: 5 });
+    expect(paid.payment!.receipt_url).toBeUndefined(); // never a fake dashboard link for a DEMO charge
+    // Nothing was sent to the business to ask for or make a payment: money moved only through the rail.
+    expect(fleet.sent.some((s) => s.idempotencyKey.startsWith("pay:") || s.idempotencyKey.startsWith("accept:"))).toBe(false);
 
     // The audit trail is ordered and complete.
     const types = (await repo.listEvents(deal.job_id)).map((e) => e.type);
     for (const t of ["question", "counteroffers_sent", "approval_requested", "approval_verified"]) expect(types).toContain(t);
-    expect(types.filter((x) => x === "payment")).toHaveLength(5); // awaiting_invoice, invoice_received, signed, sent, settled
+    expect((await repo.listEvents(deal.job_id)).filter((e) => e.type === "payment").map((e) => e.data.status)).toEqual(["charging", "settled"]);
   });
 
   it("is idempotent: same client_request_id returns the same job and sends nothing new", async () => {
@@ -128,7 +126,7 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
   });
 
   it("a revision after approval voids the approval (no payment for a changed quote)", async () => {
-    const { engine, clock, repo } = setup({ rail: "x402" }); // $5 x402 cap
+    const { engine, clock, repo } = setup({ config: { globalPaymentCapCents: 500 } }); // $5 operator cap
     const deal = await startDeal(engine);
     const ready = await runUntil(engine, clock, deal.job_id, (q) => q.ready);
     const harbor = ready.quotes.find((q) => q.business === "Harbor Table")!;

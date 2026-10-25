@@ -1,37 +1,31 @@
-// Ported from quote-broker@8a68559 tests/guard.test.ts (Partner): every rule of the payment
-// guard, the idempotent repeat and the happy path, adapted to x402 over email (Haggle v3).
+// Ported from quote-broker@8a68559 tests/guard.test.ts (Partner): every approval rule of the payment
+// guard (1–7), the idempotent repeat and the happy path. The Stripe-specific rules are in stripe.test.ts.
 import { describe, expect, it } from "vitest";
-import { BASE_SEPOLIA_USDC, checkX402PaymentAllowed, type X402GuardInput } from "../src/payments/guard.ts";
+import { checkApprovedPayment, type ApprovedPaymentInput } from "../src/payments/guard.ts";
 
 const NOW = new Date("2026-10-17T21:00:00Z");
+const IN_FLIGHT = new Set(["charging"]);
 
-const base = (): X402GuardInput => ({
+const base = (): ApprovedPaymentInput => ({
   job: { id: "job-1", state: "paying" },
   approval: {
     id: "ap-1", job_id: "job-1", quote_id: "q-bay-2", business_id: "b-bay",
     quote_total_cents: 99500, payment_cents: 500, status: "approved", expires_at: "2026-10-17T21:30:00Z",
   },
   quote: { id: "q-bay-2", business_id: "b-bay", total_cents: 99500, deposit_cents: 500, status: "current" },
-  challenge: {
-    business_id: "b-bay", sender_trusted: true, thread_matched: true, network: "base-sepolia",
-    asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", amount_base_units: "5000000",
-    pay_to: "0xPAYEE", expires_at: "2026-10-17T21:05:00Z",
-  },
-  knownPayTo: null,
   existingPayment: null,
   spendCapCents: 500,
   now: NOW,
 });
 
-const code = (input: X402GuardInput) => {
-  const r = checkX402PaymentAllowed(input);
+const code = (input: ApprovedPaymentInput) => {
+  const r = checkApprovedPayment(input, IN_FLIGHT);
   return r.ok ? "OK" : r.code;
 };
 
-describe("checkX402PaymentAllowed", () => {
-  it("allows a fully valid payment and returns the exact base units", () => {
-    expect(checkX402PaymentAllowed(base())).toEqual({ ok: true, amountBaseUnits: "5000000" });
-    expect(BASE_SEPOLIA_USDC).toBe(BASE_SEPOLIA_USDC.toLowerCase());
+describe("checkApprovedPayment", () => {
+  it("allows a fully valid payment", () => {
+    expect(checkApprovedPayment(base(), IN_FLIGHT)).toEqual({ ok: true });
   });
 
   it("1. refuses with no approval or another job's approval", () => {
@@ -41,13 +35,11 @@ describe("checkX402PaymentAllowed", () => {
     expect(code(i)).toBe("APPROVAL_NOT_FOUND");
   });
 
-  it("2. returns the settled payment for a repeat call, and never re-signs an in-flight one", () => {
+  it("2. returns the settled payment for a repeat call, and never repeats an in-flight one", () => {
     const settled = { ...base(), existingPayment: { id: "pay-1", status: "settled" } };
     settled.approval!.status = "used";
-    expect(checkX402PaymentAllowed(settled)).toMatchObject({ ok: true, existingPayment: { id: "pay-1" } });
-    for (const status of ["signed", "sent"]) {
-      expect(code({ ...base(), existingPayment: { id: "pay-1", status } })).toBe("PAYMENT_IN_FLIGHT");
-    }
+    expect(checkApprovedPayment(settled, IN_FLIGHT)).toMatchObject({ ok: true, existingPayment: { id: "pay-1" } });
+    expect(code({ ...base(), existingPayment: { id: "pay-1", status: "charging" } })).toBe("PAYMENT_IN_FLIGHT");
   });
 
   it("3./4. refuses pending, declined, expired, used, and timed-out approvals", () => {
@@ -94,45 +86,5 @@ describe("checkX402PaymentAllowed", () => {
 
   it("7. refuses when the job is not in the paying state", () => {
     for (const state of ["awaiting_approval", "negotiating", "cancelled", "paid"]) expect(code({ ...base(), job: { id: "job-1", state } })).toBe("JOB_NOT_READY");
-  });
-
-  it("8. waits for an invoice instead of signing anything", () => {
-    expect(code({ ...base(), challenge: null })).toBe("AWAITING_INVOICE");
-  });
-
-  it("9. refuses an invoice from another business, an untrusted sender, or another thread", () => {
-    for (const over of [{ business_id: "b-harbor" }, { sender_trusted: false }, { thread_matched: false }]) {
-      const i = base();
-      Object.assign(i.challenge!, over);
-      expect(code(i)).toBe("UNTRUSTED_PAYEE");
-    }
-  });
-
-  it("10. refuses any network or asset but Base Sepolia USDC", () => {
-    const net = base();
-    net.challenge!.network = "base";
-    expect(code(net)).toBe("WRONG_NETWORK");
-    const asset = base();
-    asset.challenge!.asset = "0x0000000000000000000000000000000000000001";
-    expect(code(asset)).toBe("WRONG_NETWORK");
-  });
-
-  it("11. refuses any amount other than the approved base units", () => {
-    for (const amount of ["5000001", "4999999", "500", "5000000.0", "50000000"]) {
-      const i = base();
-      i.challenge!.amount_base_units = amount;
-      expect(code(i)).toBe("AMOUNT_MISMATCH");
-    }
-  });
-
-  it("12. refuses a payee address that changed since the business's last challenge", () => {
-    expect(code({ ...base(), knownPayTo: "0xOTHER" })).toBe("PAYEE_CHANGED");
-    expect(code({ ...base(), knownPayTo: "0xpayee" })).toBe("OK");
-  });
-
-  it("13. refuses a challenge without enough time left to settle", () => {
-    const i = base();
-    i.challenge!.expires_at = "2026-10-17T21:00:30Z";
-    expect(code(i)).toBe("CHALLENGE_EXPIRED");
   });
 });

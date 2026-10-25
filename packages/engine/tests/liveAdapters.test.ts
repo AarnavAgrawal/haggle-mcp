@@ -13,9 +13,7 @@ describe("live adapters", () => {
     expect(parseFleet("A <a@x.test>, b@y.test")).toEqual([{ name: "A", email: "a@x.test" }, { name: "B", email: "b@y.test" }]);
   });
 
-  it("the disabled payer never signs and needs no wallet", async () => {
-    const p = disabledPayer("Stripe test-mode payments are not enabled yet");
-    expect(p).toMatchObject({ signer: null, simulated: false });
-    await expect(p.client.payEmailChallenge({} as never, { signer: null })).rejects.toThrow(/Stripe test-mode payments are not enabled yet/);
+  it("the disabled payer carries the refusal reason and is never simulated", () => {
+    expect(disabledPayer("Stripe test-mode payments are not enabled yet")).toEqual({ simulated: false, disabledReason: "Stripe test-mode payments are not enabled yet" });
   });
 });

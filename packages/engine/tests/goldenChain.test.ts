@@ -4,18 +4,16 @@
 // job driver and no MCP tool yet. It proves the modules compose, not that the workflow runs.
 // Numbers marked PROPOSED in docs/v3-prekickoff-readiness.md §7F still need Partner approval.
 import { beforeAll, describe, expect, it } from "vitest";
-import { createX402Client } from "@primitivedotdev/sdk/x402";
 import { FakeInkbox, SECRET, signed } from "./helpers/fakeInkbox.ts";
 import {
+  checkApprovedPayment,
   evaluateRequirements,
   inkboxSenderTrust,
   inkboxToInbound,
   jobInboxAddress,
   matchInbound,
   meetsHardRequirements,
-  parseChallengePart,
   planCounteroffers,
-  preparePayment,
   rankQuotes,
   trustForSender,
   validateQuote,
@@ -24,15 +22,13 @@ import {
   type BusinessCandidate,
   type CounterQuote,
   type EngineRequirement,
-  type PayerClient,
   type QuoteExtraction,
   type RankableQuote,
 } from "../src/index.ts";
 
 const DOMAIN = "brave-dog.inkboxmail.test";
 const INBOX = jobInboxAddress("7F3K", DOMAIN);
-// Anchored to the wall clock: the x402 SDK checks challenge expiry against real time, so fixed
-// dates would expire the fixtures (they did on 2026-10-17 at 21:05Z).
+// Anchored to the wall clock (minute precision), so approval expiry fixtures stay in the future.
 const NOW = new Date(Math.floor(Date.now() / 60_000) * 60_000);
 const at = (min: number) => new Date(NOW.getTime() + min * 60_000).toISOString();
 const REQS: EngineRequirement[] = [
@@ -163,27 +159,17 @@ describe("golden scenario through the engine modules", () => {
     expect(rankQuotes([toRankable(fake)], 120000).rejected[0]!.reason).toBe("unverified_sender");
   });
 
-  it("approval by trusted email, then the x402 guard and a locally built payment step", async () => {
+  it("approval by trusted email, then the payment guard passes for exactly the approved deposit", () => {
     const approval = { status: "pending", code: "4821", approver_email: "yash@example.com", expires_at: at(30) };
     expect(verifyApproval(approval, { from: "yash@example.com", senderTrusted: true, threadMatched: true, bodyText: "APPROVE 4821" }, NOW)).toEqual({ decision: "approve" });
-
-    const part = JSON.stringify({
-      interaction_version: 1, interaction_id: "5f0c1b9e-2d3a-4c5b-9e8f-7a6b5c4d3e2f@bay-catering.inkboxmail.test", protocol: "x402.payment",
-      protocol_version: 1, step: "challenge", step_id: "0b6d7f2e-1a2b-4c3d-8e9f-0a1b2c3d4e5f", prev_step_id: null, expires_at: at(5),
-      payload: { challenge_nonce: "b".repeat(64), payment_requirements: { scheme: "exact", network: "base-sepolia", maxAmountRequired: "5000000",
-        payTo: "0x1111111111111111111111111111111111111111", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", extra: { name: "USDC", version: "2" } } },
-    });
-    const parsed = parseChallengePart(part);
-    if (!parsed.ok) throw new Error(parsed.reason);
-    const payer = createX402Client({ apiKey: "prim_test", fetch: (async () => { throw new Error("no network"); }) as typeof fetch });
-    const signer = { address: "0x2222222222222222222222222222222222222222" as const, signTypedData: async () => `0x${"cd".repeat(65)}` as const };
-    const prepared = await preparePayment(payer as unknown as PayerClient, signer, parsed.parsed, {
+    const guard = {
       job: { id: "job-1", state: "paying" },
       approval: { id: "ap-1", job_id: "job-1", quote_id: "q-b-bay-2", business_id: "b-bay", quote_total_cents: 99500, payment_cents: 500, status: "approved", expires_at: approval.expires_at },
       quote: { id: "q-b-bay-2", business_id: "b-bay", total_cents: 99500, deposit_cents: 500, status: "current" },
-      knownPayTo: null, existingPayment: null, spendCapCents: 500, now: NOW,
-      challengeEmail: { business_id: "b-bay", sender_trusted: true, thread_matched: true },
-    });
-    expect(prepared).toMatchObject({ ok: true, amountBaseUnits: "5000000" });
+      existingPayment: null, spendCapCents: 500, now: NOW,
+    };
+    expect(checkApprovedPayment(guard, new Set(["charging"]))).toEqual({ ok: true });
+    // The superseded round-1 quote can't be paid on that approval.
+    expect(checkApprovedPayment({ ...guard, quote: { ...guard.quote, status: "superseded" } }, new Set(["charging"]))).toMatchObject({ ok: false, code: "QUOTE_CHANGED" });
   });
 });

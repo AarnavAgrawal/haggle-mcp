@@ -16,10 +16,7 @@
     "@anthropic-ai/sdk": "^0.135.0",
     "@haggle/core": "*",
     "@inkbox/sdk": "0.7.19",
-    "@primitivedotdev/sdk": "2.4.0",
     "postgres": "^3.4.9",
-    "tar": "^7.5.22",
-    "viem": "2.57.7",
     "zod": "^4.6.7"
   },
   "devDependencies": {

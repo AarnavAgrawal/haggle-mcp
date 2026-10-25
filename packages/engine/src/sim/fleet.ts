@@ -49,16 +49,10 @@ const priced = (total: number, deposit: number | null, source = "email body", ex
   ...extra,
 });
 const json = (filename: string, o: unknown): Attachment => ({ filename, contentType: "application/json", data: new TextEncoder().encode(JSON.stringify(o)) });
-const hex = (n: number, seed: string) => Array.from({ length: n }, (_, i) => ((seed.charCodeAt(i % seed.length) + i * 7) % 16).toString(16)).join("");
-const uuid = (seed: string) => { const h = hex(32, seed); return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`; };
-
-const SIM_PAYEE = "0x5157000000000000000000000000000000000001";
-const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-
 export const GOLDEN_PERSONAS: Persona[] = [
   {
     name: "Bay Catering", email: "quotes@bay-catering.sim.haggle.dev", a2aCard: "https://a2a.sim.haggle.dev/bay-catering/card", delayMs: 2_000,
-    reply(t, { jobId, inbox, nowMs, msg }) {
+    reply(t, { jobId, inbox, nowMs }) {
       const quote = (total: number, revision?: number) => json("quote.json", {
         haggle: "quote/1", job_id: jobId, business: "Bay Catering", total_usd: total, per_unit_usd: Math.round((total / 40) * 100) / 100, deposit_usd: 5,
         items: ["12 vegetarian grain bowls", "28 chicken mains", "delivery"], requirements_met: [{ requirement_id: "veg12", met: true }, { requirement_id: "delivery", met: true }],
@@ -66,22 +60,6 @@ export const GOLDEN_PERSONAS: Persona[] = [
       });
       if (t === "rfq") return { text: "Hi! Our agent-ready quote is attached as quote.json: $1,150 total, $5 deposit.", attachments: [quote(1150)] };
       if (t === "counter") return { text: "We can do $995 total, same menu, $5 deposit. Updated quote.json attached.", attachments: [quote(995, 1150)] };
-      if (t === "accept") {
-        const interaction = `${uuid(jobId + "int")}@bay-catering.sim.haggle.dev`;
-        return { text: "Great! Here's the x402 payment request for the $5 deposit.", attachments: [json("interaction.json", {
-          interaction_version: 1, interaction_id: interaction, protocol: "x402.payment", protocol_version: 1, step: "challenge", step_id: uuid(jobId + "chal"),
-          prev_step_id: null, expires_at: new Date(nowMs + 5 * 60_000).toISOString(),
-          payload: { challenge_nonce: hex(64, jobId), payment_requirements: { scheme: "exact", network: "base-sepolia", maxAmountRequired: "5000000", payTo: SIM_PAYEE, asset: BASE_SEPOLIA_USDC, extra: { name: "USDC", version: "2" } } },
-        })] };
-      }
-      if (t === "payment") {
-        const step = msg.attachments?.find((a) => a.filename === "interaction.json");
-        const env = step ? JSON.parse(new TextDecoder().decode(step.content)) : {};
-        return { text: "Payment received (DEMO receipt).", attachments: [json("interaction.json", {
-          interaction_version: 1, interaction_id: env.interaction_id, protocol: "x402.payment", protocol_version: 1, step: "receipt", step_id: uuid(jobId + "rcpt"),
-          prev_step_id: env.step_id ?? null, expires_at: null, payload: { status: "settled", settle_tx: `DEMO-${hex(16, jobId)}`, simulated: true },
-        })] };
-      }
       void inbox;
       return null;
     },

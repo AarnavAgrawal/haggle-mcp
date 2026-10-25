@@ -4,7 +4,7 @@
 // Adapted from quote-broker@8a68559 src/jobs/stateMachine.ts (Partner): same shape (transition ->
 // next + effects, terminal states reject everything, closing a window either negotiates or
 // finishes). Changes for Haggle v3: the contract's 9 JobStates; "ready" is a flag rather than a
-// state; approval leads to `paying` (x402 invoice + payment) instead of a Stripe charge; a
+// state; approval leads to `paying` (a Stripe charge, or the manual booking/payment handoff); a
 // deadline with no eligible quote fails the job with a reason.
 import type { JobState } from "../contract.ts";
 

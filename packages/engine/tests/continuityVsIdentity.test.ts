@@ -130,23 +130,30 @@ describe("a reply-token sender can quote, but never approve, confirm or move mon
     expect(ev.data.warning).toBeUndefined();
   });
 
-  it("an x402 challenge from a reply-token sender is never trusted to name the payee; an authenticated one is (control)", async () => {
-    for (const [trust, expected] of [[external, false], [authenticated, true]] as const) {
+  it("a payment challenge (interaction.json) from the approved business is flagged external_payment_link and never acted on, whoever sent it", async () => {
+    const challenge = (cents: number) => new TextEncoder().encode(JSON.stringify({
+      interaction_version: 1, interaction_id: "5f0c1b9e-2d3a-4c5b-9e8f-7a6b5c4d3e2f@realcaterer.example", protocol: "x402.payment", protocol_version: 1, step: "challenge",
+      step_id: "0b6d7f2e-1a2b-4c3d-8e9f-0a1b2c3d4e5f", prev_step_id: null, expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+      payload: { challenge_nonce: "a".repeat(64), payment_requirements: { scheme: "exact", network: "base-sepolia", maxAmountRequired: String(cents * 10_000), payTo: "0x1111111111111111111111111111111111111111", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", extra: { name: "USDC", version: "2" } } },
+    }));
+    for (const [trust, legacyRow] of [[external, false], [authenticated, false], [authenticated, true]] as const) {
       const env = setup();
       const { jobId, q, reply } = await tokenQuote(env);
       const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
       await env.engine.ingestText({ messageId: "yes", from: APPROVER, text: `YES ${a.code}`, inbound: true });
-      await env.repo.insertPayment({ id: `pay_${n}`, job_id: jobId, approval_id: a.id, business_id: q.business_id, status: "awaiting_invoice", rail: "x402", amount_cents: a.payment_cents, amount_base_units: String(a.payment_cents * 10_000), network: "base-sepolia", idempotency_key: `k_${n}`, stripe_payment_intent_id: null, challenge_json: null, challenge_step_id: null, challenge_message_id: null, challenge_trusted: false, challenge_thread_matched: false, pay_to: null, interaction_json: null, settle_tx: null, simulated: true, reason: null } as never);
-      const challenge = JSON.stringify({
-        interaction_version: 1, interaction_id: "5f0c1b9e-2d3a-4c5b-9e8f-7a6b5c4d3e2f@realcaterer.example", protocol: "x402.payment", protocol_version: 1, step: "challenge",
-        step_id: "0b6d7f2e-1a2b-4c3d-8e9f-0a1b2c3d4e5f", prev_step_id: null, expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-        payload: { challenge_nonce: "a".repeat(64), payment_requirements: { scheme: "exact", network: "base-sepolia", maxAmountRequired: String(a.payment_cents * 10_000), payTo: "0x1111111111111111111111111111111111111111", asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", extra: { name: "USDC", version: "2" } } },
-      });
-      expect((await reply("Invoice attached.", { trust, inline: [{ filename: "interaction.json", contentType: "application/json", data: new TextEncoder().encode(challenge) }] })).outcome).toBe("stored");
+      // A historic row from the retired x402 rail (the DB keeps them): it must stay inert too.
+      if (legacyRow) await env.repo.insertPayment({ id: `pay_${n}`, job_id: jobId, approval_id: a.id, business_id: q.business_id, status: "awaiting_invoice", rail: "x402", amount_cents: a.payment_cents, amount_base_units: String(a.payment_cents * 10_000), network: "base-sepolia", idempotency_key: `k_${n}`, stripe_payment_intent_id: null, challenge_json: null, challenge_step_id: null, challenge_message_id: null, challenge_trusted: false, challenge_thread_matched: false, pay_to: null, interaction_json: null, settle_tx: null, simulated: true, reason: null } as never);
+      const sentBefore = env.emails.length;
+      expect((await reply("Invoice attached.", { trust, inline: [{ filename: "interaction.json", contentType: "application/json", data: challenge(a.payment_cents) }] })).outcome).toBe("stored");
       await env.engine.advanceJob(jobId);
-      const pay = (await env.repo.getPaymentForJob(jobId))!;
-      expect(pay.status).toBe("invoice_received");
-      expect(pay.challenge_trusted).toBe(expected);
+      const flags = (await env.repo.listEvents(jobId)).filter((e) => e.type === "flag" && e.data.flag === "external_payment_link");
+      expect(flags).toHaveLength(1);
+      expect(flags[0]!.data).toMatchObject({ business_id: q.business_id, summary: expect.stringMatching(/never pays on a business's request/) });
+      const pay = await env.repo.getPaymentForJob(jobId);
+      if (legacyRow) expect(pay).toMatchObject({ status: "awaiting_invoice", challenge_json: null, pay_to: null });
+      else expect(pay).toBeNull();
+      expect(env.emails.slice(sentBefore).filter((e) => e.to === VENDOR)).toHaveLength(0); // nothing sent back to pay it
+      expect((await env.repo.getJob(jobId))!.state).toBe("paying");
     }
   });
 

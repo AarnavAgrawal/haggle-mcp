@@ -1,6 +1,6 @@
 # Buyer-side progress (actual status only)
 
-> **Historical:** the Primitive email path described here was removed from the code (Inkbox is the only email provider). Kept as a record; do not follow its Primitive steps.
+> **Historical:** Primitive/x402 removed. The Primitive email path and the x402 payment rail described here are gone from the code (email is Inkbox; payments are Stripe test mode or the manual handoff). Kept as a record; do not follow its Primitive or x402 steps.
 
 ## 2026-10-16 (Friday, pre-event)
 

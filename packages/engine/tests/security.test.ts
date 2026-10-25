@@ -430,7 +430,7 @@ describe("simulated replies, keyword-fallback readings and quarantined messages 
 // ───────────────────────────── what the agent's view of the engine can do ─────────────────────────────
 
 describe("the agent's engine (WorkspaceEngine, the only one MCP tools get) has no operator capability", () => {
-  const OPERATOR_ONLY = ["addWorkspaceVendor", "removeWorkspaceVendor", "revokeWorkspace", "rotateWorkspaceCredentials", "createWorkspace", "workspaceByCredential", "operatorCallback", "releaseHeldText", "recoverStuck", "advanceAllOpen", "reportReconcileGaveUp", "recordSettlement", "ingest", "ingestText", "ingestCall", "ingestIMessage", "ingestA2aTask", "ingestDeliveryStatus", "forWorkspace", "fire"];
+  const OPERATOR_ONLY = ["addWorkspaceVendor", "removeWorkspaceVendor", "revokeWorkspace", "rotateWorkspaceCredentials", "createWorkspace", "workspaceByCredential", "operatorCallback", "releaseHeldText", "recoverStuck", "advanceAllOpen", "reportReconcileGaveUp", "ingest", "ingestText", "ingestCall", "ingestIMessage", "ingestA2aTask", "ingestDeliveryStatus", "forWorkspace", "fire"];
 
   it("none of the operator / provider-webhook methods exist on it (and they do exist on the full engine)", () => {
     const env = setup();

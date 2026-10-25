@@ -100,7 +100,7 @@ describe("Inkbox email loop through the engine", () => {
     const repo = new InMemoryRepository();
     const engine = new HaggleEngine({
       repo, email: inkboxEmail(api, BUYER), extractor, attachments: inkboxAttachments(api, BUYER, fetchFake), brain: new StubBrain(),
-      payer: { client: {} as never, signer: null, simulated: false },
+      payer: { simulated: false },
       config: { mode: "live", inboxDomain: "inkboxmail.test", sharedInbox: BUYER, collectionWindowMs: 600_000, negotiationWindowMs: 300_000, approvalTtlMs: 1_800_000, globalPaymentCapCents: 500, maxRounds: 2 },
     });
     const seller = "goldengate@inkboxmail.test";
