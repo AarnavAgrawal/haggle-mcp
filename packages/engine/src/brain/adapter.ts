@@ -105,9 +105,18 @@ export class BrainAdapter implements Brain {
     return this.root ? this.root.aliases : this.aliases;
   }
 
+  /**
+   * A known contact: this adapter's own, else (a workspace adapter) the root's, read-only, so a
+   * contact the root learned after the child was made (deal-time discover, a configured vendor) is
+   * still found. Never the other way round: the root never reads a workspace adapter's contacts.
+   */
+  private contact(engineId: string): EngineContact | undefined {
+    return this.engine.get(engineId) ?? this.root?.engine.get(engineId);
+  }
+
   /** Brain (directory) id for an engine business id. */
   brainIdFor(engineId: string, hint: { email?: string; phone?: string; name?: string; simulated?: boolean } = {}): string {
-    const known = this.engine.get(engineId);
+    const known = this.contact(engineId);
     const email = norm(hint.email ?? known?.email);
     const phone = norm(hint.phone ?? known?.phone);
     const name = norm(hint.name ?? known?.name);
@@ -133,7 +142,7 @@ export class BrainAdapter implements Brain {
     if (id !== engineId) return id;
     const own = await this.core.getProfile(id);
     if (own && own.business_id === id) return id;
-    const known = this.engine.get(engineId);
+    const known = this.contact(engineId);
     const email = hint.email ?? known?.email;
     const phone = hint.phone ?? known?.phone;
     const name = hint.name ?? known?.name;
@@ -174,7 +183,7 @@ export class BrainAdapter implements Brain {
   async learnFromReply(businessId: string, parsed: ParsedReply, meta: ReplyMeta): Promise<Profile> {
     const phone = meta.business_email.startsWith("tel:") ? meta.business_email.slice(4) : undefined;
     const email = phone ? undefined : meta.business_email;
-    const known = this.engine.get(businessId);
+    const known = this.contact(businessId);
     const brainId = await this.profileIdFor(businessId, { ...(email ? { email } : {}), ...(phone ? { phone } : {}), ...(meta.business_name ? { name: meta.business_name } : {}), simulated: meta.simulated });
     const name = known?.name ?? this.directory.find((d) => d.id === brainId)?.name ?? meta.business_name ?? brainId;
     let last: CoreProfile | null = null;

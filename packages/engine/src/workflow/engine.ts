@@ -106,6 +106,9 @@ function refuseReservedWorkspaceId(id: string): void {
   }
 }
 
+/** Job reads shared within one board render (contactLearning's workspace scoping). */
+type JobReadCache = Map<string, Promise<JobRow | null>>;
+
 /** provisionWorkspace found a row with this id that another request created with different details. */
 const workspaceConflict = (id: string) =>
   new EngineError("workspace_conflict", `A workspace ${id} already exists and wasn't created by this request.`, `Retry once; if it persists, the operator checks it (workspace-admin.ts show --id ${id}).`, "none");
@@ -608,12 +611,13 @@ export class HaggleEngine {
     // What Haggle has learned about reaching each business (stated preference, observed replies), from
     // this workspace's own deals: the routing reason quotes the business's words, never another tenant's.
     // (Opt-outs and bounces are global: the suppression list above.)
+    const jobReads: JobReadCache = new Map(); // each earlier job read once for the whole deal
     const learned = await Promise.all(input.businesses.map(async (b) => {
       const email = b.email ? normalizeAddress(b.email) : null;
       const phone = b.phone ? b.phone.replace(/[\s().-]/g, "") : null;
       if (!email && !phone && !b.a2a_card_url) return null;
       const id = businessIdForContact({ email, phone, a2a_card_url: b.a2a_card_url?.trim() || null }, b.name);
-      return this.contactLearning(id, await this.businessAliases({ business_id: id, name: b.name, email, phone }), ws).catch(() => null);
+      return this.contactLearning(id, await this.businessAliases({ business_id: id, name: b.name, email, phone }), ws, jobReads).catch(() => null);
     }));
     const seen = new Set<string>();
     const planned = input.businesses.map((b, i) => {
@@ -819,20 +823,26 @@ export class HaggleEngine {
   /**
    * What Haggle observed about reaching this business across all its jobs (and its older ids).
    * `workspaceId`: only that workspace's deals (what an agent may see: a reply quoted from another
-   * tenant's deal is never shown to it).
+   * tenant's deal is never shown to it). `jobs`: a job-read cache shared by one board render, so a job
+   * several of the board's businesses were on is read once (the repository has no batch job read).
    */
-  async contactLearning(businessId: string, aliases: string[] = [], workspaceId?: string): Promise<ContactLearning> {
+  async contactLearning(businessId: string, aliases: string[] = [], workspaceId?: string, jobs?: JobReadCache): Promise<ContactLearning> {
     const ids = [...new Set([businessId, ...aliases])];
     const [messages, quotes] = await Promise.all([Promise.all(ids.map((id) => this.repo.listMessagesForBusiness(id))), Promise.all(ids.map((id) => this.repo.listQuotesForBusiness(id)))]);
     if (workspaceId === undefined) return learnContact(messages.flat(), quotes.flat());
-    const own = await this.jobsInWorkspace([...messages.flat().map((m) => m.job_id), ...quotes.flat().map((q) => q.job_id)], workspaceId);
+    const own = await this.jobsInWorkspace([...messages.flat().map((m) => m.job_id), ...quotes.flat().map((q) => q.job_id)], workspaceId, jobs);
     return learnContact(messages.flat().filter((m) => m.job_id !== null && own.has(m.job_id)), quotes.flat().filter((q) => own.has(q.job_id)));
   }
 
-  /** The ids among these that are jobs of this workspace. */
-  async jobsInWorkspace(jobIds: (string | null)[], workspaceId: string): Promise<Set<string>> {
+  /** The ids among these that are jobs of this workspace (`cache`: reads shared with other calls of one render). */
+  async jobsInWorkspace(jobIds: (string | null)[], workspaceId: string, cache: JobReadCache = new Map()): Promise<Set<string>> {
     const ids = [...new Set(jobIds.filter((x): x is string => !!x))];
-    const jobs = await Promise.all(ids.map((id) => this.repo.getJob(id)));
+    const read = (id: string) => {
+      let p = cache.get(id);
+      if (!p) cache.set(id, (p = this.repo.getJob(id)));
+      return p;
+    };
+    const jobs = await Promise.all(ids.map(read));
     return new Set(jobs.filter((j): j is JobRow => j !== null && j.workspace_id === workspaceId).map((j) => j.id));
   }
 
@@ -6169,9 +6179,10 @@ export class HaggleEngine {
     const pendingQuestions = questions.length > 0;
     const finalNext = job.ready && !TERMINAL.has(job.state) && (job.state === "collecting" || job.state === "negotiating") && !pendingQuestions;
     // The slower parts (cross-job contact learning, callback evidence, the next hint) run together.
+    const jobReads: JobReadCache = new Map(); // each earlier job read once for the whole board
     const [contactLearning, callbacks, hint, paymentOut] = await Promise.all([
       // This workspace's own jobs only: the board shows counts and the business's own words (stated preference).
-      Promise.all(businesses.map(async (b) => [b.business_id, await this.contactLearning(b.business_id, await this.businessAliases(b), job.workspace_id).catch(() => ({ channels: {} }))] as const)),
+      Promise.all(businesses.map(async (b) => [b.business_id, await this.contactLearning(b.business_id, await this.businessAliases(b), job.workspace_id, jobReads).catch(() => ({ channels: {} }))] as const)),
       this.callbackProposals(jobId),
       finalNext ? Promise.resolve("") : this.nextHint(job),
       payment ? this.withReceipt(jobId, paymentStatus(payment), events) : this.handoffFor(job, events),

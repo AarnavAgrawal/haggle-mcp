@@ -69,4 +69,20 @@ describe("contact learning end to end", () => {
     expect(d.contacted[0]).toMatchObject({ channel: "imessage" });
     expect(texts).toHaveLength(2);
   });
+
+  it("one board render reads each earlier job once to scope contact learning, however many of its businesses were on it", async () => {
+    const { e, repo } = setup();
+    const OTHER = { name: "Shine Team", email: "hi@shineteam.test" };
+    const earlier: string[] = [];
+    for (let i = 0; i < 2; i++) earlier.push((await e.deal({ request: REQ, budget_usd: 900, businesses: [{ name: BIZ.name, email: BIZ.email }, OTHER], client_request_id: `p${i}` })).job_id);
+    const d = await e.deal({ request: REQ, budget_usd: 900, businesses: [{ name: BIZ.name, email: BIZ.email }, OTHER], client_request_id: "now" });
+    const reads = new Map<string, number>();
+    const getJob = repo.getJob.bind(repo);
+    repo.getJob = async (id: string) => { reads.set(id, (reads.get(id) ?? 0) + 1); return getJob(id); };
+    const board = (await e.forWorkspace("ws_default").getQuotes(d.job_id)) as unknown as { contact_learning?: Record<string, { channels: Record<string, { contacted_jobs: number }> }> };
+    // Both businesses learned from all three of this workspace's jobs...
+    expect(Object.values(board.contact_learning ?? {}).map((l) => l.channels.email?.contacted_jobs)).toEqual([3, 3]);
+    // ...and each earlier job was read once for the whole board, not once per business.
+    for (const id of earlier) expect(reads.get(id), id).toBe(1);
+  });
 });

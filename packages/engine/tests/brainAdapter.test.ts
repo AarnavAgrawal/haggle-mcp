@@ -209,4 +209,25 @@ describe("brain tenancy: each workspace's engine calls reach only that workspace
     await a.profileIdFor("biz_somewhere", { name: "Somewhere", email: "x@example.com" });
     expect(asked).toEqual(["biz_somewhere"]);
   });
+
+  it("a workspace adapter reads contacts the root learns after it was made (read-only fallback); the root never reads a workspace's", async () => {
+    const brains = createWorkspaceBrains({ store: new MemoryStore() });
+    const root = new BrainAdapter({ brain: brains.forWorkspace("ws_default"), coreFor: (ws) => brains.forWorkspace(ws), directory, fleet: [] });
+    const alpha = root.forWorkspace("ws_alpha"); // made before the root knows anyone
+    const beta = root.forWorkspace("ws_beta");
+
+    // Beta discovers businesses: its own contacts. The root doesn't see them.
+    const found = await beta.discover("catering", "San Francisco", 3);
+    const id = found[0]!.business_id;
+    const directoryId = directory.find((d) => d.name === found[0]!.name)!.id;
+    expect(id).not.toBe(directoryId);
+    expect(beta.brainIdFor(id)).toBe(directoryId);
+    expect(root.brainIdFor(id)).toBe(id); // unknown to the root
+    expect(alpha.brainIdFor(id)).toBe(id); // nor to a sibling
+
+    // The root learns the same contacts later (deal-time discover): alpha, made earlier, now finds them.
+    await root.discover("catering", "San Francisco", 3);
+    expect(root.brainIdFor(id)).toBe(directoryId);
+    expect(alpha.brainIdFor(id)).toBe(directoryId);
+  });
 });
