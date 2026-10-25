@@ -101,7 +101,9 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
     delayScale: Number.isFinite(delayScale) && delayScale >= 0 ? delayScale : 1, brain, ...(personas ? { personas } : {}),
     ...(env.HAGGLE_MOCK_DATABASE_URL ? { repo: new PostgresRepository(env.HAGGLE_MOCK_DATABASE_URL) } : {}),
     // HAGGLE_DEMO_SPEED=true: the same shorter windows as live (decision 49).
-    config: { ...mockDemoConfig(env), ...(allow ? { recipientAllowlist: allow } : {}), outOfBandApprovalsOnly: outOfBandApprovals(env), webApprovals: !/^(false|0|off|no)$/i.test(env.HAGGLE_WEB_APPROVALS?.trim() ?? "") },
+    // HAGGLE_PAYMENTS=manual rehearses the pilot rail (DEMO): approval ends in the booking-and-payment
+    // handoff (nothing charged, the human reports paying), as live does (src/live.ts).
+    config: { ...mockDemoConfig(env), ...(allow ? { recipientAllowlist: allow } : {}), outOfBandApprovalsOnly: outOfBandApprovals(env), webApprovals: !/^(false|0|off|no)$/i.test(env.HAGGLE_WEB_APPROVALS?.trim() ?? ""), ...(env.HAGGLE_PAYMENTS === "manual" ? { manualPaymentHandoff: true } : {}) },
   });
   // Mock: the simulated fleet plays all six demo vendors; every one is reachable (DEMO).
   // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board).
@@ -113,7 +115,7 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   const channels = async (): Promise<ChannelStatus> => ({ email: true, imessage: false, sms: false, phone: true, a2a: m.engine.a2aEnabled, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false });
   const ops: RuntimeOps = {
     env: cfg.env, repo: m.repo, database: env.HAGGLE_MOCK_DATABASE_URL ? "postgres" : "memory",
-    providers: { inkbox: false, anthropic: false, payments: "disabled", alerts: false },
+    providers: { inkbox: false, anthropic: false, payments: env.HAGGLE_PAYMENTS === "manual" ? "manual" : "disabled", alerts: false },
   };
   runtime = mockWorkspaces(m.engine, env.HAGGLE_MOCK_WORKSPACES).then(() => ({
     mode: "mock" as const, engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster, channels, ops,

@@ -21,9 +21,12 @@ import {
 import { formatField, parseToolError } from "../_shared/format.ts";
 import { EntryList, Reply, mergeEntries } from "../conversation/thread.tsx";
 import { approvalBlock, boardContext, choiceFor, choosableCount, isUnsafe, negotiationLine, negotiationWarning, replaceableApproval, type Choice } from "./options.ts";
+import {
+  CONFIRM_ONLY_NOTE, LINK_WARNING, STEP_LABELS, TERMINAL_STATES, amountWords, isManual, keepPolling, payStepSub, purchaseDone, purchaseHeadline, purchaseStep, vendorWordsLabel, yourStep, type PurchaseLike,
+} from "./purchase.ts";
 import "./view.css";
 
-const TERMINAL = new Set(["paid", "confirmed", "cancelled", "failed"]);
+const TERMINAL = TERMINAL_STATES;
 const POLL_MS = 4000;
 const RETRY_MS = 10_000;
 
@@ -34,7 +37,17 @@ type Quote = Omit<CoreQuote, "total_usd"> & { total_usd: number | null };
 
 /** Server additions to the shared board (apps/mcp/src/views.ts DealBoardPlus); all optional. */
 type Stage = { stage: string; negotiation: string; first_total_usd?: number; current_total_usd?: number; quote_version?: number; saved_usd?: number };
+/** The business's own words (untrusted data): plain text only, links flagged and never opened. */
+type VendorText = { text: string; untrusted: true; has_link: boolean };
+/** After approval under the manual handoff (Haggle moves no money); see ./purchase.ts. */
+type Purchase = PurchaseLike & {
+  vendor_reply?: VendorText; instructions?: VendorText; reported_paid_at?: string; verified_at?: string; operator_attention?: string;
+  summary: string; next: string; order?: string; must_haves?: string;
+};
 type Extras = {
+  purchase?: Purchase;
+  payment_rail?: "manual";
+  web_app?: boolean;
   request_details?: { what: string; headcount?: number; when: string; place: string; requirements: string[]; budget_usd: number | null; budget_source?: "request" | "settings_default" };
   payment_ceiling_usd?: number;
   payments_enabled?: boolean;
@@ -76,7 +89,9 @@ export default function DealBoardView() {
   const initial = ctx.status === "ready" ? (ctx.toolOutput as DealBoardOrEmpty | undefined) : null;
   const board = live ?? (initial?.job ? (initial as DealBoard) : null);
   const jobId = board?.job.id;
-  const active = board ? !TERMINAL.has(board.job.state) : false;
+  // Under the manual handoff a "paid" job means the customer reports paying: keep polling until the
+  // business confirms it received the money.
+  const active = board ? keepPolling(board.job.state, board.purchase) : false;
 
   const reload = useCallback(async (id: string) => {
     const next = await refresh.callTool({ job_id: id });
@@ -301,26 +316,32 @@ function facts(board: DealBoard) {
   const counterPending = (board.negotiation ?? []).filter((n) => n.outcome_total_usd === null).length;
   const quotedIds = new Set(board.quotes.map((q) => q.business_id));
   const waiting = board.businesses.filter((b) => !quotedIds.has(b.id) && bizStatus(b, board).tone === "active").length;
+  // Manual handoff after approval: Haggle moves no money; the purchase stage says where it stands.
+  const purchase = board.purchase?.rail === "manual" ? board.purchase : null;
+  const manual = isManual(board);
 
   // Current step, from real state only.
   let at: number;
-  if (settled || confirmed) at = PHASES.length; // all done
-  else if (approved) at = 5; // pay
+  if (settled || confirmed || (purchase && purchaseDone(purchase.stage))) at = PHASES.length; // all done
+  else if (approved || purchase) at = 5; // pay
   else if (approval || board.ready) at = 4; // approve (recommendation made)
   else if (negotiated) at = 2;
   else if (board.quotes.length > 0) at = 1;
   else at = 0;
-  return { approval, approved, confirmed, settled, recommended, focus, negotiated, counterPending, waiting, at };
+  return { approval, approved, confirmed, settled, recommended, focus, negotiated, counterPending, waiting, at, purchase, manual };
 }
 type Facts = ReturnType<typeof facts>;
 
 /** One sentence: where the deal is and whose move it is. */
 function headline(board: DealBoard, f: Facts): { text: string; tone: "info" | "you" | "done" | "risk" } {
   const n = board.businesses.length;
+  const q = f.focus;
+  // Manual handoff first: its stages say what was (and wasn't) paid, even on a cancelled job.
+  if (f.purchase && q) return purchaseHeadline(f.purchase, q.business);
   if (board.job.state === "failed") return { text: "This deal stopped with an error. Nothing was paid.", tone: "risk" };
   if (board.job.state === "cancelled") return { text: "This deal was cancelled. Nothing was paid.", tone: "risk" };
-  const q = f.focus;
   if (f.confirmed && q) return { text: `Confirmed ${q.business}: the business was told to go ahead. Nothing was paid.`, tone: "done" };
+  if (f.manual && f.approved && q) return { text: `You approved ${q.business}. Haggle is asking ${q.business} to confirm the booking; don't pay anything yet.`, tone: "info" };
   if (f.settled && q) return { text: `Paid ${payWords(payNow(q))} to ${q.business}${board.payment?.simulated ? " (simulated, no money moved)" : ""}.`, tone: "done" };
   if (f.approved && q) {
     if (board.payments_enabled === false) return { text: `You approved ${q.business}. Payments are off on this server, so nothing will be charged.`, tone: "info" };
@@ -335,7 +356,9 @@ function headline(board: DealBoard, f: Facts): { text: string; tone: "info" | "y
     const blocked = approveBlocker(q, board);
     return blocked
       ? { text: `Quotes are final. Haggle recommends ${q.business} at ${isApproximate(q) ? `about ${usd(q.total_usd)}` : usd(q.total_usd)}, but it can't be approved yet: ${blocked.short}.`, tone: "you" }
-      : { text: `Quotes are final. Haggle recommends ${q.business} at ${usd(q.total_usd)}: approve it, then pay the ${payWords(payNow(q))}. You can also choose any other safe option.`, tone: "you" };
+      : f.manual
+        ? { text: `Quotes are final. Haggle recommends ${q.business} at ${usd(q.total_usd)}: approve it, and once ${q.business} confirms the booking you pay it the ${payWords(payNow(q))} directly. You can also choose any other safe option.`, tone: "you" }
+        : { text: `Quotes are final. Haggle recommends ${q.business} at ${usd(q.total_usd)}: approve it, then pay the ${payWords(payNow(q))}. You can also choose any other safe option.`, tone: "you" };
   }
   if (board.open_questions.length) return { text: `${board.open_questions.length === 1 ? `${board.open_questions[0]!.business} asked a question` : `${board.open_questions.length} businesses asked questions`}: answer below so they can quote.`, tone: "you" };
   if (f.negotiated) {
@@ -398,7 +421,8 @@ function bizStatus(b: DealBoardBusiness, board: DealBoard): { label: string; ton
     case "excluded": return { label: "Excluded", tone: "out" };
     case "buyer_approved": return priced("You approved", "done");
     case "confirmed": return priced("Confirmed", "done");
-    case "paid": return priced("Paid", "done");
+    // Manual handoff: "paid" means the customer reports paying, until the business confirms receipt.
+    case "paid": return priced(board.purchase?.rail === "manual" && !board.purchase.money_verified ? "You report paying" : "Paid", "done");
     case "no_reply": return { label: "No reply", tone: "out" };
     case "unreachable": return { label: "Can't reach", tone: "out" };
     case "declined": return { label: "Declined", tone: "out" };
@@ -444,7 +468,8 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
       </p>
       <NegotiationNow board={board} />
       {board.recommendation_note && board.ready && !f.approved && <p className="db-note">{board.recommendation_note}</p>}
-      {board.payments_enabled === false && !f.approved && <p className="db-note">Payments are off on this server: you can approve, but nothing can be charged.</p>}
+      {board.payments_enabled === false && !f.approved && !f.manual && <p className="db-note">Payments are off on this server: you can approve, but nothing can be charged.</p>}
+      {f.purchase && <PurchasePanel p={f.purchase} business={f.focus?.business ?? "the business"} webApp={board.web_app === true} />}
       {board.setup && <Blockers setup={board.setup} />}
 
       {board.open_questions.length > 0 && (
@@ -498,7 +523,7 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
 
       <footer className="db-foot">
         <p className="db-sync hg-muted" aria-live="polite">
-          {sync.trouble ? "Reconnecting…" : TERMINAL.has(board.job.state) ? (sync.at ? `Updated ${relativeTime(new Date(sync.at).toISOString())}` : "") : "Live · updates by itself"}
+          {sync.trouble ? "Reconnecting…" : !keepPolling(board.job.state, board.purchase) ? (sync.at ? `Updated ${relativeTime(new Date(sync.at).toISOString())}` : "") : "Live · updates by itself"}
           <button className="db-link" onClick={onRefresh} disabled={refreshing}>
             {refreshing ? "Refreshing…" : "Refresh"}
           </button>
@@ -508,7 +533,7 @@ function Board({ board, sync, refreshing, onRefresh, onChanged }: { board: DealB
           {board.quotes.length > 1 && !TERMINAL.has(board.job.state) && (
             <ChatButton prompt={`Compare the quotes on Haggle job ${board.job.id} and tell me which one to choose and why.`}>Compare quotes</ChatButton>
           )}
-          {f.focus && (f.settled || f.confirmed) && (
+          {f.focus && (f.settled || f.confirmed || (f.purchase && purchaseDone(f.purchase.stage))) && (
             <ChatButton prompt={`Show what Haggle learned about ${f.focus.business} (business_profile).`}>What Haggle learned</ChatButton>
           )}
           <ChatButton prompt="Start another Haggle deal. Ask me what to buy, for how many, when and where.">New deal</ChatButton>
@@ -555,9 +580,11 @@ function Header({ board, fullscreen, canFullscreen, onToggle }: { board: DealBoa
           <div>
             <dt>Payment</dt>
             <dd>
-              {board.payments_enabled === false
-                ? "Off on this server"
-                : `Only after you approve, with Pay${board.payment_ceiling_usd !== undefined ? `, up to ${usd(board.payment_ceiling_usd)} per payment` : ""}`}
+              {isManual(board)
+                ? "You pay the business directly, after you approve and it confirms the booking; Haggle moves no money"
+                : board.payments_enabled === false
+                  ? "Off on this server"
+                  : `Only after you approve, with Pay${board.payment_ceiling_usd !== undefined ? `, up to ${usd(board.payment_ceiling_usd)} per payment` : ""}`}
             </dd>
           </div>
         </dl>
@@ -584,7 +611,7 @@ function Stepper({ board, f }: { board: DealBoard; f: Facts }) {
     negotiate: board.negotiation?.length ? `${board.negotiation.length} counter${board.negotiation.length > 1 ? "s" : ""}` : f.at > 2 ? "not needed" : "",
     recommend: f.at > 3 && f.recommended ? f.recommended.business : "",
     approve: f.approved ? "done" : f.approval ? "waiting" : f.at === 4 ? (f.focus && approveBlocker(f.focus, board) ? "blocked" : "your turn") : "",
-    pay: f.confirmed ? "nothing to pay" : f.settled ? (board.payment?.simulated ? "simulated" : "paid") : f.approved ? "your turn" : "",
+    pay: f.purchase ? payStepSub(f.purchase.stage) : f.confirmed ? "nothing to pay" : f.manual && f.approved ? "booking" : f.settled ? (board.payment?.simulated ? "simulated" : "paid") : f.approved ? "your turn" : "",
   };
   return (
     <ol className={`db-steps${stopped ? " is-stopped" : ""}`} aria-label="Deal progress">
@@ -902,7 +929,9 @@ function ChooseAction({ board, quote: q, choice, primary, onChanged }: { board: 
           </button>
           <span className="hg-muted db-approve-hint">
             {hasTotal(q) ? `${usd(q.total_usd)} order total. ` : ""}
-            Approving charges nothing: you pay the {payWords({ amount: choice.amount, deposit: choice.deposit })} with Pay next.
+            {isManual(board)
+              ? `Approving charges nothing and Haggle moves no money: once ${q.business} confirms the booking, you pay it the ${payWords({ amount: choice.amount, deposit: choice.deposit })} directly.`
+              : `Approving charges nothing: you pay the ${payWords({ amount: choice.amount, deposit: choice.deposit })} with Pay next.`}
             {caveats.length ? ` Heads up: ${caveats.join(", ")}.` : ""}
             {choice.replaces && choice.replaces !== q.business ? ` Replaces the ${choice.replaces} suggestion Haggle texted you.` : ""}
           </span>
@@ -939,7 +968,17 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
   const words = payWords(now);
 
   let body: ReactNode;
-  if (approval && board.job.state === "confirmed") {
+  const manual = isManual(board);
+  if (manual && approval && (approval.status === "approved" || approval.status === "used" || board.job.state === "confirmed")) {
+    // Manual handoff: Haggle moves no money and this view records no payment or booking (only the
+    // human's PAID/BOOKED texts or the web app do). The purchase panel above shows the stage.
+    body = (
+      <>
+        <span className="db-approved">{board.job.state === "confirmed" ? "Confirmed (nothing paid through Haggle)" : `Approved${approvedBy(approval.channel)}`}</span>
+        {!board.purchase && <span className="hg-muted db-hint">Haggle is asking {q.business} to confirm the booking. Don't pay anything yet.</span>}
+      </>
+    );
+  } else if (approval && board.job.state === "confirmed") {
     // A confirm-only approval: the order went ahead, nothing was paid.
     body = <span className="db-approved">Confirmed: the business was told to go ahead (nothing paid)</span>;
   } else if (payment?.status === "settled") {
@@ -990,7 +1029,9 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
         <button className="hg-btn hg-btn-primary" disabled={flow.busy} onClick={() => void flow.approve()}>
           {flow.approving ? "Approving…" : `${approveLabelFor(q)} to ${q.business}`}
         </button>
-        <span className="hg-muted db-hint">Approving charges nothing; you pay with Pay next. Only you can approve; your agent can't.</span>
+        <span className="hg-muted db-hint">
+          {manual ? `Approving charges nothing and Haggle moves no money: once ${q.business} confirms the booking, you pay it directly.` : "Approving charges nothing; you pay with Pay next."} Only you can approve; your agent can't.
+        </span>
       </>
     );
   } else {
@@ -1006,6 +1047,70 @@ function DealAction({ board, quote: q, onChanged }: { board: DealBoard; quote: Q
           {flow.err}
         </span>
       )}
+    </div>
+  );
+}
+
+/**
+ * The manual payment handoff after approval (HAGGLE_PAYMENTS=manual): the five steps, where it stands,
+ * the human's own step, and the business's words as untrusted plain text. Read-only: no button here
+ * records a payment or a booking (only the human's PAID/BOOKED texts or the Haggle web app do), nothing
+ * from the business is linked, opened or passed to the model, and no code is ever shown.
+ */
+function PurchasePanel({ p, business, webApp }: { p: Purchase; business: string; webApp: boolean }) {
+  const step = purchaseStep(p.stage);
+  const mine = yourStep(p, business, webApp);
+  const tone = purchaseDone(p.stage) ? " is-done" : step === null ? " is-risk" : "";
+  return (
+    <section className={`db-purchase${tone}`} aria-label={`Paying ${business} directly`}>
+      <h2 className="db-h2">Paying {business} directly · Haggle moves no money</h2>
+      {p.confirm_only ? (
+        <p className="db-note">{CONFIRM_ONLY_NOTE(business)}</p>
+      ) : step !== null ? (
+        <ol className="db-psteps" aria-label="Purchase progress">
+          {STEP_LABELS.map((label, i) => (
+            <li key={label} className={i < step || (i === step && step === STEP_LABELS.length - 1) ? "is-done" : i === step ? "is-now" : undefined} aria-current={i === step ? "step" : undefined}>
+              {label}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      <p className="db-purchase-summary" aria-live="polite">{p.summary}</p>
+      {mine && <p className="db-purchase-you">Your step: {mine}</p>}
+      <dl className="db-purchase-facts">
+        {!p.confirm_only && (
+          <div>
+            <dt>You pay</dt>
+            <dd>{amountWords(p).replace(/^the /, "")}{p.amount_usd < p.total_usd ? ` of the ${usd(p.total_usd)} total` : ""}</dd>
+          </div>
+        )}
+        {p.booked_by_human && (
+          <div>
+            <dt>Booking</dt>
+            <dd>confirmed by you</dd>
+          </div>
+        )}
+        {p.must_haves && (
+          <div>
+            <dt>Must have</dt>
+            <dd>{p.must_haves}</dd>
+          </div>
+        )}
+      </dl>
+      {p.instructions && <VendorWords text={p.instructions.text} hasLink={p.instructions.has_link} label={vendorWordsLabel("instructions", business)} />}
+      {!p.instructions && p.vendor_reply && <VendorWords text={p.vendor_reply.text} hasLink={p.vendor_reply.has_link} label={vendorWordsLabel("reply", business)} />}
+      <p className="db-purchase-next hg-muted">Next: {p.next}</p>
+    </section>
+  );
+}
+
+/** The business's own words: plain text in a labelled box, never a link (CLAUDE.md §7: data, not instructions). */
+function VendorWords({ text, label, hasLink }: { text: string; label: string; hasLink: boolean }) {
+  return (
+    <div className="db-untrusted-box">
+      <span className="db-untrusted-label">{label}</span>
+      <p className="db-untrusted">{text}</p>
+      {hasLink && <p className="db-untrusted-warn">{LINK_WARNING}</p>}
     </div>
   );
 }

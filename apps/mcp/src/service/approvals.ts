@@ -20,6 +20,11 @@ export function webApprovalsOn(env: NodeJS.ProcessEnv = process.env): boolean {
   return !/^(false|0|off|no)$/i.test(env.HAGGLE_WEB_APPROVALS?.trim() ?? "");
 }
 
+/** The Haggle web app can act on this server: a service token (32+ chars) and web approvals not turned off. */
+export function webAppOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.HAGGLE_SERVICE_TOKEN?.trim().length ?? 0) >= 32 && webApprovalsOn(env);
+}
+
 const id = z.string().trim().min(3).max(64).regex(/^[A-Za-z0-9_.:-]+$/, "unexpected characters");
 const Bodies = {
   request: z.object({ job_id: id, quote_id: id, action: z.enum(["pay", "confirm"]).optional() }),

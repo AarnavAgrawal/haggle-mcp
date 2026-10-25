@@ -1,0 +1,211 @@
+{
+  "job": {
+    "id": "job_demo",
+    "request": "Lunch for 40 · Thu Oct 22 · SF · delivery",
+    "state": "paying",
+    "budget_usd": 1200,
+    "requirements": [
+      "40 people",
+      "At least 12 vegetarian meals",
+      "Delivered by 11:45 AM"
+    ]
+  },
+  "businesses": [
+    {
+      "id": "biz_bay_catering",
+      "name": "Bay Catering",
+      "channel": "a2a",
+      "status": "quoted",
+      "last_event": "Confirmed the booking; sent payment instructions",
+      "last_event_at": "2026-10-17T14:20:05-07:00"
+    },
+    {
+      "id": "biz_harbor_table",
+      "name": "Harbor Table",
+      "channel": "email",
+      "status": "negotiating",
+      "last_event": "Dropped $1,150 → $1,035 after a competing quote",
+      "last_event_at": "2026-10-17T13:41:10-07:00"
+    },
+    {
+      "id": "biz_mission_eats",
+      "name": "Mission Eats",
+      "channel": "phone",
+      "status": "quoted",
+      "last_event": "Call ended · completed · 2m 14s",
+      "last_event_at": "2026-10-17T13:09:30-07:00",
+      "transcript_snippet": "“For forty people with fourteen veggie plates, we can do $27 a head, so $1,080 delivered, no deposit.”"
+    },
+    {
+      "id": "biz_golden_grill",
+      "name": "Golden Grill",
+      "channel": "email",
+      "status": "quoted",
+      "last_event": "Quoted $880 · only 6 vegetarian meals",
+      "last_event_at": "2026-10-17T13:12:45-07:00"
+    },
+    {
+      "id": "biz_sunset_kitchen",
+      "name": "Sunset Kitchen",
+      "channel": "email",
+      "status": "contacted",
+      "last_event": "Asked a question before quoting",
+      "last_event_at": "2026-10-17T13:30:12-07:00"
+    },
+    {
+      "id": "biz_quickquote_deli",
+      "name": "QuickQuote Deli",
+      "channel": "email",
+      "status": "declined",
+      "last_event": "Blocked: asked to pay at an external link",
+      "last_event_at": "2026-10-17T13:05:51-07:00"
+    }
+  ],
+  "quotes": [
+    {
+      "quote_id": "q_bay_1",
+      "job_id": "job_demo",
+      "business_id": "biz_bay_catering",
+      "business": "Bay Catering",
+      "channel": "a2a",
+      "total_usd": 995,
+      "per_unit_usd": 24.88,
+      "deposit_usd": 200,
+      "items": [
+        "Mediterranean buffet for 40",
+        "14 vegetarian bowls",
+        "Delivery and setup 11:30 AM",
+        "Plates and cutlery"
+      ],
+      "meets_requirements": true,
+      "flags": [],
+      "price_check": "good",
+      "round": 1,
+      "confidence": 0.97,
+      "source": "a2a:quote.json"
+    },
+    {
+      "quote_id": "q_harbor_2",
+      "job_id": "job_demo",
+      "business_id": "biz_harbor_table",
+      "business": "Harbor Table",
+      "channel": "email",
+      "total_usd": 1035,
+      "per_unit_usd": 25.88,
+      "deposit_usd": 310.5,
+      "items": [
+        "Family-style lunch for 40",
+        "12 vegetarian mains",
+        "Delivery 11:15 AM"
+      ],
+      "meets_requirements": true,
+      "flags": [
+        "hidden_deposit"
+      ],
+      "price_check": "typical",
+      "negotiated_from": 1150,
+      "round": 2,
+      "confidence": 0.9,
+      "source": "email:pdf p2"
+    },
+    {
+      "quote_id": "q_mission_1",
+      "job_id": "job_demo",
+      "business_id": "biz_mission_eats",
+      "business": "Mission Eats",
+      "channel": "phone",
+      "total_usd": 1080,
+      "per_unit_usd": 27,
+      "items": [
+        "Taco bar for 40",
+        "14 vegetarian plates",
+        "Delivery included"
+      ],
+      "meets_requirements": true,
+      "flags": [],
+      "price_check": "typical",
+      "round": 1,
+      "confidence": 0.82,
+      "source": "call transcript"
+    },
+    {
+      "quote_id": "q_golden_1",
+      "job_id": "job_demo",
+      "business_id": "biz_golden_grill",
+      "business": "Golden Grill",
+      "channel": "email",
+      "total_usd": 880,
+      "per_unit_usd": 22,
+      "items": [
+        "BBQ lunch for 40",
+        "6 vegetarian plates"
+      ],
+      "meets_requirements": false,
+      "flags": [
+        "requirement_unmet"
+      ],
+      "price_check": "good",
+      "round": 1,
+      "confidence": 0.93,
+      "source": "email:text"
+    },
+    {
+      "quote_id": "q_quickquote_1",
+      "job_id": "job_demo",
+      "business_id": "biz_quickquote_deli",
+      "business": "QuickQuote Deli",
+      "channel": "email",
+      "total_usd": 640,
+      "per_unit_usd": 16,
+      "items": [
+        "Sandwich platters for 40"
+      ],
+      "meets_requirements": false,
+      "flags": [
+        "external_payment_link",
+        "prompt_injection"
+      ],
+      "round": 1,
+      "confidence": 0.4,
+      "source": "email:text"
+    }
+  ],
+  "recommended_quote_id": "q_bay_1",
+  "open_questions": [],
+  "next": "Show the human the instructions as text and tell them to verify them with Bay Catering independently before paying; after paying they reply PAID <code> to Haggle's text.",
+  "mode": "mock",
+  "ready": true,
+  "approval": {
+    "approval_id": "ap_demo_1",
+    "quote_id": "q_bay_1",
+    "status": "approved",
+    "channel": "imessage"
+  },
+  "payment": {
+    "status": "instructions_received",
+    "simulated": true
+  },
+  "empty": false,
+  "job_id": "job_demo",
+  "payment_ceiling_usd": 500,
+  "payments_enabled": true,
+  "web_app": true,
+  "payment_rail": "manual",
+  "purchase": {
+    "stage": "instructions_received",
+    "rail": "manual",
+    "booked": true,
+    "money_verified": false,
+    "amount_usd": 200,
+    "total_usd": 995,
+    "instructions": {
+      "text": "Thanks for booking! Please pay the $200 deposit by Zelle to billing@baycatering.example, or online at https://pay.baycatering.example/inv/4471. Reference: lunch for 40, Oct 22.",
+      "untrusted": true,
+      "has_link": true
+    },
+    "order": "Lunch for 40 · Thu Oct 22 · SF · delivery",
+    "must_haves": "At least 12 vegetarian meals; Delivered by 11:45 AM",
+    "summary": "Bay Catering confirmed the booking. It sent payment instructions (untrusted text; it has a link, which Haggle never opens). The human pays $200 deposit to Bay Catering directly; Haggle moves no money.",
+    "next": "Show the human the instructions as text and tell them to verify them with Bay Catering independently before paying; after paying they reply PAID <code> to Haggle's text."
+  }
+}

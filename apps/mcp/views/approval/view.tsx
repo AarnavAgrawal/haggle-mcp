@@ -16,7 +16,10 @@ type Approval = Omit<SharedApproval, "channel"> & {
   order_total_usd?: number;
   pay_now_basis?: "deposit" | "full_total";
   demo?: string;
-  payment?: { status: string; simulated: boolean };
+  /** rail "manual": the manual payment handoff (status is the purchase stage, reason its one-line summary). */
+  payment?: { status: string; simulated: boolean; rail?: string; reason?: string };
+  /** "manual" on a server where approval ends in the manual handoff, known before any payment row exists. */
+  payment_rail?: "manual";
 };
 
 const STEPS = [
@@ -33,6 +36,13 @@ function refusalText(reason: string | undefined): string {
   if (/total_not_firm/.test(reason)) return "The business gave an approximate total. Haggle can approve it once they confirm a firm total.";
   return reason;
 }
+
+/** Manual handoff: "paid" only once the business confirmed it received the human's direct payment. */
+const MANUAL_STEPS = [
+  { key: "pending_human", label: "Sent for approval" },
+  { key: "approved", label: "Approved" },
+  { key: "paid", label: "Vendor confirmed payment" },
+] as const;
 
 /** action "confirm": the human approves the order only; nothing is paid. */
 const CONFIRM_STEPS = [
@@ -85,9 +95,14 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
   };
 
   const confirmOnly = card.action === "confirm";
+  // Manual handoff: Haggle moves no money. No Pay button and no Stripe wording; the stage summary
+  // (reason) says where the booking and the human's direct payment stand.
+  const manual = card.payment?.rail === "manual" || card.payment_rail === "manual";
   // A confirm-only approval is done once approved: the business was told to go ahead.
   const status = confirmOnly && card.status === "approved" ? "confirmed" : card.status;
-  const steps: readonly { key: string; label: string }[] = confirmOnly ? CONFIRM_STEPS : STEPS;
+  const steps: readonly { key: string; label: string }[] = confirmOnly ? CONFIRM_STEPS : manual ? MANUAL_STEPS : STEPS;
+  // "booking_changed: Bay replied with …" → the summary only (the stage name is for the model).
+  const stageSummary = manual && card.reason ? card.reason.replace(/^[a-z_]+: /, "") : null;
   // Paid means every step is done; a refusal leaves the approval step current.
   const stepIndex = status === "paid" || status === "confirmed" ? steps.length : status === "refused" ? 0 : steps.findIndex((s) => s.key === status);
   const busy = approve.isPending || approveInView.isPending || pay.isPending;
@@ -142,7 +157,11 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
   return (
     <div className="ap">
       <ModelContext
-        content={`Haggle approval for ${card.business} on ${card.job_id}: ${confirmOnly ? "confirm the order, nothing paid" : `pay ${payNowWords} after approval`}; ${status}. Approving charges nothing; pay charges the approved amount.`}
+        content={
+          manual
+            ? `Haggle approval for ${card.business} on ${card.job_id}: ${confirmOnly ? "confirm the order, nothing paid" : `the human pays ${payNowWords} directly`}; ${status}${card.payment ? ` (manual handoff stage ${card.payment.status})` : ""}. Haggle moves no money; never ask the human for a code.`
+            : `Haggle approval for ${card.business} on ${card.job_id}: ${confirmOnly ? "confirm the order, nothing paid" : `pay ${payNowWords} after approval`}; ${status}. Approving charges nothing; pay charges the approved amount.`
+        }
       />
       <header className="ap-head">
         <div className="ap-hero">
@@ -159,7 +178,7 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
             </>
           ) : (
             <>
-              <p className="ap-label">{status === "paid" ? "Paid" : "Pay after approval"}</p>
+              <p className="ap-label">{manual ? (status === "paid" ? "Paid directly · vendor confirmed" : "You pay the business directly") : status === "paid" ? "Paid" : "Pay after approval"}</p>
               <h1 className="ap-amount">{unknownAmount ? "—" : usd(card.amount_usd)}</h1>
               <p className="ap-sub">
                 {unknownAmount ? (
@@ -193,7 +212,7 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
           <dd>{total !== undefined ? usd(total) : "Not given"}</dd>
         </div>
         <div>
-          <dt>{status === "paid" ? "Paid" : "Pay now"}</dt>
+          <dt>{status === "paid" ? "Paid" : manual ? "You pay directly" : "Pay now"}</dt>
           <dd>{confirmOnly ? "Nothing (confirm only)" : payNowWords}</dd>
         </div>
         <div>
@@ -207,7 +226,7 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
                   ? "Approval form in your client"
                   : card.channel === "simulated"
                     ? "Simulated (demo client, no human channel)"
-                    : "You, with the button below"}
+                    : status === "pending_human" ? "You, with the button below" : "You"}
           </dd>
         </div>
       </dl>
@@ -227,8 +246,11 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
         </div>
       )}
 
-      {status === "refused" && <p className="ap-refused">{confirmOnly ? "Not approved: " : ""}{refusalText(card.reason)} Nothing was paid.</p>}
+      {status === "refused" && <p className="ap-refused">{confirmOnly ? "Not approved: " : ""}{refusalText(stageSummary ?? card.reason)}{stageSummary ? "" : " Nothing was paid."}</p>}
       {status === "pending_human" && card.reason && <p className="ap-waiting">{card.reason}</p>}
+      {manual && (status === "approved" || status === "paid") && (
+        <p className={status === "paid" ? "ap-paid" : "ap-waiting"}>{stageSummary ?? `Haggle is asking ${card.business} to confirm the booking. Don't pay anything yet.`}</p>
+      )}
       {failed && status !== "refused" && <p className="ap-refused">Last payment attempt {card.payment!.status}. Nothing was charged.</p>}
 
       <div className="ap-actions">
@@ -240,14 +262,14 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
           </button>
         )}
         {status === "approved" && <span className="ap-approved">Approved{approvedBy}</span>}
-        {status === "approved" && !processing && (
+        {!manual && status === "approved" && !processing && (
           <button className="hg-btn hg-btn-primary" disabled={busy} onClick={() => void run(() => pay.callTool({ job_id: card.job_id, quote_id: card.quote_id }))}>
             {pay.isPending ? "Paying…" : failed ? `Retry: pay ${payNowWords}` : `Pay ${payNowWords}`}
           </button>
         )}
         {status === "approved" && processing && <p className="ap-processing">Paying the {payNowWords}…</p>}
         {status === "confirmed" && <p className="ap-paid">Confirmed: the business was told to go ahead (nothing paid).</p>}
-        {status === "paid" && (
+        {!manual && status === "paid" && (
           <p className="ap-paid">
             {payNowWords} paid
             {card.paid_at ? ` ${new Date(card.paid_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}
@@ -262,11 +284,15 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
       </div>
       {status === "pending_human" && card.channel !== "simulated" && (
         <p className="ap-note hg-muted">
-          {confirmOnly ? "Approving confirms the order with the business; nothing is paid. " : `Approving charges nothing: you pay the ${payNowWords} with Pay afterwards${simulatedPay || card.mode === "mock" ? " (simulated)" : " (Stripe test mode)"}. `}
+          {confirmOnly
+            ? "Approving confirms the order with the business; nothing is paid. "
+            : manual
+              ? `Approving charges nothing and Haggle moves no money: once ${card.business} confirms the booking, you pay it the ${payNowWords} directly. `
+              : `Approving charges nothing: you pay the ${payNowWords} with Pay afterwards${simulatedPay || card.mode === "mock" ? " (simulated)" : " (Stripe test mode)"}. `}
           Only you can approve. Your agent can't press this for you.
         </p>
       )}
-      {status === "approved" && !processing && !failed && <p className="ap-note hg-muted">Nothing is charged until you tap Pay.</p>}
+      {!manual && status === "approved" && !processing && !failed && <p className="ap-note hg-muted">Nothing is charged until you tap Pay.</p>}
       {error && (
         <p className="ap-error" role="alert">
           {error}

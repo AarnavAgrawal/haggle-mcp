@@ -8,7 +8,8 @@ import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
 import { historyOnly } from "./src/brain.ts";
-import { ApprovalOut, BusinessProfile, Conversation, dealStartedBoard, DealBoardPlus, emptyBoard, Estimates, Identity, requestDetails, toApproval, toDealBoardPlus, waitOutput } from "./src/views.ts";
+import { ApprovalOut, BusinessProfile, Conversation, dealStartedBoard, DealBoardPlus, emptyBoard, Estimates, Identity, pendingByTextNext, requestDetails, toApproval, toDealBoardPlus, waitOutput } from "./src/views.ts";
+import { webAppOn } from "./src/service/approvals.ts";
 import { blockerLines, businessRef, findVendors, rosterBusinessId, workspaceVendorList, type ChannelStatus, type RosterEntry } from "./src/vendors.ts";
 import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, historyEvidence, learningFor, listingEvidence, requestCategory, resolveSelection, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered, type Selected } from "./src/businesses.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
@@ -511,7 +512,7 @@ export const deal = server.tool(
       // A failed send says why (e.g. the Inkbox iMessage code) instead of a bare "send failed".
       r.not_contacted = r.not_contacted.map((c) => (c.reason === "send failed" && b ? { ...c, reason: b.businesses.find((x) => x.business_id === c.business_id)?.last_event ?? c.reason } : c));
       const v = dealStartedBoard(r, b, request, mode, {
-        warnings, ...(setup ? { setup } : {}),
+        ...(await boardFlags(engine)), warnings, ...(setup ? { setup } : {}),
         request_details: requestDetails({ job: { request: b?.job.request ?? request, budget_usd: budgetUsd ?? null } }, budgetUsd === undefined ? undefined : "request"),
         next: `Deal started; the board updates by itself. Call wait_for_update(job_id='${r.job_id}') to follow it; nothing is bought until the human approves a quote and pay is called.`,
       });
@@ -586,7 +587,7 @@ export const getQuotes = server.tool(
     }
     const id = job_id;
     const b = await engine.getQuotes(id);
-    return ok(toDealBoardPlus(b, mode, {}, { detail: detail === true }), boardText(b));
+    return ok(toDealBoardPlus(b, mode, await boardFlags(engine), { detail: detail === true }), boardText(b));
   }),
 );
 
@@ -717,7 +718,20 @@ export const cancelDeal = server.tool(
 // ───────────────────────────── approval & payment ─────────────────────────────
 
 async function approvalView(engine: WorkspaceEngine, mode: Mode, job_id: string, quote_id: string, status: ApprovalOut["status"], extra: { next: string; reason?: string; demo?: string }) {
-  return toApproval(await engine.getQuotes(job_id), quote_id, status, mode, extra);
+  // The card learns the manual rail before any payment row exists (it must not offer Pay or Stripe wording).
+  const manual = (await getRuntime()).engine.manualHandoff;
+  return toApproval(await engine.getQuotes(job_id), quote_id, status, mode, { ...extra, ...(manual ? { payment_rail: "manual" as const } : {}) });
+}
+
+/**
+ * What every deal board is told about this server: payments_enabled from the engine (true on the
+ * manual rail, which the board read model counts as off), the manual rail itself (known before any
+ * approval, so the board never offers Pay there) and whether the Haggle web app can record the human's
+ * steps (the board names it next to the PAID text only then).
+ */
+async function boardFlags(engine: WorkspaceEngine): Promise<{ payments_enabled: boolean; web_app: boolean; payment_rail?: "manual" }> {
+  const manual = (await getRuntime()).engine.manualHandoff;
+  return { payments_enabled: engine.paymentsEnabled, web_app: webAppOn(), ...(manual ? { payment_rail: "manual" as const } : {}) };
 }
 
 /**
@@ -1051,7 +1065,7 @@ export const chooseInView = server.tool(
         const reach = await engine.approvalReach(job_id);
         if (!canIMessage && !reach.text) return fail(mode, "NO_HUMAN_CHANNEL", "No way to reach this workspace's approver by text.", "Ask the operator to set the workspace approver phone and enable SMS or iMessage. Nothing was approved.", "none");
         const a = await engine.requestApproval(job_id, quote_id, "imessage", action, { text: reach.text && !canIMessage, email: false });
-        const next = a.status === "pending" ? "Sent to the approver's phone: they approve by replying YES <code> to Haggle's text." : `Approval is ${a.status}.`;
+        const next = a.status === "pending" ? pendingByTextNext(webAppOn()) : `Approval is ${a.status}.`;
         return ok({ ok: true, mode, approval_id: a.id, status: a.status, action: a.action === "confirm" ? "confirm" : "pay", amount_usd: a.payment_cents / 100, next }, `Approval ${a.status}: sent to the approver's phone.`);
       }
       if (!rendersViews(ctx)) return viewOnly(mode);
@@ -1392,7 +1406,7 @@ export const openHaggle = server.tool(
         return ok(DealBoardPlus.parse({ ...emptyBoard(mode), setup }), `No deals yet. ${setup.ready} of ${setup.total} demo vendors ready. next: deal(request, budget_usd)`);
       }
       const b = await engine.getQuotes(job.id);
-      return ok(toDealBoardPlus(b, mode), boardText(b));
+      return ok(toDealBoardPlus(b, mode, await boardFlags(engine)), boardText(b));
     }),
 );
 

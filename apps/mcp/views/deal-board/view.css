@@ -554,3 +554,75 @@
 .db-approve-hint { font-size: 12px; flex-basis: 100%; }
 .db-focus > .db-link,
 .db-quote > .db-link { justify-self: start; }
+
+/* Manual payment handoff (HAGGLE_PAYMENTS=manual): Haggle moves no money; the human pays the business. */
+.db-purchase {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--ch-email);
+  border-radius: var(--radius-m);
+  background: var(--panel);
+  min-width: 0;
+}
+.db-purchase.is-done { border-left-color: var(--win); }
+.db-purchase.is-risk { border-left-color: var(--risk); }
+.db-psteps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+.db-psteps li { display: flex; gap: 7px; align-items: baseline; }
+.db-psteps li::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--rule);
+  transform: translateY(1px);
+}
+.db-psteps li.is-done { color: var(--ink-2); }
+.db-psteps li.is-done::before { background: var(--win); border-color: var(--win); }
+.db-psteps li.is-now { color: var(--ink); font-weight: 600; }
+.db-psteps li.is-now::before { border-color: var(--ch-email); background: var(--ch-email); }
+.db-purchase-summary { font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.db-purchase-you {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 7px 9px;
+  border-radius: var(--radius-s);
+  background: var(--warn-soft);
+}
+.db-purchase-next { font-size: 12px; overflow-wrap: anywhere; }
+.db-purchase-facts { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 0; font-size: 12px; color: var(--ink-2); }
+.db-purchase-facts div { display: flex; gap: 4px; min-width: 0; }
+.db-purchase-facts dt { color: var(--ink-3); }
+.db-purchase-facts dd { margin: 0; overflow-wrap: anywhere; }
+/* The business's own words: plain text, never a link, clearly marked as unverified. */
+.db-untrusted-box {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px dashed color-mix(in srgb, var(--warn) 55%, var(--rule));
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--warn-soft) 55%, var(--panel));
+  min-width: 0;
+}
+.db-untrusted-label { font-size: 11px; font-weight: 700; color: var(--warn); }
+.db-untrusted {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.db-untrusted-warn { font-size: 12px; font-weight: 600; color: var(--risk); }

@@ -94,7 +94,7 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `HAGGLE_RATE_TOOL_CALLS_BURST` | Burst size of the per-credential tool-call rate limit |  | server | optional | optional | optional | optional | integer 1–10000; warning | `30` |
 | `HAGGLE_DB_QUEUE_TIMEOUT_MS` | How long a query waits for a free pool connection before failing as transient (ms) |  | server | – | optional | optional | optional | integer 100–60000; **error** | `5000` |
 | `HAGGLE_DB_SCHEMA` | Schema the migrations were applied to, when not public |  | server, brain, script | – | optional | optional | optional | a lower-case schema name ([a-z_][a-z0-9_]*); **error** |  |
-| `HAGGLE_PAYMENTS` | manual: approved deals end in a payment handoff to the vendor (no money moves through Haggle) |  | server | – | optional | recommended | recommended | `manual`; **error** |  |
+| `HAGGLE_PAYMENTS` | manual: approved deals end in a payment handoff to the vendor (no money moves through Haggle); in mock, rehearses the handoff stages (DEMO) |  | server | optional | optional | recommended | recommended | `manual`; **error** |  |
 | `HAGGLE_GLOBAL_PAYMENT_CAP_CENTS` | Per-payment safety ceiling in cents (max 1,000,000) |  | server | – | optional | optional | optional | integer 1–1000000; **error** | `500000` |
 | `HAGGLE_SPENDING_CAP_CEILING_CENTS` | Highest spending cap a workspace may set, in cents |  | server | – | optional | optional | optional | integer > 0; **error** | `500000` |
 | `HAGGLE_EXTERNAL_SENDERS` | reply_token: accept replies from real vendors' own mail servers when they carry a signed reply token |  | server | – | optional | optional | optional | `off` \| `reply_token`; **error** | `off` |

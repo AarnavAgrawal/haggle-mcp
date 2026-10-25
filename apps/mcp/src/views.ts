@@ -20,8 +20,15 @@ export const ApprovalOut = Approval.extend({
   /** What amount_usd is: the stated deposit, or the full total because the business stated no deposit (never $0). Absent for confirm-only. */
   pay_now_basis: z.enum(["deposit", "full_total"]).optional(),
   payment: z.looseObject({ status: z.string(), simulated: z.boolean() }).optional(),
+  /** "manual": approved deals end in the manual handoff (Haggle moves no money); known before any payment row exists. */
+  payment_rail: z.literal("manual").optional(),
 });
 export type ApprovalOut = z.infer<typeof ApprovalOut>;
+
+/** The board's hint after a choice texted to the approver (out-of-band approvals); never carries the code. */
+export function pendingByTextNext(webApp: boolean): string {
+  return `Sent to the approver's phone: they approve by replying YES <code> to Haggle's text${webApp ? ", or approve it in the Haggle web app" : ""}.`;
+}
 
 /**
  * A quote as Haggle's board shows it: the shared Quote, except a total the business never stated is
@@ -98,7 +105,12 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   }).optional(),
   /** Operator/settings ceiling for any single payment (the deposit), separate from the order budget. */
   payment_ceiling_usd: z.number().nonnegative().optional(),
+  /** Can an approved quote be paid on this server (Stripe test mode, simulated, or the manual handoff)? Set from the engine's paymentsEnabled. */
   payments_enabled: z.boolean().optional(),
+  /** The Haggle web app can record the human's approval and purchase steps on this server (service token set, HAGGLE_WEB_APPROVALS not off). */
+  web_app: z.boolean().optional(),
+  /** "manual": approval ends in the manual handoff (Haggle moves no money; no Pay button); known before any approval. */
+  payment_rail: z.literal("manual").optional(),
   /** Per quote: can the human approve it now, and if not, why (the server decides; the view only shows it). */
   quote_status: z.record(z.string(), z.object({ approvable: z.boolean(), approximate: z.boolean().optional(), block: z.object({ code: z.string(), reason: z.string() }).optional() })).optional(),
   /** The best-value quote when it isn't the recommendation because it can't be approved; and why. */
@@ -334,7 +346,7 @@ export function emptyBoard(mode: Mode): DealBoardOrEmpty {
 
 export function toApproval(
   b: DealBoardData, quote_id: string, status: ApprovalOut["status"], mode: Mode,
-  extra: { next: string; reason?: string; demo?: string },
+  extra: { next: string; reason?: string; demo?: string; payment_rail?: "manual" },
 ): ApprovalOut {
   const q = b.quotes.find((x) => x.quote_id === quote_id);
   const a = b.approval?.quote_id === quote_id ? b.approval : null;

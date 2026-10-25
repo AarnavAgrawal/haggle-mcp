@@ -176,7 +176,9 @@ export const choosableCount = (board: ChoiceBoard) => board.quotes.filter((q) =>
  * What the model can see about the board without anyone posting in the chat: ids, names, totals and
  * states only (never a business's own words). Refreshed whenever the board updates itself.
  */
-export function boardContext(board: Omit<Base, "quote_status">, recommendedId: string | undefined): string {
+export function boardContext(board: Omit<Base, "quote_status"> & { purchase?: { stage: string; rail: string } | null }, recommendedId: string | undefined): string {
+  // Manual handoff (HAGGLE_PAYMENTS=manual): the stage only, never the business's reply or instructions.
+  const manual = board.purchase?.rail === "manual" ? board.purchase : null;
   const safe = board.quotes.filter((q) => !isUnsafe(board, q));
   const opts = safe
     .slice(0, 8)
@@ -190,8 +192,9 @@ export function boardContext(board: Omit<Base, "quote_status">, recommendedId: s
     board.open_questions.length ? `${board.open_questions.length} open business question(s)` : null,
     holder ? `approval for ${holder}: ${held!.status}${replaceableApproval(board) ? " (Haggle's texted recommendation; choosing another option replaces it)" : ""}` : null,
     board.job.state === "negotiating" && (board.negotiation ?? []).some((n) => n.outcome_total_usd === null) ? "negotiation round still running" : null,
-    board.payment?.status === "settled" ? "paid" : board.job.state === "confirmed" ? "order confirmed, nothing paid" : null,
-    "The human chooses and approves on the board; approving charges nothing until pay",
+    manual ? `manual payment handoff: ${manual.stage} (Haggle moves no money; the human pays the business directly)`
+      : board.payment?.status === "settled" ? "paid" : board.job.state === "confirmed" ? "order confirmed, nothing paid" : null,
+    manual ? "Never ask the human for a code" : "The human chooses and approves on the board; approving charges nothing until pay",
   ];
   return `${parts.filter(Boolean).join("; ")}.`;
 }
