@@ -7,6 +7,7 @@
 //   exit 0 = clean, 1 = findings. apps/mcp/tests/secretsHygiene.test.ts runs it on every CI run.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const SECRET_PATTERNS: [string, RegExp][] = [
   ["stripe key", /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/],
@@ -53,7 +54,7 @@ export function scanPaths(paths: string[], root: string): Finding[] {
 }
 
 if (process.argv[1]?.replace(/\\/g, "/").endsWith("scripts/secret-scan.ts")) {
-  const root = new URL("../../..", import.meta.url).pathname;
+  const root = fileURLToPath(new URL("../../..", import.meta.url));
   const args = process.argv.slice(2);
   const findings = scanPaths(args.length ? args : defaultTargets(root), root);
   for (const f of findings) console.log(`${f.file}:${f.line}: looks like a ${f.pattern}`);

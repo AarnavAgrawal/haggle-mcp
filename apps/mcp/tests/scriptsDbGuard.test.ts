@@ -11,7 +11,8 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 const DIR = join(import.meta.dirname, "..", "scripts");
-const TSX = join(ROOT, "node_modules", ".bin", "tsx");
+/** tsx through node: Windows can't spawn the node_modules/.bin shim directly (ENOENT). */
+const TSX_CLI = join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const PROD_DB = "postgres://postgres.prodref123:hunter2pw@aws-0-us-west-1.pooler.supabase.com:5432/postgres";
 /** Where scripts live. A new directory of scripts belongs here. */
 const SCRIPT_DIRS = ["apps/mcp/scripts", "packages/engine/scripts", "scripts"];
@@ -98,7 +99,7 @@ describe("operator scripts and the production-database guard", () => {
   });
 
   const run = (script: string, args: string[], env: Record<string, string>) =>
-    spawnSync(TSX, [join(DIR, script), ...args], { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8", timeout: 30_000 });
+    spawnSync(process.execPath, [TSX_CLI, join(DIR, script), ...args], { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8", timeout: 60_000 });
 
   it("job-ops exits 2 before connecting to a production database outside production", () => {
     const r = run("job-ops.ts", ["list-stuck"], { SUPABASE_DB_URL: PROD_DB, HAGGLE_PROD_DB_HOSTS: "prodref123", HAGGLE_ENV: "staging" });

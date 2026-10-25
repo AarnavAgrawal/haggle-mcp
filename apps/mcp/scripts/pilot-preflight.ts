@@ -20,6 +20,7 @@
 // --check-webhooks (a read-only listing), otherwise the subscription check is BLOCKED.
 import "./dbGuard.ts"; // refuses a production SUPABASE_DB_URL outside HAGGLE_ENV=production (src/config.ts)
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { approverVerification, assessRoster, contactWindowFromEnv, parseFleet, PostgresRepository, workspaceSuspension, type Repository } from "@haggle/engine";
 import { HAGGLE_ENVS, prodDbGuard, type HaggleEnv } from "../src/config.ts";
 import { parseVendorConfig } from "../src/vendors.ts";
@@ -203,7 +204,7 @@ if (process.argv[1]?.replace(/\\/g, "/").endsWith("scripts/pilot-preflight.ts"))
     console.error((e as Error).message);
     process.exit(2);
   }
-  const deps = realDeps(new URL("../../..", import.meta.url).pathname);
+  const deps = realDeps(fileURLToPath(new URL("../../..", import.meta.url)));
   if (!opts.checkWebhooks) delete deps.listWebhooks; // no provider call unless explicitly asked (read-only)
   let repo: PostgresRepository | null = null;
   if (opts.dbUrlEnv && opts.workspaces.length) {

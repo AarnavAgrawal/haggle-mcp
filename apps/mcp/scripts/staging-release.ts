@@ -32,6 +32,7 @@ import "./dbGuard.ts"; // refuses a production SUPABASE_DB_URL in this process's
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isEngineMigration } from "@haggle/engine";
 import { looksLikeProductionDb, prodDbGuard, prodDbHosts } from "../src/config.ts";
 import { parseEnvFile } from "./launch-gate.ts";
@@ -328,7 +329,7 @@ export function realDeps(repoRoot: string): StagingDeps {
 if (process.argv[1]?.replace(/\\/g, "/").endsWith("scripts/staging-release.ts")) {
   let opts: StagingOptions;
   try { opts = parseStagingArgs(process.argv.slice(2)); } catch (e) { console.error((e as Error).message); process.exit(2); }
-  const root = resolve(new URL("../../..", import.meta.url).pathname);
+  const root = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
   runStaging(opts, realDeps(root)).then((r) => {
     console.log(opts.json ? JSON.stringify(r) : formatStaging(r));
     process.exit(r.ok ? 0 : 1);

@@ -66,7 +66,7 @@ describe("the manifest covers every environment read", () => {
   });
 
   it("docs/env-manifest.md and .env.example list every variable", () => {
-    const doc = readFileSync(join(ROOT, "docs", "env-manifest.md"), "utf8");
+    const doc = readFileSync(join(ROOT, "docs", "env-manifest.md"), "utf8").replace(/\r\n/g, "\n"); // a CRLF checkout (Windows autocrlf)
     const table = doc.split("<!-- manifest:start -->\n")[1]?.split("\n<!-- manifest:end -->")[0];
     expect(table, "regenerate with: npx tsx apps/mcp/scripts/env-manifest.ts").toBe(manifestTable());
     const example = readFileSync(join(ROOT, ".env.example"), "utf8");

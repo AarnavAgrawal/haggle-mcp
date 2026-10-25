@@ -15,6 +15,7 @@
 // HAGGLE_ALLOW_PROD_DB=true (src/config.ts).
 import { compareMigrations, findMigrationsDir, isEngineMigration, ledgerClient, migrationFileProblems, readLedger, recordMigrations, repoMigrations, type MigrationStatus, type RepoMigration } from "@haggle/engine";
 import { prodDbGuard } from "../src/config.ts";
+import { fileURLToPath } from "node:url";
 
 export type MigrationsCommand =
   | { kind: "status" | "verify"; urlEnv: string; json: boolean; allowAhead: boolean }
@@ -79,7 +80,7 @@ async function main(argv = process.argv.slice(2)) {
   if (!url) throw new Error(`${cmd.urlEnv} is not set`);
   const refused = prodDbGuard(process.env, [cmd.urlEnv]);
   if (refused.length) throw new Error(refused.join("; "));
-  const dir = findMigrationsDir(new URL("../../..", import.meta.url).pathname) ?? findMigrationsDir();
+  const dir = findMigrationsDir(fileURLToPath(new URL("../../..", import.meta.url))) ?? findMigrationsDir();
   if (!dir) throw new Error("supabase/migrations not found (run from a checkout of the repo)");
   const repo = repoMigrations(dir);
   const schema = process.env.HAGGLE_DB_SCHEMA?.trim() || undefined;

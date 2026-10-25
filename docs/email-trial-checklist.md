@@ -23,6 +23,8 @@ via SES), and **does the reply token survive** Gmail/Outlook/iOS replies.
 - [ ] A new run directory **outside the repository** per send, e.g. `~/haggle-trials/2026-10-23-gmail`.
       The script creates it 0700 and refuses an existing one that others can read (`chmod 700`), one
       inside the repo (also through a symlink), or one that already holds a run.
+      Run the trial on a POSIX host (macOS or Linux): the 0700/0600 permission checks rely on POSIX
+      mode bits, which Windows doesn't enforce (its tests skip only the mode assertions there).
 
 ## Gates (checked before any network call)
 

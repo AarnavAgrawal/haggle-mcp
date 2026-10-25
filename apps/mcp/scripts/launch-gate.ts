@@ -20,6 +20,7 @@
 import "./dbGuard.ts"; // refuses a production SUPABASE_DB_URL outside HAGGLE_ENV=production (src/config.ts)
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { compareMigrations, findMigrationsDir, isEngineMigration, ledgerClient, migrationFileProblems, readLedger, repoMigrations, type LedgerRow } from "@haggle/engine";
 import { checkConfig, HAGGLE_ENVS, prodDbGuard, type HaggleEnv } from "../src/config.ts";
 import { missingRecommended, targetOf } from "../src/envManifest.ts";
@@ -232,7 +233,7 @@ if (process.argv[1]?.replace(/\\/g, "/").endsWith("scripts/launch-gate.ts")) {
     console.error((e as Error).message);
     process.exit(2);
   }
-  runLaunchGate(opts, realDeps(new URL("../../..", import.meta.url).pathname)).then((r) => {
+  runLaunchGate(opts, realDeps(fileURLToPath(new URL("../../..", import.meta.url)))).then((r) => {
     console.log(opts.json ? JSON.stringify(r) : formatGate(r));
     process.exit(r.ok ? 0 : 1);
   }).catch((e) => {

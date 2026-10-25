@@ -6,7 +6,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { InkboxListedMessage, InkboxMessageDetail } from "@haggle/engine";
 import { collectRun, sendOnce, type TrialMailbox } from "../scripts/email-trial-io.ts";
@@ -20,6 +20,8 @@ const OTHER = "tester2@outlook.example";
 const BUYER = "haggle-staging@inkboxmail.test";
 const STAGING = { HAGGLE_EMAIL_TRIAL: "1", HAGGLE_EMAIL_TRIAL_MAILBOXES: `${ME},${OTHER}`, HAGGLE_ENV: "staging", INKBOX_API_KEY: "ik_staging_key_value_123", INKBOX_IDENTITY: "haggle-staging" };
 const send = (to = ME, run = "/tmp/trials/t1") => ["send", "--to", to, "--run", run, TRIAL_FLAG];
+/** Path equality as the gate sees it: --run is resolved (Windows adds a drive and backslashes). */
+const is = (p: string, ...paths: string[]) => paths.some((x) => resolve(x) === resolve(p));
 const refused = (argv: string[], env: Record<string, string | undefined>, re: RegExp, fs?: FsProbe) => expect(planTrial(argv, env, REPO, fs ? { fs } : {})).toMatchObject({ ok: false, error: expect.stringMatching(re) });
 
 describe("never against production", () => {
@@ -65,23 +67,23 @@ describe("recipients: exact allowlist matches only", () => {
 
 describe("run directory: outside the repository and private", () => {
   it("a symlink outside the repository that points into it is refused (realpath)", () => {
-    const fs: FsProbe = { ...EMPTY_FS, realpath: (p) => (p === "/tmp/link" ? `${REPO}/captures` : p === REPO ? REPO : null) };
+    const fs: FsProbe = { ...EMPTY_FS, realpath: (p) => (is(p, "/tmp/link") ? `${REPO}/captures` : is(p, REPO) ? REPO : null) };
     expect(outsideRepo("/tmp/link/t1", REPO, fs)).toBe(false);
     refused(send(ME, "/tmp/link/t1"), STAGING, /FAIL\s+--run\s+inside the repository \(directly or through a symlink\)/, fs);
     expect(outsideRepo("/tmp/elsewhere/t1", REPO, fs)).toBe(true);
   });
   it("an existing directory others can read, or a world-readable run.json, is refused with the chmod fix", () => {
-    const loose: FsProbe = { ...EMPTY_FS, exists: (p) => p === "/tmp/t", mode: () => 0o755 };
-    refused(send(ME, "/tmp/t"), STAGING, /FAIL\s+--run\s+exists with mode 0755[\s\S]*fix: chmod 700 \/tmp\/t/, loose);
+    const loose: FsProbe = { ...EMPTY_FS, exists: (p) => is(p, "/tmp/t"), mode: () => 0o755 };
+    refused(send(ME, "/tmp/t"), STAGING, /FAIL\s+--run\s+exists with mode 0755[\s\S]*fix: chmod 700 \S*[\\/]tmp[\\/]t/, loose);
     const run = { runId: "r", token: "HGR-AAAAAAAAAA", secret: "s".repeat(64), to: ME, send: { id: "o", messageId: "<m@x>", status: "sent", at: "now" } };
-    const leaky: FsProbe = { ...EMPTY_FS, exists: (p) => p === "/tmp/t" || p === "/tmp/t/run.json", mode: (p) => (p.endsWith("run.json") ? 0o644 : 0o700), read: () => JSON.stringify(run) };
+    const leaky: FsProbe = { ...EMPTY_FS, exists: (p) => is(p, "/tmp/t", "/tmp/t/run.json"), mode: (p) => (p.endsWith("run.json") ? 0o644 : 0o700), read: () => JSON.stringify(run) };
     refused(["collect", "--run", "/tmp/t", TRIAL_FLAG], STAGING, /FAIL\s+run\.json\s+mode 0644[\s\S]*chmod 600/, leaky);
   });
   it("send refuses a directory that already holds a run; collect needs one, recorded for a still-allowlisted recipient", () => {
-    const withRun = (run: object): FsProbe => ({ ...EMPTY_FS, exists: (p) => p === "/tmp/t" || p === "/tmp/t/run.json", mode: () => 0o700, read: () => JSON.stringify(run) });
+    const withRun = (run: object): FsProbe => ({ ...EMPTY_FS, exists: (p) => is(p, "/tmp/t", "/tmp/t/run.json"), mode: () => 0o700, read: () => JSON.stringify(run) });
     const run = { runId: "r", token: "HGR-AAAAAAAAAA", secret: "s".repeat(64), to: ME, send: { id: "o", messageId: "<m@x>", status: "sent", at: "now" } };
     refused(send(ME, "/tmp/t"), STAGING, /FAIL\s+run state\s+this directory already holds a run/, withRun(run));
-    refused(["collect", "--run", "/tmp/t", TRIAL_FLAG], STAGING, /BLOCKED run state\s+no run\.json here/, { ...EMPTY_FS, exists: (p) => p === "/tmp/t", mode: () => 0o700 });
+    refused(["collect", "--run", "/tmp/t", TRIAL_FLAG], STAGING, /BLOCKED run state\s+no run\.json here/, { ...EMPTY_FS, exists: (p) => is(p, "/tmp/t"), mode: () => 0o700 });
     refused(["collect", "--run", "/tmp/t", TRIAL_FLAG], { ...STAGING, HAGGLE_EMAIL_TRIAL_MAILBOXES: OTHER }, /FAIL\s+run state\s+the run's recipient t\*\*\*@gmail\.example is no longer/, withRun(run));
     expect(planTrial(["collect", "--run", "/tmp/t", TRIAL_FLAG], STAGING, REPO, { fs: withRun(run) })).toMatchObject({ ok: true });
     // A send that was started but not confirmed: collect may run (it recovers the send).
@@ -180,6 +182,8 @@ class FakeMailbox implements TrialMailbox {
   }
 }
 const mode = (p: string) => statSync(p).mode & 0o777;
+/** POSIX mode bits: Windows reports 0o666/0o777 whatever chmod set, so only the mode checks are skipped there. */
+const POSIX = process.platform !== "win32";
 
 describe("send is one-shot", () => {
   it("records the run (0600, in a 0700 directory) and refuses a second send into the same directory without calling Inkbox", async () => {
@@ -189,8 +193,10 @@ describe("send is one-shot", () => {
     expect(ink.sends).toHaveLength(1);
     expect(ink.sends[0]).toMatchObject({ to: [ME], idempotencyKey: `email-trial:${run.runId}` });
     expect(run).toMatchObject({ sendState: "sent", send: { id: "out_1", messageId: "<0100019a-send@email.amazonses.com>" } });
-    expect(mode(dir)).toBe(0o700);
-    expect(mode(join(dir, "run.json"))).toBe(0o600);
+    if (POSIX) {
+      expect(mode(dir)).toBe(0o700);
+      expect(mode(join(dir, "run.json"))).toBe(0o600);
+    }
     await expect(sendOnce(ink, { to: ME, runDir: dir })).rejects.toThrow(/already exists: this directory holds a run, so nothing was sent/);
     expect(ink.sends).toHaveLength(1);
   });
@@ -238,8 +244,10 @@ describe("collect reads only allowlisted senders and restores unread state", () 
     expect(ink.unread.sort()).toEqual(["in_unknown", "in_unread"]); // a message that was already read stays read
     expect(r.skipped).toEqual({ not_allowlisted: 2, bounces: 1 });
     expect(r.report.replies.map((x) => x.webhook.read_before_collect).sort()).toEqual(["read", "unknown", "unread"]);
-    for (const f of ["report.json", "report.md", "raw/in_unread.json"]) expect(mode(join(dir, f)), f).toBe(0o600);
-    expect(mode(join(dir, "raw"))).toBe(0o700);
+    if (POSIX) {
+      for (const f of ["report.json", "report.md", "raw/in_unread.json"]) expect(mode(join(dir, f)), f).toBe(0o600);
+      expect(mode(join(dir, "raw"))).toBe(0o700);
+    }
     const shared = readFileSync(join(dir, "report.md"), "utf8") + readFileSync(join(dir, "report.json"), "utf8");
     for (const secret of [run.token, run.secret, ME]) expect(shared).not.toContain(secret);
     const withBounces = await collectRun(ink, { runDir: dir, allowed: [ME, OTHER], includeBounces: true });
@@ -261,5 +269,6 @@ it("mkdirSync-created run directories inside an existing loose parent are still 
   mkdirSync(join(parent, "loose"), { mode: 0o777 });
   const dir = join(parent, "loose", "run");
   await sendOnce(new FakeMailbox(), { to: ME, runDir: dir });
-  expect(mode(dir)).toBe(0o700);
+  expect(existsSync(join(dir, "run.json"))).toBe(true);
+  if (POSIX) expect(mode(dir)).toBe(0o700);
 });

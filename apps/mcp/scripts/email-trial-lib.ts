@@ -4,7 +4,7 @@
 // real inbound functions, redaction, and the report. No I/O here: the file system is reached through
 // an injected probe, so tests/emailTrial*.test.ts run it with fakes.
 import { randomBytes } from "node:crypto";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   cleanEmailBody, explainQuarantine, inkboxToInbound, isOptOut, matchInbound, normalizeAddress, normalizeMessageId, parseBounce, replyToken, verifyExternalReply,
   type InkboxMessageDetail,
@@ -235,7 +235,7 @@ export function trialChecks(kind: NetworkKind, o: { runDir: string | null; to: s
   else if (mode !== null && (mode & 0o077) !== 0) add("--run", "FAIL", `exists with mode ${fmtMode(mode)}: other users can read it`, `chmod 700 ${o.runDir}`);
   else add("--run", "ok", exists ? `outside the repository, private (${mode === null ? "mode unknown" : fmtMode(mode)})` : "outside the repository; send creates it with mode 0700");
 
-  const runFile = `${o.runDir}/run.json`;
+  const runFile = join(o.runDir, "run.json");
   const hasRun = exists && fs.exists(runFile);
   const runMode = hasRun ? fs.mode(runFile) : null;
   if (runMode !== null && (runMode & 0o077) !== 0) add("run.json", "FAIL", `mode ${fmtMode(runMode)}: it holds the run's token secret`, `chmod 600 ${runFile}`);
@@ -255,7 +255,7 @@ export function trialChecks(kind: NetworkKind, o: { runDir: string | null; to: s
     return out;
   }
   if (!strictAddress(run.to) || !list.allowed.includes(strictAddress(run.to)!)) add("run state", "FAIL", `the run's recipient ${redact(run.to ?? "")} is no longer in HAGGLE_EMAIL_TRIAL_MAILBOXES`, "add it back (exactly) to collect this run");
-  else if (run.send) add("run state", "ok", `run ${run.runId} sent ${run.send.at}; ${fs.exists(`${o.runDir}/raw`) ? fs.list(`${o.runDir}/raw`).filter((f) => f.endsWith(".json")).length : 0} capture(s) so far`);
+  else if (run.send) add("run state", "ok", `run ${run.runId} sent ${run.send.at}; ${fs.exists(join(o.runDir, "raw")) ? fs.list(join(o.runDir, "raw")).filter((f) => f.endsWith(".json")).length : 0} capture(s) so far`);
   else add("run state", "info", `run ${run.runId}: the send was started but not confirmed (${run.sendState ?? "pending"}); collect looks for the test email in the outbound mailbox by its subject`);
   return out;
 }
@@ -291,7 +291,7 @@ export function planTrial(argv: string[], env: TrialEnv, repoRoot: string, probe
 
 /** validate: every check for the command this run directory is ready for next (send if it holds no run, else collect). */
 export function validateTrial(cmd: Extract<Command, { kind: "validate" }>, env: TrialEnv, argv: string[], repoRoot: string, fs: FsProbe, sdk: string | null): { ok: boolean; target: NetworkKind; checks: Check[] } {
-  const target: NetworkKind = cmd.runDir && fs.exists(`${cmd.runDir}/run.json`) ? "collect" : "send";
+  const target: NetworkKind = cmd.runDir && fs.exists(join(cmd.runDir, "run.json")) ? "collect" : "send";
   const checks = trialChecks(target, cmd, env, argv, repoRoot, fs, sdk);
   return { ok: problems(checks).length === 0, target, checks };
 }

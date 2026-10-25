@@ -29,7 +29,7 @@ function deps(o: { envFile?: string; link?: object | null; dirty?: boolean; stat
     exists: (p) => (p.endsWith("link.json") ? o.link !== null : true),
     run: (cmd, args, opts): RunResult => {
       calls.push({ cmd, args, env: opts.env });
-      const line = [cmd.split("/").pop(), ...args.map((a) => a.split("/").pop())].join(" ");
+      const line = [cmd.split(/[\\/]/).pop(), ...args.map((a) => a.split(/[\\/]/).pop())].join(" ");
       if (o.fail?.test(line)) return { status: 1, stdout: "FAIL  something - detail", stderr: `ERROR: boom at ${STAGING_DB}` };
       if (cmd === "git") return args.includes("rev-parse") ? { status: 0, stdout: "ce4760e12345\n", stderr: "" } : { status: 0, stdout: o.dirty ? " M apps/mcp/index.ts\n" : "", stderr: "" };
       if (line.includes("migrations.ts status")) return { status: 0, stdout: JSON.stringify(statuses.length > 1 ? statuses.shift() : statuses[0]), stderr: "" };
@@ -46,8 +46,8 @@ function deps(o: { envFile?: string; link?: object | null; dirty?: boolean; stat
 }
 const LINK = { organizationId: "org_1", serverId: "srv_staging1", serverSlug: "haggle-staging-x1", sourceType: "upload" };
 const opts = (...extra: string[]) => parseStagingArgs(["--env-file", "/secure/staging.env", ...extra]);
-const runs = (calls: Call[], re: RegExp) => calls.filter((c) => re.test([c.cmd.split("/").pop(), ...c.args.map((a) => a.split("/").pop())].join(" ")));
-const cli = (calls: Call[]) => calls.filter((c) => c.cmd.endsWith("/mcp-use"));
+const runs = (calls: Call[], re: RegExp) => calls.filter((c) => re.test([c.cmd.split(/[\\/]/).pop(), ...c.args.map((a) => a.split(/[\\/]/).pop())].join(" ")));
+const cli = (calls: Call[]) => calls.filter((c) => /[\\/]mcp-use$/.test(c.cmd));
 const SECRETS =/st4gingPassw0rd|pr0dPassw0rd|stagingref9:|hgw_stagingtokenvalue|ik_stagingkeyvalue|whsec_staging/;
 
 describe("staging-release: arguments", () => {
@@ -126,7 +126,7 @@ describe("staging-release: execute", () => {
     } finally {
       delete process.env.SHELL_ONLY_SECRET;
     }
-    const seq = calls.filter((c) => c.cmd !== "git").map((c) => [c.cmd.split("/").pop(), ...c.args.map((a) => a.split("/").pop())].join(" ").replace(/^node(\.exe)? /, "").replace(/^\S*node /, ""));
+    const seq = calls.filter((c) => c.cmd !== "git").map((c) => [c.cmd.split(/[\\/]/).pop(), ...c.args.map((a) => a.split(/[\\/]/).pop())].join(" ").replace(/^node(\.exe)? /, "").replace(/^\S*node /, ""));
     expect(seq.map((s) => s.replace(/ -X -v ON_ERROR_STOP=1 -1 -f /, " -1 ")).map((s) => s.replace(/^.*?(migrations\.ts|launch-gate\.ts|smoke\.ts)/, "$1"))).toEqual([
       "pg_dump --format=custom --no-owner --no-privileges --schema=public --file staging.dump",
       "migrations.ts status --json",
@@ -160,7 +160,7 @@ describe("staging-release: execute", () => {
     const { d, calls } = deps({ link: LINK, status: [{ ledger: "absent", pending: all, drift: [], unverified: [], unexpected: [], file_problems: [] }, { ledger: "present", pending: ["200_brain_profiles.sql"], drift: [], unverified: [], unexpected: [], file_problems: [] }] });
     const r = await runStaging(opts("--execute", "--backup-ref", "new project, nothing to back up", "--backfill-through", "none"), d);
     expect(r.ok, formatStaging(r)).toBe(true);
-    const seq = calls.filter((c) => c.cmd === "psql" || c.args.some((a) => a.endsWith("migrations.ts"))).map((c) => (c.cmd === "psql" ? `psql ${c.args.at(-1)!.split("/").pop()}` : c.args.slice(1).join(" ")));
+    const seq = calls.filter((c) => c.cmd === "psql" || c.args.some((a) => a.endsWith("migrations.ts"))).map((c) => (c.cmd === "psql" ? `psql ${c.args.at(-1)!.split(/[\\/]/).pop()}` : c.args.slice(1).join(" ")));
     expect(seq).toEqual(["status --json", "psql 100_engine_core.sql", "psql 101_engine_channels.sql", "psql 111_engine_ops.sql", "psql 117_engine_ops.sql", "backfill --through 117_engine_ops.sql --confirm", "status --json", "verify"]);
     expect(r.steps.find((s) => s.id === "migrations")!.detail).toMatch(/brain files not applied here: 200_brain_profiles\.sql/);
   });
@@ -217,7 +217,7 @@ describe("staging-release: helpers and the real CLI", () => {
     expect(r.stderr).not.toMatch(/ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX|SyntaxError|ERR_MODULE_NOT_FOUND/);
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/usage: staging-release\.ts/);
-  });
+  }, 90_000);
 
   it("plan mode for real: a production env file is refused, nothing printed but names", () => {
     const dir = mkdtempSync(join(tmpdir(), "haggle-staging-"));
@@ -227,5 +227,5 @@ describe("staging-release: helpers and the real CLI", () => {
     expect(r.stdout).toMatch(/REFUSED  environment: HAGGLE_ENV in the env file must be staging/);
     expect(r.stdout).toMatch(/REFUSED  database: SUPABASE_DB_URL points at a production database/);
     expect(r.stdout + r.stderr).not.toMatch(SECRETS);
-  });
+  }, 90_000);
 });

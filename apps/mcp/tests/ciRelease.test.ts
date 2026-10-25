@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { findMigrationsDir, isEngineMigration, repoMigrations } from "@haggle/engine";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
-const CI = readFileSync(join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
+const CI = readFileSync(join(ROOT, ".github", "workflows", "ci.yml"), "utf8").replace(/\r\n/g, "\n"); // a CRLF checkout (Windows autocrlf)
 const runs = [...CI.matchAll(/^\s+run:\s*(.+)$/gm)].map((m) => m[1]!.trim()).concat([...CI.matchAll(/^\s+run:\s*\|\n((?:\s{10,}.+\n?)+)/gm)].flatMap((m) => m[1]!.split("\n").map((l) => l.trim()).filter(Boolean)));
 
 describe("CI runs every release gate", () => {

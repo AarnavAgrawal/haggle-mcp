@@ -107,8 +107,9 @@ describe("development and staging refuse production database credentials", () =>
 
 describe("operator scripts are guarded", () => {
   // tsx, as docs/deployment.md runs them (the engine uses TypeScript syntax plain `node` can't strip).
-  const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
-  const run = (script: string, env: Record<string, string>) => spawnSync(TSX, [join(import.meta.dirname, "..", "scripts", script), "list-vendors", "--id", "ws_acme"], { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8", timeout: 30_000 });
+  // Through node, not the node_modules/.bin shim: Windows can't spawn that shim directly (ENOENT).
+  const TSX_CLI = join(import.meta.dirname, "..", "..", "..", "node_modules", "tsx", "dist", "cli.mjs");
+  const run = (script: string, env: Record<string, string>) => spawnSync(process.execPath, [TSX_CLI, join(import.meta.dirname, "..", "scripts", script), "list-vendors", "--id", "ws_acme"], { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8", timeout: 60_000 });
 
   it("workspace-admin exits 2 before connecting to a production database outside production", () => {
     const r = run("workspace-admin.ts", { SUPABASE_DB_URL: PROD_DB, HAGGLE_PROD_DB_HOSTS: "prodref123" });

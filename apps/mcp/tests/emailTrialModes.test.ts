@@ -4,7 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { InkboxMessageDetail } from "@haggle/engine";
 import { buildReport, compareMessageIds, EMPTY_FS, evaluateReply, newRun, planTrial, plannedSend, problems, renderMarkdown, sendGates, TRIAL_FLAG, trialEmail, validateTrial, withPipeline, type TrialRun } from "../scripts/email-trial-lib.ts";
@@ -50,7 +50,7 @@ describe("sending: each gate refuses on its own", () => {
 describe("validate and dry-run contact nothing and need no gate", () => {
   it("plans validate and dry-run without HAGGLE_EMAIL_TRIAL; dry-run still refuses a run directory in the repository", () => {
     expect(planTrial(["validate"], {}, REPO)).toEqual({ ok: true, cmd: { kind: "validate", runDir: null, to: null } });
-    expect(planTrial(["dry-run", "--to", ME.toUpperCase(), "--run", "/tmp/t"], {}, REPO)).toEqual({ ok: true, cmd: { kind: "dry-run", to: ME, runDir: "/tmp/t", buyer: null } });
+    expect(planTrial(["dry-run", "--to", ME.toUpperCase(), "--run", "/tmp/t"], {}, REPO)).toEqual({ ok: true, cmd: { kind: "dry-run", to: ME, runDir: resolve("/tmp/t"), buyer: null } });
     expect(planTrial(["dry-run", "--to", ME, "--run", `${REPO}/t`], {}, REPO)).toMatchObject({ ok: false, error: expect.stringMatching(/outside the repository/) });
     expect(planTrial(["dry-run", "--run", "/tmp/t"], {}, REPO)).toMatchObject({ ok: false });
   });
@@ -58,7 +58,7 @@ describe("validate and dry-run contact nothing and need no gate", () => {
   it("validate reports env names (never values), the allowlist, the run directory, the SDK and the gates", () => {
     const run = newRun({ to: ME, buyerMailbox: BUYER, now: new Date("2026-10-23T09:00:00Z") });
     run.send = { id: "out_1", messageId: "<a@b.example>", status: "sent", at: "2026-10-23T09:00:01Z" };
-    const fs = { ...EMPTY_FS, exists: (p: string) => p === "/tmp/t" || p === "/tmp/t/run.json" || p === "/tmp/t/raw", list: () => ["a.json", "b.json", "x.txt"], mode: () => 0o700, read: () => JSON.stringify(run) };
+    const fs = { ...EMPTY_FS, exists: (p: string) => ["/tmp/t", "/tmp/t/run.json", "/tmp/t/raw"].some((x) => resolve(x) === resolve(p)), list: () => ["a.json", "b.json", "x.txt"], mode: () => 0o700, read: () => JSON.stringify(run) };
     const v = validateTrial({ kind: "validate", runDir: "/tmp/t", to: ME }, { ...env, INKBOX_API_KEY: "ik_live_SECRET_VALUE" }, [TRIAL_FLAG], REPO, fs, "0.7.19");
     expect(JSON.stringify(v)).not.toContain("SECRET_VALUE");
     expect(v.target).toBe("collect"); // the directory holds a run: collect is next

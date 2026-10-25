@@ -1,6 +1,7 @@
 // scripts/email-trial-lib.ts: the operator email trial's gate, test email, reply evaluation through
 // the engine's real inbound functions, redaction and report. Fakes only; the script itself is never
 // run here (it would send real mail).
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { InkboxMessageDetail } from "@haggle/engine";
 import {
@@ -12,8 +13,11 @@ const ME = "tester@gmail.example";
 const OTHER = "tester2@outlook.example";
 const BUYER = "haggle@inkboxmail.test";
 const env = { HAGGLE_EMAIL_TRIAL: "1", HAGGLE_EMAIL_TRIAL_MAILBOXES: `${ME}, ${OTHER.toUpperCase()}`, HAGGLE_ENV: "staging", INKBOX_API_KEY: "ik_test_key_value", INKBOX_IDENTITY: "haggle-staging" };
-/** A run directory that holds a sent run (collect's gate reads run.json). */
-const sentRunFs = (dir: string, run: Partial<TrialRun>) => ({ ...EMPTY_FS, exists: (p: string) => p === dir || p === `${dir}/run.json`, mode: () => 0o700, read: (p: string) => (p === `${dir}/run.json` ? JSON.stringify(run) : null) });
+/** A run directory that holds a sent run (collect's gate reads run.json). Keyed on resolved paths (the gate resolves --run; Windows adds a drive). */
+const sentRunFs = (dir: string, run: Partial<TrialRun>) => {
+  const runFile = join(resolve(dir), "run.json");
+  return { ...EMPTY_FS, exists: (p: string) => resolve(p) === resolve(dir) || resolve(p) === runFile, mode: () => 0o700, read: (p: string) => (resolve(p) === runFile ? JSON.stringify(run) : null) };
+};
 
 describe("planTrial: disabled unless every gate is passed", () => {
   const send = ["send", "--to", ME, "--run", "/tmp/trials/t1", TRIAL_FLAG];
@@ -33,10 +37,10 @@ describe("planTrial: disabled unless every gate is passed", () => {
     expect(planTrial(["delete-everything"], env, REPO)).toMatchObject({ ok: false, error: expect.stringMatching(/usage/) });
   });
   it("accepts a fully gated send and collect (addresses compared case-insensitively)", () => {
-    expect(planTrial(send, env, REPO)).toEqual({ ok: true, cmd: { kind: "send", to: ME, runDir: "/tmp/trials/t1" } });
+    expect(planTrial(send, env, REPO)).toEqual({ ok: true, cmd: { kind: "send", to: ME, runDir: resolve("/tmp/trials/t1") } });
     expect(planTrial(["send", "--to", OTHER, "--run", "/tmp/t2", TRIAL_FLAG], env, REPO)).toMatchObject({ ok: true });
     const fs = sentRunFs("/tmp/trials/t1", sentRun());
-    expect(planTrial(["collect", "--run", "/tmp/trials/t1", TRIAL_FLAG], env, REPO, { fs })).toEqual({ ok: true, cmd: { kind: "collect", runDir: "/tmp/trials/t1", includeBounces: false } });
+    expect(planTrial(["collect", "--run", "/tmp/trials/t1", TRIAL_FLAG], env, REPO, { fs })).toEqual({ ok: true, cmd: { kind: "collect", runDir: resolve("/tmp/trials/t1"), includeBounces: false } });
   });
 });
 
