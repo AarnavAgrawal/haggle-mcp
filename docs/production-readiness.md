@@ -226,6 +226,21 @@ Verified on the integrated tree: typecheck and build clean; unit 1,561 passed / 
 
 **Blockers after pass 5:** real-mail evidence; staging and live migrations 103–122; Inkbox bounce events; brain tenancy and view stages (Aarnav). Decisions H1–H3 were made and implemented the same day: texted confirmations and receipts never bind on their own, caller ID is never callback consent, and only the approver's `CANCEL <code>` cancels a vendor-confirmed booking (`securityDecisions`, `purchaseFlow.e2e`).
 
+### Pass 6: hardening (2026-10-25)
+
+Branch `aarnav-hardening` (off `aarnav-prod`), not pushed, not deployed. Migrations 124 and 202 are applied only to throwaway databases. No real email, text, call or payment was sent. Full write-up: `docs/hardening-report.md`.
+
+| Area | After pass 6 (verified by) |
+| --- | --- |
+| Brain tenancy | Profiles keyed per workspace (202); each MCP tool and the engine use their workspace's brain; pre-202 pooled profiles parked under the reserved `ws_legacy_pooled`; `/ready` `checks.brain`; live servers don't learn from simulated demo vendors (`store`, `brainAdapter`, `brainObserved`, `health`, `verify-migrations`) |
+| Shared limits | `take_rate_slot` (124, SECURITY DEFINER, service_role only) for web chat/approval/vendor/account limits and MCP vendor additions across instances; AI budget rehydrated from `ai_usage_events`; memory fallback on a database outage (`rateLimit`, `engine_rate_limits_assertions`, `demo`) |
+| Web security | Per-request CSP nonce with `strict-dynamic`, no `unsafe-inline` scripts; Playwright tier 1 (public pages, zero CSP violations, CI `web-e2e`) and tier 2 (guest deal -> approve -> pay on local Supabase) |
+| Views | Manual payment handoff and booking stages on the deal board and approval card; vendor instructions as untrusted plain text, no Pay button on the manual rail (`manualViews`, screenshots) |
+| Legacy | Primitive and x402 code and SDKs removed; payment requests in business replies still flagged and never acted on |
+| Engine | Workspace provisioning survives concurrent first requests and refuses another request's row (`provisionWorkspace`, memory + Postgres) |
+| Portability | Full suite passes on Windows (the 19 ops-script failures fixed) |
+
+**Blockers after pass 6:** apply 124 and 202 to each database and redeploy MCP + web together (`docs/hardening-report.md` §4); everything in pass 5's list that needs real providers is unchanged.
 ## 1. Production infrastructure
 - [ ] Finalize and verify the shared TypeScript contracts between the deal engine and the business brain.
 - [ ] Apply all Supabase migrations; verify schemas, indexes, constraints and relationships.
