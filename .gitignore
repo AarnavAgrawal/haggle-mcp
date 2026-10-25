@@ -18,3 +18,9 @@ Thumbs.db
 # Planning PDF is kept out of version control (private planning document)
 *.pdf
 !fixtures/**/*.pdf
+# Playwright output (apps/web e2e)
+test-results/
+playwright-report/
+# Supabase CLI state for the tier-2 browser test stack
+apps/web/e2e/supabase/.temp/
+apps/web/e2e/supabase/.branches/

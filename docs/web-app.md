@@ -188,6 +188,35 @@ Run the web tests from the repo root with `npx vitest run apps/web/tests`. They 
 
 All of these tests call no external service. The e2e test starts a local server on a random port.
 
+### Browser tests (Playwright)
+
+Specs live in `apps/web/e2e/` (`*.spec.ts`, run by Playwright 1.64.1 in Chromium), not in `tests/`, so vitest never collects them. Install the browser once: `npx playwright install chromium` (in `apps/web`).
+
+| Spec | Covers | Needs |
+|---|---|---|
+| `e2e/public.spec.ts` (tier 1, also in CI as `web-e2e`) | `/`, `/login`, `/terms`, `/privacy`, `/acceptable-use` render with no CSP violation and no CSP console error. Each response has exactly one CSP, with a nonce, `'strict-dynamic'` and no `'unsafe-inline'` in `script-src`, and every `<script>` carries that nonce. Three loads get three nonces. A signed-out `/chat` redirects to `/login` with a CSP on the redirect. A nonce-less inline `<script>` injected into the real response is blocked and reported. The static security headers appear once each. | A production build with placeholder values and demo off. Nothing is contacted. |
+| `e2e/guest-deal.spec.ts` (tier 2, local only) | A demo guest end to end: the landing banner and "Try the demo, no sign-up" (Supabase anonymous sign-in), the chat (a scripted fake Claude previews with a dry run, then starts the deal once the guest says yes), "Open deal board", final quotes, "Approve $5", "Yes, approve $5", "Pay $5", and "Paid $5 to Bay Catering (simulated)." No CSP violation on any page. | Docker Desktop running, and the MCP server built (`npm run build -w @haggle/mcp`). |
+
+```bash
+# Tier 1, from the repo root
+NEXT_PUBLIC_SUPABASE_URL=https://ci-placeholder.supabase.co NEXT_PUBLIC_SUPABASE_ANON_KEY=ci-placeholder-anon-key \
+  NEXT_PUBLIC_HAGGLE_DEMO=false npm run build -w @haggle/web
+npm run e2e -w @haggle/web -- e2e/public.spec.ts    # next start on 127.0.0.1:3210 (E2E_PORT to change it)
+
+# Tier 2, from the repo root (Docker running; rebuilds apps/web/.next as a demo build)
+node apps/web/e2e/tier2.ts           # add --keep to leave the local Supabase stack up
+```
+
+`e2e/tier2.ts` does the whole setup and teardown:
+
+1. It starts a local Supabase stack with the pinned CLI (`npx supabase@2.122.0 start --workdir apps/web/e2e`; `apps/web/e2e/supabase/config.toml` turns on anonymous sign-ins and moves the ports to 554xx).
+2. It applies `supabase/migrations/*.sql` itself with `psql` in the database container, because the CLI expects timestamped migration names.
+3. It starts `e2e/fakeAnthropic.ts` and points the web app at it with `ANTHROPIC_BASE_URL`.
+4. It starts the built MCP server in mock mode (auth required, a random service token, `HAGGLE_MOCK_DATABASE_URL` set to the local database, so `workspace_members` can reference the workspace row).
+5. It builds and starts the web app with `NEXT_PUBLIC_HAGGLE_DEMO=true`, then runs the spec.
+
+Keys and tokens are local throwaways, passed only through process environments. Server logs go to `<os tmp>/haggle-tier2/`. After a tier-2 run, rebuild with the placeholder values before running tier 1 again.
+
 ---
 
 ## Deployment notes
@@ -203,7 +232,7 @@ All of these tests call no external service. The e2e test starts a local server 
 
 ## Known limitations
 
-- **No browser end-to-end test yet.** Pages and components are checked by hand. The automated coverage is the pure logic, the routes and one server-level approval e2e.
+- **Browser tests cover the public pages and the demo guest path only.** CI runs tier 1 (public pages and the CSP). Tier 2 (a demo guest's deal → approve → pay) runs locally against a local Supabase and a scripted fake Claude. Signed-in email/Google flows, the vendors, settings and account pages, and real Claude replies are still checked by hand ([Browser tests](#browser-tests-playwright)).
 - **Rate limits are per process.** The chat's 20 turns per 10 minutes, the approval routes' 30 actions per minute and double-click joining all live in memory. With several instances or serverless functions, each instance counts on its own.
 - **The MCP tool-call limiter is per process too.** The limiter (`apps/mcp/src/limits.ts`, on by default in live mode) gives web traffic one bucket per workspace: service-token requests are keyed on the token plus `x-haggle-workspace` (tested in `apps/mcp/tests/limits.test.ts`). Like the web caps, those buckets live in each MCP replica's memory.
 - **Workspace settings are read-only in the app.** Changing the approver or raising the cap is the operator's job.

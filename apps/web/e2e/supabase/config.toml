@@ -1,0 +1,63 @@
+# Local Supabase for the web app's tier-2 browser test only (apps/web/e2e/tier2.ts), never a real project.
+# `npx supabase@2.122.0 start --workdir apps/web/e2e` reads this file. Its own migrations folder stays
+# empty: the runner applies the repo's supabase/migrations/*.sql itself (their 100_… names aren't the
+# CLI's timestamp format). Ports are moved off the 543xx defaults so another local stack can run too.
+# Unlisted settings keep the CLI's defaults.
+project_id = "haggle-web-e2e"
+
+[api]
+enabled = true
+port = 55421
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 55422
+shadow_port = 55420
+major_version = 17
+
+[db.pooler]
+enabled = false
+port = 55429
+
+[db.migrations]
+enabled = false
+
+[db.seed]
+enabled = false
+
+[realtime]
+enabled = false
+
+[studio]
+enabled = false
+port = 55423
+
+[local_smtp]
+enabled = false
+port = 55424
+
+[storage]
+enabled = false
+
+[edge_runtime]
+enabled = false
+
+[analytics]
+enabled = false
+
+[auth]
+enabled = true
+site_url = "http://127.0.0.1:3210"
+additional_redirect_urls = ["http://127.0.0.1:3210"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+# The demo's "Try the demo, no sign-up" button signs in anonymously.
+enable_anonymous_sign_ins = true
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false

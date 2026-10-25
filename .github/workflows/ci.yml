@@ -126,3 +126,43 @@ jobs:
 
       - name: Engine suite and migration ledger on Postgres 17
         run: scripts/test-postgres.sh
+
+  # Browser tests, tier 1 (offline): the web app's public pages in Chromium under the per-request nonce
+  # CSP, with no violation, a fresh nonce per load and a policy on the /login redirect
+  # (apps/web/e2e/public.spec.ts). Placeholder Supabase values, demo off; nothing is contacted. Tier 2
+  # (demo guest deal against local Supabase) is local only: docs/web-app.md "Browser tests".
+  web-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://ci-placeholder.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder-anon-key
+      NEXT_PUBLIC_HAGGLE_DEMO: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build the web app (next build)
+        run: npm run build -w @haggle/web
+
+      - name: Chromium for Playwright
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Public pages and CSP (Playwright)
+        run: npm run e2e -w @haggle/web -- e2e/public.spec.ts
+
+      - name: Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: apps/web/test-results/
+          retention-days: 7
