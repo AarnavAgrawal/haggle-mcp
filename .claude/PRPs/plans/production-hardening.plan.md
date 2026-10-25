@@ -438,7 +438,7 @@ grant execute on function public.take_rate_slot(text, text, integer, integer) to
 - Convert limiters 1, 2, 3, 5 and 6 to `Limiter` with `await`. The deps are already injected (`RouteDeps.limiter`, `VendorDeps.writeLimiter` / `discoverLimiter`), so tests pass a `memoryLimiter`.
 - Keep the 429 bodies and `retry-after` headers exactly as they are, including `{error:{code:"daily_limit",…}}`.
 - **Ordering fixes (cheap, do them):**
-  - Chat: check the daily cap **before** the per-user turn, so a refused turn doesn't use a user slot (`route.ts:42-49`).
+  - Chat: ~~check the daily cap **before** the per-user turn~~ (reverted in review: that let one user's refused requests burn the shared daily budget). The per-user turn is taken first, then the daily cap (`lib/chat/limits.ts` `takeChatTurn`).
   - Approval route: validate the body before taking a slot (`approval/route.ts:104`).
 - Optional: give `/api/deals/[jobId]/actions` (answer/message/negotiate/cancel) the approval limiter. It has none today.
 

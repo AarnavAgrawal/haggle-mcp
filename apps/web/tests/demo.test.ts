@@ -1,7 +1,7 @@
 // Demo-site switches (lib/demo.ts) and the site-wide daily chat cap (lib/chat/limits.ts). Pure, no network.
 import { describe, expect, it } from "vitest";
 import { autoOnboard, chatExamples, DEMO_EXAMPLES } from "../lib/demo.ts";
-import { dailyCap } from "../lib/chat/limits.ts";
+import { dailyCap, takeChatTurn } from "../lib/chat/limits.ts";
 import { memoryLimiter } from "../lib/rateLimit.ts";
 
 describe("demo site", () => {
@@ -33,5 +33,29 @@ describe("site-wide daily chat cap", () => {
   it("no cap configured: unlimited", async () => {
     const cap = dailyCap(0, () => { throw new Error("no limiter for no cap"); });
     for (let i = 0; i < 1000; i++) expect((await cap.take("site")).ok).toBe(true);
+  });
+});
+
+describe("chat turn gate order (per-user first, then the site-wide cap)", () => {
+  it("a user's refused turns never use the shared daily budget", async () => {
+    const chatTurns = memoryLimiter(2, 600_000, { now: () => 0 });
+    const chatDaily = dailyCap(3, (max, windowS) => memoryLimiter(max, windowS * 1000, { now: () => 0 }));
+    const gate = { chatTurns, chatDaily };
+    expect(await takeChatTurn(gate, "spammer")).toEqual({ ok: true });
+    expect(await takeChatTurn(gate, "spammer")).toEqual({ ok: true });
+    for (let i = 0; i < 10; i++) expect(await takeChatTurn(gate, "spammer")).toMatchObject({ ok: false, code: "rate_limited" });
+    // The cap is 3 and the spammer was granted 2, so exactly one more turn fits for everyone else.
+    expect(await takeChatTurn(gate, "someone-else")).toEqual({ ok: true });
+    expect(await takeChatTurn(gate, "a-third-user")).toEqual({ ok: false, code: "daily_limit" });
+  });
+
+  it("a per-user refusal carries retry_after; the cap isn't consulted", async () => {
+    let dailyTakes = 0;
+    const gate = {
+      chatTurns: { take: async () => ({ ok: false as const, retryAfterS: 120 }) },
+      chatDaily: { take: async () => { dailyTakes++; return { ok: true as const }; } },
+    };
+    expect(await takeChatTurn(gate, "u")).toEqual({ ok: false, code: "rate_limited", retryAfterS: 120 });
+    expect(dailyTakes).toBe(0);
   });
 });

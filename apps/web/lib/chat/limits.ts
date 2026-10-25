@@ -21,3 +21,21 @@ export function dailyCap(cap: number, limiter: (max: number, windowS: number) =>
   const n = Math.floor(cap);
   return Number.isFinite(n) && n > 0 ? limiter(n, DAY_S) : unlimited;
 }
+
+export type ChatTurnGate =
+  | { ok: true }
+  | { ok: false; code: "rate_limited"; retryAfterS: number }
+  | { ok: false; code: "daily_limit" };
+
+/**
+ * One chat turn through both limits. The user's own limit is taken first, so a user hammering the
+ * route only burns their own turns: a request their limit refuses never reaches the site-wide daily
+ * cap, which everyone shares. (A turn the cap then refuses has used one of that user's turns; that is
+ * the cheaper side to lose.)
+ */
+export async function takeChatTurn(l: { chatTurns: Limiter; chatDaily: Limiter }, userId: string): Promise<ChatTurnGate> {
+  const own = await l.chatTurns.take(userId);
+  if (!own.ok) return { ok: false, code: "rate_limited", retryAfterS: own.retryAfterS };
+  if (!(await l.chatDaily.take("site")).ok) return { ok: false, code: "daily_limit" };
+  return { ok: true };
+}
