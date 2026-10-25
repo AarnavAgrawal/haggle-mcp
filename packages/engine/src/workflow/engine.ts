@@ -106,6 +106,10 @@ function refuseReservedWorkspaceId(id: string): void {
   }
 }
 
+/** provisionWorkspace found a row with this id that another request created with different details. */
+const workspaceConflict = (id: string) =>
+  new EngineError("workspace_conflict", `A workspace ${id} already exists and wasn't created by this request.`, `Retry once; if it persists, the operator checks it (workspace-admin.ts show --id ${id}).`, "none");
+
 /** A business to contact. At least one of email / phone / a2a_card_url. */
 export interface DealBusiness {
   name: string;
@@ -5842,26 +5846,59 @@ export class HaggleEngine {
 
   /**
    * Service onboarding (the web app's POST /internal/workspaces): create the workspace once, with its
-   * settings. Idempotent per id: an existing workspace is returned as is (created: false). Like
-   * workspace-create, an approver phone that already approves for another workspace is refused.
+   * settings. Idempotent per id (the id is derived from the owner, apps/mcp planServiceWorkspace): an
+   * existing workspace is returned (created: false), its settings completed if an earlier attempt
+   * stopped between the row and its settings. Like workspace-create, an approver phone that already
+   * approves for another workspace is refused.
+   *
+   * Race: two first requests for one owner at once (the web app's first render). Only a unique
+   * violation on insert means "the other request created it"; any other error is rethrown. The row
+   * found then must be this request's (same name, timezone and, once written, the same settings), or
+   * it is refused (workspace_conflict): never hand a caller a workspace some other request made.
    */
   async provisionWorkspace(w: { id: string; name: string; tokenHash: string; connectorSecretHash: string; timezone?: string; settings: Partial<Omit<SettingsRow, "updated_at">> }) {
     refuseReservedWorkspaceId(w.id);
     const existing = await this.repo.getWorkspace(w.id);
-    if (existing) return { workspace: existing, created: false };
+    if (existing) {
+      await this.completeProvisionedSettings(w, false);
+      return { workspace: existing, created: false };
+    }
+    await this.refuseSharedApprover(w);
+    try {
+      return { workspace: await this.createWorkspace(w), created: true };
+    } catch (err) {
+      if ((err as { code?: unknown })?.code !== "23505") throw err;
+      const raced = await this.repo.getWorkspace(w.id);
+      if (!raced) throw err; // another unique key (a credential hash), not this id
+      if (raced.name !== w.name || raced.timezone !== (w.timezone ?? "America/Los_Angeles")) throw workspaceConflict(w.id);
+      await this.completeProvisionedSettings(w, true);
+      return { workspace: raced, created: false };
+    }
+  }
+
+  private async refuseSharedApprover(w: { id: string; settings: Partial<Omit<SettingsRow, "updated_at">> }) {
     const phone = w.settings.approver_phone;
     if (phone && (await this.repo.listWorkspacesByApproverPhone(phone)).some((id) => id !== w.id)) {
       throw new EngineError("approver_shared", "That phone number already approves for another workspace.", "Use a different approver phone, or ask the operator to share it (workspace-admin --allow-shared-approver).", "none");
     }
-    try {
-      return { workspace: await this.createWorkspace(w), created: true };
-    } catch (err) {
-      // Two first requests for one owner at once (the web app's first render): the other one created
-      // it between our read and our insert. Same id, same owner: return it; anything else is real.
-      const raced = await this.repo.getWorkspace(w.id);
-      if (raced) return { workspace: raced, created: false };
-      throw err;
+  }
+
+  /**
+   * A provisioned workspace's settings: written (idempotently: the same values this request carries)
+   * when its row has none yet, i.e. a create that stopped after the row or a racing request that hasn't
+   * written them yet. `strict` (the race): settings already there must equal this request's.
+   */
+  private async completeProvisionedSettings(w: { id: string; settings: Partial<Omit<SettingsRow, "updated_at">> }, strict: boolean) {
+    const stored = await this.repo.getSettings(w.id);
+    if (!stored) {
+      await this.refuseSharedApprover(w);
+      await this.updateSettings(w.settings, w.id);
+      return;
     }
+    if (!strict) return;
+    const want = { ...w.settings, ...(w.settings.approver_email ? { approver_email: normalizeAddress(w.settings.approver_email) } : {}) };
+    const differs = (Object.keys(want) as (keyof typeof want)[]).some((k) => want[k] !== undefined && (want[k] ?? null) !== (stored[k] ?? null));
+    if (differs) throw workspaceConflict(w.id);
   }
 
   /** Create a workspace (scripts/workspace-create.ts); credentials are stored only as hashes. */

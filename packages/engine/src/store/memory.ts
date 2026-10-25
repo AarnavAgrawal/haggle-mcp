@@ -59,10 +59,12 @@ export class InMemoryRepository implements Repository {
   private workspaces: Map<string, WorkspaceRow>;
 
   async insertWorkspace(w: Omit<WorkspaceRow, "created_at">) {
-    if (this.workspaces.has(w.id)) throw new Error("duplicate workspace id");
+    // Unique violations carry Postgres's code (23505), as PostgresRepository's do (provisionWorkspace's race check).
+    const unique = (message: string) => Object.assign(new Error(message), { code: "23505" });
+    if (this.workspaces.has(w.id)) throw unique("duplicate workspace id");
     const all = [...this.workspaces.values()];
-    if (w.token_hash && all.some((x) => x.token_hash === w.token_hash)) throw new Error("duplicate token_hash");
-    if (w.connector_secret_hash && all.some((x) => x.connector_secret_hash === w.connector_secret_hash)) throw new Error("duplicate connector_secret_hash");
+    if (w.token_hash && all.some((x) => x.token_hash === w.token_hash)) throw unique("duplicate token_hash");
+    if (w.connector_secret_hash && all.some((x) => x.connector_secret_hash === w.connector_secret_hash)) throw unique("duplicate connector_secret_hash");
     const row = { ...clone(w), created_at: this.stamp() };
     this.workspaces.set(w.id, row);
     return clone(row);
