@@ -80,7 +80,7 @@ describe("/internal/vendors over HTTP (mock, service token)", () => {
       ["+14155552161", "phone", "business_agreed", true],
     ]);
 
-    const dry = await tool(ws, "deal", { request: { what: "fix a leaking kitchen sink", quantity: 1, date: "2027-01-15", area: "San Francisco" }, businesses: ["Plumb Right"], dry_run: true });
+    const dry = await tool(ws, "deal", { request: { what: "fix a leaking kitchen sink", quantity: 1, date: new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10), area: "San Francisco" }, businesses: ["Plumb Right"], dry_run: true });
     expect(dry.isError).not.toBe(true);
     expect(dry.structuredContent.would_contact.map((w: any) => w.name)).toEqual(["Plumb Right"]);
 
