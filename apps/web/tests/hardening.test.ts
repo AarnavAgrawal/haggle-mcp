@@ -1,7 +1,8 @@
-// Production hardening, pure and offline: the security headers (next.config.ts), guest gating
+// Production hardening, pure and offline: the security headers (lib/csp.ts, next.config.ts), guest gating
 // (lib/account/gate.ts), the account routes' same-origin check and rate limit, and /api/health's report.
 import { describe, expect, it } from "vitest";
-import { buildCsp, securityHeaders } from "../next.config.ts";
+import { buildCsp, isValidNonce } from "../lib/csp.ts";
+import { securityHeaders } from "../next.config.ts";
 import { GUEST_REFUSED_PATH, isAllowedUser } from "../lib/account/gate.ts";
 import { healthReport, REQUIRED_ENV } from "../lib/account/health.ts";
 import { Limiter, sameOrigin } from "../lib/account/request.ts";
@@ -36,12 +37,54 @@ describe("Content-Security-Policy", () => {
   });
 
   it("ships HSTS, nosniff, the referrer policy and a Permissions-Policy with camera, mic and location off", () => {
-    const h = Object.fromEntries(securityHeaders({}).map((x) => [x.key, x.value]));
+    const h = Object.fromEntries(securityHeaders().map((x) => [x.key, x.value]));
     expect(h["Strict-Transport-Security"]).toMatch(/^max-age=\d{8,}/);
     expect(h["X-Content-Type-Options"]).toBe("nosniff");
     expect(h["Referrer-Policy"]).toBe("strict-origin-when-cross-origin");
     for (const f of ["camera=()", "microphone=()", "geolocation=()"]) expect(h["Permissions-Policy"]).toContain(f);
-    expect(h["Content-Security-Policy"]).toBeTruthy();
+    expect(h["X-Frame-Options"]).toBe("DENY");
+  });
+
+  it("is not a static header: proxy.ts sends the one per-request policy, so a response never carries two", () => {
+    const keys = securityHeaders().map((x) => x.key.toLowerCase());
+    expect(keys).not.toContain("content-security-policy");
+    expect(keys).not.toContain("content-security-policy-report-only");
+  });
+
+  it("with a nonce: scripts need the nonce ('strict-dynamic'), never 'unsafe-inline'; styles keep inline", () => {
+    const nonce = "MTIzNDU2Nzg5MGFiY2RlZg==";
+    const csp = buildCsp({ supabaseUrl: "https://abc.supabase.co", nonce });
+    expect(directive(csp, "script-src")).toBe(`script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`);
+    expect(directive(csp, "style-src")).toBe("style-src 'self' 'unsafe-inline'");
+    expect(directive(csp, "default-src")).toBe("default-src 'self'");
+    expect(directive(csp, "frame-ancestors")).toBe("frame-ancestors 'none'");
+    // Next reads the nonce from the request's policy with this pattern (get-script-nonce-from-header.js).
+    const src = directive(csp, "script-src")!.split(" ").slice(1).find((s) => /^'nonce-([A-Za-z0-9+/_-]+={0,2})'$/.test(s));
+    expect(src).toBe(`'nonce-${nonce}'`);
+  });
+
+  it("with a nonce in development adds only 'unsafe-eval'; Turnstile's host stays for browsers without strict-dynamic", () => {
+    expect(directive(buildCsp({ nonce: "abcdefgh12345678", dev: true }), "script-src")).toBe("script-src 'self' 'nonce-abcdefgh12345678' 'strict-dynamic' 'unsafe-eval'");
+    const ts = buildCsp({ nonce: "abcdefgh12345678", turnstileSiteKey: "0x4AAA" });
+    expect(directive(ts, "script-src")).toBe("script-src 'self' 'nonce-abcdefgh12345678' 'strict-dynamic' https://challenges.cloudflare.com");
+    expect(directive(ts, "frame-src")).toBe("frame-src https://challenges.cloudflare.com");
+  });
+
+  it("never allows inline scripts, with or without a nonce, in any mode", () => {
+    for (const nonce of [undefined, "abcdefgh12345678"]) {
+      for (const dev of [false, true]) {
+        expect(directive(buildCsp({ nonce, dev, turnstileSiteKey: "0x4AAA" }), "script-src")).not.toContain("'unsafe-inline'");
+      }
+    }
+    expect(directive(buildCsp({}), "script-src")).toBe("script-src 'self'");
+  });
+
+  it("refuses a nonce that could break out of the header or the source expression", () => {
+    for (const bad of ["", "a b", "a;b", "a'b", "a\r\nb", "a,b", "x".repeat(200)]) {
+      expect(isValidNonce(bad), JSON.stringify(bad)).toBe(false);
+      expect(() => buildCsp({ nonce: bad })).toThrow(/nonce/);
+    }
+    expect(isValidNonce("MTIzNDU2Nzg5MGFiY2RlZg==")).toBe(true);
   });
 });
 

@@ -269,7 +269,8 @@ HAGGLE_SMOKE_TOKEN=<an internal test workspace bearer> node apps/mcp/scripts/smo
 curl -s https://app.<domain>/api/health     # { ok: true, mcp: reachable, config: names only, demo: false }
 curl -s -o /dev/null -w '%{http_code}\n' https://app.<domain>/api/cron/tick                        # 401 (no bearer)
 curl -s -H "Authorization: Bearer $CRON_SECRET" https://app.<domain>/api/cron/tick                   # { ok: true, … } from the server
-curl -sI https://app.<domain>/login | grep -i -E 'content-security-policy|strict-transport-security'   # both present
+curl -sI https://app.<domain>/login | grep -i -E 'content-security-policy|strict-transport-security'   # both present, one CSP
+curl -sI https://app.<domain>/login | grep -i -o "'nonce-[^']*'"   # run twice: a different nonce each time
 ```
 
 In a private window: the landing page shows **no** DEMO banner and no guest button. Email sign-in sends a mail from your SES domain, the captcha appears, and onboarding requires accepting the Terms.
@@ -345,6 +346,7 @@ The criteria for rolling back are in [runbook-incidents.md](runbook-incidents.md
 - **Per-process, in-memory limits.** The chat's per-user and daily caps, the approval-route limits, double-click joining, the vendor-addition limits, the AI usage counters and the alert rate limits all live in each process's memory. With several web instances (serverless functions scale out) or several MCP replicas, each counts on its own, so the effective limit is multiplied. Run **one** MCP replica. Treat the web caps as approximate until they move to a shared store (Postgres or Redis).
 - **The service token is a root credential** for every web workspace. It lives only on the two servers. Rotate it (set the new value on both, server first) if it may have leaked.
 - **Legal.** Terms, Privacy and Acceptable Use are drafts, and the calling and texting rules above need counsel's sign-off.
-- **No browser end-to-end tests** of the web app. Pages are checked by hand. The CSP uses `'unsafe-inline'` for Next's inline scripts and styles (no nonces yet).
+- **No browser end-to-end tests** of the web app. Pages are checked by hand.
+- **CSP: styles still allow inline.** Scripts are nonce-based: `apps/web/proxy.ts` mints a fresh nonce per request and sends one policy (`apps/web/lib/csp.ts`) with `script-src 'self' 'nonce-…' 'strict-dynamic'` and no `'unsafe-inline'`, so every page renders per request (the root layout awaits `connection()`; no page is prerendered). `style-src` keeps `'unsafe-inline'` because the app uses React `style` attributes, which a style nonce would block; injected CSS can't run script under this policy.
 - **The container image was built only in CI**, not on a production host yet. The Vercel cron and the alternatives in §5.1 haven't been run against a production server.
 - **Brain tenancy: fixed in code; one operator step.** Business profiles are scoped per workspace (`202_brain_tenancy`): one workspace's deals never inform another's estimates, price checks or profiles. Apply `supabase/migrations/202_brain_tenancy.sql` to the brain's database **before** deploying that build (`docs/deployment.md` §4); `pilot-preflight` reports PASS from the build alone and can't see whether 202 was applied. Profiles learned before 202 stay under `ws_default`.

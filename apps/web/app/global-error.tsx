@@ -2,6 +2,10 @@
 
 // Replaces the root layout when the layout itself fails, so it brings its own <html>, <body> and styles.
 import "./globals.css";
+// Next always prerenders this page (it becomes .next/server/pages/500.html, served only when a request
+// fails outside rendering), so its scripts have no CSP nonce and don't run there: the message and the
+// plain "Home" link still work, the "Try again" button doesn't. Next can't render it per request
+// (build/utils.js isPageStatic: _global-error is always static); see docs/web-app.md.
 
 export default function GlobalError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (

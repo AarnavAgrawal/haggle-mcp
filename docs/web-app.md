@@ -63,6 +63,8 @@ The web app owns only three things: sign-in, which workspace a user belongs to, 
 
 API routes never redirect: they answer with JSON (`401` signed out, `403` no workspace). To make that possible, `proxy.ts` treats `/api/*` as public and leaves each route to check the user itself. The proxy check is optimistic; pages and routes still verify the session through `lib/workspace.ts`.
 
+`proxy.ts` also sends the Content-Security-Policy (`lib/csp.ts`), one per response, with a fresh nonce per request: `script-src 'self' 'nonce-…' 'strict-dynamic'` (no `'unsafe-inline'`; `'unsafe-eval'` only under `next dev`). It puts the policy on the request headers too, which is where Next reads the nonce for its own scripts, and on redirects. Every page therefore renders per request: the root layout awaits `connection()`, so the build prerenders no page. The one exception is Next's own `/_global-error`, which Next always prerenders into the last-resort `500.html` (served only when a request fails outside rendering). Its scripts carry no nonce and are blocked there, but its message and plain "Home" link still work. `style-src` keeps `'unsafe-inline'` for React `style` attributes (a style nonce would block them). The other security headers (HSTS, nosniff, `X-Frame-Options`, Referrer-Policy, Permissions-Policy) are static, in `next.config.ts`.
+
 ---
 
 ## Auth and tenancy
