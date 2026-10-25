@@ -5945,7 +5945,15 @@ export class HaggleEngine {
     if (phone && (await this.repo.listWorkspacesByApproverPhone(phone)).some((id) => id !== w.id)) {
       throw new EngineError("approver_shared", "That phone number already approves for another workspace.", "Use a different approver phone, or ask the operator to share it (workspace-admin --allow-shared-approver).", "none");
     }
-    return { workspace: await this.createWorkspace(w), created: true };
+    try {
+      return { workspace: await this.createWorkspace(w), created: true };
+    } catch (err) {
+      // Two first requests for one owner at once (the web app's first render): the other one created
+      // it between our read and our insert. Same id, same owner: return it; anything else is real.
+      const raced = await this.repo.getWorkspace(w.id);
+      if (raced) return { workspace: raced, created: false };
+      throw err;
+    }
   }
 
   /** Create a workspace (scripts/workspace-create.ts); credentials are stored only as hashes. */

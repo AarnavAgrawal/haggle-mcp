@@ -45,4 +45,15 @@ describe("service credential", () => {
     await expect(engine.provisionWorkspace(planServiceWorkspace({ ownerRef: "user-2", name: "Bo", approverPhone: "+14155550123" }))).rejects.toMatchObject({ code: "approver_shared" });
     expect(() => planServiceWorkspace({ ownerRef: "u", name: "x", approverPhone: "415-555" })).toThrow(/E\.164/);
   });
+
+  it("onboarding is idempotent under concurrency: two first requests for one new owner both get the workspace", async () => {
+    // The web app's first render can provision twice at once (router.push then refresh): one creates,
+    // the other must find it, not fail on the duplicate id (found by the tier-2 browser test on Postgres).
+    const { engine } = await runtime();
+    const plan = planServiceWorkspace({ ownerRef: "guest-1", name: "Guest workspace", capUsd: 700 });
+    const both = await Promise.all([engine.provisionWorkspace(plan), engine.provisionWorkspace({ ...plan })]);
+    expect(both.map((r) => r.workspace.id)).toEqual([plan.id, plan.id]);
+    expect(both.map((r) => r.created).sort()).toEqual([false, true]);
+    expect(await engine.forWorkspace(plan.id).getSettings()).toMatchObject({ spending_cap_cents: 70_000 });
+  });
 });
