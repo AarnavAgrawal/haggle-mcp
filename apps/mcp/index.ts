@@ -461,6 +461,19 @@ export const deal = server.tool(
           ...(await Promise.all(given.filter(hasContact).map(async (b) => ({ b, allowed: await engine.mayContact({ ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}) }) })))).map(({ b, allowed }) => { return { name: b.name, channel: b.channel ?? (b.a2a_card_url ? "a2a" : b.email ? "email" : "phone"), contact_state: allowed ? "authorized" : "contact_found", ready: allowed, ...(allowed ? {} : { reason: "this contact isn't authorized for this workspace (ask the operator: workspace-admin add-vendor), or it opted out or bounced" }) }; }),
         ];
       }
+      // Live, with no vendor to fall back on (the operator configured none): say exactly what to do, even on
+      // a dry run, instead of previewing "would contact nobody".
+      if (fromRoster && !ownDefault && roster.length === 0 && mode === "live") {
+        const next = own.length
+          ? `This workspace's vendors are listed as caterers. Ask the user which of their vendors to use for this ${category} request and pass them by name in businesses, or have them add ${category} businesses on the Vendors page (/vendors). Nothing was sent.`
+          : "This workspace has no vendors yet: ask the user to add the businesses they want quotes from on the Vendors page (/vendors), where they can also search for real businesses. Nothing was sent.";
+        const v = DealBoardPlus.parse({ ok: false, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode, setup: { ready: 0, total: 0, blockers: [] }, next });
+        return ok(v, [
+          own.length ? `NOT STARTED: name the vendors to use for this ${category} request. Nothing was sent.` : "NOT STARTED: this workspace has no vendors yet, so there is nobody to contact. Nothing was sent.",
+          `Add businesses on the Vendors page of the Haggle web app: search for real ones there or add one by email, with how it agreed to be contacted (operator: scripts/workspace-admin.ts add-vendor --id ${engine.workspaceId}).`,
+          `next: ${next}`,
+        ].join("\n"));
+      }
       if (input.dry_run) {
         const would = preview.filter((p) => p.ready);
         const blocked = preview.filter((p) => !p.ready);

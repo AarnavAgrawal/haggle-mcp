@@ -225,7 +225,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     }
     return { email: true, imessage: imessagePort !== null, sms: smsPort !== null, phone: phonePort !== null, a2a: a2aPort !== null, connectCommand, connected: connected.set, callsViaSharedLine: callOrigin === "shared_imessage_number" };
   };
-  const roster = async () => buildRoster(contacts, await channels());
+  const roster = async () => buildRoster(contacts, await channels(), { configuredOnly: true });
   if (vendorConfig.errors.length) logger.warn("demo_vendors_config", { errors: vendorConfig.errors });
   const ops = {
     env: deployEnv, repo, database: "postgres" as const, ai, alerts, stalled, pool: () => repo.poolStats(),

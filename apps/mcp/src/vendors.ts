@@ -109,9 +109,14 @@ export function rosterRecipients(contacts: Record<string, VendorContact>): strin
   return Object.values(contacts).flatMap((c) => [c.email, c.phone, c.a2a_card_url].filter((x): x is string => !!x));
 }
 
-/** The roster with each vendor's readiness. Pure: callers pass what the runtime knows. */
-export function buildRoster(contacts: Record<string, VendorContact>, ch: ChannelStatus): RosterEntry[] {
-  return dedupeRoster(rosterEntries(contacts, ch));
+/**
+ * The roster with each vendor's readiness. Pure: callers pass what the runtime knows. configuredOnly
+ * (live mode) leaves out the demo vendors the operator didn't configure, so a real workspace never
+ * sees the fictional ones.
+ */
+export function buildRoster(contacts: Record<string, VendorContact>, ch: ChannelStatus, opts: { configuredOnly?: boolean } = {}): RosterEntry[] {
+  const entries = rosterEntries(contacts, ch);
+  return dedupeRoster(opts.configuredOnly ? entries.filter((e) => e.key in contacts) : entries);
 }
 
 function rosterEntries(contacts: Record<string, VendorContact>, ch: ChannelStatus): RosterEntry[] {

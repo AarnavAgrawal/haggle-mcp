@@ -20,6 +20,12 @@ describe("demo vendor roster", () => {
     expect(r.every((v) => v.simulated && v.played_by && !v.ready && v.blocker && v.fix)).toBe(true);
   });
 
+  it("configuredOnly (live): unconfigured demo vendors are left out, so none appears on a real workspace", () => {
+    expect(buildRoster({}, ON, { configuredOnly: true })).toEqual([]);
+    const { contacts } = parseVendorConfig(JSON.stringify({ harbor_table: { email: "harbor@inkboxmail.com" } }));
+    expect(buildRoster(contacts, ON, { configuredOnly: true }).map((v) => v.key)).toEqual(["harbor_table"]);
+  });
+
   it("fully configured and connected → all six ready; contacts normalized and authorized", () => {
     const { contacts, errors } = parseVendorConfig(CONFIG);
     expect(errors).toEqual([]);
