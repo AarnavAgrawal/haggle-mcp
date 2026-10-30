@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: first staging deployment + consenting-mailbox email trial (`docs/staging-email-trial-runbook.md`); blocked on the staging accounts in `docs/manual-actions.md` §1 · Aarnav: branch `aarnav-hardening` (off `aarnav-prod`; production hardening items 1-8 done and verified locally, report in `docs/hardening-report.md`; waiting on review before it merges into `aarnav-prod`; migrations 124 + 202 not yet applied anywhere)
+**Now working on:** Yash: first staging deployment + consenting-mailbox email trial (`docs/staging-email-trial-runbook.md`); blocked on the staging accounts in `docs/manual-actions.md` §1 · Aarnav: first production test deploy of `aarnav-prod` (hardening merged; new Supabase + Manufact `haggle-prod` + Vercel, email-only, manual payment) for a small test with a friend; waiting on account keys
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
