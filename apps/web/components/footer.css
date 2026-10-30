@@ -1,26 +1,31 @@
-/* Site footer (components/Footer.tsx). Uses the tokens in app/globals.css. */
+/* Site footer (components/Footer.tsx). Same width as the top bar and the page. */
 .site-footer {
-  max-width: 960px;
-  margin: 48px auto 0;
-  padding: 16px;
+  margin-top: 64px;
   border-top: 1px solid var(--rule);
+}
+.site-footer .wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 24px;
+  padding-block: 20px 32px;
   color: var(--ink-3);
-  font-size: 12px;
+  font-size: var(--t-14);
 }
 .site-footer nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
+  gap: 8px 20px;
 }
 .site-footer a {
   color: var(--ink-2);
   text-decoration: none;
-  font-weight: 600;
 }
 .site-footer a:hover,
 .site-footer a:focus-visible {
   text-decoration: underline;
 }
 .site-footer p {
-  margin: 8px 0 0;
+  max-width: 60ch;
 }

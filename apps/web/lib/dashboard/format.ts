@@ -69,6 +69,41 @@ export function timeline(state: string): { steps: TimelineStep[]; stopped: boole
   return { steps, stopped };
 }
 
+/**
+ * The deal page's next step, in words for the person reading it. board.next is written for an agent
+ * (tool names, ids, cursors), so the page never shows it; this reads the same board instead.
+ */
+export function humanNext(board: Pick<DealBoardView, "job" | "open_questions" | "businesses" | "quotes" | "purchase" | "ready">): string {
+  const state = board.job?.state ?? "created";
+  const asked = board.open_questions ?? [];
+  if (asked.length === 1) return `${asked[0]!.business} asked a question. Answer it below so it can quote.`;
+  if (asked.length > 1) return `${asked.length} businesses asked questions. Answer them below so they can quote.`;
+  if (board.purchase?.next) return board.purchase.next;
+  const quoted = board.quotes.filter((q) => q.total_usd !== null).length;
+  const asking = board.businesses.length;
+  switch (state) {
+    case "created":
+    case "contacting":
+      return "Haggle is contacting the businesses. Replies show up here as they arrive.";
+    case "collecting":
+      return `Waiting for quotes${asking ? `: ${quoted} of ${asking} businesses have quoted so far` : ""}. This page updates by itself.`;
+    case "negotiating":
+      return "Haggle is negotiating with real competing quotes. Final prices show up here.";
+    case "awaiting_approval":
+      return board.ready ? "The quotes are final. Compare them and approve the one you want." : "Compare the quotes and approve the one you want.";
+    case "paying":
+      return "Your approval is recorded. Follow the purchase steps on the approved quote.";
+    case "paid":
+    case "confirmed":
+      return "Done. This deal is finished.";
+    case "cancelled":
+    case "failed":
+      return "This deal was stopped. Nothing more will be sent.";
+    default:
+      return stateWords(state);
+  }
+}
+
 /** "$1,234" or "$1,234.50"; null/undefined -> "not stated" (a missing total is unknown, never $0). */
 export function money(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "not stated";

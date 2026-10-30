@@ -25,14 +25,16 @@ export default async function VendorsPage() {
   return (
     <>
       <TopBar email={user.email} active="vendors" />
-      <main className="shell stack">
-        <div className="dash-title">
-          <h1>Vendors</h1>
-          {list?.mode === "mock" ? <span className="chip demo">DEMO: simulated, nothing real is sent</span> : null}
-        </div>
-        <p className="muted" style={{ margin: 0 }}>
-          The businesses Haggle may contact for you, and how each agreed to it. Start a request in the chat and Haggle asks these vendors for quotes.
-        </p>
+      <main className="shell">
+        <header className="page-head">
+          <div>
+            <div className="page-title">
+              <h1>Vendors</h1>
+              {list?.mode === "mock" ? <span className="chip demo">DEMO: simulated, nothing real is sent</span> : null}
+            </div>
+            <p>The businesses Haggle may contact for you, and how each agreed to it. Start a request in the chat and Haggle asks these vendors for quotes.</p>
+          </div>
+        </header>
         {!list ? (
           <p className="note note-risk" role="alert">
             {error?.message} <span className="fix">{error?.fix}</span>

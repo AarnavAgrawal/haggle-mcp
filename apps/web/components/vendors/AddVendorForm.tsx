@@ -74,13 +74,12 @@ export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | n
   const described = (f: FormField, hint?: string) => [errors[f] ? `vf-${f}-err` : null, hint ?? null].filter(Boolean).join(" ") || undefined;
 
   return (
-    <form ref={formRef} className="card stack vend-form" onSubmit={submit} noValidate aria-labelledby="add-h">
-      <h2 id="add-h" className="dash-h2">
-        Add vendor
-      </h2>
-      <p className="hint" style={{ margin: 0 }}>
-        Haggle contacts only the businesses you add here, and only on the channel and basis you record. A business that asks Haggle to stop is never contacted again.
-      </p>
+    <section className="section" aria-labelledby="add-h">
+    <div className="section-head">
+      <h2 id="add-h">Add a vendor</h2>
+      <p>Haggle contacts only the businesses you add, on the channel and basis you record. A business that asks Haggle to stop is never contacted again.</p>
+    </div>
+    <form ref={formRef} className="vend-form" onSubmit={submit} noValidate aria-labelledby="add-h">
       <div className="vend-grid">
         <div>
           <label htmlFor="vf-name">Business name</label>
@@ -146,7 +145,7 @@ export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | n
       </div>
 
       {failure ? (
-        <p className="note note-risk" role="alert" style={{ margin: 0 }}>
+        <p className="note note-risk" role="alert">
           {failure.message} <span className="fix">{failure.fix}</span>
         </p>
       ) : null}
@@ -156,5 +155,6 @@ export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | n
         </button>
       </div>
     </form>
+    </section>
   );
 }

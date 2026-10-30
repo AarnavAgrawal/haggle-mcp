@@ -65,6 +65,10 @@ export function LoginForm({ notice }: { notice: string | null }) {
           {notice}
         </p>
       )}
+      <button className="btn btn-primary btn-block" type="button" onClick={() => void google()}>
+        Continue with Google
+      </button>
+      <p className="login-or">or get a sign-in link by email</p>
       {state === "sent" ? (
         <p className="note" role="status">
           Check {email} for a sign-in link.
@@ -75,16 +79,13 @@ export function LoginForm({ notice }: { notice: string | null }) {
             <label htmlFor="email">Email</label>
             <input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
-          <button className="btn btn-primary" type="submit" disabled={state === "sending"} style={{ width: "100%" }}>
+          <button className="btn btn-block" type="submit" disabled={state === "sending"}>
             {state === "sending" ? "Sending…" : "Email me a sign-in link"}
           </button>
         </form>
       )}
-      <button className="btn" type="button" onClick={() => void google()} style={{ width: "100%" }}>
-        Continue with Google
-      </button>
       {DEMO && (
-        <button className="btn" type="button" onClick={() => void guest()} disabled={state === "guest"} style={{ width: "100%" }}>
+        <button className="btn btn-block" type="button" onClick={() => void guest()} disabled={state === "guest"}>
           {state === "guest" ? "Starting…" : "Continue as a guest (demo)"}
         </button>
       )}

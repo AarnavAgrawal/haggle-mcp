@@ -12,7 +12,7 @@ export function ThreadSidebar({ threads, activeId }: { threads: ThreadSummary[];
   return (
     <aside className="chat-side" aria-label="Conversations">
       <div className="side-body">
-        <Link className="btn btn-primary" href="/chat" style={{ width: "100%", flex: "none", maxWidth: 200 }}>
+        <Link className="btn btn-block" href="/chat">
           New request
         </Link>
         <h2>Recent</h2>
@@ -28,9 +28,7 @@ export function ThreadSidebar({ threads, activeId }: { threads: ThreadSummary[];
             ))}
           </ul>
         ) : (
-          <p className="muted" style={{ margin: "0 4px" }}>
-            No conversations yet.
-          </p>
+          <p className="chat-side-empty">Your conversations show up here.</p>
         )}
       </div>
     </aside>

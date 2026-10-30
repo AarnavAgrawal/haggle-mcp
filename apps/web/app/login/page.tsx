@@ -13,7 +13,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const notice = q.guest === "off" ? NOTICES.guest! : q.deleted ? NOTICES.deleted! : q.error === "sign_in_failed" ? NOTICES.sign_in_failed! : null;
   return (
     <>
-      <main className="shell" style={{ maxWidth: 420, paddingTop: 72 }}>
+      <main className="shell shell-narrow">
         <LoginForm notice={notice} />
       </main>
       <Footer />

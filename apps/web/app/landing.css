@@ -1,59 +1,181 @@
-.demo-banner {
-  padding: 8px 16px;
-  background: var(--warn-soft);
-  color: var(--warn);
-  font-size: 13px;
-  text-align: center;
+/* Landing page (app/page.tsx). Tokens come from globals.css. */
+.landing-bar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
 }
 
-.landing {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 56px 16px 72px;
-}
 .landing-hero {
-  max-width: 680px;
-}
-.landing-hero h1 {
-  font-size: clamp(30px, 5vw, 46px);
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-}
-.landing-hero p {
-  font-size: 17px;
-  color: var(--ink-2);
-  margin: 16px 0 24px;
-}
-.landing-cta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-}
-.landing-steps {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  margin-top: 48px;
-  padding: 0;
-  list-style: none;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: clamp(32px, 6vw, 80px);
+  align-items: center;
+  padding-block: clamp(40px, 9vh, 96px) clamp(48px, 9vh, 96px);
 }
-.landing-steps li {
+.landing-copy h1 {
+  font-size: clamp(var(--t-36), 5.2vw, var(--t-60));
+  font-weight: 800;
+  font-stretch: 112%;
+  line-height: 1.04;
+  letter-spacing: -0.025em;
+  max-width: 15ch;
+}
+.landing-copy p {
+  margin: 24px 0 32px;
+  max-width: 46ch;
+  font-size: var(--t-18);
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+
+/* The example quote sheet. */
+.sheet {
+  margin: 0;
   background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: var(--radius-m);
-  padding: 16px;
+  box-shadow: 0 1px 0 var(--rule), 0 24px 48px -32px rgba(27, 31, 51, 0.45);
+  overflow: hidden;
 }
-.landing-steps strong {
+.sheet-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.sheet-what {
+  font-weight: 700;
+}
+.sheet-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sheet-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 16px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.sheet-row > div:first-child {
+  display: grid;
+}
+.sheet-amount {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  font-size: var(--t-21);
+}
+.sheet-amount .price-was {
+  font-size: var(--t-14);
+}
+.sheet-note {
+  grid-column: 1 / -1;
+  font-size: var(--t-14);
+  color: var(--ink-2);
+}
+.sheet-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--t-14);
+  font-weight: 650;
+  color: var(--carbon);
+}
+.sheet-live::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: sheet-pulse 1.6s ease-in-out infinite;
+}
+@keyframes sheet-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+.sheet-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 16px 20px;
+  background: var(--paper);
+  font-weight: 650;
+}
+.sheet-foot .price {
+  font-size: var(--t-24);
+}
+
+/* How a deal runs: a real sequence, so it is numbered. */
+.landing-how {
+  padding-block: 0 24px;
+}
+/* The rule sits inside the padding, so it starts and ends with the content. */
+.landing-how::before {
+  content: "";
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 48px;
+  border-top: 1px solid var(--rule);
+}
+.landing-how h2 {
+  margin-bottom: 24px;
+}
+.landing-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 32px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.landing-step-n {
+  display: block;
+  margin-bottom: 12px;
+  font-size: var(--t-30);
+  font-weight: 800;
+  font-stretch: 125%;
+  line-height: 1;
+  color: var(--carbon);
+}
+.landing-steps h3 {
+  margin-bottom: 6px;
+}
+.landing-steps p {
+  color: var(--ink-2);
+  font-size: var(--t-16);
 }
 .landing-channels {
-  margin-top: 32px;
+  margin-top: 40px;
   color: var(--ink-3);
+  font-size: var(--t-14);
 }
 .guest {
   display: inline-flex;
   flex-direction: column;
   gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .landing-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .landing-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 520px) {
+  .landing-steps {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  .sheet-row {
+    padding: 14px 16px;
+  }
 }

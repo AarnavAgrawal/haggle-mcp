@@ -1,28 +1,32 @@
-/* Legal pages (/terms, /privacy, /acceptable-use). Uses the tokens in app/globals.css. */
+/* Legal pages (/terms, /privacy, /acceptable-use). Uses the tokens in app/globals.css. The page keeps
+   the shared left edge; the text column is narrow for reading. */
+.legal > * {
+  max-width: 68ch;
+}
 .legal {
-  max-width: 720px;
-  font-size: 15px;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 .legal h1 {
-  margin-top: 16px;
-  font-size: 26px;
+  margin-top: 24px;
+  font-size: var(--t-36);
 }
 .legal h2 {
-  margin-top: 28px;
-  font-size: 18px;
+  margin-top: 36px;
+  font-size: var(--t-21);
 }
 .legal p,
 .legal ul {
-  margin: 10px 0;
+  margin: 12px 0;
 }
 .legal li + li {
-  margin-top: 4px;
+  margin-top: 6px;
 }
 .legal-draft {
-  padding: 10px 12px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--warn);
   border-radius: var(--radius-s);
   background: var(--warn-soft);
-  color: var(--warn);
+  color: var(--ink);
   font-weight: 600;
+  font-size: var(--t-14);
 }

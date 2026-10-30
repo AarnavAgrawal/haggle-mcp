@@ -108,32 +108,35 @@ export function Chat({ threadId: initialThreadId, initial }: { threadId: string 
   return (
     <section className="chat-main" aria-label="Chat with Haggle">
       <div className="chat-log" ref={logRef} role="log" aria-live="polite" aria-busy={sending} aria-label="Conversation">
+        <div className="chat-col chat-thread">
         {items.length === 0 && (
           <div className="chat-empty">
             <h1>What do you need?</h1>
             <p>Tell Haggle what to buy. It asks a couple of questions, shows who it will contact, and starts once you confirm.</p>
-            <div className="examples">
+            <ul className="examples">
               {EXAMPLES.map((x) => (
-                <button key={x} type="button" className="btn" onClick={() => { setDraft(x); inputRef.current?.focus(); }}>
-                  {x}
-                </button>
+                <li key={x}>
+                  <button type="button" onClick={() => { setDraft(x); inputRef.current?.focus(); }}>
+                    {x}
+                  </button>
+                </li>
               ))}
-            </div>
+            </ul>
           </div>
         )}
         {items.map((it, i) => {
           switch (it.kind) {
             case "user":
               return (
-                <div key={i} className="msg msg-user">
-                  <span className="msg-who">You: </span>
+                <div key={i} className="chat-msg chat-msg-user">
+                  <span className="sr-only">You: </span>
                   {it.text}
                 </div>
               );
             case "assistant":
               return (
-                <div key={i} className="msg msg-assistant">
-                  <span className="msg-who">Haggle: </span>
+                <div key={i} className="chat-msg chat-msg-assistant">
+                  <span className="sr-only">Haggle: </span>
                   {it.text}
                 </div>
               );
@@ -149,10 +152,10 @@ export function Chat({ threadId: initialThreadId, initial }: { threadId: string 
               );
             case "deal":
               return (
-                <div key={i} className="card deal-card">
+                <div key={i} className="chat-deal">
                   <div>
                     <strong>Deal started</strong>
-                    <p className="muted">Haggle is contacting businesses. Quotes, calls and messages show up live on the deal board.</p>
+                    <p>Haggle is contacting businesses. Quotes, calls and messages show up live on the deal board.</p>
                   </div>
                   <Link className="btn btn-primary" href={`/deals/${encodeURIComponent(it.job_id)}`}>
                     Open deal board
@@ -161,39 +164,45 @@ export function Chat({ threadId: initialThreadId, initial }: { threadId: string 
               );
             case "error":
               return (
-                <p key={i} className="note note-risk" role="alert" style={{ margin: 0 }}>
+                <p key={i} className="note note-risk" role="alert">
                   {it.text}
                 </p>
               );
           }
         })}
         {waitingForText && <p className="typing">Haggle is thinking…</p>}
+        </div>
       </div>
       <form className="chat-form" onSubmit={onSubmit}>
-        <label htmlFor="chat-input" className="sr-only">
-          Message Haggle
-        </label>
-        <textarea
-          id="chat-input"
-          ref={inputRef}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={items.length ? "Reply to Haggle…" : "e.g. Lunch for 40 next Thursday in SoMa, under $1,500"}
-          rows={2}
-          maxLength={4000}
-          disabled={sending}
-          autoFocus
-        />
-        {sending ? (
-          <button type="button" className="btn" onClick={() => abortRef.current?.abort()}>
-            Stop
-          </button>
-        ) : (
-          <button type="submit" className="btn btn-primary" disabled={!draft.trim()}>
-            Send
-          </button>
-        )}
+        <div className="chat-col">
+          <div className="composer">
+            <label htmlFor="chat-input" className="sr-only">
+              Message Haggle
+            </label>
+            <textarea
+              id="chat-input"
+              ref={inputRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onKeyDown}
+              placeholder={items.length ? "Reply to Haggle" : "Lunch for 40 next Thursday in SoMa, under $1,500"}
+              rows={1}
+              maxLength={4000}
+              disabled={sending}
+              autoFocus
+            />
+            {sending ? (
+              <button type="button" className="btn" onClick={() => abortRef.current?.abort()}>
+                Stop
+              </button>
+            ) : (
+              <button type="submit" className="btn btn-primary" disabled={!draft.trim()}>
+                Send
+              </button>
+            )}
+          </div>
+          <p className="composer-hint">Enter sends. Shift+Enter adds a line. Nothing is sent to a business until you confirm.</p>
+        </div>
       </form>
     </section>
   );

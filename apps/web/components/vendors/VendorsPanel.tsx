@@ -1,5 +1,5 @@
 "use client";
-// The vendors page's live part: the list, "Add vendor" and "Find businesses". After a change it
+// The vendors page's live part: the list, "Find businesses" and "Add vendor". After a change it
 // re-reads the list from /api/vendors (the MCP server is the source of truth).
 import { useState } from "react";
 import type { VendorList } from "@/lib/vendors/types";
@@ -24,33 +24,35 @@ export function VendorsPanel({ initial, canAdd, cantAddReason }: { initial: Vend
   const left = Math.max(0, list.limits.adds_per_day - list.limits.added_today);
   return (
     <>
-      <section className="card stack" aria-labelledby="list-h">
-        <div className="dash-head">
-          <h2 id="list-h" className="dash-h2" style={{ margin: 0 }}>
-            Your vendors ({list.vendors.length} of {list.limits.max_vendors})
+      <section className="section" aria-labelledby="list-h">
+        <div className="section-head">
+          <h2 id="list-h">
+            Your vendors <span className="muted num">{list.vendors.length}</span>
           </h2>
-          <span className="hint">{left} more can be added today</span>
+          <p>
+            Up to {list.limits.max_vendors}. {left} more can be added today.
+          </p>
         </div>
         {status ? (
-          <p className="note" role="status" style={{ margin: 0 }}>
+          <p className="note vend-status" role="status">
             {status}
           </p>
         ) : null}
         <VendorTable vendors={list.vendors} onChanged={refresh} />
       </section>
 
-      {canAdd ? (
-        <AddVendorForm prefill={prefill} onAdded={refresh} />
-      ) : (
-        <p className="note" style={{ margin: 0 }}>
-          {cantAddReason}
-        </p>
-      )}
-
       <FindBusinesses
         vendorNames={list.vendors.map((v) => v.name)}
         onAdd={(b) => setPrefill({ key: Date.now(), name: b.name, consent_basis: "public_listing_email", note: `Found in public listings${b.website ? `; email from ${b.website}` : ""}` })}
       />
+
+      {canAdd ? (
+        <AddVendorForm prefill={prefill} onAdded={refresh} />
+      ) : (
+        <section className="section">
+          <p className="note">{cantAddReason}</p>
+        </section>
+      )}
     </>
   );
 }

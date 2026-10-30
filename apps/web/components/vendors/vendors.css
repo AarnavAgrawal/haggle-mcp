@@ -1,125 +1,164 @@
 /* Vendors page: builds on globals.css tokens (light and dark come from there). */
 
+.vend-status {
+  margin-bottom: 12px;
+}
 .vend-list {
   list-style: none;
   margin: 0;
   padding: 0;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
 }
 .vend-item {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 12px;
-  padding: 12px 0;
-  border-top: 1px solid var(--rule);
+  gap: 16px;
+  padding: 16px 20px;
 }
-.vend-item:first-child {
-  border-top: 0;
+.vend-item + .vend-item {
+  border-top: 1px solid var(--rule);
 }
 .vend-main {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: 4px;
+}
+.vend-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.vend-name strong {
+  font-size: var(--t-18);
 }
 .vend-contact {
   overflow-wrap: anywhere;
   color: var(--ink-2);
+  font-size: var(--t-14);
+}
+.vend-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
 }
 .vend-actions {
   flex: none;
 }
 .vend-consent summary {
   cursor: pointer;
+  width: max-content;
 }
 .vend-consent-text {
-  margin: 4px 0 0;
+  margin-top: 4px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.vend-empty {
+  padding: 24px 20px;
+  background: var(--panel);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius-m);
+  color: var(--ink-2);
+}
 
+/* the search: inputs and the button share one baseline */
+.vend-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+.vend-search .btn {
+  min-height: 42px;
+}
+.vend-results > * + * {
+  margin-top: 12px;
+}
+
+/* the form */
+.vend-form {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-m);
+  padding: 24px;
+}
+.vend-form > * + * {
+  margin-top: 20px;
+}
 .vend-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
 }
-.vend-search {
-  align-items: end;
-}
-.vend-search-btn {
-  display: flex;
-  align-items: flex-end;
-}
-
-.vend-select,
-.vend-textarea {
-  padding: 8px 10px;
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--radius-s);
-  background: var(--paper);
-  color: var(--ink);
-  font: inherit;
-}
-.vend-textarea {
-  width: 100%;
-  resize: vertical;
-}
-.vend-select:focus-visible,
-.vend-textarea:focus-visible,
-.vend-radio input:focus-visible,
-.vend-check input:focus-visible {
-  outline: 2px solid var(--info);
-  outline-offset: 2px;
-}
-
 .vend-fieldset {
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-s);
-  margin: 0;
-  padding: 8px 12px 12px;
+  border: 0;
+  margin-inline: 0;
+  margin-bottom: 0;
+  padding: 0;
+  min-inline-size: 0;
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 .vend-fieldset legend {
+  font-size: var(--t-14);
   font-weight: 600;
-  padding: 0 4px;
+  padding: 0;
+  margin-bottom: 8px;
 }
 .vend-radio,
 .vend-check {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 12px;
   font-weight: 400;
+  font-size: var(--t-16);
   margin: 0;
   cursor: pointer;
 }
-.vend-radio input,
-.vend-check input {
-  width: auto;
-  margin-top: 3px;
-  flex: none;
+.vend-radio {
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-s);
+}
+.vend-radio:has(input:checked) {
+  border-color: var(--carbon);
+  background: var(--carbon-soft);
 }
 .vend-radio > span {
   display: grid;
+  gap: 2px;
 }
 .vend-radio-off {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: default;
 }
 .vend-explain {
-  font-size: 12px;
+  font-size: var(--t-14);
 }
 .vend-err {
-  margin: 4px 0 0;
+  margin-top: 6px;
   color: var(--risk);
-  font-size: 12px;
+  font-size: var(--t-14);
 }
 .vend-form input[aria-invalid="true"],
 .vend-form select[aria-invalid="true"] {
   border-color: var(--risk);
 }
 
-@media (max-width: 560px) {
+@media (max-width: 640px) {
   .vend-item {
     flex-direction: column;
+  }
+  .vend-search,
+  .vend-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .vend-form {
+    padding: 18px;
   }
 }

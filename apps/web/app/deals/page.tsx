@@ -22,27 +22,30 @@ export default async function DealsPage() {
   return (
     <>
       <TopBar email={user.email} active="deals" />
-      <main className="shell stack">
-        <div className="dash-head">
-          <div className="dash-title">
-            <h1>Your deals</h1>
-            {deals?.mode === "mock" && <span className="chip demo">DEMO data</span>}
+      <main className="shell">
+        <header className="page-head">
+          <div>
+            <div className="page-title">
+              <h1>Your deals</h1>
+              {deals?.mode === "mock" && <span className="chip demo">DEMO data</span>}
+            </div>
+            <p>Every request Haggle is working on or has finished, newest first.</p>
           </div>
           <Link className="btn btn-primary" href="/chat">
             New request
           </Link>
-        </div>
+        </header>
         {error ? (
           <p className="note note-risk" role="alert">
             {error.message} <span className="fix">{error.fix}</span>
           </p>
         ) : deals && deals.deals.length ? (
-          <ul className="card deals" aria-label="Deals">
+          <ul className="deals" aria-label="Deals">
             {deals.deals.map((d) => (
               <li key={d.job_id} className="deal">
-                <Link className="deal-link" href={`/deals/${encodeURIComponent(d.job_id)}`} style={{ flex: 1 }}>
+                <Link className="deal-link" href={`/deals/${encodeURIComponent(d.job_id)}`}>
                   <div>
-                    <strong>{d.what}</strong>
+                    <strong className="deal-what">{d.what}</strong>
                     <div className="muted">{dealLine(d)}</div>
                     {d.purchase ? <div className="hint">{d.purchase.summary}</div> : null}
                   </div>
@@ -50,11 +53,12 @@ export default async function DealsPage() {
                     <span className={`chip chip-${stateTone(d.state)}`}>{stateWords(d.state)}</span>
                     {d.leading ? (
                       <span>
-                        Leading: {d.leading.business} {money(d.leading.total_usd)}
+                        <span className="hint">{d.leading.business} </span>
+                        <span className="price">{money(d.leading.total_usd)}</span>
                       </span>
                     ) : d.quotes !== undefined && d.businesses !== undefined ? (
-                      <span className="muted">
-                        {d.quotes}/{d.businesses} quoted
+                      <span className="muted num">
+                        {d.quotes} of {d.businesses} quoted
                       </span>
                     ) : null}
                     {d.created_at ? <span className="hint">Started {ago(d.created_at)}</span> : null}
@@ -64,15 +68,11 @@ export default async function DealsPage() {
             ))}
           </ul>
         ) : (
-          <div className="card stack">
-            <p className="muted" style={{ margin: 0 }}>
-              No deals yet. Tell Haggle what you need and it gets real quotes by email, phone and text.
-            </p>
-            <div>
-              <Link className="btn btn-primary" href="/chat">
-                New request
-              </Link>
-            </div>
+          <div className="deals-empty">
+            <p>No deals yet. Tell Haggle what you need and it gets real quotes from your vendors by email, phone and text.</p>
+            <Link className="btn btn-primary" href="/chat">
+              New request
+            </Link>
           </div>
         )}
       </main>

@@ -1,17 +1,15 @@
-/* /account. Uses the tokens in app/globals.css. */
-.acct {
-  max-width: 640px;
+/* /account. Uses the tokens in app/globals.css. The page keeps the shared left edge; its sections
+   are narrower so lines stay readable. */
+.acct > section {
+  max-width: 680px;
 }
 .acct h2 {
-  font-size: 16px;
-}
-.acct p {
-  margin: 0;
+  font-size: var(--t-18);
 }
 .acct-facts {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 4px 16px;
+  gap: 6px 20px;
   margin: 0;
 }
 .acct-facts dt {
@@ -27,10 +25,5 @@
 .acct-delete {
   background: var(--risk);
   border-color: var(--risk);
-  color: #fff;
-}
-@media (prefers-color-scheme: dark) {
-  .acct-delete {
-    color: #1a0b09;
-  }
+  color: var(--on-ink);
 }

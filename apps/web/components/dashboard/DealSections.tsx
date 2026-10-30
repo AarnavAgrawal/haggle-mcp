@@ -21,7 +21,7 @@ export function Untrusted({ text, label = "from the business, unverified" }: { t
 }
 
 export function ChannelBadge({ channel }: { channel: string }) {
-  return <span className="chip chip-plain">{channelWords(channel)}</span>;
+  return <span className="via">{channelWords(channel)}</span>;
 }
 
 export function Timeline({ state }: { state: string }) {
@@ -37,7 +37,7 @@ export function Timeline({ state }: { state: string }) {
         ))}
       </ol>
       {stopped ? (
-        <p className="note note-risk" style={{ margin: 0 }}>
+        <p className="note note-risk">
           This deal was {state === "cancelled" ? "cancelled" : "stopped"}.
         </p>
       ) : null}
@@ -68,7 +68,7 @@ export function BusinessTable({ board, jobId }: { board: DealBoardView; jobId: s
                 <Link href={`/deals/${encodeURIComponent(jobId)}/businesses/${encodeURIComponent(b.id)}`}>
                   <strong>{b.name}</strong>
                 </Link>
-                {b.simulated ? <span className="chip demo" style={{ marginLeft: 6 }}>simulated</span> : null}
+                {b.simulated ? <span className="chip demo">simulated</span> : null}
               </td>
               <td data-label="Channel">
                 <ChannelBadge channel={b.channel} />
@@ -101,7 +101,7 @@ const RANK_CHIP: Record<QuoteRank, { text: string; cls: string }> = {
 
 export function QuoteList({ board, jobId, mode, live }: { board: DealBoardView; jobId: string; mode: Mode; live: boolean }) {
   const rows = sortQuotes(board);
-  if (!rows.length) return <p className="muted">No quotes yet. They appear here as businesses reply.</p>;
+  if (!rows.length) return <p className="quotes-empty">No quotes yet. They appear here as businesses reply.</p>;
   const why = recommendationReason(board);
   return (
     <ol className="quotes" aria-label="Quotes, best first">
@@ -117,19 +117,28 @@ export function QuoteList({ board, jobId, mode, live }: { board: DealBoardView; 
         return (
           <li key={q.quote_id} className={`quote ${rank === "recommended" ? "quote-recommended" : ""} ${rank === "excluded" || rank === "old" ? "quote-dim" : ""}`}>
             <div className="quote-top">
-              <div className="dash-title">
+              <div className="quote-who">
                 <strong>{q.business}</strong>
                 <ChannelBadge channel={q.channel} />
                 <span className={`chip ${chip.cls}`}>{chip.text}</span>
                 {q.round > 1 ? <span className="chip chip-plain">round {q.round}</span> : null}
               </div>
-              <div>
-                {q.negotiated_from !== undefined ? <span className="quote-was">{money(q.negotiated_from)}</span> : null}
-                <span className="quote-total">{q.total_usd === null ? "Total not stated" : `${status?.approximate ? "≈ " : ""}${money(q.total_usd)}`}</span>
+              <div className="quote-amount">
+                {q.negotiated_from !== undefined ? <span className="price-was quote-was">{money(q.negotiated_from)}</span> : null}
+                {q.total_usd === null ? (
+                  <span className="quote-total-none">Total not stated</span>
+                ) : (
+                  <span className="price quote-total">{`${status?.approximate ? "≈ " : ""}${money(q.total_usd)}`}</span>
+                )}
+                {q.negotiated_from !== undefined && q.total_usd !== null && q.negotiated_from > q.total_usd ? (
+                  <span className="sticker" title="Saved by negotiating">
+                    −{money(q.negotiated_from - q.total_usd)}
+                  </span>
+                ) : null}
               </div>
             </div>
-            {rank === "recommended" && why ? <p className="quote-why" style={{ margin: "4px 0" }}>Why: {why}</p> : null}
-            <dl className="dash-meta" style={{ marginTop: 8 }}>
+            {rank === "recommended" && why ? <p className="quote-why">Why: {why.replace(/^(why )?recommended:\s*/i, "")}</p> : null}
+            <dl className="dash-meta quote-facts">
               {q.per_unit_usd !== undefined ? (
                 <div>
                   <dt>Per unit</dt>
@@ -166,7 +175,7 @@ export function QuoteList({ board, jobId, mode, live }: { board: DealBoardView; 
               ) : null}
             </dl>
             {q.flags.length ? (
-              <div className="chips" style={{ marginTop: 8 }} aria-label="Flags">
+              <div className="chips" aria-label="Flags">
                 {q.flags.map((f) => (
                   <span key={f} className={`chip chip-${flagTone(f)}`}>
                     {flagWords(f)}
@@ -183,7 +192,7 @@ export function QuoteList({ board, jobId, mode, live }: { board: DealBoardView; 
             ) : null}
             {q.missing_fields?.length ? <p className="hint">Still missing: {q.missing_fields.join(", ")}</p> : null}
             {compliance && compliance.issues.length ? (
-              <ul className="hint" style={{ margin: "4px 0", paddingLeft: 18 }}>
+              <ul className="hint quote-notes">
                 {compliance.issues.map((x) => (
                   <li key={x.code + x.text}>{x.text}</li>
                 ))}
@@ -200,11 +209,11 @@ export function QuoteList({ board, jobId, mode, live }: { board: DealBoardView; 
             ) : null}
             {terms?.cancellation ? <p className="hint">Cancellation: {terms.cancellation}</p> : null}
             {terms?.exclusions?.length ? <p className="hint">Not included: {terms.exclusions.join("; ")}</p> : null}
-            <p className="hint" style={{ margin: "4px 0 0" }}>
-              Source: {q.source} · confidence {Math.round(q.confidence * 100)}%
+            <p className="hint quote-notes">
+              Source: {q.source}, {Math.round(q.confidence * 100)}% confidence
             </p>
             {showPanel ? (
-              <div style={{ marginTop: 12 }}>
+              <div className="quote-approve">
                 <ApprovalPanel
                   jobId={jobId}
                   quoteId={q.quote_id}
@@ -227,7 +236,7 @@ export function NegotiationHistory({ board }: { board: DealBoardView }) {
   const rows = board.negotiation ?? [];
   if (!rows.length) return null;
   return (
-    <section className="card stack" aria-labelledby="neg-h">
+    <section className="deal-section stack" aria-labelledby="neg-h">
       <h2 id="neg-h" className="dash-h2">
         Negotiation
       </h2>
@@ -275,11 +284,11 @@ export function Callbacks({ board, jobId }: { board: DealBoardView; jobId: strin
   const rows = board.callbacks ?? [];
   if (!rows.length) return null;
   return (
-    <section className="card stack" aria-labelledby="cb-h">
+    <section className="deal-section stack" aria-labelledby="cb-h">
       <h2 id="cb-h" className="dash-h2">
         Callbacks Haggle suggests
       </h2>
-      <p className="hint" style={{ margin: 0 }}>
+      <p className="hint">
         A short Voice AI call asking a business to match a real lower quote. Nothing is placed without your go-ahead.
       </p>
       {rows.map((c) => (
@@ -299,7 +308,7 @@ export function PurchaseStatus({ board }: { board: DealBoardView }) {
   const pay = board.payment;
   if (!p && !pay) return null;
   return (
-    <section className="card stack" aria-labelledby="buy-h">
+    <section className="deal-section stack card" aria-labelledby="buy-h">
       <h2 id="buy-h" className="dash-h2">
         Purchase
       </h2>
@@ -309,24 +318,24 @@ export function PurchaseStatus({ board }: { board: DealBoardView }) {
             <span className={`chip ${p.money_verified ? "chip-win" : ""}`}>{p.stage.replace(/_/g, " ")}</span>
             {p.confirm_only ? <span className="chip chip-plain">confirm only, nothing paid</span> : null}
           </div>
-          <p style={{ margin: 0 }}>{p.summary}</p>
-          {p.order ? <p className="hint" style={{ margin: 0 }}>Order: {p.order}</p> : null}
+          <p>{p.summary}</p>
+          {p.order ? <p className="hint">Order: {p.order}</p> : null}
           {p.vendor_reply ? <Untrusted text={p.vendor_reply.text} /> : null}
           {p.instructions ? (
             <>
               <Untrusted text={p.instructions.text} label="payment instructions from the business, unverified" />
               {p.instructions.has_link ? (
-                <p className="note note-risk" style={{ margin: 0 }}>
+                <p className="note note-risk">
                   These instructions contain a link. Haggle never opens payment links; don't pay through one you didn't expect.
                 </p>
               ) : null}
             </>
           ) : null}
-          <p className="hint" style={{ margin: 0 }}>Next: {p.next}</p>
+          <p className="hint">Next: {p.next}</p>
         </>
       ) : null}
       {pay ? (
-        <p style={{ margin: 0 }}>
+        <p>
           Payment: <strong>{pay.status}</strong>
           {pay.simulated ? " (simulated)" : ""}
           {pay.receipt_url && /^https:\/\//.test(pay.receipt_url) ? (

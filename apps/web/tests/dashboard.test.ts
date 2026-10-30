@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { HaggleError } from "../lib/haggle.ts";
 import { errorJson, runDealAction } from "../lib/dashboard/actions.ts";
-import { ago, dealLine, isApprovable, isTerminal, money, recommendationReason, sortQuotes, stamp, stateWords, timeline } from "../lib/dashboard/format.ts";
+import { ago, dealLine, humanNext, isApprovable, isTerminal, money, recommendationReason, sortQuotes, stamp, stateWords, timeline } from "../lib/dashboard/format.ts";
 import { backoffMs, cursorOf, streamUrl } from "../lib/dashboard/live.ts";
 import { parseCursor, sseComment, sseFrame, streamUpdates } from "../lib/dashboard/stream.ts";
 import type { DealBoardView, WaitResult } from "../lib/dashboard/types.ts";
@@ -49,6 +49,32 @@ describe("state and timeline", () => {
     const c = timeline("cancelled");
     expect(c.stopped).toBe(true);
     expect(c.steps.every((x) => x.status === "todo")).toBe(true);
+  });
+});
+
+describe("humanNext: the deal page's next step, for a person (board.next is written for agents)", () => {
+  const board = (patch: Partial<DealBoardView> & { state?: string }): DealBoardView => {
+    const { state, ...rest } = patch;
+    return { ...fixture, ...rest, job: { ...fixture.job!, state: (state ?? fixture.job!.state) as never } } as DealBoardView;
+  };
+  it("never shows the agent's tool-call hint", () => {
+    const b = board({ next: "Answer with answer_business(job_id, question_id='qn_1', answer)", state: "collecting" });
+    expect(humanNext(b)).not.toMatch(/answer_business|job_id|wait_for_update/);
+  });
+  it("a business's open question comes first", () => {
+    const q = { question_id: "qn_1", business: "Sunset Kitchen", text: "Plates?" } as DealBoardView["open_questions"][number];
+    expect(humanNext(board({ state: "collecting", open_questions: [q] }))).toBe("Sunset Kitchen asked a question. Answer it below so it can quote.");
+  });
+  it("each state reads as a plain sentence", () => {
+    expect(humanNext(board({ state: "collecting", open_questions: [], businesses: [], quotes: [] }))).toMatch(/^Waiting for quotes/);
+    expect(humanNext(board({ state: "negotiating", open_questions: [] }))).toMatch(/^Haggle is negotiating/);
+    expect(humanNext(board({ state: "awaiting_approval", open_questions: [] }))).toMatch(/approve/i);
+    expect(humanNext(board({ state: "paid", open_questions: [] }))).toMatch(/^Done/);
+    expect(humanNext(board({ state: "cancelled", open_questions: [] }))).toMatch(/stopped/);
+  });
+  it("after approval the purchase's own next step is used", () => {
+    const purchase = { next: "Wait for Bay Catering to confirm the booking." } as DealBoardView["purchase"];
+    expect(humanNext(board({ state: "paying", open_questions: [], purchase }))).toBe("Wait for Bay Catering to confirm the booking.");
   });
 });
 

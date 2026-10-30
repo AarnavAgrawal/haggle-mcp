@@ -30,15 +30,15 @@ export function VendorTable({ vendors, onChanged }: { vendors: VendorView[]; onC
 
   if (!vendors.length) {
     return (
-      <p className="note" style={{ margin: 0 }}>
-        No vendors yet. Add the businesses you buy from below, or find some with the search. Haggle contacts nobody until you do.
+      <p className="vend-empty">
+        No vendors yet. Find real businesses with the search below, or add one you already buy from. Haggle contacts nobody until you do.
       </p>
     );
   }
   return (
     <>
       {failure ? (
-        <p className="note note-risk" role="alert" style={{ margin: 0 }}>
+        <p className="note note-risk vend-status" role="alert">
           {failure.message} <span className="fix">{failure.fix}</span>
         </p>
       ) : null}
@@ -48,7 +48,7 @@ export function VendorTable({ vendors, onChanged }: { vendors: VendorView[]; onC
           return (
             <li key={key} className="vend-item">
               <div className="vend-main">
-                <div className="dash-row dash-wrap">
+                <div className="vend-name">
                   <strong>{v.name}</strong>
                   <span className="chip chip-plain">{CHANNEL_WORDS[v.channel] ?? v.channel}</span>
                   {v.suppressed ? (
@@ -59,7 +59,7 @@ export function VendorTable({ vendors, onChanged }: { vendors: VendorView[]; onC
                 </div>
                 <div className="vend-contact">{v.contact}</div>
                 <div className="hint">
-                  {basisWords(v.consent.basis)} · added {day(v.added_at)}
+                  {basisWords(v.consent.basis)}, added {day(v.added_at)}
                 </div>
                 <details className="vend-consent">
                   <summary className="hint">Recorded consent</summary>

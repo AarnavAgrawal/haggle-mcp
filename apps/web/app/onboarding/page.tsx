@@ -11,7 +11,7 @@ export default function OnboardingPage() {
   const [state, action, pending] = useActionState<OnboardState, FormData>(createWorkspace, { error: null });
   return (
     <>
-      <main className="shell" style={{ maxWidth: 520, paddingTop: 48 }}>
+      <main className="shell shell-narrow">
         <form className="card stack" action={action}>
           <h1>Set up your workspace</h1>
           <p className="muted">Haggle contacts businesses for you and never pays anything without your approval.</p>

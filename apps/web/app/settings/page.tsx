@@ -32,10 +32,15 @@ export default async function SettingsPage() {
     <>
       <TopBar email={user.email} active="settings" />
       <main className="shell stack">
-        <div className="dash-title">
-          <h1>Settings</h1>
-          {id?.mode === "mock" ? <span className="chip demo">DEMO data</span> : null}
-        </div>
+        <header className="page-head">
+          <div>
+            <div className="page-title">
+              <h1>Settings</h1>
+              {id?.mode === "mock" ? <span className="chip demo">DEMO data</span> : null}
+            </div>
+            <p>How businesses see Haggle, which channels are on, and who approves spending.</p>
+          </div>
+        </header>
         {!id ? (
           <p className="note note-risk" role="alert">
             {error?.message} <span className="fix">{error?.fix}</span>
@@ -66,7 +71,7 @@ export default async function SettingsPage() {
               <h2 id="ch-h" className="dash-h2">
                 Channels
               </h2>
-              <ul className="chips" style={{ listStyle: "none", margin: 0, padding: 0 }}>
+              <ul className="chips plain-list">
                 {CHANNEL_ROWS.map((c) => {
                   const ready = id!.channels[c.key] === "ready";
                   return (
@@ -79,7 +84,7 @@ export default async function SettingsPage() {
                 })}
               </ul>
               {id.call_hours ? (
-                <p className="hint" style={{ margin: 0 }}>
+                <p className="hint">
                   Calls are placed between {hour(id.call_hours.start)} and {hour(id.call_hours.end)} ({id.workspace.timezone}).
                 </p>
               ) : null}
@@ -103,7 +108,7 @@ export default async function SettingsPage() {
                   <dd>{money(id.spend_cap_usd)}</dd>
                 </div>
               </dl>
-              <p className="note" style={{ margin: 0 }}>
+              <p className="note">
                 Nothing is paid without the approver&apos;s yes, and never above the cap. To change the approver or raise the cap, ask the operator of this Haggle workspace.
               </p>
             </section>

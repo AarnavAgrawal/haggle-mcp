@@ -5,7 +5,7 @@ import { TopBar } from "@/components/TopBar";
 import { AnswerForm, CancelDealButton, NegotiateButton } from "@/components/dashboard/DealActions";
 import { BusinessTable, Callbacks, NegotiationHistory, PurchaseStatus, QuoteList, SetupNotes, Timeline, Untrusted } from "@/components/dashboard/DealSections";
 import { LiveRefresh } from "@/components/dashboard/LiveRefresh";
-import { isTerminal, money, stamp, stateTone, stateWords } from "@/lib/dashboard/format";
+import { humanNext, isTerminal, money, stamp, stateTone, stateWords } from "@/lib/dashboard/format";
 import type { DealBoardView } from "@/lib/dashboard/types";
 import { HaggleError } from "@/lib/haggle";
 import { requireHaggle } from "@/lib/workspace";
@@ -28,9 +28,9 @@ export default async function DealPage({ params }: { params: Promise<{ jobId: st
     return (
       <>
         <TopBar email={user.email} active="deals" />
-        <main className="shell stack">
+        <main className="shell">
           <Link className="dash-back" href="/deals">
-            ← All deals
+            All deals
           </Link>
           <p className="note note-risk" role="alert">
             {error ? (
@@ -62,113 +62,133 @@ export default async function DealPage({ params }: { params: Promise<{ jobId: st
   return (
     <>
       <TopBar email={user.email} active="deals" />
-      <main className="shell stack">
+      <main className="shell">
         <Link className="dash-back" href="/deals">
-          ← All deals
+          All deals
         </Link>
 
-        <section className="card stack" aria-labelledby="deal-h">
-          <div className="dash-head">
-            <div className="dash-title">
-              <h1 id="deal-h">{d?.what ?? job.request}</h1>
-              {mode === "mock" ? <span className="chip demo">DEMO data</span> : null}
-              <span className={`chip chip-${stateTone(state)}`}>{stateWords(state)}</span>
-            </div>
-            {live ? <LiveRefresh jobId={jobId} /> : null}
+        <header className="page-head deal-head">
+          <div className="page-title">
+            <h1 id="deal-h" className="deal-title">
+              {d?.what ?? job.request}
+            </h1>
+            <span className={`chip chip-${stateTone(state)}`}>{stateWords(state)}</span>
+            {mode === "mock" ? <span className="chip demo">DEMO data</span> : null}
           </div>
-          <dl className="dash-meta">
-            {d?.headcount !== undefined ? (
-              <div>
-                <dt>For</dt>
-                <dd>{d.headcount}</dd>
-              </div>
+          {live ? <LiveRefresh jobId={jobId} /> : null}
+        </header>
+
+        <div className="deal-grid">
+          <div className="deal-main">
+            <p className="note dash-next" role="status">
+              {humanNext(board)}
+            </p>
+
+            <SetupNotes board={board} />
+
+            {board.open_questions.length ? (
+              <section className="deal-section stack" aria-labelledby="q-h">
+                <h2 id="q-h" className="dash-h2">
+                  Questions from businesses
+                </h2>
+                {board.open_questions.map((q) => (
+                  <div key={q.question_id} className="card stack">
+                    <div>
+                      <strong>{q.business}</strong>
+                      {q.asked_at ? <span className="hint"> asked {stamp(q.asked_at)}</span> : null}
+                    </div>
+                    <Untrusted text={q.text} />
+                    {live ? <AnswerForm jobId={jobId} questionId={q.question_id} business={q.business} /> : null}
+                  </div>
+                ))}
+              </section>
             ) : null}
-            <div>
-              <dt>When</dt>
-              <dd>{d?.when ?? "—"}</dd>
-            </div>
-            <div>
-              <dt>Where</dt>
-              <dd>{d?.place ?? "—"}</dd>
-            </div>
-            <div>
-              <dt>Budget</dt>
-              <dd>
-                {budget !== undefined && budget !== null ? money(budget) : "none set"}
-                {d?.budget_source === "settings_default" ? <span className="hint"> (default)</span> : null}
-              </dd>
-            </div>
-            {board.payment_ceiling_usd !== undefined ? (
-              <div>
-                <dt>Payment cap</dt>
-                <dd>{money(board.payment_ceiling_usd)}</dd>
+
+            <section className="deal-section" aria-labelledby="quotes-h">
+              <div className="dash-head">
+                <h2 id="quotes-h" className="dash-h2">
+                  Quotes
+                </h2>
+                {board.ready ? <span className="chip chip-win">Final</span> : null}
               </div>
-            ) : null}
-          </dl>
-          {job.requirements.length ? (
-            <div className="chips" aria-label="Requirements">
-              {job.requirements.map((r) => (
-                <span key={r} className="chip chip-plain">
-                  {r}
-                </span>
-              ))}
-            </div>
-          ) : null}
-          <Timeline state={state} />
-        </section>
-
-        <p className="note dash-next" role="status">
-          <strong>Next:</strong> {board.next}
-        </p>
-
-        <SetupNotes board={board} />
-
-        {board.open_questions.length ? (
-          <section className="card stack" aria-labelledby="q-h">
-            <h2 id="q-h" className="dash-h2">
-              Questions from businesses
-            </h2>
-            {board.open_questions.map((q) => (
-              <div key={q.question_id} className="stack">
-                <div>
-                  <strong>{q.business}</strong>
-                  {q.asked_at ? <span className="hint"> · {stamp(q.asked_at)}</span> : null}
+              {board.recommendation_note && !board.recommended_quote_id ? <p className="hint">{board.recommendation_note}</p> : null}
+              <QuoteList board={board} jobId={jobId} mode={mode} live={state !== "cancelled" && state !== "failed"} />
+              {canNegotiate ? (
+                <div className="quote-approve">
+                  <NegotiateButton jobId={jobId} />
                 </div>
-                <Untrusted text={q.text} />
-                {live ? <AnswerForm jobId={jobId} questionId={q.question_id} business={q.business} /> : null}
-              </div>
-            ))}
-          </section>
-        ) : null}
+              ) : null}
+            </section>
 
-        <section className="card stack" aria-labelledby="quotes-h">
-          <div className="dash-head">
-            <h2 id="quotes-h" className="dash-h2" style={{ margin: 0 }}>
-              Quotes
-            </h2>
-            {board.ready ? <span className="chip chip-win">Final</span> : null}
+            <PurchaseStatus board={board} />
+            <Callbacks board={board} jobId={jobId} />
+            <NegotiationHistory board={board} />
+
+            <section className="deal-section" aria-labelledby="biz-h">
+              <h2 id="biz-h" className="dash-h2">
+                Businesses
+              </h2>
+              <BusinessTable board={board} jobId={jobId} />
+            </section>
+
+            {live ? (
+              <section className="deal-cancel" aria-label="Stop this deal">
+                <CancelDealButton jobId={jobId} />
+              </section>
+            ) : null}
           </div>
-          {board.recommendation_note && !board.recommended_quote_id ? <p className="hint">{board.recommendation_note}</p> : null}
-          <QuoteList board={board} jobId={jobId} mode={mode} live={state !== "cancelled" && state !== "failed"} />
-          {canNegotiate ? <NegotiateButton jobId={jobId} /> : null}
-        </section>
 
-        <PurchaseStatus board={board} />
-        <Callbacks board={board} jobId={jobId} />
-        <NegotiationHistory board={board} />
-
-        <section className="card stack" aria-labelledby="biz-h">
-          <h2 id="biz-h" className="dash-h2">
-            Businesses
-          </h2>
-          <BusinessTable board={board} jobId={jobId} />
-        </section>
-
-        {live ? (
-          <section aria-label="Stop this deal">
-            <CancelDealButton jobId={jobId} />
-          </section>
-        ) : null}
+          <aside className="deal-aside" aria-label="The request">
+            <div>
+              <h2>Request</h2>
+              <dl className="dash-meta">
+                {d?.headcount !== undefined ? (
+                  <div>
+                    <dt>For</dt>
+                    <dd>{d.headcount}</dd>
+                  </div>
+                ) : null}
+                <div>
+                  <dt>Budget</dt>
+                  <dd>
+                    {budget !== undefined && budget !== null ? money(budget) : "none set"}
+                    {d?.budget_source === "settings_default" ? <span className="hint"> (default)</span> : null}
+                  </dd>
+                </div>
+                <div className="meta-wide">
+                  <dt>When</dt>
+                  <dd>{d?.when ?? "not set"}</dd>
+                </div>
+                <div className="meta-wide">
+                  <dt>Where</dt>
+                  <dd>{d?.place ?? "not set"}</dd>
+                </div>
+                {board.payment_ceiling_usd !== undefined ? (
+                  <div>
+                    <dt>Payment cap</dt>
+                    <dd>{money(board.payment_ceiling_usd)}</dd>
+                  </div>
+                ) : null}
+              </dl>
+            </div>
+            {job.requirements.length ? (
+              <div>
+                <h2>Must have</h2>
+                <div className="chips" aria-label="Requirements">
+                  {job.requirements.map((r) => (
+                    <span key={r} className="chip chip-plain">
+                      {r}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <div>
+              <h2>Progress</h2>
+              <Timeline state={state} />
+            </div>
+          </aside>
+        </div>
       </main>
     </>
   );

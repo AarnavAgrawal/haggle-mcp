@@ -9,9 +9,11 @@ export function LegalPage({ title, children }: { title: string; children: ReactN
   return (
     <>
       <header className="topbar">
-        <Link className="brand" href="/">
-          Haggle
-        </Link>
+        <div className="wrap topbar-inner">
+          <Link className="brand" href="/">
+            Haggle
+          </Link>
+        </div>
       </header>
       <main className="shell legal">
         <p className="legal-draft" role="note">

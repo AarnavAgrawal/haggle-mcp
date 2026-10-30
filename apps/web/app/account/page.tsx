@@ -23,7 +23,9 @@ export default async function AccountPage() {
     <>
       <TopBar email={user.email} active="account" />
       <main className="shell stack acct">
-        <h1>Account</h1>
+        <header className="page-head">
+          <h1>Account</h1>
+        </header>
         <section className="card stack">
           <h2>Your account</h2>
           <dl className="acct-facts">

@@ -7,12 +7,12 @@ import { Footer } from "@/components/Footer";
 export default function ErrorPage({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
     <>
-      <main className="shell" style={{ maxWidth: 520, paddingTop: 72 }}>
+      <main className="shell shell-narrow">
         <div className="card stack" role="alert">
           <h1>Something went wrong</h1>
           <p className="muted">This page couldn't load. Your deals keep running on the Haggle server; nothing was sent or paid because of this error.</p>
           {error.digest ? <p className="hint">Reference: {error.digest}</p> : null}
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="actions">
             <button className="btn btn-primary" type="button" onClick={() => reset()}>
               Try again
             </button>

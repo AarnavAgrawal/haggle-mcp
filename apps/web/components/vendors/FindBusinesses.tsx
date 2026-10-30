@@ -34,14 +34,12 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
   }
 
   return (
-    <section className="card stack" aria-labelledby="find-h">
-      <h2 id="find-h" className="dash-h2">
-        Find businesses
-      </h2>
-      <p className="hint" style={{ margin: 0 }}>
-        Search public listings. Haggle contacts none of these until you add one as a vendor.
-      </p>
-      <form className="vend-grid vend-search" onSubmit={search}>
+    <section className="section" aria-labelledby="find-h">
+      <div className="section-head">
+        <h2 id="find-h">Find businesses</h2>
+        <p>Search Google listings for real businesses near you. Haggle contacts none of them until you add one as a vendor.</p>
+      </div>
+      <form className="vend-search" onSubmit={search}>
         <div>
           <label htmlFor="fb-cat">Kind of business</label>
           <input id="fb-cat" value={category} maxLength={100} placeholder="caterer, plumber, print shop" onChange={(e) => setCategory(e.target.value)} />
@@ -52,21 +50,21 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
           </label>
           <input id="fb-area" value={area} maxLength={200} placeholder="San Francisco" onChange={(e) => setArea(e.target.value)} />
         </div>
-        <div className="vend-search-btn">
+        <div>
           <button className="btn" type="submit" disabled={busy}>
             {busy ? "Searching…" : "Search"}
           </button>
         </div>
       </form>
       {failure ? (
-        <p className="note note-risk" role="alert" style={{ margin: 0 }}>
+        <p className="note note-risk" role="alert">
           {failure.message} <span className="fix">{failure.fix}</span>
         </p>
       ) : null}
       {result ? (
-        <div className="stack" aria-live="polite">
+        <div className="vend-results" aria-live="polite">
           {result.status !== "ok" || !result.found.length ? (
-            <p className="note" style={{ margin: 0 }}>
+            <p className="note">
               {result.message || "No businesses found."}
             </p>
           ) : (
@@ -78,7 +76,7 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
                   return (
                     <li key={f.business_ref} className="vend-item">
                       <div className="vend-main">
-                        <div className="dash-row dash-wrap">
+                        <div className="vend-name">
                           <strong>{f.name}</strong>
                           {f.rating !== undefined ? (
                             <span className="hint">
@@ -88,7 +86,7 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
                           <span className={`chip chip-${cw.tone}`}>{cw.label}</span>
                         </div>
                         {f.address ? <div className="hint">{f.address}</div> : null}
-                        <div className="hint dash-row dash-wrap">
+                        <div className="hint vend-links">
                           {f.website ? (
                             <a href={f.website} target="_blank" rel="noopener noreferrer nofollow">
                               Website
@@ -115,7 +113,7 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
                   );
                 })}
               </ul>
-              <p className="hint" style={{ margin: 0 }}>
+              <p className="hint">
                 Listings: Google Maps. To add one, copy the business&apos;s email from its website; a phone call or text needs the business&apos;s agreement or an existing relationship.
               </p>
             </>

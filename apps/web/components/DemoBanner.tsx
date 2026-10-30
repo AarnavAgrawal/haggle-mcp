@@ -5,7 +5,7 @@ export function DemoBanner() {
   if (!DEMO) return null;
   return (
     <div className="demo-banner" role="note">
-      <strong>Demo</strong> · Simulated businesses reply by email, text and phone. No real business is contacted and no money moves.
+      <strong>This is the demo.</strong> Simulated businesses reply by email, text and phone. No real business is contacted and no money moves.
     </div>
   );
 }

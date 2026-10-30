@@ -53,7 +53,7 @@ export default async function ConversationPage({ params }: { params: Promise<{ j
               </div>
               <LiveRefresh jobId={jobId} />
             </div>
-            <p className="hint" style={{ margin: 0 }}>
+            <p className="hint">
               Everything Haggle sent and received, oldest first. Text from the business is shown exactly as received; Haggle never follows links or payment requests in it.
             </p>
 
@@ -71,7 +71,7 @@ export default async function ConversationPage({ params }: { params: Promise<{ j
                         <time dateTime={e.at}>{stamp(e.at)}</time>
                       </div>
                       {inbound ? (
-                        <div className="dash-row dash-wrap" style={{ marginBottom: 4 }}>
+                        <div className="dash-row dash-wrap">
                           <span className="untrusted-label">from the business, unverified</span>
                           {e.sender_verified === false ? <span className="chip chip-risk">sender not verified</span> : null}
                           {e.quarantined ? <span className="chip chip-risk">quarantined</span> : null}
