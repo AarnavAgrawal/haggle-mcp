@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useTransition } from "react";
+import { Button } from "@/components/ui/Button";
 import { supabaseBrowser } from "@/lib/supabase/browser";
 
 /** One-click guest access (Supabase anonymous sign-in): straight into a new request. */
@@ -9,9 +11,9 @@ export function GuestButton({ label = "Try the demo", className = "btn btn-prima
   // With bot protection on, a guest sign-in needs the captcha token: /login has the widget.
   if (process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY) {
     return (
-      <a className={className} href="/login">
+      <Link className={className} href="/login">
         {label}
-      </a>
+      </Link>
     );
   }
   return <GuestSignIn label={label} className={className} />;
@@ -19,25 +21,30 @@ export function GuestButton({ label = "Try the demo", className = "btn btn-prima
 
 function GuestSignIn({ label, className }: { label: string; className: string }) {
   const router = useRouter();
-  const [pending, setPending] = useState(false);
+  // signingIn covers the Supabase call; the transition keeps the button pending until /chat has rendered.
+  const [signingIn, setSigningIn] = useState(false);
+  const [navigating, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const start = async () => {
-    setPending(true);
+    setSigningIn(true);
     setError(null);
     const { error } = await supabaseBrowser().auth.signInAnonymously();
     if (error) {
       setError(error.message);
-      setPending(false);
+      setSigningIn(false);
       return;
     }
-    router.push("/chat");
-    router.refresh();
+    startTransition(() => {
+      router.push("/chat");
+      router.refresh();
+    });
   };
+  const pending = signingIn || navigating;
   return (
     <span className="guest">
-      <button type="button" className={className} onClick={() => void start()} disabled={pending}>
-        {pending ? "Starting…" : label}
-      </button>
+      <Button className={className} pending={pending} onClick={() => void start()}>
+        {label}
+      </Button>
       {error && (
         <span className="note note-risk" role="alert">
           {error}
