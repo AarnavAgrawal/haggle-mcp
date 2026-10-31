@@ -1,38 +1,42 @@
-/* Haggle web design system.
-   Paper and ink like a purchase order: cool paper, white sheets, blue-black ink, carbon-copy blue for
-   links and the current place, and one loud color (sale-sticker yellow) spent only on money saved.
-   Type is Archivo: normal width for text, expanded width for prices and the wordmark.
-   Older token names (--panel, --info, --win…) are kept so every page's CSS reads the same palette. */
+/* Haggle web: tokens and base styles. The design direction is apps/web/DESIGN.md ("a marked-up quote"):
+   a clean printed sheet on a cool desk, ink-blue text, pen blue for actions and marks, and the
+   highlighter spent only on money saved. Primitives (buttons, fields, marks…) live in
+   components/ui/ui.css; the app shell in components/shell/shell.css.
+
+   Legacy token names (--paper, --panel, --carbon, --win, --warn, --info…) are aliases onto the new
+   tokens so older page CSS keeps reading the same palette. New code uses the new names. */
 :root {
-  --paper: #f3f4f7;
-  --panel: #ffffff;
-  --ink: #1b1f33;
-  --ink-2: #464c63;
-  --ink-3: #6a7086;
-  --rule: #dfe2ea;
-  --rule-strong: #c5cad7;
-  --carbon: #3a3dc0;
-  --carbon-soft: #ebebfb;
-  --sticker: #ffd43b;
-  --sticker-ink: #1b1f33;
-  --win: #0a7a4e;
-  --win-soft: #e2f3eb;
+  /* ---------- color (light) ---------- */
+  --desk: #eef0f3;
+  --sheet: #ffffff;
+  --ink: #15203a;
+  --ink-2: #4b556b;
+  --ink-3: #646d82; /* DESIGN.md had #7A8296 (3.4:1 on the desk); darkened so hints pass AA (4.5:1) */
+  --rule: #dce0e7;
+  --rule-strong: #bfc5d1;
+  --pen: #2346d8;
+  --pen-strong: #1a37b4; /* pressed / hovered pen */
+  --pen-wash: #e8edff;
+  --on-pen: #ffffff;
+  --highlight: #e4f53b;
+  --on-highlight: #15203a;
+  --signed: #0d7a4c;
+  --signed-wash: #e3f3ea;
+  --hold: #8a5a00;
+  --hold-wash: #fbf0d9;
   --risk: #b42318;
-  --risk-soft: #fceceb;
-  --warn: #8a5800;
-  --warn-soft: #fbf1db;
-  --info: var(--carbon);
-  --info-soft: var(--carbon-soft);
-  --on-ink: #ffffff;
+  --risk-wash: #fcebea;
+  --skeleton: #e3e6ec;
+  --skeleton-shine: #f1f3f6;
+  --shadow-float: 0 8px 24px -12px rgb(21 32 58 / 0.28), 0 1px 2px rgb(21 32 58 / 0.06);
+  --scrim: rgb(12 18 32 / 0.36);
 
-  --radius-s: 6px;
-  --radius-m: 10px;
-  --wrap: 1120px;
-  --gutter: clamp(16px, 4vw, 32px);
-
-  /* The classic typographic scale. */
+  /* ---------- type ---------- */
+  --font-text: var(--font-schibsted), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: var(--font-bricolage), var(--font-text);
   --t-12: 12px;
   --t-14: 14px;
+  --t-15: 15px;
   --t-16: 16px;
   --t-18: 18px;
   --t-21: 21px;
@@ -42,31 +46,76 @@
   --t-48: 48px;
   --t-60: 60px;
 
-  --font: var(--font-archivo), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* ---------- shape, space, layout ---------- */
+  --r-control: 4px;
+  --r-sheet: 8px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-12: 48px;
+  --s-16: 64px;
+  --rail: 256px;
+  --content: 1080px; /* app pages: max content width, left-aligned */
+  --wrap: 1120px; /* public pages */
+  --gutter: clamp(16px, 4vw, 32px);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ---------- legacy aliases (older page CSS) ---------- */
+  --paper: var(--desk);
+  --panel: var(--sheet);
+  --carbon: var(--pen);
+  --carbon-soft: var(--pen-wash);
+  --sticker: var(--highlight);
+  --sticker-ink: var(--on-highlight);
+  --win: var(--signed);
+  --win-soft: var(--signed-wash);
+  --risk-soft: var(--risk-wash);
+  --warn: var(--hold);
+  --warn-soft: var(--hold-wash);
+  --info: var(--pen);
+  --info-soft: var(--pen-wash);
+  --on-ink: var(--on-pen);
+  --radius-s: var(--r-control);
+  --radius-m: var(--r-sheet);
+  --font: var(--font-text);
+
   color-scheme: light;
 }
+
+/* Dark: designed, not inverted. Washes are ~15% of their color over the sheet. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #0f111a;
-    --panel: #171a27;
-    --ink: #e9ebf3;
-    --ink-2: #b4b9cc;
-    --ink-3: #868ca3;
-    --rule: #272b3c;
-    --rule-strong: #363b50;
-    --carbon: #a9abff;
-    --carbon-soft: #22244a;
-    --win: #4fd39d;
-    --win-soft: #12321f;
-    --risk: #ff8f84;
-    --risk-soft: #3a1b1a;
-    --warn: #f1bd55;
-    --warn-soft: #35280f;
-    --on-ink: #0f111a;
+    --desk: #0c1220;
+    --sheet: #131b2d;
+    --ink: #e6e9f2;
+    --ink-2: #aeb5c7;
+    --ink-3: #7f879c;
+    --rule: #222b40;
+    --rule-strong: #313c56;
+    --pen: #8fa3ff;
+    --pen-strong: #b0bdff;
+    --pen-wash: #1c2550;
+    --on-pen: #0c1220;
+    --highlight: #d6ec2e;
+    --on-highlight: #15203a;
+    --signed: #4ccb92;
+    --signed-wash: #1c353c;
+    --hold: #f0b54a;
+    --hold-wash: #33301f;
+    --risk: #ff8a80;
+    --risk-wash: #382a33;
+    --skeleton: #1b2438;
+    --skeleton-shine: #232d44;
+    --shadow-float: 0 12px 32px -12px rgb(0 0 0 / 0.7), 0 0 0 1px var(--rule);
+    --scrim: rgb(4 7 14 / 0.6);
     color-scheme: dark;
   }
 }
 
+/* ---------- base ---------- */
 *,
 *::before,
 *::after {
@@ -74,51 +123,72 @@
 }
 html {
   -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 body {
   margin: 0;
   min-height: 100dvh;
   color: var(--ink);
-  background: var(--paper);
-  font-family: var(--font);
+  background: var(--desk);
+  font-family: var(--font-text);
   font-size: var(--t-16);
   line-height: 1.55;
-  -webkit-font-smoothing: antialiased;
 }
 a {
-  color: var(--carbon);
-  text-underline-offset: 0.18em;
+  color: var(--pen);
+  text-underline-offset: 0.2em;
   text-decoration-thickness: 1px;
+}
+a:hover {
+  text-decoration-thickness: 2px;
 }
 h1,
 h2,
-h3 {
+h3,
+h4 {
   margin: 0;
-  line-height: 1.2;
-  font-stretch: 108%;
-  letter-spacing: -0.01em;
+  font-family: var(--font-display);
+  line-height: 1.15;
+  text-wrap: balance;
 }
 h1 {
   font-size: var(--t-30);
   font-weight: 750;
+  letter-spacing: -0.02em;
 }
 h2 {
   font-size: var(--t-21);
   font-weight: 700;
+  letter-spacing: -0.01em;
 }
 h3 {
   font-size: var(--t-18);
   font-weight: 650;
 }
+h4 {
+  font-size: var(--t-16);
+  font-weight: 650;
+}
+@media (min-width: 1200px) {
+  h1 {
+    font-size: var(--t-36);
+  }
+}
 p {
   margin: 0;
+  text-wrap: pretty;
 }
 code {
   font-size: 0.92em;
 }
 :focus-visible {
-  outline: 2px solid var(--carbon);
+  outline: 2px solid var(--pen);
   outline-offset: 2px;
+}
+::selection {
+  background: var(--pen-wash);
+  color: var(--ink);
 }
 .sr-only {
   position: absolute;
@@ -131,8 +201,19 @@ code {
   white-space: nowrap;
   border: 0;
 }
+/* Prices, counters, amounts in tables: figures that don't shift as they change. Tabular figures come
+   from Bricolage only: Schibsted Grotesk's tnum also widens commas and colons ("$1 , 200"), so never put
+   font-variant-numeric: tabular-nums on body-face text. */
+.num,
+.tabular {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.display {
+  font-family: var(--font-display);
+}
 
-/* ---------- layout: one width for the bar, the page and the footer, so every left edge lines up ---------- */
+/* ---------- layout ---------- */
 .wrap,
 .shell {
   width: 100%;
@@ -170,104 +251,22 @@ code {
   align-items: center;
   gap: 8px 12px;
 }
-
-/* ---------- top bar ---------- */
-.topbar {
-  background: var(--panel);
-  border-bottom: 1px solid var(--rule);
-}
-.topbar-inner {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  min-height: 60px;
-}
 .brand {
-  font-size: var(--t-21);
+  font-family: var(--font-display);
+  font-size: var(--t-24);
   font-weight: 800;
-  font-stretch: 125%;
-  letter-spacing: -0.02em;
+  font-stretch: 88%;
+  letter-spacing: -0.03em;
   color: var(--ink);
   text-decoration: none;
   line-height: 1;
 }
-.nav {
-  display: flex;
-  align-items: stretch;
-  gap: 4px;
-  align-self: stretch;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.navlink {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 10px;
-  color: var(--ink-2);
-  font-size: var(--t-14);
-  font-weight: 600;
-  text-decoration: none;
-  white-space: nowrap;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-}
-.navlink:hover {
-  color: var(--ink);
-}
-.navlink[aria-current="page"] {
-  color: var(--ink);
-  border-bottom-color: var(--carbon);
-}
-.topbar-user {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0;
-  flex: none;
-}
-.topbar-email {
-  max-width: 22ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink-3);
-  font-size: var(--t-14);
-}
-@media (max-width: 760px) {
-  .topbar-inner {
-    flex-wrap: wrap;
-    gap: 0 16px;
-    padding-top: 10px;
-  }
-  .nav {
-    order: 3;
-    flex-basis: 100%;
-    min-height: 44px;
-    margin-inline: -10px;
-  }
-  .topbar-user {
-    margin-left: auto;
-  }
-  .topbar-email {
-    display: none;
-  }
-}
 
-.demo-banner {
-  padding: 8px var(--gutter);
-  background: var(--warn-soft);
-  color: var(--warn);
-  font-size: var(--t-14);
-  text-align: center;
-}
-
-/* ---------- surfaces ---------- */
+/* ---------- surfaces (legacy classes, restyled) ---------- */
 .card {
-  background: var(--panel);
+  background: var(--sheet);
   border: 1px solid var(--rule);
-  border-radius: var(--radius-m);
+  border-radius: var(--r-sheet);
   padding: 20px 24px;
 }
 .section {
@@ -295,13 +294,13 @@ code {
   font-size: var(--t-14);
 }
 .hint.warn {
-  color: var(--warn);
+  color: var(--hold);
 }
 
-/* ---------- money: the one loud thing ---------- */
+/* ---------- money ---------- */
 .price {
-  font-weight: 750;
-  font-stretch: 125%;
+  font-family: var(--font-display);
+  font-weight: 700;
   font-variant-numeric: tabular-nums lining-nums;
   letter-spacing: -0.01em;
   white-space: nowrap;
@@ -309,125 +308,26 @@ code {
 .price-was {
   color: var(--ink-3);
   text-decoration: line-through;
-  text-decoration-color: var(--risk);
+  text-decoration-color: var(--pen);
   text-decoration-thickness: 2px;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums lining-nums;
   white-space: nowrap;
 }
+/* Savings: a highlighter swipe (the only place --highlight appears). */
 .sticker {
   display: inline-block;
-  padding: 2px 8px 3px;
-  border-radius: 4px;
-  background: var(--sticker);
-  color: var(--sticker-ink);
+  padding: 0 4px;
+  border-radius: 2px;
+  background: var(--highlight);
+  color: var(--on-highlight);
+  font-family: var(--font-display);
   font-size: var(--t-14);
-  font-weight: 800;
-  font-stretch: 112%;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  transform: rotate(-3deg);
-  box-shadow: 0 1px 0 rgba(27, 31, 51, 0.25);
-}
-.num {
-  font-variant-numeric: tabular-nums;
-}
-
-/* ---------- forms ---------- */
-label {
-  display: block;
-  font-size: var(--t-14);
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-input:not([type="checkbox"]):not([type="radio"]),
-select,
-textarea {
-  width: 100%;
-  min-height: 42px;
-  padding: 9px 12px;
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--radius-s);
-  background: var(--panel);
-  color: var(--ink);
-  font: inherit;
-  font-size: var(--t-16);
-}
-textarea {
-  resize: vertical;
-  line-height: 1.5;
-}
-select {
-  width: auto;
-  max-width: 100%;
-}
-input::placeholder,
-textarea::placeholder {
-  color: var(--ink-3);
-}
-input[type="checkbox"],
-input[type="radio"] {
-  width: 18px;
-  height: 18px;
-  margin: 2px 0 0;
-  accent-color: var(--carbon);
-  flex: none;
-}
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: 2px solid var(--carbon);
-  outline-offset: 0;
-  border-color: var(--carbon);
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 42px;
-  padding: 0 16px;
-  border-radius: var(--radius-s);
-  border: 1px solid var(--rule-strong);
-  background: var(--panel);
-  color: var(--ink);
-  font: inherit;
-  font-size: var(--t-14);
-  font-weight: 650;
-  line-height: 1.2;
-  cursor: pointer;
-  text-decoration: none;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums lining-nums;
   white-space: nowrap;
 }
-.btn:hover {
-  border-color: var(--ink-3);
-}
-.btn-primary {
-  background: var(--ink);
-  border-color: var(--ink);
-  color: var(--on-ink);
-}
-.btn-primary:hover {
-  background: var(--ink-2);
-  border-color: var(--ink-2);
-}
-.btn-danger {
-  background: var(--risk);
-  border-color: var(--risk);
-  color: var(--on-ink);
-}
-.btn-quiet {
-  border-color: transparent;
-  background: transparent;
-  color: var(--ink-2);
-}
-.btn-block {
-  width: 100%;
-}
-.btn:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
+
+/* ---------- lists, notes, legacy chips ---------- */
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -443,41 +343,38 @@ textarea:focus-visible {
   color: var(--ink-3);
   font-size: var(--t-14);
 }
-
-/* ---------- notes and tags ---------- */
 .note {
   padding: 12px 14px;
-  border-radius: var(--radius-s);
-  border-left: 3px solid var(--carbon);
-  background: var(--carbon-soft);
+  border-radius: var(--r-control);
+  border-left: 3px solid var(--pen);
+  background: var(--pen-wash);
   color: var(--ink);
   font-size: var(--t-14);
 }
 .note-risk {
   border-left-color: var(--risk);
-  background: var(--risk-soft);
-  color: var(--ink);
+  background: var(--risk-wash);
 }
 .fix {
   color: var(--ink-2);
 }
-
+/* Legacy status chips: page agents replace them with <Status>. Kept quiet (no pill) meanwhile. */
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: var(--carbon-soft);
-  color: var(--carbon);
+  padding: 1px 8px;
+  border-radius: var(--r-control);
+  background: var(--pen-wash);
+  color: var(--pen);
   font-size: var(--t-12);
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.6;
   white-space: nowrap;
 }
 .demo {
-  background: var(--warn-soft);
-  color: var(--warn);
+  background: var(--hold-wash);
+  color: var(--hold);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -487,5 +384,6 @@ textarea:focus-visible {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

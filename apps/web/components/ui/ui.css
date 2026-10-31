@@ -1,0 +1,674 @@
+/* UI primitives (components/ui/*). Loaded once by the root layout, after app/globals.css (tokens).
+   DESIGN.md "Components" documents the API. Page CSS loads later and may refine these per page. */
+
+/* ---------- buttons (.btn API: .btn-primary .btn-quiet .btn-danger .btn-block .btn-s .btn-icon) ---------- */
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--rule-strong);
+  background: var(--sheet);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-15);
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition-property: background-color, border-color, color, transform;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+.btn:hover {
+  border-color: var(--ink-3);
+  text-decoration: none;
+}
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.btn .icon {
+  flex: none;
+}
+.btn-primary {
+  background: var(--pen);
+  border-color: var(--pen);
+  color: var(--on-pen);
+}
+.btn-primary:hover {
+  background: var(--pen-strong);
+  border-color: var(--pen-strong);
+}
+.btn-danger {
+  background: var(--sheet);
+  border-color: var(--risk);
+  color: var(--risk);
+}
+.btn-danger:hover {
+  background: var(--risk);
+  border-color: var(--risk);
+  color: var(--sheet);
+}
+.btn-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-2);
+}
+.btn-quiet:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+.btn-s {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: var(--t-14);
+}
+.btn-icon {
+  padding: 0;
+  width: 40px;
+}
+.btn-s.btn-icon {
+  width: 32px;
+}
+.btn-block {
+  width: 100%;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* Pending: full color (it's working, not unavailable) and a progress stroke along the bottom edge. */
+.btn[aria-busy="true"] {
+  opacity: 1;
+  cursor: progress;
+}
+.btn[aria-busy="true"]::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 5px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.55;
+  transform-origin: left center;
+  animation: btn-busy 1.1s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+}
+.btn-s[aria-busy="true"]::after {
+  bottom: 3px;
+}
+@keyframes btn-busy {
+  0% {
+    transform: scaleX(0);
+    transform-origin: left center;
+  }
+  50% {
+    transform: scaleX(1);
+    transform-origin: left center;
+  }
+  50.01% {
+    transform-origin: right center;
+  }
+  100% {
+    transform: scaleX(0);
+    transform-origin: right center;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn[aria-busy="true"]::after {
+    animation: none;
+    right: 50%;
+  }
+  .btn:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* ---------- form controls (bare elements and <Field>) ---------- */
+label {
+  display: block;
+  font-size: var(--t-14);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+select,
+textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-16); /* 16px: no zoom-on-focus on iOS */
+  line-height: 1.4;
+  transition: border-color 120ms ease-out;
+}
+input:not([type="checkbox"]):not([type="radio"]):hover,
+select:hover,
+textarea:hover {
+  border-color: var(--ink-3);
+}
+textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+select {
+  width: auto;
+  max-width: 100%;
+  padding-right: 32px;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237a8296' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--ink-3);
+  opacity: 1;
+}
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--pen);
+  outline-offset: -1px;
+  border-color: var(--pen);
+}
+input[aria-invalid="true"],
+select[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--risk);
+}
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background: var(--desk);
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+input[type="checkbox"],
+input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--pen);
+  flex: none;
+}
+.field {
+  display: grid;
+  gap: 6px;
+}
+.field + .field {
+  margin-top: 16px;
+}
+.field-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--t-14);
+  font-weight: 600;
+  color: var(--ink);
+}
+.field-optional {
+  font-weight: 400;
+  color: var(--ink-3);
+}
+.field-hint {
+  margin-top: -2px;
+  font-size: var(--t-14);
+  color: var(--ink-3);
+}
+.field-error {
+  font-size: var(--t-14);
+  color: var(--risk);
+}
+
+/* ---------- status: 8px dot + words ---------- */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: var(--t-14);
+  line-height: 1.4;
+  min-width: 0;
+}
+.status-words {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-hold {
+  color: var(--hold);
+}
+.status-risk {
+  color: var(--risk);
+}
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--ink-3);
+}
+.dot-live {
+  background: var(--pen);
+  animation: dot-breathe 1.8s ease-in-out infinite;
+}
+.dot-ok {
+  background: var(--signed);
+}
+.dot-hold {
+  background: var(--hold);
+}
+.dot-risk {
+  background: var(--risk);
+}
+.dot-idle {
+  background: var(--rule-strong);
+}
+@keyframes dot-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--pen) 45%, transparent);
+  }
+  60% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--pen) 0%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dot-live {
+    animation: none;
+  }
+}
+
+/* ---------- money ---------- */
+.price-s {
+  font-size: var(--t-14);
+}
+.price-m {
+  font-size: var(--t-16);
+}
+.price-l {
+  font-size: var(--t-24);
+  letter-spacing: -0.015em;
+}
+.price-xl {
+  font-size: var(--t-36);
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+.price-unknown {
+  color: var(--ink-3);
+  font-size: var(--t-14);
+  white-space: nowrap;
+}
+
+/* ---------- pen marks ---------- */
+.pen {
+  position: relative;
+  display: inline-block;
+  white-space: nowrap;
+}
+.pen-svg {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+.pen-stroke {
+  fill: none;
+  stroke: var(--pen);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+.pen-fill {
+  fill: var(--highlight);
+}
+.pen-struck del {
+  color: var(--ink-3);
+  text-decoration: none;
+}
+.pen-struck-svg {
+  left: -3px;
+  right: -3px;
+  top: 8%;
+  width: calc(100% + 6px);
+  height: 84%;
+}
+.pen-circled {
+  isolation: isolate;
+}
+.pen-circled-svg {
+  left: -0.6em;
+  top: -0.5em;
+  width: calc(100% + 1.2em);
+  height: calc(100% + 1em);
+}
+.pen-circled .pen-stroke {
+  stroke-width: 1.75;
+}
+.pen-hl {
+  isolation: isolate;
+  padding: 0 3px;
+  margin: 0 -3px;
+}
+.pen-hl-svg {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+}
+.pen-hl-text {
+  position: relative;
+  color: var(--on-highlight);
+}
+.pen-hl-text .price,
+.pen-hl-text .price-unknown {
+  color: var(--on-highlight);
+}
+.pen-under {
+  padding-bottom: 5px;
+}
+.pen-underline {
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: -1px;
+  height: 6px;
+  pointer-events: none;
+}
+.pen-underline-svg {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+/* Draw once. Straight marks (strike, underline, highlighter) are revealed left to right, the way the
+   pen moves; their non-scaling stroke can't use dash offsets (Chrome measures dashes in screen space).
+   The circle scales its stroke with the box (no non-scaling stroke) so it can draw by dash offset. */
+.pen-circled .pen-stroke {
+  vector-effect: none;
+  stroke-width: 2;
+}
+/* The stroke scales with the box: thinner units around big totals keep it ballpoint-weight. */
+.pen-circled:has(.price-xl) .pen-stroke {
+  stroke-width: 1.5;
+}
+.pen-circled:has(.price-s) .pen-stroke {
+  stroke-width: 2.6;
+}
+[data-animate] .pen-struck-svg,
+[data-animate] .pen-underline-svg,
+[data-animate] .pen-hl-svg {
+  clip-path: inset(-4px 100% -4px -4px);
+  animation: pen-swipe 420ms var(--ease-out) var(--pen-delay, 0ms) forwards;
+}
+.pen-circled[data-animate] .pen-stroke {
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 1;
+  animation: pen-draw 640ms var(--ease-out) var(--pen-delay, 0ms) forwards;
+}
+@keyframes pen-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes pen-swipe {
+  to {
+    clip-path: inset(-4px -4px -4px -4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-animate] .pen-struck-svg,
+  [data-animate] .pen-underline-svg,
+  [data-animate] .pen-hl-svg {
+    animation: none;
+    clip-path: none;
+  }
+  .pen-circled[data-animate] .pen-stroke {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}
+@media (prefers-color-scheme: dark) {
+  .pen-stroke {
+    stroke-width: 2.25;
+  }
+}
+
+/* ---------- skeleton ---------- */
+.skeleton {
+  display: block;
+  max-width: 100%;
+  border-radius: var(--r-control);
+  background: linear-gradient(90deg, var(--skeleton) 0%, var(--skeleton-shine) 40%, var(--skeleton) 80%) 0 0 / 300% 100%;
+  animation: skeleton-shine 1.6s linear infinite;
+}
+.skeleton-text {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+@keyframes skeleton-shine {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background: var(--skeleton);
+  }
+}
+
+/* ---------- icon ---------- */
+.icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: -0.15em;
+}
+
+/* ---------- badge (the Demo marker only) ---------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--hold) 35%, transparent);
+  background: var(--hold-wash);
+  color: var(--hold);
+  font-size: var(--t-12);
+  font-weight: 650;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* ---------- demo bar (components/DemoBanner) ---------- */
+.demo-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 6px var(--gutter);
+  background: var(--hold-wash);
+  border-bottom: 1px solid color-mix(in srgb, var(--hold) 18%, transparent);
+  color: var(--ink-2);
+  font-size: var(--t-14);
+  line-height: 1.4;
+}
+.demo-banner .badge {
+  background: transparent;
+}
+@media (prefers-color-scheme: dark) {
+  .demo-banner {
+    background: color-mix(in srgb, var(--hold) 8%, var(--desk));
+  }
+}
+.demo-banner-text {
+  min-width: 0;
+}
+@media (max-width: 560px) {
+  .demo-banner {
+    font-size: 13px;
+  }
+  .demo-banner-long {
+    display: none;
+  }
+}
+
+/* ---------- sheet and empty state ---------- */
+.ui-sheet {
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sheet);
+  padding: 20px 24px;
+}
+.ui-sheet-pad-s {
+  padding: 12px 16px;
+}
+.ui-sheet-pad-none {
+  padding: 0;
+  overflow: hidden;
+}
+.empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 32px;
+}
+.empty-title {
+  font-size: var(--t-21);
+}
+.empty-body {
+  max-width: 56ch;
+  color: var(--ink-2);
+}
+.empty-action {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ---------- drawer (<dialog>) ---------- */
+html:has(dialog.drawer[open]) {
+  overflow: hidden;
+}
+.drawer {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: min(320px, 88vw);
+  max-width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  overflow: visible;
+  transform: translateX(-100%);
+  transition:
+    transform 150ms ease-in,
+    overlay 150ms allow-discrete,
+    display 150ms allow-discrete;
+}
+.drawer-right {
+  inset: 0 0 0 auto;
+  width: min(440px, 100vw);
+  transform: translateX(100%);
+}
+.drawer[open] {
+  transform: none;
+  transition-duration: 200ms;
+  transition-timing-function: var(--ease-out);
+}
+@starting-style {
+  .drawer[open] {
+    transform: translateX(-100%);
+  }
+  .drawer-right[open] {
+    transform: translateX(100%);
+  }
+}
+.drawer::backdrop {
+  background: var(--scrim);
+  opacity: 0;
+  transition:
+    opacity 150ms ease-in,
+    overlay 150ms allow-discrete,
+    display 150ms allow-discrete;
+}
+.drawer[open]::backdrop {
+  opacity: 1;
+  transition-duration: 200ms;
+}
+@starting-style {
+  .drawer[open]::backdrop {
+    opacity: 0;
+  }
+}
+.drawer-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--desk);
+  border-right: 1px solid var(--rule);
+  box-shadow: var(--shadow-float);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.drawer-right .drawer-panel {
+  background: var(--sheet);
+  border-right: 0;
+  border-left: 1px solid var(--rule);
+}
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px 12px 24px;
+  border-bottom: 1px solid var(--rule);
+}
+.drawer-head-bare {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  padding: 8px;
+  border: 0;
+}
+.drawer-title {
+  font-size: var(--t-18);
+}
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+}
+.drawer-right .drawer-body {
+  padding: 24px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .drawer::backdrop {
+    transition: none;
+  }
+}

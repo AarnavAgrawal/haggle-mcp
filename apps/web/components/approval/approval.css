@@ -44,8 +44,8 @@
 .ap-big {
   font-size: var(--t-24);
   font-weight: 750;
-  font-stretch: 125%;
-  font-variant-numeric: tabular-nums;
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums lining-nums;
   line-height: 1.2;
 }
 .ap-demo {
