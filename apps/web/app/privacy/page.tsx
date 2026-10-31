@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: "Privacy · Haggle" };
 
 export default function PrivacyPage() {
   return (
-    <LegalPage title="Privacy Policy">
+    <LegalPage title="Privacy Policy" current="privacy">
       <p>
         This policy explains what [Company legal name] (&quot;Haggle&quot;) collects when you use Haggle, why, who processes it for us, and your choices. It
         also covers the businesses Haggle contacts for you.

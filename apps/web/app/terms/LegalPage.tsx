@@ -1,27 +1,54 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { Footer } from "@/components/Footer";
+import { buttonClass } from "@/components/ui/Button";
+import { PenUnderline } from "@/components/ui/PenMarks";
 import { LEGAL_DRAFT_NOTE, supportEmail, TERMS_VERSION } from "@/lib/account/legal";
 import "./legal.css";
 
-/** Shared frame for /terms, /privacy and /acceptable-use: the draft banner, title, version and footer. */
-export function LegalPage({ title, children }: { title: string; children: ReactNode }) {
+const DOCS = [
+  { key: "terms", href: "/terms", label: "Terms" },
+  { key: "privacy", href: "/privacy", label: "Privacy" },
+  { key: "acceptable-use", href: "/acceptable-use", label: "Acceptable use" },
+] as const;
+
+export type LegalDoc = (typeof DOCS)[number]["key"];
+
+/** Shared frame for /terms, /privacy and /acceptable-use: the policies nav, draft note, title, version and footer. */
+export function LegalPage({ title, current, children }: { title: string; current: LegalDoc; children: ReactNode }) {
   return (
     <>
-      <header className="topbar">
-        <div className="wrap topbar-inner">
+      <header className="legal-bar">
+        <div className="wrap legal-bar-inner">
           <Link className="brand" href="/">
             Haggle
           </Link>
+          <Link className={buttonClass("quiet", { size: "s" })} href="/">
+            Back to Haggle
+          </Link>
         </div>
       </header>
-      <main className="shell legal">
-        <p className="legal-draft" role="note">
-          {LEGAL_DRAFT_NOTE}
-        </p>
-        <h1>{title}</h1>
-        <p className="muted">Version {TERMS_VERSION}</p>
-        {children}
+      <main className="wrap legal">
+        <nav className="legal-nav" aria-label="Policies">
+          <ul>
+            {DOCS.map((d) => (
+              <li key={d.key}>
+                <Link href={d.href} aria-current={d.key === current ? "page" : undefined}>
+                  {d.label}
+                  {d.key === current ? <PenUnderline /> : null}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <article className="legal-article">
+          <p className="legal-draft" role="note">
+            {LEGAL_DRAFT_NOTE}
+          </p>
+          <h1>{title}</h1>
+          <p className="legal-meta">Version {TERMS_VERSION}</p>
+          {children}
+        </article>
       </main>
       <Footer />
     </>

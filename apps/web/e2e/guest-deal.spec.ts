@@ -22,7 +22,8 @@ test("a demo guest starts a deal in chat, approves and pays the recommended quot
   await page.goto("/");
   await expect(page.getByRole("note").filter({ hasText: /demo/i }).first()).toBeVisible();
   await checkCsp();
-  await page.getByRole("button", { name: "Try the demo, no sign-up" }).click();
+  // The hero and the closing section both offer it; the hero's comes first.
+  await page.getByRole("button", { name: "Try the demo", exact: true }).first().click();
 
   // 2. The chat (the guest's workspace is provisioned on the way in).
   await expect(page).toHaveURL(/\/chat/, { timeout: 30_000 });
