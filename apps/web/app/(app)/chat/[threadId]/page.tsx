@@ -1,5 +1,4 @@
 import { notFound } from "next/navigation";
-import { TopBar } from "@/components/TopBar";
 import { Chat } from "@/components/chat/Chat";
 import { ThreadSidebar, type ThreadSummary } from "@/components/chat/ThreadSidebar";
 import { toDisplay } from "@/lib/chat/history";
@@ -20,7 +19,6 @@ export default async function ThreadPage({ params }: { params: Promise<{ threadI
   if (!loaded) notFound();
   return (
     <>
-      <TopBar email={user.email} active="chat" />
       <div className="chat-layout">
         <ThreadSidebar threads={threads} activeId={loaded.thread.id} />
         <Chat key={loaded.thread.id} threadId={loaded.thread.id} initial={toDisplay(loaded.messages, loaded.thread.job_id)} />

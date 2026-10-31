@@ -1,4 +1,3 @@
-import { TopBar } from "@/components/TopBar";
 import { Chat } from "@/components/chat/Chat";
 import { ThreadSidebar, type ThreadSummary } from "@/components/chat/ThreadSidebar";
 import { listThreads } from "@/lib/chat/store";
@@ -14,7 +13,6 @@ export default async function NewChatPage() {
   const threads: ThreadSummary[] = await listThreads(supabaseAdmin(), { userId: user.id, workspaceId }).catch(() => []);
   return (
     <>
-      <TopBar email={user.email} active="chat" />
       <div className="chat-layout">
         <ThreadSidebar threads={threads} />
         <Chat threadId={null} initial={[]} />

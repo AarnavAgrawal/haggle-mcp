@@ -1,6 +1,5 @@
 // /settings: who Haggle is to businesses and how this workspace is set up (get_identity). Read-only:
 // the operator changes the approver or raises the cap (CLAUDE.md §7).
-import { TopBar } from "@/components/TopBar";
 import { channelWords, money } from "@/lib/dashboard/format";
 import type { IdentityView } from "@/lib/dashboard/types";
 import { HaggleError } from "@/lib/haggle";
@@ -19,7 +18,7 @@ const CHANNEL_ROWS: { key: keyof IdentityView["channels"]; label: string }[] = [
 const hour = (h: number) => `${((h + 11) % 12) + 1}${h < 12 ? " AM" : " PM"}`;
 
 export default async function SettingsPage() {
-  const { user, haggle } = await requireHaggle();
+  const { haggle } = await requireHaggle();
   let id: IdentityView | null = null;
   let error: { message: string; fix: string } | null = null;
   try {
@@ -30,7 +29,6 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <TopBar email={user.email} active="settings" />
       <main className="shell stack">
         <header className="page-head">
           <div>

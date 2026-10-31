@@ -1,6 +1,5 @@
 // /account: who you're signed in as, your workspace, "Download my data" and "Delete my account".
 import { Footer } from "@/components/Footer";
-import { TopBar } from "@/components/TopBar";
 import { requireHaggle } from "@/lib/workspace";
 import { DeleteAccount } from "./DeleteAccount";
 import "./account.css";
@@ -21,7 +20,6 @@ export default async function AccountPage() {
   }
   return (
     <>
-      <TopBar email={user.email} active="account" />
       <main className="shell stack acct">
         <header className="page-head">
           <h1>Account</h1>

@@ -1,6 +1,5 @@
 // /vendors: the businesses this workspace may contact, each with the consent it rests on; add one
 // (with an attestation), remove one, or find businesses in public listings. Haggle contacts only these.
-import { TopBar } from "@/components/TopBar";
 import { VendorsPanel } from "@/components/vendors/VendorsPanel";
 import { DEMO } from "@/lib/demo";
 import { callService, HaggleError } from "@/lib/haggle";
@@ -24,7 +23,6 @@ export default async function VendorsPage() {
 
   return (
     <>
-      <TopBar email={user.email} active="vendors" />
       <main className="shell">
         <header className="page-head">
           <div>

@@ -1,7 +1,6 @@
 // /deals/<jobId>/businesses/<businessId>: one business's full thread on a deal (get_conversation),
 // oldest first, with a message form. Business text is untrusted data: plain text only, never links.
 import Link from "next/link";
-import { TopBar } from "@/components/TopBar";
 import { MessageForm } from "@/components/dashboard/DealActions";
 import { ChannelBadge } from "@/components/dashboard/DealSections";
 import { LiveRefresh } from "@/components/dashboard/LiveRefresh";
@@ -22,7 +21,7 @@ const kindWords = (kind: string, direction: "in" | "out") =>
 
 export default async function ConversationPage({ params }: { params: Promise<{ jobId: string; businessId: string }> }) {
   const { jobId, businessId } = await params;
-  const { user, haggle } = await requireHaggle();
+  const { haggle } = await requireHaggle();
   let convo: ConversationView | null = null;
   let error: { message: string; fix: string } | null = null;
   try {
@@ -34,7 +33,6 @@ export default async function ConversationPage({ params }: { params: Promise<{ j
 
   return (
     <>
-      <TopBar email={user.email} active="deals" />
       <main className="shell stack">
         <Link className="dash-back" href={back}>
           ← Back to the deal

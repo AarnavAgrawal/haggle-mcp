@@ -1,0 +1,299 @@
+/* The signed-in app shell (components/shell/*): rail + content from 900px, top bar + drawer below.
+   Pages render inside .app-main; each page renders its own <main>. */
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr);
+  min-height: 100dvh;
+}
+.skip-link {
+  position: absolute;
+  left: 12px;
+  top: -48px;
+  z-index: 50;
+  padding: 8px 12px;
+  border-radius: var(--r-control);
+  background: var(--sheet);
+  color: var(--pen);
+  box-shadow: var(--shadow-float);
+}
+.skip-link:focus {
+  top: 12px;
+}
+
+/* ---------- rail (desktop) ---------- */
+.app-rail {
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--rule);
+  background: var(--desk);
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-strong) transparent;
+}
+.app-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.app-main {
+  flex: 1;
+  min-width: 0;
+}
+.app-main:focus {
+  outline: none;
+}
+/* Pages keep their .shell wrapper; in the app it's left-aligned at the app content width. */
+.app-main .shell {
+  max-width: calc(var(--content) + 2 * var(--gutter));
+  margin-inline: 0;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 100%;
+  padding: 20px 12px 12px;
+  font-size: var(--t-15);
+  line-height: 1.4;
+}
+.rail-top {
+  display: grid;
+  gap: 16px;
+  padding-inline: 4px;
+}
+.rail-brand {
+  padding: 4px 4px 0;
+  justify-self: start;
+}
+.rail-deals {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.rail-link {
+  position: relative;
+  display: block;
+  padding: 6px 8px;
+  border-radius: var(--r-control);
+  color: var(--ink-2);
+  text-decoration: none;
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+.rail-link:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--ink);
+  text-decoration: none;
+}
+.rail-link[aria-current="page"] {
+  color: var(--ink);
+}
+.rail-link-label {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  padding-bottom: 3px;
+  vertical-align: top;
+}
+.rail-link-label .pen-underline {
+  bottom: -2px;
+}
+.rail-heading {
+  font-weight: 600;
+  color: var(--ink);
+}
+.rail-group {
+  display: grid;
+  gap: 2px;
+}
+.rail-group-label {
+  margin: 0 8px 2px;
+  font-family: var(--font-text);
+  font-size: var(--t-12);
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0;
+  color: var(--ink-3);
+}
+.rail-group-needs_you .rail-group-label {
+  color: var(--hold);
+}
+.rail-list {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rail-deal {
+  display: grid;
+  gap: 1px;
+  padding-block: 6px 7px;
+}
+.rail-deal .rail-link-label {
+  justify-self: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-weight: 500;
+}
+.rail-deal[aria-current="page"] {
+  background: var(--sheet);
+  box-shadow: inset 0 0 0 1px var(--rule);
+}
+.rail-deal .rail-link-label .pen-underline {
+  bottom: 0;
+}
+.rail-deal-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.rail-deal-meta .status {
+  font-size: 13px;
+  align-items: baseline;
+}
+.rail-deal-meta .dot {
+  align-self: center;
+  width: 7px;
+  height: 7px;
+}
+.rail-deal-meta .price {
+  font-size: var(--t-14);
+  color: var(--ink);
+}
+.rail-more {
+  margin: 2px 8px 0;
+  font-size: var(--t-14);
+  color: var(--ink-3);
+}
+.rail-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0 8px;
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+.rail-note .btn {
+  margin-left: -12px;
+  color: var(--pen);
+}
+.rail-skeleton-row {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+}
+.rail-nav {
+  display: grid;
+  gap: 1px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+}
+.rail-user {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 0 0 8px;
+  border-top: 1px solid var(--rule);
+}
+.rail-email {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+
+/* ---------- narrow: top bar + drawer ---------- */
+.app-topbar {
+  display: none;
+}
+@media (max-width: 899.98px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app-rail {
+    display: none;
+  }
+  .app-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 56px;
+    padding: 0 12px 0 6px;
+    background: var(--desk);
+    border-bottom: 1px solid var(--rule);
+  }
+  .app-topbar .brand {
+    font-size: var(--t-21);
+  }
+  .app-topbar-new {
+    margin-left: auto;
+  }
+}
+.app-drawer-rail {
+  min-height: 100%;
+  display: flex;
+}
+.app-drawer-rail .rail {
+  flex: 1;
+}
+
+/* ---------- full-height pages (the chat): the shell fills the window and the page scrolls inside ---------- */
+body:has(.chat-layout) .app-shell {
+  flex: 1;
+  min-height: 0;
+}
+body:has(.chat-layout) .app-col,
+body:has(.chat-layout) .app-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+body:has(.chat-layout) .app-main {
+  flex: 1;
+}
+
+/* ---------- app/(app)/loading.tsx ---------- */
+.app-loading-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 20px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--rule);
+}
+.app-loading-rows {
+  display: grid;
+}
+.app-loading-row {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 16px 20px;
+}
+.app-loading-row + .app-loading-row {
+  border-top: 1px solid var(--rule);
+}
+.app-loading-row .skeleton-text {
+  max-width: 420px;
+}
+.app-loading-row > .skeleton {
+  margin-left: auto;
+  flex: none;
+}

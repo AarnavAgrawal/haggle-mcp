@@ -1,27 +1,17 @@
 // /deals: every deal in the workspace (list_deals, newest 20), each linking to its live page.
 import Link from "next/link";
-import { TopBar } from "@/components/TopBar";
 import { ago, dealLine, money, stateTone, stateWords } from "@/lib/dashboard/format";
-import type { DealList } from "@/lib/dashboard/types";
-import { HaggleError } from "@/lib/haggle";
-import { requireHaggle } from "@/lib/workspace";
+import { loadDeals } from "@/components/shell/data";
 import "@/components/dashboard/dashboard.css";
 
 export const dynamic = "force-dynamic";
 
 export default async function DealsPage() {
-  const { user, haggle } = await requireHaggle();
-  let deals: DealList | null = null;
-  let error: { message: string; fix: string } | null = null;
-  try {
-    deals = (await haggle.callTool<DealList>("list_deals", { limit: 20 })).data;
-  } catch (err) {
-    error = err instanceof HaggleError ? { message: err.message, fix: err.fix } : { message: "The Haggle server couldn't be reached.", fix: "Try again in a moment." };
-  }
+  // Shared with the shell rail's deals list: one list_deals call per request.
+  const { deals = null, error = null } = await loadDeals();
 
   return (
     <>
-      <TopBar email={user.email} active="deals" />
       <main className="shell">
         <header className="page-head">
           <div>

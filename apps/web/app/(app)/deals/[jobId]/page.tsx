@@ -1,7 +1,6 @@
 // /deals/<jobId>: one deal, live. The board comes from get_quotes (DealBoardPlus); LiveRefresh re-renders
 // it whenever wait_for_update reports a change.
 import Link from "next/link";
-import { TopBar } from "@/components/TopBar";
 import { AnswerForm, CancelDealButton, NegotiateButton } from "@/components/dashboard/DealActions";
 import { BusinessTable, Callbacks, NegotiationHistory, PurchaseStatus, QuoteList, SetupNotes, Timeline, Untrusted } from "@/components/dashboard/DealSections";
 import { LiveRefresh } from "@/components/dashboard/LiveRefresh";
@@ -15,7 +14,7 @@ export const dynamic = "force-dynamic";
 
 export default async function DealPage({ params }: { params: Promise<{ jobId: string }> }) {
   const { jobId } = await params;
-  const { user, haggle } = await requireHaggle();
+  const { haggle } = await requireHaggle();
   let board: DealBoardView | null = null;
   let error: { message: string; fix: string } | null = null;
   try {
@@ -27,7 +26,6 @@ export default async function DealPage({ params }: { params: Promise<{ jobId: st
   if (!board || !board.job) {
     return (
       <>
-        <TopBar email={user.email} active="deals" />
         <main className="shell">
           <Link className="dash-back" href="/deals">
             All deals
@@ -61,7 +59,6 @@ export default async function DealPage({ params }: { params: Promise<{ jobId: st
 
   return (
     <>
-      <TopBar email={user.email} active="deals" />
       <main className="shell">
         <Link className="dash-back" href="/deals">
           All deals
