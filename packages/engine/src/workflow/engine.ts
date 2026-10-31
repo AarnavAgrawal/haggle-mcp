@@ -40,6 +40,7 @@ import { answeredSomething, dropAgentOnlyAmounts } from "../parsing/callSafety.t
 import { evaluateRequirements, meetsHardRequirements, type EngineRequirement } from "../parsing/requirements.ts";
 import { dropUnstatedDietaryRefusals, dropUnsupportedRequirementAnswers, validateQuote } from "../parsing/validate.ts";
 import { APPROXIMATE_FLAG, confirmsFirm, isApproximateTotal } from "../parsing/approximate.ts";
+import { CONFIRMED_UNUSUAL_FLAG, IMPLAUSIBLE_FLAG, PRICE_FLAGS, confirmsPrice, fromClaudeJudgment, judgeDeterministic, priceBlockReason, priceCaveat, priceConfirmQuestion, priceDoubt, priceFlags, type PriceJudgment } from "../parsing/plausibility.ts";
 import { pdfBodyTotalConflict } from "../parsing/pdfBody.ts";
 import { termsMismatch } from "../parsing/termsCheck.ts";
 import { isTransientParseError, MAX_PARSE_RETRIES, parseErrorKind, parseRetryDelayMs } from "../parsing/parseErrors.ts";
@@ -341,6 +342,8 @@ export type BoardQuote = Omit<Quote, "total_usd"> & {
   excluded_reason?: string;
   /** The business hedged this total in its own words ("around $1,300"): show it as ≈, rank it, but it is not approvable until confirmed. */
   total_approximate?: true;
+  /** The price is far outside the usual range for what was asked (parsing/plausibility.ts), in words for the human. */
+  price_note?: string;
   /** Can the human approve (and pay) this quote right now? Caveats (over budget, unconfirmed requirement) don't block; see approval_block when false. */
   approvable: boolean;
   /** Why it can't be approved yet, in words for the board (code is an EngineError code, e.g. total_not_firm). */
@@ -918,6 +921,8 @@ export class HaggleEngine {
       : q.total_cents === null ? "no_total"
       // A $0 total is never an amount to approve or charge (approvals require > 0).
       : q.total_cents <= 0 ? "zero_total"
+      // "$50 for dinner for 100": far below the usual range. Never approved until the business confirms it.
+      : q.record.flags.includes(IMPLAUSIBLE_FLAG) ? "price_implausible"
       // "around $1,300" is a price to compare, never an amount to approve or charge.
       : isApproximate(q.record) ? "total_not_firm"
       // Over a budget (a target or a "limit") is a caveat, never a block (decision 33).
@@ -945,6 +950,9 @@ export class HaggleEngine {
       fees_unclear: "Some fees may not be in the total",
     };
     for (const f of q.record.flags) if (FLAG_TEXT[f]) caveats.push(FLAG_TEXT[f]!);
+    // A price far outside the usual range (confirmed by the vendor or not), in words with the range.
+    const priceNote = priceCaveat(q.record);
+    if (priceNote) caveats.push(priceNote);
     if (q.total_cents !== null && !(q.deposit_cents && q.deposit_cents > 0)) caveats.push(`No deposit stated: the full ${dollars(q.total_cents)} is charged now`);
     return { hard, caveats };
   }
@@ -970,7 +978,7 @@ export class HaggleEngine {
   }
 
   /** Why the board can't offer Approve on this quote (null = approvable; caveats never block). */
-  private approvalBlock(job: JobRow, q: QuoteRow, b: JobBusinessRow | undefined, askedFirm: boolean): { code: string; reason: string } | null {
+  private approvalBlock(job: JobRow, q: QuoteRow, b: JobBusinessRow | undefined, askedFirm: boolean, askedPrice = false): { code: string; reason: string } | null {
     const hard = this.approvability(job, q).hard;
     const name = b?.name ?? "The business";
     if (!hard) {
@@ -992,6 +1000,7 @@ export class HaggleEngine {
           : `Approximate total (${approx}). ${name} must confirm a firm all-in total before it can be approved.`,
       };
     }
+    if (hard === "price_implausible") return { code: "price_implausible", reason: priceBlockReason(q.record.price_judgment, name, b?.channel === "phone", askedPrice) };
     const TEXT: Record<string, string> = {
       not_current: "Superseded by a newer quote.", unavailable: `${name} declined.`, unverified_sender: "The sender couldn't be verified.",
       external_payment_link: "It asked for payment through an external link (blocked).", prompt_injection: "It contained instructions aimed at the agent (ignored).",
@@ -1014,7 +1023,8 @@ export class HaggleEngine {
     const approval = event?.type === "approval_verified" || event?.type === "booking_confirmed" ? await this.repo.getLatestApproval(job.id) : null;
     return {
       // An approximate total counts: it becomes approvable once the business confirms a firm figure.
-      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => { const h = this.approvability(job, q).hard; return h === null || h === "total_not_firm"; }).length, counterable: plan.length > 0,
+      // So does a suspiciously low one, once the business confirms it.
+      now: this.now(), eligibleQuotes: ranking.ranked.length, approvableQuotes: quotes.filter((q) => { const h = this.approvability(job, q).hard; return h === null || h === "total_not_firm" || h === "price_implausible"; }).length, counterable: plan.length > 0,
       negotiationWindowMs: this.d.config.negotiationWindowMs, paymentInFlight: payment !== null && ["signed", "sent", "charging"].includes(payment.status),
       ...(approval ? { approvalAction: approval.action } : {}), ...(this.d.config.manualPaymentHandoff ? { bookingFirst: true } : {}),
     };
@@ -1037,7 +1047,9 @@ export class HaggleEngine {
       // A business's negotiation round is how far it has been countered (1 = not yet), never how many
       // replies it sent: a confirm-once revision (a firm total, a confirmed requirement) is still round 1.
       // A keyword-fallback reading is neither cited to other businesses nor countered: its figures aren't reliable.
-      rankable.filter((r) => { const row = rows.get(r.quoteId); return !row || !heuristicReading(row.record); }).map((r) => ({
+      // Nor is a price far below the usual range ("$50 for dinner for 100"), even one its business
+      // confirmed: honest businesses are never asked to match a figure Haggle doubts.
+      rankable.filter((r) => { const row = rows.get(r.quoteId); return !row || (!heuristicReading(row.record) && !priceDoubt(row.record)); }).map((r) => ({
         ...r, businessName: byId.get(r.businessId)?.name ?? "there", round: Math.max(1, byId.get(r.businessId)?.countered_round ?? 0),
         deliveryFeeCents: rows.get(r.quoteId)?.record.delivery_fee_cents ?? null, depositCents: rows.get(r.quoteId)?.deposit_cents ?? null, approximate: isApproximate(rows.get(r.quoteId)?.record),
       })),
@@ -1868,9 +1880,10 @@ export class HaggleEngine {
     const { quotes, ranking, capCents } = await this.rankRows(job, all);
     const byId = new Map((pre?.businesses ?? (await this.repo.getBusinesses(job.id))).map((b) => [b.business_id, b]));
     const eligible = new Set(ranking.ranked.map((r) => r.quoteId));
-    const value = await this.valueRanking(job, quotes.filter((q) => eligible.has(q.id) && q.total_cents !== null), all, byId, ranking.caveats);
+    // A price Haggle doubts is never valued (it would make every honest price look poor) nor recommended.
+    const value = await this.valueRanking(job, quotes.filter((q) => eligible.has(q.id) && q.total_cents !== null && !priceDoubt(q.record)), all, byId, ranking.caveats);
     // A request compared on a non-money answer (earliest date) recommends in the ranker's compare_by order.
-    const orderIds = nonMoneyCompare(job.request) ? ranking.ranked.map((r) => r.quoteId) : value.ranked.map((r) => r.quoteId);
+    const orderIds = (nonMoneyCompare(job.request) ? ranking.ranked.map((r) => r.quoteId) : value.ranked.map((r) => r.quoteId)).filter((id) => !priceDoubt(quotes.find((x) => x.id === id)?.record));
     // Never a quote that misses a must (unmet or unconfirmed requirement, over budget, pay-now over the
     // cap): Haggle doesn't pick one of those for the human; they may still choose it knowingly.
     // Nor a stale real quote: it is re-confirmed with the business before anyone can approve it.
@@ -1890,7 +1903,7 @@ export class HaggleEngine {
     const byId = new Map((await this.repo.getBusinesses(job.id)).map((b) => [b.business_id, b]));
     for (const r of ranking.ranked) {
       const q = quotes.find((x) => x.id === r.quoteId);
-      if (q && this.approvalBlock(job, q, byId.get(q.business_id), false) === null) return { q, compliance: this.complianceOf(job, q, capCents) };
+      if (q && !priceDoubt(q.record) && this.approvalBlock(job, q, byId.get(q.business_id), false) === null) return { q, compliance: this.complianceOf(job, q, capCents) };
     }
     return null;
   }
@@ -5329,7 +5342,9 @@ export class HaggleEngine {
     const statesTerms = Object.keys(fresh.dietary_coverage).length > 0 || fresh.delivery_included !== null || fresh.delivery_fee_cents !== null || fresh.tax_cents !== null || Object.keys(fresh.requirement_answers ?? {}).length > 0 || (fresh.other_fees?.length ?? 0) > 0 || !!fresh.terms || fresh.deposit_cents !== null;
     // "Yes, that's firm" to Haggle's one request for a firm total: the approximate figure becomes firm.
     const firmed = !!priorRecord && isApproximate(priorRecord) && fresh.total_cents === null && confirmsFirm(ownText, msg.channel);
-    if (priorRecord && fresh.total_cents === null && fresh.available && priorRecord.available && priorRecord.total_cents !== null && fresh.questions.length === 0 && (statesTerms || firmed)) {
+    // "Yes, that's correct" to Haggle's one question about a suspiciously low total: the price stands, confirmed.
+    const priceConfirmed = await this.confirmsDoubtedPrice(job, b, msg, priorRecord, fresh.total_cents, ownText);
+    if (priorRecord && fresh.total_cents === null && fresh.available && priorRecord.available && priorRecord.total_cents !== null && fresh.questions.length === 0 && (statesTerms || firmed || priceConfirmed)) {
       const p = priorRecord;
       const extras = ([["delivery_fee", "delivery_fee_cents", p.delivery_included !== true], ["tax", "tax_cents", p.tax_included !== true]] as const)
         .filter(([, k, notIncluded]) => notIncluded && p[k] === null && fresh[k] !== null && fresh[k]! > 0);
@@ -5397,11 +5412,14 @@ export class HaggleEngine {
       this.log("parse_duplicate", { job_id: job.id, message_id: msg.id });
       return;
     }
+    // Is the price plausible for what was asked? The judgment carried for the same total, else the
+    // brain's price data or a category floor, else a short Claude judgment (parsing/plausibility.ts).
+    record = await this.withPriceJudgment(job, record, priorRecord, priceConfirmed);
     let quoteRow: QuoteRow | null = null;
     // A reply that states nothing new ("Thanks, looking forward to it!") only carries the current quote
     // over: it is not a revision, so it never supersedes that quote or voids an approval of it.
     const statesNothing = !!priorRecord && fresh.available && fresh.total_cents === null && fresh.subtotal_cents === null && fresh.price_per_head_cents === null
-      && !statesTerms && !firmed && fresh.questions.length === 0 && fresh.menu_items.length === 0
+      && !statesTerms && !firmed && !priceConfirmed && fresh.questions.length === 0 && fresh.menu_items.length === 0
       && !Object.values(fresh.fields ?? {}).some((v) => v !== null) && fresh.flags.every((f) => priorRecord.flags.includes(f) || ABSENCE_FLAGS.has(f));
     // Every priced reply is reported as a quote, even without a single stated total (flagged; Haggle
     // asks for the exact total below when it can).
@@ -5468,6 +5486,11 @@ export class HaggleEngine {
     const deliveryAsked = missing.some((m) => reqs.some((r) => r.kind === "delivery" && r.text === m));
     const allInAsk = !firmAsk && !needExact && quoteRow && record.available && b.channel !== "phone" && !(isApproximate(record)) && !allInKnown(record, this.needsDelivery(job) && !deliveryAsked) ? "the all-in total including delivery, tax and any fees" : null;
     const totalAsk = needExact ? exactTotalAsk(record.total_cents) : firmAsk ?? allInAsk;
+    // A suspiciously low total: Haggle asks the business once, in plain words, to confirm the total and
+    // what it includes (with anything else still missing, in the same message). It covers the exact,
+    // firm and all-in asks. Never by a new call: a phone vendor needs a callback only the human authorizes.
+    const priceAsk = !!quoteRow && record.available && record.flags.includes(IMPLAUSIBLE_FLAG) && b.channel !== "phone" && job.request.auto_follow_up !== false && !TERMINAL.has(job.state)
+      && this.canReach(b) && !(await this.repo.findMessageByIdempotencyKey(priceConfirmKey(job.id, b.business_id)));
     if (quoteRow) {
       // No text to the human per quote: the deal board and wait_for_update show it; the human is
       // texted once quotes are final (offerReady) or when they must answer something.
@@ -5480,13 +5503,14 @@ export class HaggleEngine {
       // A reply that adds nothing to a quote we already have ("ok", the reference code) is not news.
       if (!priorCurrent) for (const f of record.flags) await this.repo.appendEvent(job.id, "flag", { business_id: b.business_id, flag: f });
     }
-    if (needExact && missing.length === 0) await this.askExactTotal(job, b, record.total_cents);
+    if (needExact && missing.length === 0 && !priceAsk) await this.askExactTotal(job, b, record.total_cents);
     const status = !record.available ? "declined" : quoteRow || statesNothing ? "quoted" : record.questions.length ? "question" : followupsBefore >= 1 ? "silent" : "replied";
     await this.repo.updateBusiness(job.id, b.business_id, { status });
     if (asked.length && record.available && !record.flags.some((f) => f === "external_payment_link" || f === "prompt_injection")) await this.answerFromRequest(job, b, asked);
     // The window waits briefly for the answer (collectionWaiting), never past the deadline. One
     // batched follow-up: the missing answers plus the total ask (exact, firm or all-in), once.
-    if (missing.length) await this.sendMissingFollowUp(job, { ...b, status }, missing, totalAsk && followupsBefore < 1 ? { totalAsk, firmTotal: firmAsk !== null } : {});
+    if (priceAsk) await this.askPriceConfirmation(job, { ...b, status }, record, missing);
+    else if (missing.length) await this.sendMissingFollowUp(job, { ...b, status }, missing, totalAsk && followupsBefore < 1 ? { totalAsk, firmTotal: firmAsk !== null } : {});
     else if (!needExact && totalAsk && chase && followupsBefore < 1) await this.sendMissingFollowUp(job, { ...b, status }, [], { totalAsk, firmTotal: firmAsk !== null });
     // Partner's brain learns from every parsed reply; a brain failure never blocks the deal. It learns
     // into this job's workspace's brain only (brainFor; 202_brain_tenancy), and only from trustworthy
@@ -5666,6 +5690,98 @@ export class HaggleEngine {
       if (fresh && !fresh.ready && ["collecting", "negotiating"].includes(fresh.state) && fresh.collect_until < until) await this.repo.touchJob(job.id, { collect_until: until });
     } catch (err) {
       this.log("followup_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+    }
+  }
+
+  /**
+   * The price judgment for a record about to be stored (parsing/plausibility.ts): the judgment of the
+   * business's previous quote when the total is the same (no second Claude call), else the brain's
+   * price data or a category floor, else a short Claude judgment for a category Haggle has no prices
+   * for. Claude failing, refusing or over the AI budget leaves the deterministic result (often none).
+   * `confirmed`: the business just confirmed its suspiciously low total when asked.
+   */
+  private async withPriceJudgment(job: JobRow, record: QuoteRecord, prior: QuoteRecord | null, confirmed: boolean): Promise<QuoteRecord> {
+    const { price_judgment: _stale, ...rest } = record;
+    const base: QuoteRecord = { ...rest, flags: rest.flags.filter((f) => !PRICE_FLAGS.has(f)) };
+    const total = base.total_cents;
+    if (!base.available || total === null || total <= 0 || heuristicReading(base)) return base;
+    let j: PriceJudgment | null = prior?.price_judgment && prior.price_judgment.total_cents === total ? prior.price_judgment : null;
+    if (!j) {
+      const r = job.request;
+      const quantity = r.quantity ?? base.headcount ?? null;
+      const input = { totalCents: total, quantity, unit: r.unit, what: r.what };
+      let brain: Awaited<ReturnType<HaggleEngine["checkPrice"]>> | null = null;
+      try {
+        brain = await this.brainFor(job.workspace_id).checkPrice({ request: { what: r.what, ...(quantity ? { quantity } : {}), area: r.area, ...(r.date ? { date: r.date } : {}) }, total_usd: centsToUsd(total) });
+      } catch { /* the brain is optional */ }
+      j = judgeDeterministic({ ...input, brain });
+      if (!j && this.d.extractor.judgePrice) {
+        try {
+          const a = await this.d.extractor.judgePrice({
+            what: r.what, ...(quantity ? { quantity } : {}), ...(r.unit ? { unit: r.unit } : {}), area: r.area, ...(r.date ? { date: r.date } : {}),
+            details: (r.details ?? []).map((d) => ({ label: d.label, value: d.value })), total_usd: centsToUsd(total), items: base.menu_items, job_id: job.id,
+          });
+          if (a) j = fromClaudeJudgment(input, a);
+        } catch (err) {
+          this.log("price_judgment_failed", { job_id: job.id, error: (err as Error).message.slice(0, 200) });
+        }
+      }
+    }
+    if (j && confirmed && j.verdict === "too_low") j = { ...j, confirmed: true };
+    return { ...base, flags: [...base.flags, ...priceFlags(j ?? undefined)], ...(j ? { price_judgment: j } : {}) };
+  }
+
+  /**
+   * Did this reply confirm the business's suspiciously low total? By text: an affirmation ("Yes, that's
+   * correct") to Haggle's one question about it, stating no other total. On a call (a callback the
+   * human authorized): the same total said again. A different total is a correction, judged afresh.
+   */
+  private async confirmsDoubtedPrice(job: JobRow, b: JobBusinessRow, msg: MessageRow, prior: QuoteRecord | null, freshTotal: number | null, ownText: string): Promise<boolean> {
+    if (!prior || !prior.flags.includes(IMPLAUSIBLE_FLAG) || prior.total_cents === null) return false;
+    const restated = freshTotal !== null && freshTotal === prior.total_cents;
+    if (freshTotal !== null && !restated) return false;
+    if (msg.channel === "phone") return restated;
+    const asked = (await this.repo.listEvents(job.id)).some((e) => e.type === "reply" && e.data.asked === "price_confirm" && e.data.business_id === b.business_id);
+    return asked && confirmsPrice(ownText, msg.channel);
+  }
+
+  /**
+   * The one plain question about a suspiciously low total ("Just to confirm: is $50 the full total for
+   * dinner for 100 guests, and what does it include?"), on the business's own channel (email thread,
+   * text, A2A; never a new call), with anything else still missing in the same message. Once per
+   * business per deal. Returns whether it was sent.
+   */
+  private async askPriceConfirmation(job: JobRow, b: JobBusinessRow, record: QuoteRecord, missingAnswers: string[]): Promise<boolean> {
+    const key = priceConfirmKey(job.id, b.business_id);
+    if (record.total_cents === null || !this.canReach(b) || (await this.repo.findMessageByIdempotencyKey(key))) return false;
+    const question = priceConfirmQuestion({ totalCents: record.total_cents, what: job.request.what, quantity: job.request.quantity ?? record.headcount, unit: job.request.unit });
+    const also = missingAnswers.length ? `\n\nCould you also tell us:\n${missingAnswers.map((m) => `- ${m}`).join("\n")}` : "";
+    let how: string;
+    try {
+      if (b.channel === "email") {
+        await this.sendRecorded(job, b, "followup", key, {
+          to: b.email, subject: `[HG-${job.short_code}] Quote request: ${job.request.what}`, inThread: true,
+          bodyText: `Hi ${b.name},\n\nThanks for your quote. Just to confirm: ${question}${also}\n\nNothing has been booked or paid yet.\n\n${this.signOff(job)}`,
+        });
+        how = "email";
+      } else if (b.channel === "imessage") {
+        if (!(await this.sendIMessageToBusiness(job, b, "followup", key, HaggleEngine.confirmIMessageText([...missingAnswers, question.replace(/\?$/, "")], job.short_code), null))) return false;
+        how = "text";
+      } else if (b.channel === "a2a") {
+        if (!(await this.sendA2aMessage(job, b, "followup", key, `Thanks for your quote. Just to confirm: ${question}${also}`))) return false;
+        how = "A2A";
+      } else return false;
+      await this.repo.updateBusiness(job.id, b.business_id, { followups_sent: b.followups_sent + 1 });
+      await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Asked ${b.name} to confirm its ${usdText(record.total_cents)} total and what it includes: far below the usual price for this (${how})`, channel: b.channel, asked: "price_confirm" });
+      // Keep the window open long enough for the answer (as sendMissingFollowUp does).
+      const grace = this.d.config.replyGraceMs ?? Math.min(this.d.config.collectionWindowMs, 15 * 60_000);
+      const until = new Date(this.now().getTime() + grace).toISOString();
+      const fresh = await this.repo.getJob(job.id);
+      if (fresh && !fresh.ready && ["collecting", "negotiating"].includes(fresh.state) && fresh.collect_until < until) await this.repo.touchJob(job.id, { collect_until: until });
+      return true;
+    } catch (err) {
+      this.log("price_confirm_failed", { job_id: job.id, business_id: b.business_id, error: (err as Error).message });
+      return false;
     }
   }
 
@@ -6042,16 +6158,18 @@ export class HaggleEngine {
     const out: BoardQuote[] = [];
     const unknownOnly = new Map<string, { met: boolean | null }[]>();
     const askedFirm = new Set(events.filter((e) => e.type === "reply" && e.data.asked === "firm_total").map((e) => String(e.data.business_id)));
+    const askedPrice = new Set(events.filter((e) => e.type === "reply" && e.data.asked === "price_confirm").map((e) => String(e.data.business_id)));
     for (const [i, q] of sorted.entries()) {
       const b = byId.get(q.business_id)!;
       // "Negotiated from" only from this business's own earlier firm figure (an estimate was never a price).
       const prev = all.filter((x) => x.business_id === q.business_id && x.id !== q.id && x.total_cents !== null).sort((x, y) => y.round - x.round || y.created_at.localeCompare(x.created_at))[0];
       const prevFirm = prev && !isApproximate(prev.record) ? prev : undefined;
-      const price_check = priceChecks[i];
+      // A price Haggle judged far too low is labelled so, whatever the brain's sample says (never "Good price").
+      const price_check = priceDoubt(q.record) ? "too_low" : priceChecks[i];
       const cq = toContractQuote(q, b, { budgetCents: job.budget_cents, ...(prevFirm?.total_cents != null && prevFirm.total_cents !== q.total_cents ? { negotiatedFromCents: prevFirm.total_cents } : {}), ...(price_check ? { price_check } : {}) });
       const reason = rejectedBy.get(q.id);
       const hard = this.approvability(job, q).hard;
-      const block = this.approvalBlock(job, q, b, askedFirm.has(q.business_id));
+      const block = this.approvalBlock(job, q, b, askedFirm.has(q.business_id), askedPrice.has(q.business_id));
       const { ask } = askInfo(job.request);
       const fields = ask.length ? Object.fromEntries(ask.map((f) => { const v = q.record.fields?.[f.key] ?? null; return [f.key, f.type === "money" && typeof v === "number" ? centsToUsd(v) : v]; })) : undefined;
       const missingFields = ask.filter((f) => f.required && (q.record.fields?.[f.key] ?? null) === null).map((f) => f.label);
@@ -6061,9 +6179,10 @@ export class HaggleEngine {
         // Soft preferences (decision 1): a ranked quote that misses one is "incomplete", never "rejected";
         // "rejected" is only for an unsafe quote or one that declined. approvable/approval_block say whether it can be approved now.
         verdict: order.has(q.id) ? (ranking.caveats.some((c) => c.quoteId === q.id) ? "incomplete" : "compliant")
-          : hard && !["no_total", "zero_total", "total_not_firm", "missing_info", "all_in_unknown"].includes(hard) ? "rejected" : "incomplete",
+          : hard && !["no_total", "zero_total", "total_not_firm", "price_implausible", "missing_info", "all_in_unknown"].includes(hard) ? "rejected" : "incomplete",
         ...(reason ? { excluded_reason: excludedText(reason, cq.requirement_results) } : {}),
         ...(isApproximate(q.record) ? { total_approximate: true as const } : {}),
+        ...(priceCaveat(q.record) ? { price_note: priceCaveat(q.record)! } : {}),
         approvable: block === null, ...(block ? { approval_block: block } : {}),
         ...(fields ? { fields, missing_fields: missingFields } : {}),
         compliance: this.complianceOf(job, q, capCents), freshness: this.freshnessOf(q, events),
@@ -6128,7 +6247,8 @@ export class HaggleEngine {
     const clarifying = new Set(businesses.filter((b) => { const f = lastAt(b.business_id, (m) => m.direction === "out" && m.kind === "followup"); return f !== "" && f > lastAt(b.business_id, (m) => m.direction === "in" && m.kind === "reply"); }).map((b) => b.business_id));
     const stages = this.stages(job, businesses, all, negotiation, questions.map((q) => q.business_id), approval, excludedBiz, unreadable, clarifying);
     // Best value among the eligible (safe, priced) quotes, in soft-preference tiers: deterministic and explained.
-    const value = await this.valueRanking(job, quotes.filter((q) => order.has(q.id) && q.total_cents !== null), all, byId, ranking.caveats);
+    // A price Haggle doubts (far below the usual range) is never valued against honest ones, nor recommended.
+    const value = await this.valueRanking(job, quotes.filter((q) => order.has(q.id) && q.total_cents !== null && !priceDoubt(q.record)), all, byId, ranking.caveats);
     const valueOrder = new Map(value.ranked.map((r, i) => [r.quoteId, i]));
     out.sort((a, b) => (valueOrder.get(a.quote_id) ?? 1e6 + (order.get(a.quote_id) ?? 1e6)) - (valueOrder.get(b.quote_id) ?? 1e6 + (order.get(b.quote_id) ?? 1e6)));
     // Recommend only what the human can actually approve: the best-value quote that passes every hard
@@ -6156,7 +6276,8 @@ export class HaggleEngine {
     const notCompared = exclusionLine(businesses.filter((b) => vendorContact[b.business_id] && !pricedNow.has(b.business_id)).map((b) => ({ name: b.name, status: vendorContact[b.business_id]!.status })));
     const boardById = new Map(out.map((q) => [q.quote_id, q]));
     // A request compared on a non-money answer (earliest date) recommends in the ranker's compare_by order.
-    const recommendOrder = nonMoneyCompare(job.request) ? ranking.ranked.map((r) => r.quoteId) : value.ranked.map((r) => r.quoteId);
+    const doubted = new Set(quotes.filter((q) => priceDoubt(q.record)).map((q) => q.id));
+    const recommendOrder = (nonMoneyCompare(job.request) ? ranking.ranked.map((r) => r.quoteId) : value.ranked.map((r) => r.quoteId)).filter((id) => !doubted.has(id));
     // ...and that misses no must: a quote with an unmet or unconfirmed requirement, over the budget or
     // with a pay-now amount over the cap never wins by default (best_available names the closest one).
     // ...and never a stale real quote (it is re-confirmed with the business before any approval).
@@ -6630,6 +6751,11 @@ export class HaggleEngine {
       const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id);
       throw new EngineError("total_not_firm", `${b?.name ?? "The business"} only gave an approximate total (about $${centsToUsd(q.total_cents!).toLocaleString("en-US")}); nothing can be approved or charged on an estimate.`,
         b?.channel === "phone" ? "A firm figure needs a callback to the business, which only the human can authorize; or approve another quote." : "Wait for the business to confirm a firm total (Haggle asked once), then approve the revised quote; or approve another quote.", "get_quotes");
+    }
+    if (reason === "price_implausible") {
+      const b = (await this.repo.getBusinesses(jobId)).find((x) => x.business_id === q.business_id);
+      throw new EngineError("price_implausible", `${b?.name ?? "The business"}'s ${usdText(q.total_cents!)} total looks implausible: ${q.record.price_judgment?.reason ?? "far below the usual price for what was asked"}. Nothing can be approved or charged until the business confirms it.`,
+        b?.channel === "phone" ? "Confirming it needs a callback to the business, which only the human can authorize; or approve another quote." : "Wait for the business to confirm the total and what it includes (Haggle asked once), then approve; or approve another quote. Tell the human it looks too good to be true.", "get_quotes");
     }
     // pay_now_basis: the deposit; with no deposit stated, the full total (the approval says so), never
     // $0. "pay" approves that amount for payment (pay then charges it); "confirm" only confirms the
@@ -7640,6 +7766,11 @@ function allInKnown(r: import("../parsing/extraction.ts").QuoteRecord, needsDeli
 
 
 /** The business hedged its total in its own words (see parsing/approximate.ts). */
+/** Idempotency key of the one question about a suspiciously low total (once per business per deal). */
+function priceConfirmKey(jobId: string, businessId: string): string {
+  return `pricecheck:${jobId}:${businessId}`;
+}
+
 function isApproximate(r: QuoteRecord | undefined | null): boolean {
   return !!r && r.flags.includes(APPROXIMATE_FLAG);
 }

@@ -90,6 +90,10 @@ const FLAG_INFO: Record<string, { label: string; tone: "risk" | "warn" | "info" 
   question_pending: { label: "Waiting on our answer", tone: "info" },
   expired: { label: "Expired", tone: "warn" },
   approximate_total: { label: "Approximate total", tone: "warn" },
+  // Far below the usual range for what was asked: not approvable until the business confirms it.
+  price_implausible: { label: "Suspiciously low price", tone: "risk" },
+  price_confirmed_unusual: { label: "Unusually low (vendor confirmed)", tone: "warn" },
+  price_unusually_high: { label: "Unusually high price", tone: "warn" },
 };
 
 export function FlagChip({ flag }: { flag: string }) {
@@ -99,9 +103,9 @@ export function FlagChip({ flag }: { flag: string }) {
 
 export const isRiskFlag = (flag: string) => FLAG_INFO[flag]?.tone === "risk";
 
-const VERDICT_LABEL = { good: "Good price", typical: "Typical price", high: "High price" } as const;
+const VERDICT_LABEL = { good: "Good price", typical: "Typical price", high: "High price", too_low: "Suspiciously low" } as const;
 
-export function VerdictChip({ verdict }: { verdict?: "good" | "typical" | "high" }) {
+export function VerdictChip({ verdict }: { verdict?: "good" | "typical" | "high" | "too_low" }) {
   if (!verdict) return null;
   return <span className={`hg-verdict hg-verdict-${verdict}`}>{VERDICT_LABEL[verdict]}</span>;
 }
@@ -206,6 +210,8 @@ export function payWords(p: { amount: number; deposit: boolean }): string {
 
 /** The business gave a rough figure ("about $1,300"): shown as an estimate and never approvable. */
 export const isApproximate = (q: { flags: string[] }) => q.flags.includes("approximate_total");
+/** Far below the usual range for what was asked, not yet confirmed by the business (never a "good price"). */
+export const isImplausible = (q: { flags: string[] }) => q.flags.includes("price_implausible");
 
 export function relativeTime(iso: string | undefined, now = Date.now()): string {
   if (!iso) return "";

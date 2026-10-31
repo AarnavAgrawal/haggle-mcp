@@ -45,7 +45,7 @@ interface Quote {
   quote_id: string; job_id: string; business_id: string; business: string;
   channel: Channel; total_usd: number; per_unit_usd?: number; deposit_usd?: number;
   items: string[]; meets_requirements: boolean; flags: string[];
-  price_check?: 'good' | 'typical' | 'high'; negotiated_from?: number;
+  price_check?: 'good' | 'typical' | 'high' | 'too_low'; negotiated_from?: number;
   round: number; confidence: number; source: string;
 }
 
@@ -66,6 +66,7 @@ Rules:
 - **`ReplyMeta.channel`** is a `Channel`; the format the reply arrived in (`quote.json`, `pdf`, `html`, `text`, `transcript`) goes in a separate `format` field. `ReplyMeta.message_id` is the Inkbox message id, call id, iMessage id or A2A task id.
 - **`ReplyMeta.sender_trusted`** comes from the Inkbox webhook signature plus checking the sender against the business record (sender email, caller number, or Agent Card URL).
 - Business text and transcripts are typed as untrusted data: display them, never act on them.
+- **Price judgment:** `price_check: 'too_low'` (and `PriceVerdict.verdict: 'too_low'`) means the per-unit price is under 40% of the low end of the usual range: suspicious, never a "good" price. The engine flags such a quote `price_implausible` (also from a category floor, e.g. a catered meal under $3 a person, or a short Claude judgment for categories with no price data): it is not recommended, never cited in a counteroffer, and not approvable (`approval_block.code: 'price_implausible'`) until the business confirms the total and what it includes (Haggle asks once). A confirmed one becomes `price_confirmed_unusual` (approvable, with a caveat); a corrected price is judged again. `price_unusually_high` is a caveat only. The brain never learns from a quote with either low-price flag.
 
 ## 2. View schemas: `packages/core/views.ts`
 

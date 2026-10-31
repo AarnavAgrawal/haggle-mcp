@@ -18,7 +18,7 @@ export type DealBoardView = Omit<DealBoardOrEmpty, "quotes"> & {
   };
   payment_ceiling_usd?: number;
   payments_enabled?: boolean;
-  quote_status?: Record<string, { approvable: boolean; approximate?: boolean; block?: { code: string; reason: string } }>;
+  quote_status?: Record<string, { approvable: boolean; approximate?: boolean; block?: { code: string; reason: string }; price_note?: string }>;
   best_value_quote_id?: string;
   recommendation_note?: string;
   best_available_quote_id?: string;

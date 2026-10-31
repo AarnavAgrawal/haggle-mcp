@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { HaggleError } from "../lib/haggle.ts";
 import { errorJson, runDealAction } from "../lib/dashboard/actions.ts";
-import { ago, dealLine, humanNext, isApprovable, isTerminal, money, recommendationReason, sortQuotes, stamp, stateWords, timeline } from "../lib/dashboard/format.ts";
+import { ago, dealLine, flagTone, flagWords, humanNext, isApprovable, priceCheckWords, isTerminal, money, recommendationReason, sortQuotes, stamp, stateWords, timeline } from "../lib/dashboard/format.ts";
 import { backoffMs, cursorOf, streamUrl } from "../lib/dashboard/live.ts";
 import { parseCursor, sseComment, sseFrame, streamUpdates } from "../lib/dashboard/stream.ts";
 import type { DealBoardView, WaitResult } from "../lib/dashboard/types.ts";
@@ -97,6 +97,16 @@ describe("formatting", () => {
     expect(stamp("2026-10-22T15:04:00Z")).toBe("Oct 22, 15:04 UTC");
     expect(dealLine({ quantity: 40, date: "2026-10-24", area: "SF" })).toBe("40 people · 2026-10-24 · SF");
     expect(dealLine({})).toBe("");
+  });
+
+  it("a suspiciously low price is a risk, never a good price; a confirmed or high one is a warning", () => {
+    expect(flagWords("price_implausible")).toBe("suspiciously low price");
+    expect(flagTone("price_implausible")).toBe("risk");
+    expect(flagWords("price_confirmed_unusual")).toBe("unusually low (vendor confirmed)");
+    expect(flagTone("price_confirmed_unusual")).toBe("warn");
+    expect(flagWords("price_unusually_high")).toBe("unusually high price");
+    expect(priceCheckWords("too_low")).toBe("Suspiciously low");
+    expect(priceCheckWords("good")).toBe("Good price");
   });
 });
 

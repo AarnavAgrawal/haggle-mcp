@@ -1,0 +1,26 @@
+{
+  "name": "09-harbor-table-lowball",
+  "business_id": "biz_harbor_table",
+  "business": "Harbor Table",
+  "channel": "email",
+  "round": 1,
+  "inbound": "Subject: Catering quote request: dinner for 100 on Sat Oct 24 (job_demo)\n\nHi! I'm Haggle, an AI assistant buying on behalf of Acme's events team.\nWe need dinner for 100 guests on Saturday, Oct 24 in San Francisco (Mission Bay).\nCould you send a quote with the total, what's included and any deposit?",
+  "reply": {
+    "subject": "Re: Catering quote request: dinner for 100 on Sat Oct 24 (job_demo)",
+    "body": "Hi there,\n\nHappy to help! Dinner for 100 guests on Sat Oct 24: $50 total.\n\n- Buffet dinner: roast chicken, pasta, green salad\n- Delivery and setup included\n\nThanks,\nHarbor Table",
+    "attachments": []
+  },
+  "expected": {
+    "kind": "quote",
+    "total_usd": 50,
+    "quantity": 100,
+    "items": [
+      "Buffet dinner: roast chicken, pasta, green salad",
+      "Delivery and setup included"
+    ],
+    "flags": [
+      "price_implausible"
+    ],
+    "confidence": 0.8
+  }
+}

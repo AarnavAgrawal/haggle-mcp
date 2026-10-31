@@ -16,7 +16,7 @@ import type {
   Conversation, ConversationEntry, DealBoard as CoreDealBoard, DealBoardBusiness, DealBoardOrEmpty as CoreDealBoardOrEmpty, OpenQuestion, Quote as CoreQuote,
 } from "@haggle/core";
 import {
-  ChannelBadge, FlagChip, ModeBadge, Shell, Skeleton, ToolErrorNote, VerdictChip, isApproximate, isRiskFlag, payNow, payWords, relativeTime, toolErrorText, usd, viewTicket,
+  ChannelBadge, FlagChip, ModeBadge, Shell, Skeleton, ToolErrorNote, VerdictChip, isApproximate, isImplausible, isRiskFlag, payNow, payWords, relativeTime, toolErrorText, usd, viewTicket,
 } from "../_shared/ui.tsx";
 import { formatField, parseToolError } from "../_shared/format.ts";
 import { EntryList, Reply, mergeEntries } from "../conversation/thread.tsx";
@@ -49,7 +49,7 @@ type Extras = {
   request_details?: { what: string; headcount?: number; when: string; place: string; requirements: string[]; budget_usd: number | null; budget_source?: "request" | "settings_default" };
   payment_ceiling_usd?: number;
   payments_enabled?: boolean;
-  quote_status?: Record<string, { approvable: boolean; approximate?: boolean; block?: { code: string; reason: string } }>;
+  quote_status?: Record<string, { approvable: boolean; approximate?: boolean; block?: { code: string; reason: string }; price_note?: string }>;
   best_value_quote_id?: string;
   recommendation_note?: string;
   negotiation_estimates?: string[];
@@ -375,6 +375,7 @@ function headline(board: DealBoard, f: Facts): { text: string; tone: "info" | "y
 
 const BLOCK_SHORT: Record<string, string> = {
   total_not_firm: "the total is approximate",
+  price_implausible: "the price is suspiciously low (Haggle is confirming it)",
   over_cap: "it is over the per-payment ceiling",
   no_total: "it has no total yet",
   zero_total: "it has no real total",
@@ -732,6 +733,9 @@ function QuoteFacts({ q, board }: { q: Quote; board: DealBoard }) {
         {q.missing_fields && q.missing_fields.length > 0 && <span className="hg-flag hg-tone-warn">Still owes: {q.missing_fields.join(", ")}</span>}
       </div>
       {isApproximate(q) && <p className="db-warn-line">Approximate total: it can be chosen once {q.business} confirms a firm total.</p>}
+      {(isImplausible(q) || q.flags.includes("price_confirmed_unusual") || q.flags.includes("price_unusually_high")) && (
+        <p className="db-warn-line">{board.quote_status?.[q.quote_id]?.price_note ?? (isImplausible(q) ? `Suspiciously low for what was asked: it can be chosen once ${q.business} confirms the total and what it includes.` : `${q.business}'s price is far outside the usual range: check what it includes.`)}</p>
+      )}
     </>
   );
 }

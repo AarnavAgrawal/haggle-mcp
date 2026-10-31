@@ -144,17 +144,20 @@ const STATUS_WORDS: Record<string, string> = {
 export const businessStatusWords = (s: string) => STATUS_WORDS[s] ?? s.replace(/_/g, " ");
 
 /** Flags that mean danger (shown in the risk color). */
-const RISK_FLAGS = new Set(["external_payment_link", "prompt_injection", "unverified_sender", "conflicting_numbers", "requirement_unmet", "over_budget"]);
+const RISK_FLAGS = new Set(["external_payment_link", "prompt_injection", "unverified_sender", "conflicting_numbers", "requirement_unmet", "over_budget", "price_implausible"]);
 export const flagTone = (f: string): "risk" | "warn" => (RISK_FLAGS.has(f) ? "risk" : "warn");
 const FLAG_WORDS: Record<string, string> = {
   external_payment_link: "asked to pay at a link",
   prompt_injection: "suspicious instructions",
   unverified_sender: "unverified sender",
   approximate_total: "approximate total",
+  price_implausible: "suspiciously low price",
+  price_confirmed_unusual: "unusually low (vendor confirmed)",
+  price_unusually_high: "unusually high price",
 };
 export const flagWords = (f: string) => FLAG_WORDS[f] ?? f.replace(/_/g, " ");
 
-const PRICE_WORDS: Record<string, string> = { good: "Good price", typical: "Typical price", high: "High price" };
+const PRICE_WORDS: Record<string, string> = { good: "Good price", typical: "Typical price", high: "High price", too_low: "Suspiciously low" };
 export const priceCheckWords = (p: string | undefined) => (p ? PRICE_WORDS[p] ?? p : "");
 
 export type QuoteRank = "recommended" | "eligible" | "other" | "excluded" | "old";

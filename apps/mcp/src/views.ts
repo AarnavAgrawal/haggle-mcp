@@ -22,6 +22,8 @@ export const ApprovalOut = Approval.extend({
   payment: z.looseObject({ status: z.string(), simulated: z.boolean() }).optional(),
   /** "manual": approved deals end in the manual handoff (Haggle moves no money); known before any payment row exists. */
   payment_rail: z.literal("manual").optional(),
+  /** The price is far outside the usual range for what was asked (e.g. vendor confirmed a price far below it): the card warns. */
+  price_warning: z.string().optional(),
 });
 export type ApprovalOut = z.infer<typeof ApprovalOut>;
 
@@ -111,8 +113,8 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   web_app: z.boolean().optional(),
   /** "manual": approval ends in the manual handoff (Haggle moves no money; no Pay button); known before any approval. */
   payment_rail: z.literal("manual").optional(),
-  /** Per quote: can the human approve it now, and if not, why (the server decides; the view only shows it). */
-  quote_status: z.record(z.string(), z.object({ approvable: z.boolean(), approximate: z.boolean().optional(), block: z.object({ code: z.string(), reason: z.string() }).optional() })).optional(),
+  /** Per quote: can the human approve it now, and if not, why (the server decides; the view only shows it). price_note: a price far outside the usual range, in words. */
+  quote_status: z.record(z.string(), z.object({ approvable: z.boolean(), approximate: z.boolean().optional(), block: z.object({ code: z.string(), reason: z.string() }).optional(), price_note: z.string().optional() })).optional(),
   /** The best-value quote when it isn't the recommendation because it can't be approved; and why. */
   best_value_quote_id: z.string().optional(),
   recommendation_note: z.string().optional(),
@@ -303,7 +305,7 @@ function fullDealBoardPlus(b: DealBoardData, mode: Mode, extra: Partial<DealBoar
   return DealBoardPlus.parse({
     ...integrationSlots(b),
     ...toDealBoard(b, mode), empty: false, job_id: b.job.id, request_details: requestDetails(b), ...(b.payment_ceiling_usd !== undefined ? { payment_ceiling_usd: b.payment_ceiling_usd } : {}), ...(b.payments_enabled !== undefined ? { payments_enabled: b.payments_enabled } : {}), ...(b.value ? { value: b.value } : {}), ...(b.callbacks ? { callbacks: b.callbacks } : {}), ...(b.stages ? { stages: b.stages } : {}), ...(b.terms && Object.keys(b.terms).length ? { terms: b.terms } : {}), ...(b.contact_learning ? { contact_learning: b.contact_learning } : {}),
-    quote_status: Object.fromEntries(b.quotes.filter((q) => q.total_usd !== null).map((q) => [q.quote_id, { approvable: q.approvable, ...(q.total_approximate ? { approximate: true } : {}), ...(q.approval_block ? { block: q.approval_block } : {}) }])),
+    quote_status: Object.fromEntries(b.quotes.filter((q) => q.total_usd !== null).map((q) => [q.quote_id, { approvable: q.approvable, ...(q.total_approximate ? { approximate: true } : {}), ...(q.approval_block ? { block: q.approval_block } : {}), ...(q.price_note ? { price_note: q.price_note } : {}) }])),
     ...(b.best_value_quote_id ? { best_value_quote_id: b.best_value_quote_id } : {}), ...(b.recommendation_note ? { recommendation_note: b.recommendation_note } : {}),
     ...(b.best_available_quote_id ? { best_available_quote_id: b.best_available_quote_id } : {}),
     compliance: Object.fromEntries(b.quotes.filter((q) => q.status === "current" && q.compliance).map((q) => [q.quote_id, { status: q.compliance!.status, issues: q.compliance!.issues.map((x) => ({ code: x.code, text: x.text })), assumed: q.compliance!.assumed }])),
@@ -372,6 +374,7 @@ export function toApproval(
     ...(a ? { approval_id: a.approval_id, expires_at: a.expires_at } : {}),
     ...(b.payment ? { payment: b.payment } : {}),
     ...(b.payment?.receipt_url ? { receipt_url: b.payment.receipt_url } : b.payment?.explorer_url ? { receipt_url: b.payment.explorer_url } : {}),
+    ...(q?.price_note ? { price_warning: q.price_note } : {}),
     mode, ...extra,
   });
 }

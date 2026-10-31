@@ -8,6 +8,7 @@
 // Kept to plain types (no record keys, no numeric bounds) so it works as a Claude
 // structured-output schema; validate.ts enforces the bounds.
 import { z } from "zod";
+import type { PriceJudgment } from "./plausibility.ts";
 
 export const MONEY_FIELDS = ["price_per_head", "subtotal", "delivery_fee", "tax", "total", "deposit"] as const;
 export type MoneyField = (typeof MONEY_FIELDS)[number];
@@ -222,4 +223,10 @@ export interface QuoteRecord {
    * (date_mismatch, delivery_window_mismatch, identity_mismatch) that blocks approval.
    */
   terms_mismatch?: { offered_date?: string; delivery_window?: string; signed_as?: string; notes: string[] };
+  /**
+   * Is the total plausible for what was asked (parsing/plausibility.ts)? Absent = not judged. Sets
+   * price_implausible (blocks approval until the business confirms), price_confirmed_unusual or
+   * price_unusually_high (caveats).
+   */
+  price_judgment?: PriceJudgment;
 }

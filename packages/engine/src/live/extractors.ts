@@ -1,6 +1,7 @@
 // LIVE MODE extractor ports: Claude (structured outputs) with an explicit keyword fallback.
 // Adapted from quote-broker@8a68559 src/parser/parseReply.ts (Claude).
 import { answerFromRequest } from "../parsing/answerQuestion.ts";
+import { judgePriceWithClaude } from "../parsing/priceJudgment.ts";
 import { heuristicExtract } from "../parsing/heuristic.ts";
 import { isTransientParseError } from "../parsing/parseErrors.ts";
 import { createAnthropicClient, parseReply, type ParserClient } from "../parsing/parseReply.ts";
@@ -14,6 +15,7 @@ export function claudeExtractor(opts: { apiKey: string; workspaceId?: string; mo
   return {
     extract: ({ request, bodyText, pdfs, images }) => parseReply(client, opts.model, { request, bodyText, pdfs, ...(images ? { images } : {}) }),
     answerQuestion: (input) => answerFromRequest(client, opts.model, input),
+    judgePrice: (input) => judgePriceWithClaude(client, opts.model, input),
   };
 }
 
@@ -47,6 +49,18 @@ export function withHeuristicFallback(primary: ExtractorPort, log?: (event: stri
           return await primary.answerQuestion!(input);
         } catch (err) {
           log?.("answer_question_failed", { error: (err as Error).message.slice(0, 200) });
+          return null;
+        }
+      },
+    } : {}),
+    // No fallback for a price judgment either: when Claude can't (busy, over the AI budget), the
+    // deterministic check stands.
+    ...(primary.judgePrice ? {
+      async judgePrice(input: Parameters<NonNullable<ExtractorPort["judgePrice"]>>[0]) {
+        try {
+          return await primary.judgePrice!(input);
+        } catch (err) {
+          log?.("price_judgment_failed", { error: (err as Error).message.slice(0, 200) });
           return null;
         }
       },

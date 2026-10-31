@@ -10,7 +10,7 @@ import { businessText, spokenAmounts } from "./callSafety.ts";
 export const APPROXIMATE_FLAG = "approximate_total";
 
 /** Hedge words that make a figure approximate when they are in the same clause as it. */
-const HEDGE = /(~|≈|\b(?:around|about|approx(?:imately|imate)?|roughly|rough|prolly|probably|prob|maybe|perhaps|est|estimate[ds]?|estimated|ballpark(?:ing)?|should be|somewhere|circa|give or take|or so|close to|nearly|in the (?:range|neighbou?rhood|ballpark) of|i'?d (?:say|guess)|guess(?:ing|timate)?|ish)\b|\d\s*-\s*ish\b|\d\s*ish\b)/i;
+export const HEDGE = /(~|≈|\b(?:around|about|approx(?:imately|imate)?|roughly|rough|prolly|probably|prob|maybe|perhaps|est|estimate[ds]?|estimated|ballpark(?:ing)?|should be|somewhere|circa|give or take|or so|close to|nearly|in the (?:range|neighbou?rhood|ballpark) of|i'?d (?:say|guess)|guess(?:ing|timate)?|ish)\b|\d\s*-\s*ish\b|\d\s*ish\b)/i;
 
 /** A sentence that hedges the whole reply ("That's an estimate.", "ballpark", "subject to change"). */
 const WHOLE_REPLY_HEDGE = /\b(?:(?:that'?s|this is|it'?s|just|only)\s+(?:a|an|just a|only a)?\s*(?:rough|ballpark|estimate|approximate|guess)|rough (?:estimate|number|figure|guess)|ballpark|give or take|subject to change|not (?:a )?firm|to be confirmed|tbc)\b/i;

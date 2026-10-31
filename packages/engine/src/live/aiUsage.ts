@@ -298,5 +298,6 @@ export function meteredExtractor(port: ExtractorPort, meter: AiUsageMeter): Extr
   return {
     extract: (input) => meter.run({ jobId: input.message.job_id ?? undefined, purpose: "extract" }, () => port.extract(input)),
     ...(port.answerQuestion ? { answerQuestion: (input: Parameters<NonNullable<ExtractorPort["answerQuestion"]>>[0]) => meter.run({ purpose: "answer_question" }, () => port.answerQuestion!(input)) } : {}),
+    ...(port.judgePrice ? { judgePrice: (input: Parameters<NonNullable<ExtractorPort["judgePrice"]>>[0]) => meter.run({ jobId: input.job_id, purpose: "price_judgment" }, () => port.judgePrice!(input)) } : {}),
   };
 }

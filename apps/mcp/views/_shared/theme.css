@@ -111,6 +111,7 @@
 .hg-verdict-good { color: var(--win); background: var(--win-soft); }
 .hg-verdict-typical { color: var(--ink-2); background: var(--info-soft); }
 .hg-verdict-high { color: var(--warn); background: var(--warn-soft); }
+.hg-verdict-too_low { color: var(--warn); background: var(--warn-soft); }
 
 /* Meter */
 .hg-meter {

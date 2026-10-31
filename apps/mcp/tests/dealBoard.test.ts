@@ -57,6 +57,17 @@ describe("every safe option can be chosen", () => {
     expect(choosableCount(allIn)).toBe(3);
   });
 
+  it("a suspiciously low price ($50 for dinner for 100) can't be chosen until the business confirms it; a confirmed one can", () => {
+    const b = withState("collecting");
+    const lowball = { ...quote("q_mission_1"), total_usd: 50, flags: ["price_implausible"] };
+    expect(choiceFor(b, lowball)).toMatchObject({ kind: "unapprovable", code: "price_implausible" });
+    const reason = "Suspiciously low: $50 for 100 ($0.50 per person) is far below the usual $1,200–$6,000 for this order. Haggle asked Mission Eats once to confirm the total and what it includes; it can be approved when they confirm.";
+    const server = { ...b, quote_status: { q_mission_1: { approvable: false, block: { code: "price_implausible", reason }, price_note: "Suspiciously low: …" } } };
+    expect(choiceFor(server, lowball)).toEqual({ kind: "unapprovable", code: "price_implausible", reason });
+    const confirmed = { ...lowball, flags: ["price_confirmed_unusual"] };
+    expect(choiceFor(b, confirmed)).toMatchObject({ kind: "choose", confirm: "Approve $50 (full total)" });
+  });
+
   it("over budget is a caveat, not unsafe; safety flags and the engine's rejected list are", () => {
     const pricey = { ...quote("q_mission_1"), total_usd: 1500, flags: ["over_budget"] };
     expect(isUnsafe(base, pricey)).toBe(false);

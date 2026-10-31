@@ -3,7 +3,7 @@
 // board that rendered live in Claude.ai keeps rendering through the shared DealBoard schema.
 import { describe, expect, it } from "vitest";
 import type { DealBoardData } from "@haggle/engine";
-import { ApprovalOut, DealBoard, DealBoardOrEmpty, DealBoardPlus, dealStartedBoard, emptyBoard, toApproval, toDealBoard } from "../src/views.ts";
+import { ApprovalOut, DealBoard, DealBoardOrEmpty, DealBoardPlus, dealStartedBoard, emptyBoard, toApproval, toDealBoard, toDealBoardPlus } from "../src/views.ts";
 import { callHoursText, formatField, isLongText, kindLabel, parseToolError, toolErrorText } from "../views/_shared/format.ts";
 
 const request = {
@@ -84,6 +84,20 @@ describe("toDealBoard (live-shaped engine data)", () => {
     expect(ApprovalOut.safeParse(a).success).toBe(true);
     expect(a).toMatchObject({ business: "Haggle Test Seller", quote_channel: "email", amount_usd: 5, cap_usd: 5, channel: "view", status: "pending_human", approval_id: "ap_1" });
     expect(a.summary).toBe("Haggle Test Seller: $1,080 order total; pay $5 deposit now");
+  });
+
+  it("a price far outside the usual range is warned about on the board (quote_status) and the approval card", () => {
+    const note = "Vendor confirmed this price, but it is far below the usual range of $1,200–$6,000";
+    const low = { ...live, quotes: [{ ...quote, total_usd: 50, flags: ["price_confirmed_unusual"], price_check: "too_low", price_note: note }] } as unknown as DealBoardData;
+    const board = toDealBoardPlus(low, "live");
+    expect(DealBoardPlus.safeParse(board).success).toBe(true);
+    expect(board.quote_status!.q_live_1).toMatchObject({ approvable: true, price_note: note });
+    expect(board.quotes[0]).toMatchObject({ price_check: "too_low", flags: ["price_confirmed_unusual"] });
+    const a = toApproval(low, "q_live_1", "pending_human", "live", { next: "Waiting for the human to tap Approve." });
+    expect(ApprovalOut.safeParse(a).success).toBe(true);
+    expect(a.price_warning).toBe(note);
+    // An ordinary quote carries no warning.
+    expect(toApproval(live, "q_live_1", "pending_human", "live", { next: "x" }).price_warning).toBeUndefined();
   });
 });
 

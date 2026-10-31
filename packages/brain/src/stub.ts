@@ -60,7 +60,8 @@ export function createStubBrain(): Brain {
       const perUnit = q.per_unit_usd ?? (q.quantity ? q.total_usd / q.quantity : 26);
       const delta = Math.round((perUnit / 26 - 1) * 100) / 100;
       return {
-        verdict: delta <= -0.07 ? "good" : delta >= 0.12 ? "high" : "typical",
+        // Same rule as the real brain: under 40% of the range's low end is suspicious, not a bargain.
+        verdict: perUnit < 22 * 0.4 ? "too_low" : delta <= -0.07 ? "good" : delta >= 0.12 ? "high" : "typical",
         typical_per_unit_usd: 26,
         range_per_unit_usd: { low: 22, high: 32 },
         delta_pct: delta,

@@ -120,10 +120,14 @@ export const QUOTE_FLAGS = [
   "low_confidence",
   "question_pending",
   "expired",
+  "price_implausible", // far below the usual range for what was asked: not approvable until the business confirms
+  "price_confirmed_unusual", // the business confirmed a price far below the usual range: approvable, with a caveat
+  "price_unusually_high", // far above the usual range: a caveat only
 ] as const;
 export type QuoteFlag = (typeof QUOTE_FLAGS)[number];
 
-export const PriceCheck = z.enum(["good", "typical", "high"]);
+/** "too_low": far below the usual range (under 40% of its low end per unit): suspicious, not a bargain. */
+export const PriceCheck = z.enum(["good", "typical", "high", "too_low"]);
 export type PriceCheck = z.infer<typeof PriceCheck>;
 
 export const Quote = z.object({

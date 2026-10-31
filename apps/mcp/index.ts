@@ -196,7 +196,7 @@ function boardText(b: DealBoardData) {
     ...b.quotes.filter((q) => q.total_usd !== null).map((q) => {
       const flags = q.flags as string[];
       const approx = flags.includes("approximate_total");
-      return `- ${q.business}: ${approx ? "≈ " : ""}${usd(q.total_usd)}${approx ? " (approximate: not approvable until the business confirms a firm total)" : ""}, deposit ${q.deposit_usd !== undefined ? usd(q.deposit_usd) : "not stated"}${q.negotiated_from ? `, down from ${usd(q.negotiated_from)}` : ""}${flags.some((f) => f !== "approximate_total") ? ` [${flags.filter((f) => f !== "approximate_total").join(", ")}]` : ""}`;
+      return `- ${q.business}: ${approx ? "≈ " : ""}${usd(q.total_usd)}${approx ? " (approximate: not approvable until the business confirms a firm total)" : ""}${q.price_note ? ` (${q.price_note}${flags.includes("price_implausible") ? "; not approvable or recommended until the business confirms it: warn the user" : ""})` : ""}, deposit ${q.deposit_usd !== undefined ? usd(q.deposit_usd) : "not stated"}${q.negotiated_from ? `, down from ${usd(q.negotiated_from)}` : ""}${flags.some((f) => f !== "approximate_total") ? ` [${flags.filter((f) => f !== "approximate_total").join(", ")}]` : ""}`;
     }),
     ...b.rejected.map((r) => `rejected ${b.business_names[r.business_id]}: ${r.detail}`),
     ...(b.value?.explanation ? [`why: ${b.value.explanation.winner}`] : []),
