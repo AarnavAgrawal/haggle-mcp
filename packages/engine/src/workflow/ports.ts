@@ -290,6 +290,11 @@ export interface EngineDeps {
   sms?: SmsPort;
   /** Optional: keeps the buyer's Voice AI answering instructions in sync with open requests (inbound callbacks). */
   voice?: VoiceContextPort;
+  /**
+   * Optional (HAGGLE_MAILBOX_PER_WORKSPACE): the workspace's own mailbox for a new live deal's email
+   * (jobs.inbox), provisioned on first use. Null or an error: the shared mailbox (never blocks a deal).
+   */
+  mailboxes?: { inboxFor(workspaceId: string): Promise<string | null> };
   extractor: ExtractorPort;
   attachments: AttachmentPort;
   brain: Brain;

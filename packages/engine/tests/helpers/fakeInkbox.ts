@@ -32,11 +32,12 @@ export class FakeInkbox implements InkboxMailApi {
     }
     return { id, messageId: `<${id}@inkbox.test>`, status: "queued" };
   }
-  /** A seller mailbox (Inkbox identity) sends a reply to the buyer. */
-  reply(from: string, inReplyTo: string, text: string, attachments: Record<string, unknown>[] = [], opts: { recordOutbound?: boolean } = {}) {
+  /** A seller mailbox (Inkbox identity) sends a reply to the buyer (or to `opts.to`, e.g. a workspace mailbox). */
+  reply(from: string, inReplyTo: string, text: string, attachments: Record<string, unknown>[] = [], opts: { recordOutbound?: boolean; to?: string } = {}) {
     const id = `in_${++this.n}`;
     const rfc = `<${id}@${from.split("@")[1]}>`;
-    const detail = { id, mailbox: BUYER, direction: "inbound", threadId: `t_${from}`, messageId: rfc, fromAddress: from, toAddresses: [BUYER], subject: "Re: [HG-X] Quote request", bodyText: text, inReplyTo, references: [inReplyTo], attachmentMetadata: attachments };
+    const to = opts.to ?? BUYER;
+    const detail = { id, mailbox: to, direction: "inbound", threadId: `t_${from}`, messageId: rfc, fromAddress: from, toAddresses: [to], subject: "Re: Quote request", bodyText: text, inReplyTo, references: [inReplyTo], attachmentMetadata: attachments };
     this.messages.set(id, detail);
     if (opts.recordOutbound !== false) this.messages.set(`out_${id}`, { ...detail, id: `out_${id}`, mailbox: from, direction: "outbound" });
     return detail;

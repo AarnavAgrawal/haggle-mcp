@@ -41,6 +41,23 @@ export interface WorkspaceRow {
   created_at: string;
 }
 
+/**
+ * A workspace's own Inkbox identity (migration 126, HAGGLE_MAILBOX_PER_WORKSPACE): its mailbox sends
+ * and receives that workspace's deal email. `webhook_secret` is the identity's webhook signing key:
+ * server-only, never returned to a client. 'provisioning' doubles as the cross-process claim.
+ */
+export interface WorkspaceIdentityRow {
+  workspace_id: string;
+  handle: string;
+  identity_id: string | null;
+  mailbox: string | null;
+  webhook_secret: string | null;
+  status: "provisioning" | "active" | "failed";
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface JobRow {
   id: string;
   /** Owning workspace (DEFAULT_WORKSPACE_ID on single-tenant servers). */
@@ -473,6 +490,19 @@ export interface Repository {
    * is one of `inboxes` (the receiving mailbox): matching a new email that isn't a reply (matching.ts rule 5).
    */
   findOpenBusinessesBySender(address: string, inboxes: string[]): Promise<(JobBusinessRow & { short_code: string })[]>;
+
+  // workspace identities (migration 126)
+  getWorkspaceIdentity(workspaceId: string): Promise<WorkspaceIdentityRow | null>;
+  /** By identity handle or mailbox address (case-insensitive). */
+  findWorkspaceIdentity(q: { handle?: string; mailbox?: string }): Promise<WorkspaceIdentityRow | null>;
+  listWorkspaceIdentities(): Promise<WorkspaceIdentityRow[]>;
+  /**
+   * Take the provisioning claim: insert a 'provisioning' row if the workspace has none (atomic across
+   * processes). `claimed` is false when a row already existed (returned as it is). A 'failed' row
+   * (or a 'provisioning' claim whose holder died) last updated before `retryFailedBefore` is re-claimed (back to 'provisioning', same handle).
+   */
+  claimWorkspaceIdentity(workspaceId: string, handle: string, retryFailedBefore?: string): Promise<{ claimed: boolean; row: WorkspaceIdentityRow }>;
+  updateWorkspaceIdentity(workspaceId: string, patch: Partial<Pick<WorkspaceIdentityRow, "handle" | "identity_id" | "mailbox" | "webhook_secret" | "status" | "error">>): Promise<WorkspaceIdentityRow | null>;
 
   // messages
   /** Idempotent: returns null when provider_email_id or idempotency_key already exists. */

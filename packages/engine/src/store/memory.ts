@@ -17,6 +17,7 @@ import {
   type Repository,
   type SettingsRow,
   type WorkspaceRow,
+  type WorkspaceIdentityRow,
   type OutboxRow,
   type SuppressionRow,
   type WorkspaceVendorRow,
@@ -235,6 +236,47 @@ export class InMemoryRepository implements Repository {
     return this.businesses
       .map((b) => ({ ...clone(b), short_code: this.jobs.get(b.job_id)?.short_code ?? "" }))
       .filter((b) => codes.has(b.short_code) || (q.threadId !== null && b.thread_id === q.threadId) || (b.rfq_message_id !== null && ids.has(norm(b.rfq_message_id))) || this.messages.some((m) => m.direction === "out" && m.business_id === b.business_id && m.job_id === b.job_id && m.rfc_message_id !== null && ids.has(norm(m.rfc_message_id))));
+  }
+
+  // ── workspace identities (126) ──
+  private wsIdentities = new Map<string, WorkspaceIdentityRow>();
+  async getWorkspaceIdentity(workspaceId: string) {
+    const r = this.wsIdentities.get(workspaceId);
+    return r ? clone(r) : null;
+  }
+  async findWorkspaceIdentity(q: { handle?: string; mailbox?: string }) {
+    const h = q.handle?.trim().toLowerCase();
+    const m = q.mailbox?.trim().toLowerCase();
+    const r = [...this.wsIdentities.values()].find((x) => (h ? x.handle === h : !!m && x.mailbox === m));
+    return r ? clone(r) : null;
+  }
+  async listWorkspaceIdentities() {
+    return [...this.wsIdentities.values()].map(clone);
+  }
+  async claimWorkspaceIdentity(workspaceId: string, handle: string, retryFailedBefore?: string) {
+    const cur = this.wsIdentities.get(workspaceId);
+    if (!cur) {
+      if ([...this.wsIdentities.values()].some((x) => x.handle === handle)) throw new Error("duplicate key value violates unique constraint workspace_identities_handle_key");
+      const at = this.stamp();
+      const row: WorkspaceIdentityRow = { workspace_id: workspaceId, handle, identity_id: null, mailbox: null, webhook_secret: null, status: "provisioning", error: null, created_at: at, updated_at: at };
+      this.wsIdentities.set(workspaceId, row);
+      return { claimed: true, row: clone(row) };
+    }
+    if (retryFailedBefore && (cur.status === "failed" || cur.status === "provisioning") && cur.updated_at < retryFailedBefore) {
+      Object.assign(cur, { status: "provisioning", error: null, updated_at: this.stamp() });
+      return { claimed: true, row: clone(cur) };
+    }
+    return { claimed: false, row: clone(cur) };
+  }
+  async updateWorkspaceIdentity(workspaceId: string, patch: Partial<Pick<WorkspaceIdentityRow, "handle" | "identity_id" | "mailbox" | "webhook_secret" | "status" | "error">>) {
+    const cur = this.wsIdentities.get(workspaceId);
+    if (!cur) return null;
+    const p = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as typeof patch;
+    if (typeof p.mailbox === "string") p.mailbox = p.mailbox.toLowerCase();
+    const next = { ...cur, ...p };
+    if (next.status === "active" && (!next.identity_id || !next.mailbox || !next.webhook_secret)) throw new Error("workspace_identities: an active identity needs identity_id, mailbox and webhook_secret");
+    Object.assign(cur, p, { updated_at: this.stamp() });
+    return clone(cur);
   }
 
   async findOpenBusinessesBySender(address: string, inboxes: string[]) {

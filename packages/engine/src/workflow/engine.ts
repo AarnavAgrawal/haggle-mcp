@@ -666,6 +666,15 @@ export class HaggleEngine {
     // The per-job payment cap: what Haggle may charge at most, the lower of the operator's per-payment
     // ceiling and the workspace spending cap. The budget stays a preference (a caveat, never a refusal).
     const paymentCapCents = Math.min(this.d.config.globalPaymentCapCents, (await this.getSettings(ws)).spending_cap_cents);
+    // A mailbox of the workspace's own (HAGGLE_MAILBOX_PER_WORKSPACE), else the shared one.
+    let ownInbox: string | null = null;
+    if (mode === "live" && this.d.mailboxes) {
+      try {
+        ownInbox = await this.d.mailboxes.inboxFor(ws);
+      } catch (err) {
+        this.log("workspace_mailbox_fallback", { workspace_id: ws, error: (err as Error).message?.slice(0, 200) });
+      }
+    }
     let job: JobRow | null = null;
     for (let i = 0; i < 5 && !job; i++) {
       const code = newShortCode();
@@ -674,7 +683,7 @@ export class HaggleEngine {
         job = await this.repo.insertJob({
           id: newId("job"), workspace_id: ws, short_code: code, state: "created", mode, request: input.request, budget_cents: budgetCents,
           payment_cap_cents: paymentCapCents, approver_email: input.approver_email ? normalizeAddress(input.approver_email) : null,
-          inbox: this.d.config.sharedInbox ?? jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.max(1, Math.min(input.max_rounds ?? this.d.config.maxRounds, MAX_ROUNDS)),
+          inbox: ownInbox ?? this.d.config.sharedInbox ?? jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.max(1, Math.min(input.max_rounds ?? this.d.config.maxRounds, MAX_ROUNDS)),
           collect_until: replyBy.toISOString(), ready: false, pay_intent: false, failure_reason: null,
           client_request_id: input.client_request_id ?? null, version: 0, created_at: at, updated_at: at,
         });
@@ -1114,9 +1123,12 @@ export class HaggleEngine {
     const msg = this.withoutForeignTokens(raw);
     await this.claimSend(key, job.id, "email");
     const thread = msg.inThread && b?.last_inbound_message_id ? { inReplyTo: b.last_inbound_message_id, references: b.references.slice(-10) } : raw.threadOn ? { inReplyTo: raw.threadOn, references: [raw.threadOn] } : undefined;
+    // Business mail goes from the deal's mailbox (the workspace's own, when it has one); mail to the
+    // approver (approval requests, receipts) always from the shared buyer mailbox.
+    const from = b === null && this.d.config.sharedInbox ? this.d.config.sharedInbox : job.inbox;
     let out;
     try {
-      out = await this.d.email.send({ from: job.inbox, to, subject: msg.subject, bodyText: msg.bodyText, idempotencyKey: key, ...(thread ? { thread } : {}), ...(msg.attachments ? { attachments: msg.attachments } : {}) });
+      out = await this.d.email.send({ from, to, subject: msg.subject, bodyText: msg.bodyText, idempotencyKey: key, ...(thread ? { thread } : {}), ...(msg.attachments ? { attachments: msg.attachments } : {}) });
     } catch (err) {
       // Email carries the provider idempotency key, so a later retry under the same key is safe;
       // unless the provider says it may have acted (an idempotency conflict): never re-sent then.
@@ -1128,7 +1140,7 @@ export class HaggleEngine {
       row = await this.repo.insertMessage({
         job_id: job.id, business_id: b?.business_id ?? null, approval_id: msg.approvalId ?? null, direction: "out", kind,
         provider_email_id: out.providerId, idempotency_key: key, rfc_message_id: out.messageId, thread_id: b?.thread_id ?? null,
-        from_address: job.inbox, to_address: to, subject: msg.subject, body_text: msg.bodyText,
+        from_address: from, to_address: to, subject: msg.subject, body_text: msg.bodyText,
         attachments: (msg.attachments ?? []).map((a) => ({ filename: a.filename, content_type: a.contentType, size_bytes: a.content.byteLength, tar_path: null })),
         attachments_download_url: null, sender_trusted: null, trust_reason: null, matched_via: null, parse_status: "none", quarantine_reason: null,
         round: msg.round ?? null, simulated: job.mode === "mock",

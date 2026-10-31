@@ -89,6 +89,9 @@ Set in the Manufact dashboard (or `mcp-use servers env set <server-id> KEY=VALUE
 | `INKBOX_IDENTITY` | the production handle | |
 | `HAGGLE_ENABLE_CALLS`, `HAGGLE_ENABLE_IMESSAGE` | `true` once each channel is tested on staging (both off by default). Leave `HAGGLE_ENABLE_SMS` off until the 10DLC registration is approved; `HAGGLE_ENABLE_A2A` only with allowlisted Agent Cards | |
 | `HAGGLE_EXTERNAL_SENDERS` | `reply_token`, so real vendors' replies from their own mail servers are accepted (a reply in Haggle's thread, an aligned DMARC pass, or a new email from a vendor with one open deal; no token is sent any more, and `HAGGLE_REPLY_TOKEN_SECRET` is unused) | no |
+| `HAGGLE_MAILBOX_PER_WORKSPACE` | optional, off by default. `true`: each workspace gets its own Inkbox mailbox on its first live deal (see §6.3); needs the two below | no |
+| `INKBOX_ADMIN_API_KEY` | an **org-level (admin)** Inkbox API key: only it can create identities and their webhook subscriptions. Only with `HAGGLE_MAILBOX_PER_WORKSPACE=true` | yes |
+| `HAGGLE_WEBHOOK_BASE_URL` | the server's public https URL (e.g. `https://<mcp host>`); per-workspace webhooks go to `<url>/webhooks/inkbox/<handle>`. Only with `HAGGLE_MAILBOX_PER_WORKSPACE=true` | no |
 | `ANTHROPIC_API_KEY` | the server's key | yes |
 | `HAGGLE_AI_MAX_CALLS_PER_JOB` | e.g. `60` | |
 | `HAGGLE_AI_DAILY_TOKEN_BUDGET` | your daily cap, e.g. `5000000` (production warns when unset) | |
@@ -231,6 +234,13 @@ For the production buyer identity, create the subscription. Use the Inkbox dashb
 - **Events:** `message.received`, `message.bounced` and `message.failed` (all three required; the launch gate fails without them), plus `call.ended` (calls), `imessage.received` (texts and approvals by text) and `a2a.sent_task.updated` (A2A), for each channel you enable.
 - Check that the mailbox's inbound filter isn't `whitelist`, and that the identity's phone number is attached if calls or texts are on.
 - Check it read-only with the gate (§7.2, `--check-webhooks`).
+
+### 6.3 A mailbox per workspace (optional) [YOU]
+Off by default: every workspace's deals share the buyer identity's mailbox. To give each workspace (each user) its own mailbox, apply migration `126_engine_workspace_identities.sql`, then set `HAGGLE_MAILBOX_PER_WORKSPACE=true`, `INKBOX_ADMIN_API_KEY` (an **org-level admin key**; an agent-scoped key can't create identities) and `HAGGLE_WEBHOOK_BASE_URL=https://<mcp host>`.
+- On a workspace's first live deal the server creates an Inkbox identity for it (handle `hg-<workspace>-<hash>`, a mailbox, no phone), subscribes its webhook to `https://<mcp host>/webhooks/inkbox/<handle>` for `message.received`, `message.bounced` and `message.failed`, and stores the identity's signing key in `workspace_identities` (service role only). Nothing to do by hand per workspace.
+- That deal's vendor email goes from, and is answered to, the workspace's mailbox; replies are matched only to that workspace's deals, and the reconciler sweeps every workspace mailbox. Calls, texts, voice and mail to the approver stay on the shared identity (its subscription in §6.2 is unchanged).
+- If provisioning fails (Inkbox error, missing key), the deal uses the shared mailbox and the row is marked `failed` with the reason; it is retried after 10 minutes. Check with `select workspace_id, handle, mailbox, status, error from workspace_identities;` (never select `webhook_secret`).
+- Each new identity counts against the Inkbox org's identity quota and, if the inbound filter is `whitelist`, needs the vendors on it like the shared mailbox.
 
 ---
 

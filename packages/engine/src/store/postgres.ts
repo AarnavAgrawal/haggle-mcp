@@ -6,7 +6,7 @@ import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import { gatedSql, PoolGate, type PoolStats } from "./poolGate.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction, type AiUsageRow, type RateSlot,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction, type AiUsageRow, type RateSlot, type WorkspaceIdentityRow,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -236,6 +236,35 @@ export class PostgresRepository implements Repository {
       union select b.*, (select short_code from jobs where id = b.job_id) from job_businesses b where lower(btrim(b.rfq_message_id, '<>')) = any(${ids})
       union select b.*, (select short_code from jobs where id = b.job_id) from messages m join job_businesses b on b.job_id = m.job_id and b.business_id = m.business_id
         where m.direction = 'out' and lower(btrim(m.rfc_message_id, '<>')) = any(${ids})`);
+  }
+
+  // ── workspace identities (126) ──
+  async getWorkspaceIdentity(workspaceId: string) {
+    return row<WorkspaceIdentityRow>((await this.sql`select * from workspace_identities where workspace_id = ${workspaceId}`)[0]);
+  }
+  async findWorkspaceIdentity(q: { handle?: string; mailbox?: string }) {
+    if (q.handle) return row<WorkspaceIdentityRow>((await this.sql`select * from workspace_identities where handle = ${q.handle.trim().toLowerCase()}`)[0]);
+    if (q.mailbox) return row<WorkspaceIdentityRow>((await this.sql`select * from workspace_identities where mailbox = ${q.mailbox.trim().toLowerCase()}`)[0]);
+    return null;
+  }
+  async listWorkspaceIdentities() {
+    return rows<WorkspaceIdentityRow>(await this.sql`select * from workspace_identities order by created_at`);
+  }
+  async claimWorkspaceIdentity(workspaceId: string, handle: string, retryFailedBefore?: string) {
+    const ins = await this.sql`insert into workspace_identities (workspace_id, handle, status) values (${workspaceId}, ${handle}, 'provisioning') on conflict (workspace_id) do nothing returning *`;
+    if (ins[0]) return { claimed: true, row: row<WorkspaceIdentityRow>(ins[0])! };
+    if (retryFailedBefore) {
+      // Atomic: only one process re-claims a stale row (failed, or a claim whose holder died mid-provisioning).
+      const re = await this.sql`update workspace_identities set status = 'provisioning', error = null, updated_at = now() where workspace_id = ${workspaceId} and status in ('failed', 'provisioning') and updated_at < ${retryFailedBefore} returning *`;
+      if (re[0]) return { claimed: true, row: row<WorkspaceIdentityRow>(re[0])! };
+    }
+    return { claimed: false, row: (await this.getWorkspaceIdentity(workspaceId))! };
+  }
+  async updateWorkspaceIdentity(workspaceId: string, patch: Partial<Pick<WorkspaceIdentityRow, "handle" | "identity_id" | "mailbox" | "webhook_secret" | "status" | "error">>) {
+    const set = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
+    if (typeof set.mailbox === "string") set.mailbox = set.mailbox.toLowerCase();
+    const r = await this.sql`update workspace_identities set ${this.sql(set as Record<string, string | null>)}, updated_at = now() where workspace_id = ${workspaceId} returning *`;
+    return row<WorkspaceIdentityRow>(r[0]);
   }
 
   async findOpenBusinessesBySender(address: string, inboxes: string[]) {

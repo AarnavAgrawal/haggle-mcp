@@ -194,6 +194,7 @@ npx tsx apps/mcp/scripts/migrations.ts verify
 | `118_engine_booking` (A), `119_engine_pilot` (B), `120_engine_release` (C, not added), `121_engine_security2` (D), `122_engine_metrics` (E) | Sprint 5 workstreams | **Each on 100–117 alone** | As above | Per file, in its header |
 | `123_engine_web_approvals` | Web app: approvals decided by the signed-in account owner (channel `web`) | On 100–122 | Additive; safe to re-run | In its header |
 | `124_engine_rate_limits` | Shared rate limits: `rate_limit_slots` and `take_rate_slot()` (security definer, service_role only). Used by the web app's chat, approval, vendor and account limits and the MCP server's vendor additions | Nothing (applies alone on 100–117) | Additive; safe to re-run. Until it is applied, both apps fall back to per-process counts and log `rate_limit_fallback` / `vendor_daily_limit_fallback` | Table and function can stay; older code ignores them |
+| `126_engine_workspace_identities` | A mailbox per workspace: `workspace_identities` (handle, Inkbox identity id, mailbox, webhook signing key; RLS on, no client policies) and an index on `lower(job_businesses.email)` for matching a new email by its sender | On 103 (workspaces) | Additive; safe to re-run. Unused until `HAGGLE_MAILBOX_PER_WORKSPACE=true` | Table and index can stay; older code ignores them |
 
 **The brain's migrations** (applied to the database the brain's `SUPABASE_URL` points at; not engine files, so not in the ledger and `migrations.ts verify` ignores them):
 

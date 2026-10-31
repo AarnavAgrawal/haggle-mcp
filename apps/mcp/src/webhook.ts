@@ -10,14 +10,29 @@
 // live runtime's InboundReconciler lists the mailbox, texts and calls and ingests what is missing.
 // Ingest is idempotent by provider id, so a replay or a sweep after a 503 never double-ingests.
 // Kept free of the HTTP framework so the route can be tested with Inkbox fakes.
+//
+// POST /webhooks/inkbox/<handle> (HAGGLE_MAILBOX_PER_WORKSPACE): mail events for a workspace's own
+// identity, verified with THAT identity's signing key; its mail is read from its mailbox and matched
+// only to the deals sent from it. Calls, texts and the rest are never subscribed there and are ignored.
 import { addressedToBuyer, classifyFailure, inkboxCallEnded, inkboxIMessageReceived, inkboxSenderTrust, inkboxTextReceived, inkboxToInbound, RetryLater, trustForSender, verifyInkboxWebhook } from "@haggle/engine";
 import type { Runtime } from "./runtime.ts";
 
 export type WebhookResult = { status: 200 | 400 | 401 | 404 | 422 | 500 | 503; body: Record<string, unknown>; jobId?: string | null; outcome?: string; retryAfterS?: number };
 
-export async function handleInkboxWebhook(rt: Runtime, raw: string, headers: Headers, requestId: string = crypto.randomUUID()): Promise<WebhookResult> {
+export async function handleInkboxWebhook(rt: Runtime, raw: string, headers: Headers, requestId: string = crypto.randomUUID(), handle?: string): Promise<WebhookResult> {
   if (!rt.inkbox) return { status: 404, body: { error: "webhooks are disabled in mock mode" } };
-  const v = verifyInkboxWebhook(raw, headers, rt.inkbox.webhookSecret);
+  // A workspace identity: its own mailbox and signing key; unknown or inactive handles are refused.
+  let mailbox = rt.inkbox.buyerMailbox;
+  let secret = rt.inkbox.webhookSecret;
+  let scoped = false;
+  if (handle !== undefined) {
+    const ws = rt.inkbox.workspaceIdentity ? await rt.inkbox.workspaceIdentity(handle.toLowerCase()).catch(() => null) : null;
+    if (!ws?.mailbox || !ws.webhook_secret) return { status: 404, body: { error: "unknown identity" } };
+    mailbox = ws.mailbox;
+    secret = ws.webhook_secret;
+    scoped = true;
+  }
+  const v = verifyInkboxWebhook(raw, headers, secret);
   if (!v.ok) return { status: 401, body: { error: v.reason } };
   const { payload } = v;
   let handled: string | null = null; // the reconciler's key for this item, once ingested
@@ -27,14 +42,14 @@ export async function handleInkboxWebhook(rt: Runtime, raw: string, headers: Hea
     if (payload.event_type === "message.received") {
       const id = (payload.data.message as { id?: string } | undefined)?.id;
       if (!id) return { status: 400, body: { error: "bad payload" } };
-      const detail = await rt.inkbox.api.get(rt.inkbox.buyerMailbox, id);
-      if (!addressedToBuyer(detail, rt.inkbox.buyerMailbox)) {
+      const detail = await rt.inkbox.api.get(mailbox, id);
+      if (!addressedToBuyer(detail, mailbox)) {
         outcome = "not_for_buyer";
       } else {
         const msg = inkboxToInbound(payload, detail);
         const trust = await inkboxSenderTrust(rt.inkbox.api, payload as never, detail, rt.inkbox.senderTrust);
         if (!trust.trusted && trust.retryable) throw new RetryLater("sender verification temporarily unavailable");
-        ({ jobId, outcome } = await rt.engine.ingest(msg, trustForSender(trust, msg.from)));
+        ({ jobId, outcome } = await rt.engine.ingest(msg, trustForSender(trust, msg.from), scoped ? { mailbox } : {}));
       }
       handled = `mail:${id}`;
     } else if (payload.event_type === "message.bounced" || payload.event_type === "message.failed") {
@@ -43,12 +58,14 @@ export async function handleInkboxWebhook(rt: Runtime, raw: string, headers: Hea
       const id = (payload.data.message as { id?: string } | undefined)?.id;
       if (!id) return { status: 400, body: { error: "bad payload" } };
       const status = payload.event_type === "message.bounced" ? "bounced" : "failed";
-      const detail = await rt.inkbox.api.get(rt.inkbox.buyerMailbox, id);
-      const outbound = detail.direction === "outbound" && (detail.fromAddress ?? "").trim().toLowerCase() === rt.inkbox.buyerMailbox.toLowerCase();
+      const detail = await rt.inkbox.api.get(mailbox, id);
+      const outbound = detail.direction === "outbound" && (detail.fromAddress ?? "").trim().toLowerCase() === mailbox.toLowerCase();
       if (!outbound) outcome = "not_buyer_outbound";
       else if (detail.status && detail.status !== status) outcome = `status_mismatch:${detail.status}`;
       else ({ jobId, outcome } = await rt.engine.ingestDeliveryStatus({ providerMessageId: detail.id, rfcMessageId: detail.messageId || null, status, source: "webhook" }));
       handled = `status:${id}`;
+    } else if (scoped) {
+      outcome = "ignored_on_workspace_identity"; // only mail events are subscribed for a workspace identity
     } else if (payload.event_type === "call.ended") {
       const call = inkboxCallEnded(payload);
       if (call) {

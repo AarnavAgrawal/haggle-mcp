@@ -110,6 +110,15 @@ One buyer identity, **`haggle`** (Yash), with a mailbox, a phone number and iMes
 identities (Aarnav). Every inbound event is an Inkbox webhook posted to the MCP server's webhook
 route, verified by signature and deduplicated by event id before anything else happens.
 
+**A mailbox per workspace** (`HAGGLE_MAILBOX_PER_WORKSPACE=true`, off by default; migration 126): on a
+workspace's first live deal the server creates an Inkbox identity for it (a mailbox, no phone; needs
+`INKBOX_ADMIN_API_KEY`), subscribes `<HAGGLE_WEBHOOK_BASE_URL>/webhooks/inkbox/<handle>` to
+`message.received` / `message.bounced` / `message.failed` and stores its signing key. That deal's
+vendor email goes from and returns to that mailbox (`jobs.inbox`); the per-handle webhook verifies
+with that identity's key and matches only that mailbox's deals; the reconciler sweeps every
+workspace mailbox. Phone, iMessage, voice and mail to the approver stay on the shared identity. Any
+provisioning failure falls back to the shared mailbox (retried after 10 minutes).
+
 **Routing (engine):** A2A if the business has `a2a_card_url`; else email if it has `email`; else a
 Voice AI call to `phone`. If an email gets no reply by the follow-up deadline and a phone number
 exists, call.
@@ -165,6 +174,7 @@ A2A tasks carry the same JSON shapes in the task body.
 - Yash: `supabase/migrations/1xx_engine_*.sql` (jobs, businesses per job, messages, calls, quotes, questions, approvals, payments, audit log).
 - Aarnav: `supabase/migrations/2xx_brain_*.sql` (profiles, price observations, seller personas).
 - Money is `bigint` cents. Inbound events dedupe on `(provider, provider_event_id)`.
+- `workspace_identities` (126): a workspace's own Inkbox identity (handle, identity id, mailbox, webhook signing key, status). The signing key is never returned to a client.
 - RLS on every table; only `service_role` (server-side) reads or writes. Neither side writes the other's tables. To read the other side's data, add a narrow read-only view and agree on it.
 
 ## 8. Environment variables

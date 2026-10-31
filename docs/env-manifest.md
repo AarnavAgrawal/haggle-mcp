@@ -104,6 +104,9 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `STRIPE_CUSTOMER_ID` | Stripe test customer charged for deposits |  | server, script | – | optional | optional | optional | free text (conditional); **error** |  |
 | `STRIPE_PAYMENT_METHOD_ID` | Stripe test card on that customer |  | server, script | – | optional | optional | optional | free text (conditional); **error** |  |
 | `INKBOX_IDENTITY` | Inkbox buyer identity handle |  | server, script | – | optional | optional | optional | an Inkbox handle; warning | `haggle` |
+| `HAGGLE_MAILBOX_PER_WORKSPACE` | true: each workspace gets its own Inkbox mailbox on its first live deal (needs INKBOX_ADMIN_API_KEY and HAGGLE_WEBHOOK_BASE_URL); phone, texts, voice and approver mail stay on the shared identity. Off: one shared mailbox |  | server | – | optional | optional | optional | `true` \| `false`; warning | `false` |
+| `INKBOX_ADMIN_API_KEY` | Org-level (admin) Inkbox API key: creates the per-workspace identities and their webhook subscriptions (HAGGLE_MAILBOX_PER_WORKSPACE) | yes | server | – | optional | optional | optional | free text; warning |  |
+| `HAGGLE_WEBHOOK_BASE_URL` | This server's public https URL; per-workspace identities' webhooks go to <url>/webhooks/inkbox/<handle> (HAGGLE_MAILBOX_PER_WORKSPACE) |  | server | – | optional | optional | optional | http(s) URL; warning |  |
 | `INKBOX_SENDER_TRUST` | Seller-reply trust: outbound-verified (default) or pinned-org-identity |  | server | – | optional | optional | optional | `outbound-verified` \| `pinned-org-identity`; warning | `outbound-verified` |
 | `ANTHROPIC_MODEL` | Claude model for extraction and the strategist |  | server, eval | – | optional | optional | optional | free text; warning |  |
 | `ANTHROPIC_WORKSPACE_ID` | Anthropic workspace for usage attribution |  | server, eval | – | optional | optional | optional | free text; warning |  |
