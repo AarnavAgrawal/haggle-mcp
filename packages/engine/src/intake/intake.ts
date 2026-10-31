@@ -63,6 +63,10 @@ export interface CategoryProfile {
   vendorAsks: VendorAsk[];
   /** Common asks that are decision-critical for this kind of purchase (e.g. the cancellation policy for an event). */
   critical: VendorAskCovers[];
+  /** What "all-in" covers in the first email: "including delivery, tax and fees". */
+  allIn: string;
+  /** At most one category ask the all-in price can't carry, for the first email (e.g. a repair's earliest arrival). */
+  firstAsk?: { key: string; text: string };
 }
 
 // ───────────────────────────── reading a request ─────────────────────────────
@@ -100,7 +104,6 @@ function commonAsks(r: IntakeInput): { first: VendorAsk; rest: VendorAsk[] } {
       { key: "deposit", text: "Any deposit, when it's due, and your payment terms", voice: "any deposit, when it is due, and payment terms", short: "deposit", covers: "deposit" },
       { key: "availability", text: when ? "That you're available for that date and time (or the closest you can do)" : "When you could do it", voice: when ? "that they are available for that date and time" : "when they could do it", short: when ? "availability" : "earliest date", covers: "available" },
       { key: "cancellation", text: "Your cancellation and change policy", voice: "their cancellation and change policy", short: "cancellation policy", covers: "cancellation" },
-      { key: "valid_until", text: "How long the quote is good for", voice: "how long the quote is good for", short: "how long it's valid", covers: "valid_until" },
     ],
   };
 }
@@ -127,7 +130,9 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       ask("menu", "The menu or items you'd serve", "the menu or items they would serve", "menu"),
       ask("service_included", "Whether delivery, setup, serving staff, plates and utensils are included", "whether delivery, setup, staff, plates and utensils are included", "delivery incl.?"),
     ],
-    critical: ["deposit", "cancellation"],
+    // The cancellation policy is asked in a follow-up only when the reply leaves it out (followUpGaps).
+    critical: ["deposit"],
+    allIn: "including delivery, tax and fees",
   },
   event_services: {
     id: "event_services", label: "Event rentals & staffing",
@@ -147,6 +152,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       ask("overtime", "The overtime rate if the event runs long", "the overtime rate if it runs long", "overtime rate"),
     ],
     critical: ["deposit", "cancellation"],
+    allIn: "including delivery, setup, pickup and fees",
   },
   home_repair: {
     id: "home_repair", label: "Home repair",
@@ -169,6 +175,8 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       ask("licensed", "Whether you're licensed and insured", "whether they are licensed and insured", "licensed?"),
     ],
     critical: ["deposit"],
+    allIn: "including labor, parts, any trip fee and tax",
+    firstAsk: { key: "arrival", text: "your earliest arrival time" },
   },
   cleaning: {
     id: "cleaning", label: "Cleaning",
@@ -189,6 +197,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       ask("recurring", "Any lower price for recurring cleans (weekly or every two weeks)", "any lower price for recurring cleans", "recurring price"),
     ],
     critical: ["deposit"],
+    allIn: "including supplies and fees",
   },
   moving: {
     id: "moving", label: "Moving",
@@ -211,6 +220,8 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       ask("arrival", "Your arrival window", "their arrival window", "arrival window"),
     ],
     critical: ["deposit", "cancellation"],
+    allIn: "including travel, truck and any fees",
+    firstAsk: { key: "pricing_basis", text: "your hourly rate and minimum hours, if you charge by the hour" },
   },
   printing: {
     id: "printing", label: "Printing & merch",
@@ -232,6 +243,8 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       ask("files", "What file format you need", "what file format they need", "file format"),
     ],
     critical: ["deposit"],
+    allIn: "including setup, shipping and tax",
+    firstAsk: { key: "shipping", text: "the date they would arrive" },
   },
   general: {
     id: "general", label: "General",
@@ -245,6 +258,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
     ],
     vendorAsks: [],
     critical: ["deposit"],
+    allIn: "including any fees and tax",
   },
 };
 
@@ -334,8 +348,9 @@ function askedAlready(a: VendorAsk, own: { key: string; label: string }[]): bool
 /**
  * What we need back from every business for this request, in priority order: the itemized all-in
  * total, the category's own asks, then what's included, the per-unit price, the deposit and payment
- * terms, availability, the cancellation policy and how long the quote is valid. Asks the request's
- * own ask[] already covers are left out (those are asked by their own labels).
+ * terms, availability and the cancellation policy. Asks the request's own ask[] already covers are
+ * left out (those are asked by their own labels). Calls and texts ask from this list; the first email
+ * asks only firstEmailAsks.
  */
 export function vendorAsksFor(r: IntakeInput): VendorAsk[] {
   const p = profileFor(r);
@@ -346,23 +361,58 @@ export function vendorAsksFor(r: IntakeInput): VendorAsk[] {
   return own.length ? all.filter((a) => !askedAlready(a, own)) : all;
 }
 
+/**
+ * The first email's asks after "your all-in price (<allIn>)": any deposit, then at most two short
+ * asks the price can't carry. Which of the flexible days works (a date range), when they could do it
+ * (an undated job with no timing ask), and the category's one first ask (a repair's earliest arrival,
+ * a mover's hourly rate). Asks the request's own ask[] covers are left out. Everything else (the menu,
+ * the per-person price, the cancellation policy) waits for a follow-up, and only if the reply leaves it out.
+ */
+export function firstEmailAsks(r: IntakeInput): { allIn: string; asks: string[]; delivered: boolean } {
+  const p = profileFor(r);
+  const own = r.ask ?? [];
+  const covered = (key: string) => own.length > 0 && askedAlready({ key, text: "", voice: "", short: "" }, own);
+  const asks: string[] = [];
+  if (filled(r.date_until) && r.date_until !== r.date) asks.push("which of those days you can do");
+  else if (!filled(r.date) && !filled(r.time) && !covered("availability") && p.firstAsk?.key !== "arrival") asks.push("when you could do it");
+  if (p.firstAsk && !covered(p.firstAsk.key)) asks.push(p.firstAsk.text);
+  if (!covered("deposit")) asks.unshift("any deposit you need");
+  return { allIn: p.allIn, asks: asks.slice(0, 3), delivered: p.id === "catering" };
+}
+
 /** A parsed reply's terms, as far as intake needs them (QuoteRecord satisfies it). */
 export interface ReplyTerms {
   deposit_cents: number | null;
   terms?: { deposit_terms: string | null; cancellation: string | null; exclusions: string[] };
+  /** Catering: what the reply lists (an empty list = it said nothing about the menu). */
+  menu_items?: string[];
+  price_per_head_cents?: number | null;
+  total_cents?: number | null;
 }
 
 /**
- * Decision-critical asks this reply left out, as plain asks for one follow-up: the deposit and
- * payment terms (what gets paid on approval depends on it), and for events and moves the
- * cancellation policy. Empty when the reply said them (or the request's own ask[] covers them).
+ * What this reply left out that matters, as plain asks for the one follow-up (they ride along only
+ * with a follow-up that goes out anyway): the deposit and payment terms (what gets paid on approval
+ * depends on it), and for events and moves the cancellation policy. For catering, the terms the first
+ * email no longer asks for: the cancellation policy for a dated event, what the price includes when the
+ * reply lists no menu, and the price per person when it gives neither a menu nor a total. Empty when the reply said them
+ * (or the request's own ask[] covers them).
  */
 export function criticalGaps(r: IntakeInput, reply: ReplyTerms): string[] {
   const out: string[] = [];
-  for (const a of vendorAsksFor(r).filter((x) => x.critical)) {
-    // Short enough for a 159-char text, plain enough for an email list.
+  const asks = vendorAsksFor(r);
+  for (const a of asks.filter((x) => x.critical)) {
+    // Short enough for a 159-char text, plain enough for an email sentence.
     if (a.covers === "deposit" && reply.deposit_cents === null && !reply.terms?.deposit_terms) out.push("any deposit and when it's due");
     if (a.covers === "cancellation" && !reply.terms?.cancellation) out.push("your cancellation policy");
+  }
+  if (classify(r) === "catering") {
+    const has = (key: string) => asks.some((a) => a.key === key);
+    const noMenu = reply.menu_items !== undefined && reply.menu_items.length === 0;
+    if (filled(r.date) && has("cancellation") && !reply.terms?.cancellation) out.push("your cancellation policy");
+    if (noMenu && has("menu")) out.push("what the price includes (menu, delivery, setup)");
+    // The price per person matters only when the reply gives neither a menu nor a total to divide.
+    if (noMenu && has("per_unit") && reply.price_per_head_cents === null && reply.total_cents === null) out.push(`the price per ${(r.unit ?? "person").replace(/^people$/, "person").replace(/s$/, "")}`);
   }
   return out;
 }

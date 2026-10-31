@@ -55,7 +55,7 @@ describe("no code or token goes out to a business", () => {
     expect(env.emails.length).toBeGreaterThanOrEqual(3);
     for (const e of env.emails) expect(`${e.subject}\n${e.bodyText}`, `mail to ${e.to}`).not.toMatch(CODES);
     // Every email to a vendor on a deal shares the RFQ's plain subject, so the vendor's mail app threads it.
-    for (const e of env.emails) expect(e.subject.replace(/^Re: /, "")).toMatch(/^Quote request: /);
+    for (const e of env.emails) expect(e.subject.replace(/^Re: /, "")).toMatch(/^Quote (for|request:) /);
   });
 
   it("an old reply token pasted into a message (from an earlier thread) is masked before it reaches a vendor", async () => {

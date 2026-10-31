@@ -164,10 +164,10 @@ describe("SIMULATED pilot acceptance: onboarded workspace â†’ catering request â
     expect(stored.budget_cents).toBe(250_000);
     // Stage 1, the RFQ: every vendor is told headcount, day, place and the must-haves.
     for (const e of emails.filter((x) => [HARBOR, GRILL].includes(x.to))) {
-      expect(e.bodyText).toMatch(/People: 60/);
-      expect(e.bodyText).toContain(MONTH_DAY);
+      expect(e.bodyText).toMatch(/ for 60 people /);
+      expect(e.bodyText).toContain(EVENT.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })); // "Nov 12"
       expect(e.bodyText).toMatch(/500 Howard St/);
-      expect(e.bodyText).toMatch(/At least 12 vegetarian meals/);
+      expect(e.bodyText).toMatch(/at least 12 vegetarian meals/i);
     }
     expect(texts.filter((x) => x.to === SUNSET)).toHaveLength(1);
 
@@ -282,7 +282,7 @@ describe("SIMULATED pilot acceptance: onboarded workspace â†’ catering request â
     // Stage 6, the closing note to the vendor names the order; it claims only what the human reported.
     const closing = emails.filter((e) => e.to === HARBOR).at(-1)!;
     expect(closing.bodyText).toMatch(/team offsite lunch catering, 60 people/);
-    expect(closing.bodyText).toMatch(/The customer has told us they have paid the \$500\.00 directly to you/);
+    expect(closing.bodyText).toMatch(/The customer reports they have paid the \$500\.00 directly to you/);
     // Golden Grill and Sunset were never accepted.
     expect(emails.filter((e) => e.to === GRILL).some((e) => /accepted your quote/.test(e.bodyText))).toBe(false);
     expect(texts.filter((x) => x.to === SUNSET).some((x) => /accepted your/.test(x.text))).toBe(false);

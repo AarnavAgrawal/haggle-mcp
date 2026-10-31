@@ -83,7 +83,8 @@ describe("a flexible date window", async () => {
     expect(eventWhen("2026-10-19", undefined, "2026-10-23")).toBe("any day Monday, October 19 – Friday, October 23, 2026 (flexible)");
     expect(eventWhen("2026-10-19", "12:00", "2026-10-19")).toBe("Monday, October 19, 2026 at 12:00 PM"); // a one-day "range" is just the day
     const email = buildRfqEmail({ shortCode: "AB12", businessName: "Harbor Table", what: "lunch", quantity: 25, date: "2026-10-19", date_until: "2026-10-23", location: "San Francisco", requirements: [], replyBy: new Date("2026-10-18T20:00:00Z") });
-    expect(email.bodyText).toContain("- When: any day Monday, October 19 – Friday, October 23, 2026 (flexible). Please tell us which of these days you can do");
+    expect(email.bodyText).toContain("on any day from Monday, Oct 19 to Friday, Oct 23");
+    expect(email.bodyText).toContain("which of those days you can do");
     const brief = HaggleEngine.callBrief("Mission Eats", flex, ["5 vegetarian meals"]);
     expect(brief).toContain("on any day Monday, October 19 – Friday, October 23, 2026 (flexible)");
     expect(brief).toContain("ask which of those days they can do");

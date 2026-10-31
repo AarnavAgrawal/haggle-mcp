@@ -157,6 +157,7 @@ Each schema has a matching sample in `fixtures/views/`.
 - **`pay` requires all of:** a stored human approval for that exact quote; amount ≤ approved ≤ cap; payee is a business that actually quoted.
 - **Approval:** iMessage YES from the approver's number in an active connection, or the human tapping Approve in the approval view. Store who, when, quote, amount, channel.
 - **Calls:** the voice agent's `reason` says it is an AI assistant requesting a quote. Only call our simulated businesses or people who agreed to it.
+- **Email: no AI self-label, never pose as a named human, answer truthfully if asked; calls and texts: disclose.**
 - **Estimates** are labeled as estimates with confidence and quote count; nothing is ordered until the business confirms.
 - **Negotiation** cites only real competing quotes.
 

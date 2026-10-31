@@ -154,7 +154,7 @@ describe("collection closes as soon as every contacted business has answered", (
     await reply(e, deal.job_id, "Harbor Table", "$1,150 total, delivered."); // no vegetarian count: one follow-up
     await reply(e, deal.job_id, "Sunset Kitchen", "$1,100 total, delivered, 12 veg meals.");
     expect(e.emails.at(-1)).toMatchObject({ to: HARBOR.email });
-    expect(e.emails.at(-1)!.bodyText).toMatch(/At least 12 vegetarian meals/);
+    expect(e.emails.at(-1)!.bodyText).toMatch(/at least 12 vegetarian meals/i);
     expect((await e.repo.getJob(deal.job_id))!.state).toBe("collecting");
     e.clock.advance(2 * 60_000);
     await e.engine.advanceJob(deal.job_id);
@@ -224,7 +224,7 @@ describe("one follow-up per business", () => {
     const toHarbor = e.emails.slice(before).filter((m) => m.to === HARBOR.email);
     expect(toHarbor).toHaveLength(1);
     expect(toHarbor[0]!.bodyText).toMatch(/exact all-in total/);
-    expect(toHarbor[0]!.bodyText).toMatch(/At least 12 vegetarian meals/);
+    expect(toHarbor[0]!.bodyText).toMatch(/at least 12 vegetarian meals/i);
     const harbor = (await e.repo.getBusinesses(deal.job_id)).find((x) => x.name === "Harbor Table")!;
     expect(harbor.followups_sent).toBe(1);
   });
@@ -237,7 +237,7 @@ describe("one follow-up per business", () => {
     await reply(e, deal.job_id, "Harbor Table", "We charge $28 per person, delivered."); // $1,120 for 40, tax included; no vegetarian count
     const toHarbor = e.emails.slice(before).filter((m) => m.to === HARBOR.email);
     expect(toHarbor).toHaveLength(1);
-    expect(toHarbor[0]!.bodyText).toMatch(/At least 12 vegetarian meals/);
+    expect(toHarbor[0]!.bodyText).toMatch(/at least 12 vegetarian meals/i);
     expect(toHarbor[0]!.bodyText).not.toMatch(/all-in total|worked it out|read your quote/);
     const q = (await e.engine.getQuotes(deal.job_id)).quotes.find((x) => x.business === "Harbor Table")!;
     expect(q).toMatchObject({ total_usd: 1120, approvable: true });

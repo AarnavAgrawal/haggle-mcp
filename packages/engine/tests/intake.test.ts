@@ -74,7 +74,8 @@ describe("vendorAsksFor", () => {
   it("every request asks for the itemized all-in total first and the decision terms after", () => {
     const keys = vendorAsksFor({ what: "lunch catering", quantity: 40, date: "2026-10-22" }).map((a) => a.key);
     expect(keys[0]).toBe("total");
-    expect(keys).toEqual(["total", "menu", "service_included", "included", "per_unit", "deposit", "availability", "cancellation", "valid_until"]);
+    // "How long the quote is good for" is no longer asked anywhere.
+    expect(keys).toEqual(["total", "menu", "service_included", "included", "per_unit", "deposit", "availability", "cancellation"]);
   });
 
   it("category asks: plumbing asks call-out fee, flat vs hourly, parts, arrival and warranty", () => {
@@ -102,7 +103,9 @@ describe("vendorAsksFor", () => {
 
   it("marks what is decision-critical per category", () => {
     const crit = (what: string) => vendorAsksFor({ what }).filter((a) => a.critical).map((a) => a.key);
-    expect(crit("lunch catering")).toEqual(["deposit", "cancellation"]);
+    // Catering's cancellation policy is a follow-up term now (criticalGaps), not decision-critical.
+    expect(crit("lunch catering")).toEqual(["deposit"]);
+    expect(crit("tent rental")).toEqual(["deposit", "cancellation"]);
     expect(crit("fix a leak")).toEqual(["deposit"]);
   });
 });
@@ -110,9 +113,22 @@ describe("vendorAsksFor", () => {
 describe("criticalGaps", () => {
   it("chases the deposit and, for events, the cancellation policy, only when the reply left them out", () => {
     const r = { what: "lunch catering", quantity: 40 };
-    expect(criticalGaps(r, { deposit_cents: null })).toEqual(["any deposit and when it's due", "your cancellation policy"]);
+    expect(criticalGaps(r, { deposit_cents: null })).toEqual(["any deposit and when it's due"]);
+    expect(criticalGaps({ what: "tent rental" }, { deposit_cents: null })).toEqual(["any deposit and when it's due", "your cancellation policy"]);
     expect(criticalGaps(r, { deposit_cents: 34500, terms: { deposit_terms: null, cancellation: "Full refund until 7 days before", exclusions: [] } })).toEqual([]);
     expect(criticalGaps({ what: "fix a leak" }, { deposit_cents: 5000 })).toEqual([]);
+  });
+
+  it("catering: asks what the first email no longer does, only when the reply leaves it out", () => {
+    const r = { what: "lunch catering", quantity: 40, date: "2026-11-12" };
+    // A lump sum with no menu and no cancellation policy (the per-person price follows from the total).
+    expect(criticalGaps(r, { deposit_cents: 20000, total_cents: 100000, menu_items: [], price_per_head_cents: null })).toEqual([
+      "your cancellation policy", "what the price includes (menu, delivery, setup)",
+    ]);
+    // No total and no menu: the price per person too.
+    expect(criticalGaps(r, { deposit_cents: 20000, total_cents: null, menu_items: [], price_per_head_cents: null }).at(-1)).toBe("the price per person");
+    // A complete quote asks nothing more.
+    expect(criticalGaps(r, { deposit_cents: 20000, menu_items: ["Chicken bowls"], price_per_head_cents: 2500, terms: { deposit_terms: null, cancellation: "48 hours", exclusions: [] } })).toEqual([]);
   });
 });
 
@@ -121,7 +137,7 @@ describe("imessageAskVariants", () => {
     const v = imessageAskVariants({ what: "fix a leaking pipe" });
     expect(v[0]).toBe("All-in total, call-out fee, deposit?");
     expect(v.at(-1)).toBe("Total + deposit?");
-    expect(imessageAskVariants({ what: "lunch catering" })[0]).toBe("All-in total, menu, deposit, cancellation policy?");
+    expect(imessageAskVariants({ what: "lunch catering" })[0]).toBe("All-in total, menu, deposit?");
   });
 });
 

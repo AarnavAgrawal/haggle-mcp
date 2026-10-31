@@ -657,7 +657,7 @@ export const answerBusiness = server.tool(
     description:
       "Reply in the business's own thread (email or text) to a question it asked before quoting (e.g. 'Is there a loading dock?'). Only for a pending question_id from wait_for_update or get_quotes. " +
       "Only answer from the request or what the user told you in this chat; never guess or pick a 'reasonable' value (a delivery time, an entrance or loading area, set-up or serving, a menu choice). Otherwise leave it: Haggle texts the user the open questions and sends their reply to the business. " +
-      "Guarded: amounts must be real (from the request or a quote), no other business names, no commitments. " +
+      "Guarded: amounts must be real (from the request or a quote), no other business names, no commitments, never a claim to be a person (if asked: an AI assistant for the customer). " +
       "Don't use to negotiate (use negotiate) or to message a business that asked nothing (use send_message). Side effect: sends one message. Next: wait_for_update.",
     inputSchema: answerInput,
     outputSchema: answerOutput,
@@ -677,7 +677,7 @@ export const sendMessage = server.tool(
     description:
       "Send your own message to one business on a deal, on the channel it was first contacted on: its email thread, a text, a short Voice AI call (call hours apply), or its A2A task. Pass channel only when the user asks for a different one. " +
       "Or pass ask_missing=true to ask for exactly what its quote still lacks. Guarded like everything Haggle sends: amounts must come from the request or a stored quote (never an invented competing offer), " +
-      "other businesses are never named, and commitments ('we accept', 'book it') are refused: commit only through approve. Side effect: one message or call. Next: wait_for_update.",
+      "other businesses are never named, and commitments ('we accept', 'book it') are refused: commit only through approve. Never claim to be a person; if a business asks, it's an AI assistant for the customer. Side effect: one message or call. Next: wait_for_update.",
     inputSchema: z.object({
       job_id: jobId, business_id: businessId,
       text: z.string().min(1).max(1000).optional().describe("Your message (plain text). Omit with ask_missing."),

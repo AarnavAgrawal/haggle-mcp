@@ -6,14 +6,26 @@
 //   1. a dollar amount that isn't from this request or a stored quote (no invented competing offers);
 //   2. the name of another business on the job (competitors are never named);
 //   3. text over the channel's limit;
-//   4. commitment phrases: committing the buyer needs a human approval (approve), never free text.
+//   4. commitment phrases: committing the buyer needs a human approval (approve), never free text;
+//   5. a claim to be human ("I'm a real person", "this isn't a bot"): never true, never sent.
 
 import { findDollarAmounts } from "../parsing/callSafety.ts";
 
 // The dollar reader lives in parsing/callSafety.ts (decision 24); re-exported for existing importers.
 export { findDollarAmounts };
 
-export type GuardCode = "UNVERIFIED_AMOUNT" | "MENTIONS_OTHER_BUSINESS" | "MESSAGE_TOO_LONG" | "COMMITMENT_NEEDS_APPROVAL";
+export type GuardCode = "UNVERIFIED_AMOUNT" | "MENTIONS_OTHER_BUSINESS" | "MESSAGE_TOO_LONG" | "COMMITMENT_NEEDS_APPROVAL" | "CLAIMS_HUMAN";
+
+/**
+ * Text that claims (or denies the opposite of) being a human: "I'm a real person", "this isn't a bot",
+ * "I'm not an AI". Email carries no AI label, but never a false claim (CLAUDE.md section 7).
+ */
+const CLAIMS_HUMAN: RegExp[] = [
+  /\b(?:i\s+am|i'm|im|this\s+is|we\s+are|we're|you're\s+(?:talking|speaking|writing)\s+(?:to|with))\s+(?:a\s+|an\s+)?(?:real|actual|live)\s+(?:person|human)\b/i,
+  /\b(?:i\s+am|i'm|im|we\s+are|we're)\s+(?:a\s+)?human(?:\s+being)?\b/i,
+  /\b(?:i\s+am|i'm|im|this\s+is|this\s+isn't|this\s+is\s+not|it's|it\s+is|we're|we\s+are)\s+not\s+(?:a\s+|an\s+)?(?:bot|robot|ai|a\.i\.|machine|chat ?bot|automated)\b/i,
+  /\b(?:this\s+isn't|this\s+is\s+not|i'm\s+not|i\s+am\s+not|it's\s+not)\s+(?:a\s+|an\s+)?(?:bot|robot|ai|machine|chat ?bot)\b/i,
+];
 
 export interface GuardInput {
   /** The agent's own words only; amounts, names and commitments are checked here. */
@@ -103,5 +115,7 @@ export function checkMessage(input: GuardInput): GuardResult {
   const phrase = COMMITMENT_PHRASES.find((p) => lower.includes(p));
   const said = phrase ?? COMMITMENT_RES.map((r) => r.exec(input.text)?.[0]).find((x) => !!x);
   if (said) return { ok: false, code: "COMMITMENT_NEEDS_APPROVAL", message: `"${said}" commits the buyer. Commitments only go out after the human approves (approve).` };
+  const claim = CLAIMS_HUMAN.map((r) => r.exec(input.text)?.[0]).find((x) => !!x);
+  if (claim) return { ok: false, code: "CLAIMS_HUMAN", message: `"${claim}" claims to be a person. Messages to businesses never claim to be human; if asked, they say it's an AI assistant.` };
   return { ok: true };
 }

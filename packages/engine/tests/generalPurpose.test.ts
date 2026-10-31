@@ -50,8 +50,9 @@ describe("a non-catering purchase: roof leak repair (contractor)", () => {
       budget_usd: 3000,
       businesses: [{ name: "Bayside Roofing", email: "bids@bayside-roofing.test" }, { name: "Peak Roof Co", phone: "+15105550188", channel: "imessage" }],
     });
-    expect(sent[0]!.subject).toMatch(/Quote request: roof leak repair, 1 job, /);
-    expect(sent[0]!.bodyText).toMatch(/- Quantity: 1 job/);
+    expect(sent[0]!.subject).toMatch(/^Quote for roof leak repair for 1 job – /);
+    expect(sent[0]!.bodyText).toMatch(/Could you quote roof leak repair for 1 job on Tuesday, Nov 3 at 412 Grand Ave, Oakland, CA\? Must-have: licensed and insured\./);
+    expect(sent[0]!.bodyText).not.toMatch(/AI assistant/);
     expect(sent[0]!.bodyText).not.toMatch(/People:|vegetarian/);
     // Persona (decision 17): the customer's AI assistant, never "Haggle"; the venue and date stay (main).
     expect(texts[0]!.text).toMatch(/^Hi Peak Roof Co, I'm an AI assistant for a customer\. Quote for roof leak repair/);

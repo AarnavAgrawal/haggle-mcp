@@ -435,7 +435,7 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const convo = await call("get_conversation", { job_id: job, business_id: harbor });
     expect(Conversation.safeParse(convo.structuredContent).success).toBe(true);
     expect(convo.structuredContent.entries[0]).toMatchObject({ direction: "out", kind: "rfq", channel: "email" });
-    expect(convo.structuredContent.entries[0].text).toMatch(/Could you reply by .* with:\n- Total price/);
+    expect(convo.structuredContent.entries[0].text).toMatch(/please reply by .* with total price/);
     const invented = await call("send_message", { job_id: job, business_id: harbor, text: "Someone quoted $90. Can you beat it?" });
     expect(errorOf(invented)).toMatchObject({ error: { code: "unverified_amount" } });
     const named = await call("send_message", { job_id: job, business_id: harbor, text: "Golden Grill is faster." });

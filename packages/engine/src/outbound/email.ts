@@ -4,7 +4,8 @@
 // can never send a second copy. Moved here unchanged from the retired Primitive sender module.
 //   - In-thread replies go to the pinned business address with explicit In-Reply-To / References;
 //     the recipient never comes from email content (never the inbound's Reply-To).
-//   - JSON protocol parts (rfq.json, counter.json, accept.json) attach inline.
+//   - The RFQ and counteroffer emails carry no JSON part (rfq.json and counter.json go only to A2A
+//     businesses); an attachment, when a caller passes one, attaches inline.
 
 export interface OutboundAttachment {
   filename: string;

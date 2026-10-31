@@ -75,7 +75,7 @@ describe("real external email (Gmail/Outlook) is accepted only with proof beyond
     const env = setup(cfg);
     const { jobId, b } = await dealWith(env);
     const token = replyToken(SECRET, jobId, b.business_id);
-    expect(env.emails[0]!.subject).toMatch(/^Quote request: /);
+    expect(env.emails[0]!.subject).toMatch(/^Quote (for|request:) /);
     expect(`${env.emails[0]!.subject}\n${env.emails[0]!.bodyText}`).not.toMatch(/HGR-|HG-|\bref\b/i);
     expect(env.emails[0]!.bodyText).not.toContain(token);
     expect((await mail(env, b, 1, { subject: env.emails[0]!.subject.replace(/^/, "Re: ") })).outcome).toBe("stored");

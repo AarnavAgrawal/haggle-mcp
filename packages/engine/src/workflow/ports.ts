@@ -272,7 +272,8 @@ export interface EngineConfig {
   identity?: { name: string; phone?: string | null };
   /**
    * Who the AI assistant acts for when the request doesn't say (a detail like "Customer: Acme Labs"
-   * wins): messages to businesses say "I'm an AI assistant ... on behalf of <name>". Default "a customer".
+   * wins): emails to businesses are signed with it ("Thanks,\nAcme Labs"; no AI label, never an
+   * invented person), and calls and texts say "I'm an AI assistant ... on behalf of <name>". Default "a customer".
    */
   customerName?: string;
   /**

@@ -17,7 +17,7 @@
     "ccAddresses": null,
     "subject": "Re: {{RFQ_SUBJECT}}",
     "snippet": null,
-    "bodyText": "STOP\n\nOn Wed, Oct 21, 2026 at 10:02 AM AI assistant <{{BUYER}}> wrote:\n> Hi Valley Catering,\n>\n> I'm an AI assistant reaching out on behalf of a customer. Could you quote the following?\n>\n> - What: {{WHAT}}\n> - People: 40\n> - Location: {{AREA}}\n> - Must have:\n>   - 12 vegetarian meals\n>\n> Please reply with your total price, what it includes (delivery or travel, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.\n>\n> Thank you!\n> AI assistant for a customer\n>\n> Reference: {{TOKEN}} (please keep it when you reply)",
+    "bodyText": "STOP\n\nOn Wed, Oct 21, 2026 at 10:02 AM haggle-buyer <{{BUYER}}> wrote:\n> Hi Valley Catering,\n>\n> Could you quote {{WHAT}} for 40 people on Thursday, Oct 22, for delivery in {{AREA}}? We need 12 vegetarian meals.\n>\n> If you can do it, please reply by Wednesday, Oct 21 with your all-in price (including delivery, tax and fees) and any deposit you need. A photo or PDF of your quote is fine.\n>\n> Thanks!\n>\n> Reference: {{TOKEN}} (please keep it when you reply)",
     "bodyHtml": null,
     "inReplyTo": "{{RFQ_MESSAGE_ID}}",
     "references": [

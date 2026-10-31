@@ -1,6 +1,5 @@
 // Every message to a business after first contact stays on the channel it was first contacted on
-// (email, a Voice AI call, a text, A2A), unless the agent explicitly picks another one; and every
-// message introduces the sender as an AI assistant acting for the customer, never as "Haggle".
+// (email, a Voice AI call, a text, A2A), unless the agent explicitly picks another one; texts and calls introduce the sender as an AI assistant acting for the customer, emails are signed by the customer (no AI label), and nothing says "Haggle".
 // Real engine, fake Inkbox ports; no network.
 import { describe, expect, it } from "vitest";
 import { disabledPayer, GOLDEN_REQUEST, HaggleEngine, InMemoryRepository, StubBrain, type SmsPort } from "../src/index.ts";
@@ -95,7 +94,7 @@ describe("follow-ups stay on the channel the business was first contacted on", (
     expect(texts.at(-1)!.text).toMatch(/Delivery included/);
     expect(emails).toHaveLength(0);
     expect(calls).toHaveLength(0);
-    expect((await engine.getQuotes(deal.job_id)).businesses[0]!.last_event).toMatch(/Asked Golden Grill for: Delivery included, any deposit and when it's due, your cancellation policy \(text\)/);
+    expect((await engine.getQuotes(deal.job_id)).businesses[0]!.last_event).toMatch(/Asked Golden Grill for: Delivery included, any deposit and when it's due, your cancellation policy, what the price includes \(menu, delivery, setup\) \(text\)/);
   });
 
   it("a phone business whose call left the total unclear gets a follow-up Voice AI call (after the cooldown), never a text", async () => {
@@ -286,15 +285,18 @@ describe("answers and the agent's messages stay on the business's channel unless
   });
 });
 
-describe("introduces itself as an AI assistant for the customer, never as Haggle", () => {
+describe("texts and calls introduce themselves as an AI assistant for the customer; emails are signed by the customer; never Haggle", () => {
   it("the RFQ text, email and call name the customer when the deal gives one", async () => {
     const { engine, emails, texts, calls } = demoEngine();
     const withCustomer = { ...request, details: [{ label: "Customer", value: "Acme Labs" }] };
     await engine.deal({ request: withCustomer, budget_usd, businesses: [
       { name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Golden Grill", phone: GRILL, channel: "imessage" }, { name: "Mission Eats", phone: MISSION },
     ] });
-    expect(emails[0]!.bodyText).toMatch(/I'm an AI assistant reaching out on behalf of Acme Labs/);
-    expect(texts[0]!.text).toMatch(/^Hi Golden Grill, I'm an AI assistant for Acme Labs\..*(All-in total|Total) \+ [^?]+\?$/);
+    // Email: no AI self-label, signed with the customer's name. Texts and calls keep the disclosure.
+    expect(emails[0]!.bodyText).not.toMatch(/AI assistant/);
+    expect(emails[0]!.bodyText.trim().endsWith("Thanks,\nAcme Labs")).toBe(true);
+    expect((emails[0] as { attachments?: unknown[] }).attachments ?? []).toEqual([]);
+    expect(texts[0]!.text).toMatch(/^Hi Golden Grill, I'm an AI assistant for Acme Labs\..*(All-in total|Total)[ ,+][^?]+\?$/);
     expect(texts[0]!.text.length).toBeLessThanOrEqual(159);
     expect(calls[0]!.reason).toMatch(/Hi, I'm an AI assistant calling on behalf of Acme Labs/);
     for (const s of [emails[0]!.bodyText, texts[0]!.text, calls[0]!.reason]) expect(s).not.toMatch(/Haggle/);
@@ -314,15 +316,47 @@ describe("introduces itself as an AI assistant for the customer, never as Haggle
     const t = HaggleEngine.rfqIMessageText("Golden Grill and Catering Company", job);
     expect(t.length).toBeLessThanOrEqual(159);
     expect(t).toMatch(/I'm an AI assistant for /);
-    expect(t).toMatch(/(All-in total|Total) \+ [^?]+\?$/);
+    expect(t).toMatch(/(All-in total|Total)[ ,+][^?]+\?$/);
     expect(t).not.toMatch(/HG-/);
     expect(t).not.toMatch(/https?:|\d{3}[\s.-]\d{3}[\s.-]\d{4}/);
   });
 
-  it("the RFQ email signs off as the customer's AI assistant", () => {
+  it("no email to a business carries an AI label or a JSON attachment; chases are short and carry the opt-out line", async () => {
+    const { engine, repo, emails } = demoEngine();
+    const deal = await engine.deal({ request: { ...request, details: [{ label: "Customer", value: "Acme Labs" }] }, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }] });
+    // A total with nothing about delivery: the one follow-up asks for what's missing.
+    await emailReply(engine, repo, deal.job_id, "Harbor Table", 1, "$1,020 total, $100 deposit");
+    expect(emails.length).toBeGreaterThanOrEqual(2);
+    for (const m of emails as { bodyText: string; attachments?: unknown[] }[]) {
+      expect(m.bodyText).not.toMatch(/AI assistant|\bAI\b|Haggle/);
+      expect(m.attachments ?? []).toEqual([]);
+      expect(m.bodyText.trim().endsWith("Thanks,\nAcme Labs")).toBe(true);
+    }
+    const chase = emails.at(-1)!.bodyText;
+    expect(chase).toMatch(/\nReply STOP and we won't email again\.\n/);
+    // Between the greeting and the sign-off: two or three lines.
+    const body = chase.split("\n\n").slice(1, -1).join("\n").split("\n").filter(Boolean);
+    expect(body.length).toBeGreaterThanOrEqual(2);
+    expect(body.length).toBeLessThanOrEqual(3);
+  });
+
+  it("a business that asks whether it's talking to a person gets the truthful answer, never a claim to be human", async () => {
+    const { engine, repo, emails } = demoEngine();
+    const deal = await engine.deal({ request: { ...request, details: [{ label: "Customer", value: "Acme Labs" }] }, budget_usd, businesses: [{ name: "Harbor Table", email: "harbor@inkboxmail.test" }] });
+    await emailReply(engine, repo, deal.job_id, "Harbor Table", 1, "Happy to help. Before I quote, is this a real person or a bot?");
+    const answer = emails.at(-1)!.bodyText;
+    expect(answer).toMatch(/You're writing with an AI assistant that collects quotes on behalf of Acme Labs\./);
+    expect(answer).not.toMatch(/real person|I'm human|not a bot/i);
+    expect((await repo.listQuestions(deal.job_id)).every((q) => q.status !== "pending")).toBe(true);
+  });
+
+  it("the RFQ email is signed by the customer, with no AI label and no invented person", () => {
     const out = buildRfqEmail({ shortCode: "7F3K", businessName: "Bay Catering", what: "lunch catering", quantity: 40, date: "2026-10-22", location: "San Francisco, CA", requirements: [], replyBy: new Date("2026-10-17T21:30:00Z"), customer: "Acme Labs" });
-    expect(out.bodyText).toMatch(/^Hi Bay Catering,\n\nI'm an AI assistant reaching out on behalf of Acme Labs\./);
-    expect(out.bodyText.trim().split("\n").at(-1)).toBe("AI assistant for Acme Labs");
-    expect(out.bodyText).not.toMatch(/Haggle/);
+    expect(out.bodyText).toMatch(/^Hi Bay Catering,\n\nCould you quote lunch catering for 40 people/);
+    expect(out.bodyText.trim().split("\n").slice(-2)).toEqual(["Thanks,", "Acme Labs"]);
+    expect(out.bodyText).not.toMatch(/Haggle|AI assistant/);
+    // No name known: "Thanks!" alone, never "a customer" and never a made-up person.
+    const plain = buildRfqEmail({ shortCode: "7F3K", businessName: "Bay Catering", what: "lunch catering", quantity: 40, date: "2026-10-22", location: "San Francisco, CA", requirements: [], replyBy: new Date("2026-10-17T21:30:00Z") });
+    expect(plain.bodyText.trim().split("\n").at(-1)).toBe("Thanks!");
   });
 });

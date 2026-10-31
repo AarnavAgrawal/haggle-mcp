@@ -100,6 +100,17 @@ describe("opt-outs: unverified stops this job only; verified suppresses everywhe
     expect(await env.repo.findSuppressions([V])).toEqual([expect.objectContaining({ reason: "opt_out" })]);
     await expect(env.engine.deal({ request, budget_usd, businesses: [{ name: "Vendor 0", email: V }] })).rejects.toBeTruthy();
   });
+  it("a verified STOP answering the follow-ups' opt-out line ('Reply STOP and we won't email again.') lands in vendor_suppressions", async () => {
+    const env = setup();
+    const { b, token } = await deal(env);
+    expect((await mail(env, { subject: `Re: Quote for lunch (ref ${token})`, bodyText: "STOP\n\nOn Wed, Oct 21, 2026 at 10:02 AM haggle-buyer wrote:\n> Just checking in on the request below.\n> Reply STOP and we won't email again.", inReplyTo: [b.rfq_message_id!] })).outcome).toBe("opted_out");
+    expect(await env.repo.findSuppressions([V])).toEqual([expect.objectContaining({ reason: "opt_out" })]);
+  });
+  it("our own opt-out line, quoted back under a quote, is not an opt-out", () => {
+    expect(isOptOut("Reply STOP and we won't email again.")).toBe(false);
+    expect(isOptOut("Total: $1,045 delivered.\n\nOn Wed, Oct 21, 2026 at 10:02 AM haggle-buyer wrote:\n> Reply STOP and we won't email again.")).toBe(false);
+    expect(isOptOut("Total: $1,045 delivered.\n\nFrom: haggle-buyer <buyer@inkboxmail.test>\nSubject: Quote for lunch\n\nReply STOP and we won't email again.")).toBe(false);
+  });
   it("a quote with a newsletter footer is read as a quote", async () => {
     const env = setup();
     const { jobId, b, token } = await deal(env, [V]);

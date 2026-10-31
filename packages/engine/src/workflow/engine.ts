@@ -32,7 +32,7 @@ import { planCounteroffers, type PlannedCounter } from "../negotiation/counterof
 import { applyStrategy, type StrategyContext } from "../negotiation/strategist.ts";
 import { imessageFailureReason } from "../outbound/imessageErrors.ts";
 import { amountsIn, checkMessage, citesCompetingOffer, findDollarAmounts } from "../negotiation/messageGuard.ts";
-import { buildRfqEmail, eventPlace, eventWhen, humanTime, quantityText, quoteRequestSubject } from "../outbound/rfq.ts";
+import { alsoAsk, buildRfqEmail, emailSignOff, eventPlace, eventWhen, humanTime, quantityText, quoteRequestSubject, replyByText, signatureName } from "../outbound/rfq.ts";
 import { criticalGaps, imessageAskVariants, vendorAsksFor } from "../intake/intake.ts";
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/email.ts";
@@ -46,7 +46,7 @@ import { pdfBodyTotalConflict } from "../parsing/pdfBody.ts";
 import { termsMismatch } from "../parsing/termsCheck.ts";
 import { isTransientParseError, MAX_PARSE_RETRIES, parseErrorKind, parseRetryDelayMs } from "../parsing/parseErrors.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
-import { groundedAnswer } from "../parsing/answerQuestion.ts";
+import { groundedAnswer, identityAnswer, isIdentityQuestion } from "../parsing/answerQuestion.ts";
 import { firstReplyLine, verifyApproval } from "../approvals/verifyApproval.ts";
 import { isUnansweredLimitError, TextBudget } from "./textBudget.ts";
 import { checkStripePaymentAllowed, STRIPE_NETWORK, type StripeGuardCode } from "../payments/stripe.ts";
@@ -250,7 +250,8 @@ const plainName = (s: string, n: number) => s.replace(/https?:\/\/\S+|www\.\S+/g
 /**
  * Who the AI assistant acts for, as businesses hear it: the customer named on the request (a detail
  * like "Customer: Acme Labs"), else the operator's configured name, else "a customer". Never "Haggle":
- * businesses deal with the customer's AI assistant, not with a brand.
+ * businesses deal with the customer, not with a brand. Emails are signed with it; calls and texts say
+ * they are its AI assistant.
  */
 export function customerOf(request: { details?: { label: string; value: string }[] }, configured?: string | null): string {
   const named = request.details?.find((d) => CUSTOMER_LABEL_RE.test(d.label.trim()))?.value ?? configured ?? "";
@@ -568,8 +569,6 @@ export function fieldText(f: AskField, v: FieldValue): string {
   return String(v);
 }
 
-const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
-const jsonPart = (filename: string, o: unknown): OutboundAttachment => ({ filename, contentType: "application/json", content: enc(o) });
 
 /** A vendor category as stored (migration 127): lower case words, e.g. "plumbing"; null when it isn't one. */
 export function vendorCategoryName(raw: string): string | null {
@@ -1324,12 +1323,11 @@ export class HaggleEngine {
       const [sup] = await this.repo.findSuppressions([normalizeAddress(b.email)]);
       const d = decideFollowUp({ now: this.now(), lastSentAt: new Date(last), followUpsSent: sent, suppressed: sup?.reason === "bounce", optedOut: sup?.reason === "opt_out", jobOpen: !TERMINAL.has(job.state), replied: false, deadline: new Date(job.collect_until) }, cfg, tz);
       if (!d.send) continue;
-      const qty = quantityText(job.request.quantity, job.request.unit);
-      const what = `${job.request.what}${qty ? ` for ${qty}` : ""}${job.request.date ? ` on ${eventWhen(job.request.date, job.request.time, job.request.date_until)}` : ""}`;
       try {
+        // Two short lines and the opt-out; the request itself is quoted below in the thread.
         await this.sendRecorded(job, b, "followup", `${prefix}${sent + 1}`, {
           to: b.email, subject: rfq.subject ?? quoteRequestSubject(job.request), threadOn: rfq.rfc_message_id,
-          bodyText: `Hi ${b.name},\n\nJust following up on the request below for ${what}. If you can quote it, please reply to this email by ${localLabel(new Date(job.collect_until), tz)}. If you can't take it on, a quick "no thanks" helps too. If you'd rather not get requests like this, reply STOP and we won't contact you again.\n\n${this.signOff(job)}`,
+          bodyText: `Hi ${b.name},\n\nJust checking in on the request below for ${job.request.what}. If you can quote it, please reply ${replyByText(new Date(job.collect_until), tz, this.now())}; a quick "no thanks" helps too.\nReply STOP and we won't email again.\n\n${this.signOff(job)}`,
         });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, contact_window: "reminder", sent_at: this.now().toISOString(), summary: `Reminder ${sent + 1} of ${cfg.maxFollowUps} sent to ${b.name} (no reply yet)` });
       } catch (err) {
@@ -1358,33 +1356,39 @@ export class HaggleEngine {
     else if (b.email) await this.sendRfqEmail(job, b);
   }
 
-  /** Who this job's AI assistant acts for, as businesses hear it ("Acme Labs" or "a customer"). */
+  /** Who this job's messages are for, as businesses hear it ("Acme Labs" or "a customer"). Calls and texts say they are its AI assistant. */
   private customer(job: Pick<JobRow, "request">): string {
     return customerOf(job.request, this.d.config.customerName);
   }
 
-  /** The sign-off on every email to a business: the customer's AI assistant, never a brand. */
-  private signOff(job: Pick<JobRow, "request">): string {
-    return `Thank you!\nAI assistant for ${this.customer(job)}`;
+  /** The customer in an email sentence: "Acme Labs", or "the customer" when unnamed (`start`: "The customer"). */
+  private customerInText(job: Pick<JobRow, "request">, start = false): string {
+    return signatureName(this.customer(job)) ?? (start ? "The customer" : "the customer");
   }
 
-  /** The RFQ email for this job (catering default, or the custom ask and details). */
-  private rfqEmail(job: JobRow, b: JobBusinessRow) {
+  /** The sign-off on every email to a business: the customer's name ("Thanks,\nAcme Labs"), never a brand or an AI label. */
+  private signOff(job: Pick<JobRow, "request">): string {
+    return emailSignOff(this.customer(job));
+  }
+
+  /** The RFQ email for this job (catering default, or the custom ask and details), with the reply-by in the workspace's time zone. */
+  private async rfqEmail(job: JobRow, b: JobBusinessRow) {
     const r = job.request;
     return buildRfqEmail({
       shortCode: job.short_code, businessName: b.name, what: r.what, customer: this.customer(job), ...(r.quantity !== undefined ? { quantity: r.quantity } : {}), ...(r.unit ? { unit: r.unit } : {}),
       // Main's exact event details (a flexible range, the local time, the venue) on every send, retries too.
       ...(r.date ? { date: r.date } : {}), ...(r.date_until ? { date_until: r.date_until } : {}), ...(r.time ? { time: r.time } : {}),
       location: r.area, ...(r.venue ? { venue: r.venue } : {}), requirements: r.requirements.filter((x) => x.hard).map((x) => x.text), replyBy: new Date(job.collect_until),
-      ...(r.details?.length ? { details: r.details } : {}), ...(r.ask?.length ? { askLabels: r.ask.map((f) => ({ label: f.label, required: f.required })) } : {}),
-      // What the customer needs back to decide (intake): the itemized total, category asks, terms.
-      vendorAsks: vendorAsksFor(r).map((a) => a.text),
+      timezone: await this.contactTimezone(job), now: this.now(),
+      // The customer's name signs the email; it isn't repeated as a detail.
+      ...(r.details?.some((d) => !CUSTOMER_LABEL_RE.test(d.label.trim())) ? { details: r.details.filter((d) => !CUSTOMER_LABEL_RE.test(d.label.trim())) } : {}), ...(r.ask?.length ? { askLabels: r.ask.map((f) => ({ label: f.label, required: f.required })) } : {}),
     });
   }
 
   private async sendRfqEmail(job: JobRow, b: JobBusinessRow) {
     try {
-      const m = await this.sendRecorded(job, b, "rfq", sendKeys.rfq(job.id, b.business_id), { to: b.email, ...this.rfqEmail(job, b), attachments: [jsonPart("rfq.json", this.rfqPart(job, false))] });
+      // No rfq.json on email (it looks like spam to a small business); A2A gets the structured RFQ.
+      const m = await this.sendRecorded(job, b, "rfq", sendKeys.rfq(job.id, b.business_id), { to: b.email, ...(await this.rfqEmail(job, b)) });
       await this.repo.updateBusiness(job.id, b.business_id, { status: "contacted", contacted_at: this.now().toISOString(), rfq_message_id: m?.rfc_message_id ?? null, references: m?.rfc_message_id ? [m.rfc_message_id] : [], next_attempt_at: null });
       await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `RFQ sent to ${b.name}` });
     } catch (err) {
@@ -1429,7 +1433,7 @@ export class HaggleEngine {
   }
 
   /**
-   * The structured RFQ (email rfq.json and A2A data part). v3 keys plus the CONTRACTS.md §5 keys
+   * The structured RFQ (the A2A data part; email carries none). v3 keys plus the CONTRACTS.md §5 keys
    * (protocol/type) and the flat keys Aarnav's sellers read (quantity, vegetarian, date). Additive:
    * unknown keys are ignored by every reader.
    */
@@ -1464,7 +1468,7 @@ export class HaggleEngine {
       return;
     }
     if (await this.repo.findMessageByIdempotencyKey(key)) return;
-    const email = this.rfqEmail(job, b);
+    const email = await this.rfqEmail(job, b);
     try {
       const t = await this.a2aSend(job.id, key, { cardUrl: b.a2a_card_url, text: email.bodyText, data: this.rfqPart(job, true), messageId: `haggle-rfq-${job.id}-${b.business_id}` });
       await this.repo.updateBusiness(job.id, b.business_id, { status: "contacted", contacted_at: this.now().toISOString(), thread_id: t.contextId, rfq_message_id: t.taskId });
@@ -1811,7 +1815,7 @@ export class HaggleEngine {
         const read = readCents !== null ? ` We read your quote as ${usdText(readCents)} in total.` : "";
         await this.sendRecorded(job, b, "followup", key, {
           to: b.email, subject: quoteRequestSubject(job.request), inThread: true,
-          bodyText: `Hi ${b.name},\n\nThanks for your reply!${read} Could you tell us the exact all-in total${qty ? ` for ${qty}` : ""}, including delivery and tax, and any deposit? We can't compare estimates.\n\n${this.signOff(job)}`,
+          bodyText: `Hi ${b.name},\n\nThanks for your reply!${read} Could you send the exact all-in total${qty ? ` for ${qty}` : ""}, including delivery and tax, and any deposit?\nReply STOP and we won't email again.\n\n${this.signOff(job)}`,
         });
         how = "email";
       } else if (b.channel === "imessage") {
@@ -2806,16 +2810,18 @@ export class HaggleEngine {
     const musts = mustHaveLine(job.request.requirements);
     const q = await this.repo.getQuote(a.quote_id);
     const open = q ? this.unconfirmedMusts(job, q) : [];
+    // The business hears the customer's name, never "Haggle".
+    const who = this.customerInText(job, true);
     const text = [
       `Hi ${b.name},`, "",
-      `The customer has accepted your quote of ${usdText(a.quote_total_cents)} total for ${what}.`, "",
+      `${who} has accepted your quote of ${usdText(a.quote_total_cents)} total for ${what}.`, "",
       "Before anything is booked or paid, please reply to confirm:",
       "1. You're available and will provide this as quoted.",
       `2. The total of ${usdText(a.quote_total_cents)} stands${deposit ? `, with a ${usdText(a.payment_cents)} deposit due now` : ""}.`,
       ...(musts ? [`3. You'll meet every must-have: ${musts}.`] : []),
       ...(open.length ? [`   Your quote didn't confirm ${open.length === 1 ? "this one" : "these"}, so please confirm ${open.length === 1 ? "it" : "each"} specifically: ${open.join("; ")}.`] : []), "",
-      confirmOnly ? "The customer arranges payment with you directly; Haggle never takes or sends money. Nothing has been paid."
-        : "Once you confirm, please also tell us how you take payment (an invoice or payment instructions). The customer pays you directly; Haggle never takes or sends money. Nothing has been paid yet.", "",
+      confirmOnly ? `${who} will arrange payment with you directly. Nothing has been paid.`
+        : `Once you confirm, please also tell us how you take payment (an invoice or payment instructions). ${who} will pay you directly. Nothing has been paid yet.`, "",
       this.signOff(job),
     ].join("\n");
     try {
@@ -2890,8 +2896,8 @@ export class HaggleEngine {
     if (opts.ask !== false) {
       const text = [
         `Hi ${b.name},`, "",
-        `Thank you. The customer will pay the ${what} for your ${usdText(a.quote_total_cents)} quote (${this.orderText(job)}) to you directly.`,
-        "Please reply with how you take payment (an invoice, or payment instructions). The customer pays you themselves; Haggle never takes or sends money.", "",
+        `Thank you. ${this.customerInText(job, true)} will pay the ${what} for your ${usdText(a.quote_total_cents)} quote (${this.orderText(job)}) to you directly.`,
+        "Please reply with how you take payment (an invoice, or payment instructions).", "",
         this.signOff(job),
       ].join("\n");
       try {
@@ -3095,7 +3101,7 @@ export class HaggleEngine {
     if (h?.status === "instructions_requested" && !h.stalled_at) {
       const since = at("payment", (e) => e.data.approval_id === a.id && e.data.status === "handoff_requested");
       if (since !== null && now - since > this.handoffTimeoutMs && (await this.repo.markHandoffStalled(h.id, this.now().toISOString()))) {
-        if (b.channel === "email" && b.email) await this.sendRecorded(job, b, "followup", `handoff-nudge:${a.id}`, { to: b.email, subject: quoteRequestSubject(job.request), inThread: true, bodyText: `Hi ${b.name},\n\nJust checking: how would you like the customer to pay the ${usdText(a.payment_cents)}${a.payment_cents < a.quote_total_cents ? " deposit" : ""}? An invoice or payment instructions is fine. Haggle never takes or sends money.\n\n${this.signOff(job)}` }).catch((err: Error) => this.log("handoff_nudge_failed", { job_id: jobId, error: err.message }));
+        if (b.channel === "email" && b.email) await this.sendRecorded(job, b, "followup", `handoff-nudge:${a.id}`, { to: b.email, subject: quoteRequestSubject(job.request), inThread: true, bodyText: `Hi ${b.name},\n\nJust checking: how would you like ${this.customerInText(job)} to pay the ${usdText(a.payment_cents)}${a.payment_cents < a.quote_total_cents ? " deposit" : ""}? An invoice or payment instructions is fine.\n\n${this.signOff(job)}` }).catch((err: Error) => this.log("handoff_nudge_failed", { job_id: jobId, error: err.message }));
         await this.repo.appendEvent(jobId, "operator_attention", { reason: "payment_instructions_overdue", approval_id: a.id, business_id: b.business_id });
         this.log("operator_attention", { job_id: jobId, reason: "payment_instructions_overdue" });
         await this.notifyHuman(job, `handoff-stalled:${a.id}`, `${name} hasn't sent payment instructions yet; Haggle reminded them. Ask them directly how to pay; reply PAID ${a.code} only after you've paid.`);
@@ -4209,7 +4215,8 @@ export class HaggleEngine {
       }
       try {
         await this.sendRecorded(job, b, "counter", sendKeys.counter(job.id, b.business_id, c.round), {
-          to: b.email, subject: quoteRequestSubject(job.request), bodyText: `${c.text}\nAI assistant for ${this.customer(job)}`, attachments: [jsonPart("counter.json", counter)], inThread: true, round: c.round,
+          // Signed with the customer's name; no counter.json on email (A2A carries the structured counter).
+          to: b.email, subject: quoteRequestSubject(job.request), bodyText: `${c.text.replace(/\n*Thank you!\s*$/, "")}\n\n${this.signOff(job)}`, inThread: true, round: c.round,
         });
         await this.repo.updateBusiness(job.id, b.business_id, { countered_round: c.round });
         await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, summary: `Counteroffer to ${b.name}: ${why}`, basis_quote_id: c.basisQuoteId });
@@ -4278,7 +4285,9 @@ export class HaggleEngine {
     const reported = handoff?.status === "human_confirmed";
     // Manual rail, confirm-only: the business already confirmed in writing; this only closes the loop.
     const confirmedOrder = this.d.config.manualPaymentHandoff && a.action === "confirm" && (await this.repo.getBookingByApproval(a.id))?.status === "confirmed";
-    const payLine = confirmedOrder ? "Thanks for confirming: the order is set. The customer arranges payment with you directly; Haggle never takes or sends money." : reported ? `The customer has told us they have paid the ${money(handoff!.amount_cents)} directly to you. Haggle doesn't handle the money, so please check you received it and reply to confirm once it arrives.`
+    // The business hears the customer's name, never "Haggle".
+    const who = this.customerInText(job, true);
+    const payLine = confirmedOrder ? `Thanks for confirming: the order is set. ${who} will arrange payment with you directly.` : reported ? `${who} reports they have paid the ${money(handoff!.amount_cents)} directly to you. Please check you received it and reply to confirm once it arrives.`
       : paid ? `A payment of ${money(paid.amount_cents)} has been sent${paid.rail === "stripe" ? " (Stripe test mode)" : ""}${ref ? `, reference ${ref}` : ""}.` : "";
     // Every approval goes ahead with the order: confirm-only, or approved and then paid (decisions 2, 3).
     const confirm = true;
@@ -5686,9 +5695,17 @@ export class HaggleEngine {
    * for the human: surfaceQuestions texts it with the other open questions.
    */
   private async answerFromRequest(job: JobRow, b: JobBusinessRow, asked: QuestionRow[]) {
-    if (!this.d.extractor.answerQuestion || TERMINAL.has(job.state)) return;
+    if (TERMINAL.has(job.state)) return;
     for (const q of asked) {
       try {
+        // "Is this a real person?": always the truthful answer (an AI assistant for the customer), never a claim to be human.
+        if (isIdentityQuestion(q.text)) {
+          const answer = identityAnswer(signatureName(this.customer(job)));
+          await this.answerSeller(job.id, q.id, answer);
+          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, kind: "question_auto_answered", question_id: q.id, summary: `Told ${b.name} truthfully that it is writing with the customer's AI assistant (it asked)`, channel: b.channel });
+          continue;
+        }
+        if (!this.d.extractor.answerQuestion) continue;
         const facts = await this.questionFacts(job);
         const raw = await this.d.extractor.answerQuestion({ business: b.name, question: q.text, facts });
         // Grounded or not at all: a time, number or detail that isn't in the request leaves the question for the human.
@@ -5800,7 +5817,8 @@ export class HaggleEngine {
       if (b.channel === "email") {
         await this.sendRecorded(job, b, "followup", key, {
           to: b.email, subject: quoteRequestSubject(job.request), inThread: true,
-          bodyText: `Hi ${b.name},\n\nThanks for your quote! Could you also tell us:\n${list}\n\n${this.signOff(job)}`,
+          // One sentence for the asks, then the opt-out: the chase stays two or three lines.
+          bodyText: `Hi ${b.name},\n\nThanks for your quote! ${alsoAsk(missing)}\nReply STOP and we won't email again.\n\n${this.signOff(job)}`,
         });
         how = "email";
       } else if (b.channel === "imessage") {
@@ -5900,7 +5918,7 @@ export class HaggleEngine {
       if (b.channel === "email") {
         await this.sendRecorded(job, b, "followup", key, {
           to: b.email, subject: quoteRequestSubject(job.request), inThread: true,
-          bodyText: `Hi ${b.name},\n\nThanks for your quote. Just to confirm: ${question}${also}\n\nNothing has been booked or paid yet.\n\n${this.signOff(job)}`,
+          bodyText: `Hi ${b.name},\n\nThanks for your quote. Just to confirm: ${question}${missingAnswers.length ? ` ${alsoAsk(missingAnswers)}` : ""}\nNothing has been booked or paid yet.\n\n${this.signOff(job)}`,
         });
         how = "email";
       } else if (b.channel === "imessage") {
@@ -6674,6 +6692,7 @@ export class HaggleEngine {
       MENTIONS_OTHER_BUSINESS: "Don't name other businesses; say 'another quote' instead (or use negotiate).",
       MESSAGE_TOO_LONG: "Shorten the message.",
       COMMITMENT_NEEDS_APPROVAL: "To commit, use approve: the human approves and Haggle confirms with the business.",
+      CLAIMS_HUMAN: "Never claim to be a person. If the business asks, say it's an AI assistant writing for the customer.",
     }[g.code];
     throw new EngineError(g.code.toLowerCase(), g.message, fix, g.code === "COMMITMENT_NEEDS_APPROVAL" ? "approve" : "send_message");
   }
@@ -6710,7 +6729,7 @@ export class HaggleEngine {
       const q = (await this.repo.listQuotes(jobId)).find((x) => x.business_id === businessId && x.status === "current");
       const missing = q ? [...this.missingLabels(job, q), ...this.criticalLabels(job, q)] : (job.request.ask?.length ? job.request.ask.filter((f) => f.required).map((f) => f.label) : ["the all-in total", "any deposit"]);
       if (missing.length === 0) throw new EngineError("nothing_missing", `${b.name}'s quote isn't missing anything required.`, "Compare quotes with get_quotes.", "get_quotes");
-      text = channel === "phone" ? missing.join("; ") : channel === "imessage" ? `Thanks! Could you also confirm: ${missing.join("; ")}?` : `Thanks for your reply! Could you also tell us:\n${missing.map((m) => `- ${m}`).join("\n")}`;
+      text = channel === "phone" ? missing.join("; ") : channel === "imessage" ? `Thanks! Could you also confirm: ${missing.join("; ")}?` : `Thanks for your reply! ${alsoAsk(missing)}`;
     } else {
       text = opts.text!.trim();
       await this.guardText(job, b, text, channel === "imessage" ? textLimit : MESSAGE_LIMIT[channel]);
