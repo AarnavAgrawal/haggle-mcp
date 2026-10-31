@@ -84,6 +84,15 @@ describe("toDealBoard (live-shaped engine data)", () => {
     expect(ApprovalOut.safeParse(a).success).toBe(true);
     expect(a).toMatchObject({ business: "Haggle Test Seller", quote_channel: "email", amount_usd: 5, cap_usd: 5, channel: "view", status: "pending_human", approval_id: "ap_1" });
     expect(a.summary).toBe("Haggle Test Seller: $1,080 order total; pay $5 deposit now");
+    expect(a.terms).toBeUndefined(); // none stated
+  });
+
+  it("approval card carries the quote's fees and terms as stated (cancellation, exclusions)", () => {
+    const terms = { fees: [{ label: "Service charge", amount_usd: 90, included: false, excerpt: "18% service" }], deposit_terms: "Due on booking, non-refundable", cancellation: "Full refund until 7 days before", exclusions: ["Plates and cutlery"] };
+    const withTerms = { ...live, terms: { q_live_1: terms } } as unknown as DealBoardData;
+    const a = toApproval(withTerms, "q_live_1", "pending_human", "live", { next: "Waiting." });
+    expect(ApprovalOut.safeParse(a).success).toBe(true);
+    expect(a.terms).toEqual(terms);
   });
 });
 

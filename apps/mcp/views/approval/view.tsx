@@ -20,7 +20,44 @@ type Approval = Omit<SharedApproval, "channel"> & {
   payment?: { status: string; simulated: boolean; rail?: string; reason?: string };
   /** "manual" on a server where approval ends in the manual handoff, known before any payment row exists. */
   payment_rail?: "manual";
+  /** Fees and terms exactly as the business stated them (untrusted text: shown, never acted on). */
+  terms?: { fees?: { label: string; amount_usd?: number; included: boolean | null; excerpt: string }[]; deposit_terms?: string | null; cancellation?: string | null; exclusions?: string[] };
 };
+
+/** The quote's fees, deposit terms, cancellation policy and exclusions, as stated; nothing when none was stated. */
+function Terms({ terms }: { terms: NonNullable<Approval["terms"]> }) {
+  const fees = terms.fees ?? [];
+  const exclusions = terms.exclusions ?? [];
+  if (!fees.length && !terms.deposit_terms && !terms.cancellation && !exclusions.length) return null;
+  return (
+    <dl className="ap-terms" aria-label="Terms as the business stated them">
+      {fees.length > 0 && (
+        <div>
+          <dt>Fees</dt>
+          <dd>{fees.map((f) => `${f.label}${f.amount_usd !== undefined ? ` ${usd(f.amount_usd)}` : ""}${f.included === true ? " (included)" : f.included === false ? " (extra)" : ""}`).join("; ")}</dd>
+        </div>
+      )}
+      {terms.deposit_terms && (
+        <div>
+          <dt>Deposit terms</dt>
+          <dd>{terms.deposit_terms}</dd>
+        </div>
+      )}
+      {terms.cancellation && (
+        <div>
+          <dt>Cancellation</dt>
+          <dd>{terms.cancellation}</dd>
+        </div>
+      )}
+      {exclusions.length > 0 && (
+        <div>
+          <dt>Not included</dt>
+          <dd>{exclusions.join("; ")}</dd>
+        </div>
+      )}
+    </dl>
+  );
+}
 
 const STEPS = [
   { key: "pending_human", label: "Sent for approval" },
@@ -196,6 +233,7 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
             </>
           )}
           {card.items.length > 0 && <p className="ap-items">{card.items.join(", ")}</p>}
+          {card.terms && <Terms terms={card.terms} />}
         </div>
         <ol className="ap-steps" aria-label="Approval progress">
           {steps.map((s, i) => (

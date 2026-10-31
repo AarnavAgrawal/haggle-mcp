@@ -22,6 +22,11 @@ export const ApprovalOut = Approval.extend({
   payment: z.looseObject({ status: z.string(), simulated: z.boolean() }).optional(),
   /** "manual": approved deals end in the manual handoff (Haggle moves no money); known before any payment row exists. */
   payment_rail: z.literal("manual").optional(),
+  /** The quote's extra fees and commercial terms exactly as the business stated them (untrusted text, shown before approving). */
+  terms: z.looseObject({
+    fees: z.array(z.looseObject({ label: z.string(), amount_usd: z.number().optional(), included: z.boolean().nullable(), excerpt: z.string() })).optional(),
+    deposit_terms: z.string().nullable().optional(), cancellation: z.string().nullable().optional(), exclusions: z.array(z.string()).optional(),
+  }).optional(),
 });
 export type ApprovalOut = z.infer<typeof ApprovalOut>;
 
@@ -379,6 +384,7 @@ export function toApproval(
     ...(a ? { approval_id: a.approval_id, expires_at: a.expires_at } : {}),
     ...(b.payment ? { payment: b.payment } : {}),
     ...(b.payment?.receipt_url ? { receipt_url: b.payment.receipt_url } : b.payment?.explorer_url ? { receipt_url: b.payment.explorer_url } : {}),
+    ...(b.terms?.[quote_id] ? { terms: b.terms[quote_id] } : {}),
     mode, ...extra,
   });
 }
