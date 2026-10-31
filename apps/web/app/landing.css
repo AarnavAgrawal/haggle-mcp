@@ -16,13 +16,13 @@
 /* ---------- hero ---------- */
 .lp-hero {
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   gap: var(--s-12) clamp(40px, 6vw, 88px);
   align-items: center;
   padding-block: clamp(24px, 6vh, 72px) clamp(56px, 10vh, 112px);
 }
 .lp-copy h1 {
-  font-size: clamp(40px, 4.1vw, 56px);
+  font-size: clamp(40px, 3.9vw, 54px);
   font-weight: 760;
   font-stretch: 94%;
   line-height: 1.04;
@@ -354,7 +354,7 @@
   color: var(--ink-3);
   font-weight: 600;
 }
-.call-line:nth-of-type(odd) .call-who {
+.call-us {
   color: var(--pen);
 }
 .sample-text {
@@ -442,11 +442,9 @@
     padding-block: var(--s-8) var(--s-12);
   }
   .lp-section-head {
-  position: sticky;
-  top: var(--s-6);
-  align-self: start;
-}
-.lp-section-head h2 {
+    position: static;
+  }
+  .lp-section-head h2 {
     max-width: none;
   }
   .lp-section-head p {
@@ -476,7 +474,7 @@
     grid-template-columns: minmax(0, 1fr);
   }
   .lp-hero {
-    padding-top: var(--s-4);
+    padding-block: var(--s-4) var(--s-12);
     gap: var(--s-8);
   }
   .lp-copy h1 {

@@ -266,7 +266,7 @@ function CallSample() {
         <span className="num">4:12</span>
       </p>
       <p className="call-line">
-        <span className="call-who">Haggle</span>
+        <span className="call-who call-us">Haggle</span>
         <span>Hi, I&rsquo;m an AI assistant calling for a customer who&rsquo;d like a catering quote. Is now a good time?</span>
       </p>
       <p className="call-line">
@@ -274,7 +274,7 @@ function CallSample() {
         <span>Sure. How many people, and when?</span>
       </p>
       <p className="call-line">
-        <span className="call-who">Haggle</span>
+        <span className="call-who call-us">Haggle</span>
         <span>Forty, next Thursday at noon, twelve vegetarian.</span>
       </p>
     </figure>
@@ -284,6 +284,9 @@ function CallSample() {
 function TextSample() {
   return (
     <figure className="sample sample-text" aria-label="Example texts between Haggle and you">
+      <p className="call-head">
+        <span>Texts with Haggle</span>
+      </p>
       <p className="bubble bubble-in">Bay Catering quoted $1,150 for lunch for 40, with a $200 deposit. Reply YES 4821 to approve the deposit.</p>
       <p className="bubble bubble-out">YES 4821</p>
       <p className="bubble bubble-in">Approved. Nothing is charged until you pay.</p>
