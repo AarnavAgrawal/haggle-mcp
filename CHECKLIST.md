@@ -4,7 +4,7 @@ Haggle is an MCP server and MCP App that lets any AI agent buy from businesses b
 
 **Claude Code keeps this file updated** (rules in `CLAUDE.md` section 8). Before work: set "Now working on". After work: tick the item only if its "Done when" is fully met, update its status line, and add one log line. Edit only your own items. Specs: `CONTRACTS.md`. Plan: `PLAN.md`.
 
-**Now working on:** Yash: first staging deployment + consenting-mailbox email trial (`docs/staging-email-trial-runbook.md`); blocked on the staging accounts in `docs/manual-actions.md` §1 · Aarnav: first production test deploy of `aarnav-prod` (hardening merged; new Supabase + Manufact `haggle-prod` + Vercel, email-only, manual payment) for a small test with a friend; waiting on account keys
+**Now working on:** Yash: first staging deployment + consenting-mailbox email trial (`docs/staging-email-trial-runbook.md`); blocked on the staging accounts in `docs/manual-actions.md` §1 · Aarnav: making production (tryhaggle.tech) publicly usable: real-business search, Voice AI calls from the shared number; waiting on the Places key and the go-ahead to redeploy
 
 **Gates:** 3 PM email deal end to end + deal board renders · 9 PM multi-channel deal + warm ask + approval + payment live on Manufact · 3 AM feature freeze · 9:45 AM submit
 
@@ -105,6 +105,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-30 · Aarnav · Production on tryhaggle.tech (Cloudflare DNS, DNS-only; sign-in moved). Find businesses: discover reads each found business's website and returns its published emails; Add as vendor fills the email in. Full suite 1,895 passed. Not yet redeployed; calls (shared number, consented vendors only) and Places key ready to turn on with it
 - 2026-10-30 · Aarnav · Live server no longer lists unconfigured demo vendors (a workspace with no vendors is told to add real businesses on /vendors); web app redesigned (aligned layout, Archivo, quote ledger with negotiated-price sticker, two-column deal page, full-height chat, plain-words next step); full suite 1,894 passed, guest browser flow passed. Not yet redeployed
 - 2026-10-30 · Aarnav · Production test deploy of `aarnav-prod` (e16e0c6): new Supabase project (all 28 migrations, ledger clean), Manufact `haggle-prod` (wild-forge-smbdu, live, manual payment, `/ready` all OK), web on Vercel (haggle-prod.vercel.app, Google sign-in), Inkbox `haggle-buyer` webhook; email-only. Not yet done: a real deal end to end
 - 2026-10-25 · Aarnav · Hardening report (branch `aarnav-hardening`): `docs/hardening-report.md` (per-phase status, test counts, operator steps, open decisions); production-readiness Pass 6
