@@ -23,6 +23,8 @@ export function applyEvent(items: DisplayItem[], e: ChatEvent): DisplayItem[] {
     }
     case "deal":
       return items.some((it) => it.kind === "deal" && it.job_id === e.job_id) ? items : [...items, { kind: "deal", job_id: e.job_id }];
+    case "card":
+      return [...items, { kind: "card", card: e.card }];
     case "error":
       return [...items, { kind: "error", text: e.message }];
     default:
