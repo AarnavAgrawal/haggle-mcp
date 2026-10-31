@@ -306,6 +306,7 @@ code {
   white-space: nowrap;
 }
 .price-was {
+  font-family: var(--font-display);
   color: var(--ink-3);
   text-decoration: line-through;
   text-decoration-color: var(--pen);
