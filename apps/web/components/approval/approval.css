@@ -1,176 +1,324 @@
-/* Approval panel and callback button. Tokens and .card/.btn/.note/.chip come from app/globals.css.
-   Inside a quote the panel is an approval slip: tinted paper, no second box around a box. */
-.ap-panel.card {
-  background: var(--paper);
-  border-color: var(--rule);
-  padding: 18px 20px;
+/* The approval bar (ApprovalPanel), the purchase steps after approval (PurchaseSteps) and the callback
+   confirm (CallbackButton). Tokens: app/globals.css; buttons: components/ui/ui.css. DESIGN.md: the
+   approval bar is a floating thing, so it is the one place on the board with the float shadow. */
+
+/* ---------- the bar ---------- */
+.ap-bar {
+  position: relative;
+  display: grid;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-6);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sheet);
 }
-.ap-panel > * + * {
-  margin-top: 14px;
+/* Docked: sticks to the bottom of the viewport while the quote sheet above it is on screen. */
+.ap-docked {
+  position: sticky;
+  bottom: var(--s-3);
+  z-index: 5;
+  border-color: var(--rule-strong);
+  box-shadow: var(--shadow-float);
+  max-height: min(78dvh, 640px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
-.ap-head {
+.ap-bar-empty {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-style: dashed;
+  border-color: var(--rule-strong);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: var(--t-14);
 }
-.ap-head h3 {
-  font-size: var(--t-16);
+.ap-bar-empty .icon {
+  color: var(--ink-3);
+}
+.ap-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3) var(--s-6);
+}
+.ap-what {
+  min-width: 0;
+  flex: 1 1 260px;
+}
+.ap-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-18);
+  font-weight: 700;
   overflow-wrap: anywhere;
+}
+.ap-check {
+  color: var(--signed);
+}
+.ap-terms {
+  margin-top: 2px;
+  color: var(--ink-2);
+  font-size: var(--t-15);
+}
+.ap-terms .num {
+  color: var(--ink);
+  font-weight: 700;
+}
+.ap-line-actions:empty {
+  display: none;
+}
+.ap-done {
+  border-color: color-mix(in srgb, var(--signed) 40%, var(--rule));
+}
+
+/* ---------- confirm step: exactly what the human is approving ---------- */
+.ap-line[hidden] {
+  display: none;
+}
+.ap-confirm {
+  display: grid;
+  gap: var(--s-3);
+  animation: ap-open 180ms var(--ease-out);
+}
+@keyframes ap-open {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.ap-ask {
+  font-family: var(--font-display);
+  font-size: var(--t-21);
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 .ap-amounts {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 12px 32px;
+  align-items: flex-start;
+  gap: var(--s-3) var(--s-8);
   margin: 0;
 }
 .ap-amounts > div {
   min-width: 0;
 }
 .ap-amounts dt {
-  font-size: var(--t-12);
+  font-size: var(--t-14);
   color: var(--ink-3);
 }
 .ap-amounts dd {
   margin: 0;
-  font-weight: 600;
   overflow-wrap: anywhere;
 }
-.ap-amounts dd.muted {
-  font-weight: 400;
-  font-size: var(--t-14);
-}
-.ap-big {
-  font-size: var(--t-24);
-  font-weight: 750;
+.ap-big,
+.ap-mid {
   font-family: var(--font-display);
   font-variant-numeric: tabular-nums lining-nums;
-  line-height: 1.2;
+  font-weight: 750;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
 }
-.ap-demo {
-  border-left-color: var(--warn);
-  background: var(--warn-soft);
+.ap-big {
+  font-size: var(--t-30);
 }
-.ap-ok {
-  border-left-color: var(--win);
-  background: var(--win-soft);
+.ap-mid {
+  font-size: var(--t-21);
 }
-.ap-wait {
-  border-left-color: var(--carbon);
-  background: var(--carbon-soft);
+.ap-to {
+  font-weight: 650;
+  line-height: 1.6;
 }
-.ap-status:empty {
-  display: none;
-}
-.ap-status > * + * {
-  margin-top: 8px;
-}
-.ap-sub {
-  display: block;
-  margin-top: 2px;
+.ap-small {
   font-size: var(--t-14);
+  color: var(--ink-2);
 }
-.ap-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.ap-accepting {
+  font-weight: 650;
+  color: var(--ink);
 }
-.ap-actions:empty {
-  display: none;
-}
-@media (max-width: 480px) {
-  .ap-actions .btn {
-    flex: 1 1 100%;
-  }
-}
-
-.ap-callback > * + * {
-  margin-top: 8px;
-}
-.ap-confirm {
-  padding: 14px 16px;
-  border: 1px solid var(--rule-strong);
-  border-radius: var(--radius-m);
-  background: var(--panel);
-}
-.ap-confirm > * + * {
-  margin-top: 10px;
-}
-
-/* Confirm step: what the human accepts. */
 .ap-caveats {
   margin: 4px 0 0;
   padding-left: 18px;
   font-size: var(--t-14);
+  color: var(--ink-2);
 }
 .ap-caveats li + li {
   margin-top: 2px;
 }
 
-/* After approval on the manual rail: the purchase stages and the human's steps. */
-.ap-purchase > * + * {
-  margin-top: 10px;
+/* ---------- status lines ---------- */
+.ap-status:empty {
+  display: none;
+}
+.ap-status {
+  display: grid;
+  gap: var(--s-2);
+}
+.ap-sub {
+  font-size: var(--t-14);
+  color: var(--ink-2);
+  max-width: 72ch;
+}
+.ap-ok {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+  color: var(--signed);
+  font-weight: 650;
+  font-size: var(--t-15);
+}
+.ap-ok a {
+  font-weight: 600;
+}
+.ap-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.ap-actions:empty {
+  display: none;
+}
+@media (max-width: 560px) {
+  .ap-bar {
+    padding: var(--s-3) var(--s-4);
+  }
+  .ap-docked {
+    bottom: var(--s-2);
+  }
+  /* Docked on a phone: one compact line, so the sheet above stays readable. */
+  .ap-line {
+    gap: var(--s-2) var(--s-3);
+  }
+  .ap-what {
+    flex-basis: 150px;
+  }
+  .ap-title {
+    font-size: var(--t-16);
+  }
+  .ap-terms {
+    font-size: var(--t-14);
+  }
+  .ap-confirm .ap-actions .btn-primary {
+    flex: 1 1 auto;
+  }
+}
+
+/* ---------- after approval on the manual rail: the purchase steps ---------- */
+.ap-purchase {
+  display: grid;
+  gap: var(--s-3);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--rule);
 }
 .ap-steps {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 6px;
   font-size: var(--t-14);
 }
 .ap-steps li {
   position: relative;
-  padding-left: 22px;
+  padding: 0 0 10px 24px;
   color: var(--ink-3);
   overflow-wrap: anywhere;
+}
+.ap-steps li:last-child {
+  padding-bottom: 0;
+}
+/* The thread joining the steps. */
+.ap-steps li::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1.15em;
+  bottom: -0.15em;
+  width: 2px;
+  background: var(--rule);
+}
+.ap-steps li:last-child::after {
+  display: none;
 }
 .ap-steps li::before {
   content: "";
   position: absolute;
-  left: 2px;
-  top: 0.4em;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+  left: 0;
+  top: 0.35em;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
   border: 2px solid var(--rule-strong);
-  background: var(--panel);
+  background: var(--sheet);
+  box-sizing: border-box;
 }
 .ap-steps li[data-status="done"] {
   color: var(--ink-2);
 }
 .ap-steps li[data-status="done"]::before {
-  border-color: var(--win);
-  background: var(--win);
+  border-color: var(--signed);
+  background: var(--signed);
+}
+.ap-steps li[data-status="done"]::after {
+  background: var(--signed);
 }
 .ap-steps li[data-status="current"] {
-  color: inherit;
+  color: var(--ink);
   font-weight: 650;
 }
 .ap-steps li[data-status="current"]::before {
-  border-color: var(--carbon);
-  background: var(--carbon-soft);
+  border-color: var(--pen);
+  background: var(--pen-wash);
+}
+.ap-wait {
+  color: var(--ink);
+  font-size: var(--t-15);
 }
 
-/* A business's own words: plain text, labelled as unverified, never a link. */
-.ap-untrusted-box > * + * {
-  margin-top: 4px;
+/* ---------- a business's own words: plain text, marked as from them, never a link ---------- */
+.ap-untrusted-box {
+  display: grid;
+  gap: 6px;
 }
 .ap-untrusted-label {
-  display: block;
-  font-size: var(--t-12);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--t-14);
   font-weight: 600;
-  color: var(--warn);
+  color: var(--hold);
 }
 .ap-untrusted {
   margin: 0;
-  padding: 10px 12px;
-  border-left: 3px solid var(--warn);
-  border-radius: var(--radius-s);
-  background: var(--warn-soft);
-  color: inherit;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--hold) 30%, var(--rule));
+  border-radius: var(--r-control);
+  background: var(--hold-wash);
+  color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: var(--t-14);
+}
+
+/* ---------- callback confirm ---------- */
+.ap-callback {
+  display: grid;
+  gap: var(--s-2);
+  justify-items: start;
+}
+.ap-callback .ap-confirm {
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-sheet);
+  background: var(--sheet);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ap-confirm {
+    animation: none;
+  }
 }

@@ -3,8 +3,9 @@
 // the human's own steps as buttons. Waiting for the vendor's written confirmation → its payment
 // instructions, shown as untrusted plain text to verify before paying → "I've paid the vendor" →
 // waiting for the vendor to confirm receipt → done. The server decides every step; this only asks.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/Button";
 import { postAction, usd, type ApiError } from "./post";
 import type { PurchaseOk } from "@/lib/approval/flow";
 import "./approval.css";
@@ -66,7 +67,7 @@ export function PurchaseSteps({ jobId, business, initial }: { jobId: string; bus
   const settledRef = useRef(settled);
   useEffect(() => {
     // Settled while open: one refresh of the page (the board's own sections catch up), then quiet.
-    if (settled && !settledRef.current) router.refresh();
+    if (settled && !settledRef.current) startTransition(() => router.refresh());
     settledRef.current = settled;
   }, [settled, router]);
 
@@ -94,19 +95,23 @@ export function PurchaseSteps({ jobId, business, initial }: { jobId: string; bus
     setSending(true);
     setError(null);
     const r = await postAction<ActionAnswer>(url, { action });
-    busy.current = false;
-    setSending(false);
-    setConfirming(null);
     if (!r.ok) {
+      busy.current = false;
+      setSending(false);
+      setConfirming(null);
       setError(r.error);
       return;
     }
-    setNote(r.note ?? r.summary ?? (action === "paid" ? "Recorded that you paid. The vendor was told." : action === "booked" ? "Booking accepted." : "Cancelled."));
+    // Keep the button pending until the new stage has loaded, then let the board catch up.
     await load();
-    router.refresh();
+    busy.current = false;
+    setSending(false);
+    setConfirming(null);
+    setNote(r.note ?? r.summary ?? (action === "paid" ? "Recorded that you paid. The vendor was told." : action === "booked" ? "Booking accepted." : "Cancelled."));
+    startTransition(() => router.refresh());
   }
 
-  if (!p) return <p className="muted ap-sub">Loading the purchase status…</p>;
+  if (!p) return <p className="ap-sub">Loading the purchase status…</p>;
   if (p.rail !== "manual" || !p.stage) return null;
 
   const current = STEP_OF[p.stage];
@@ -116,7 +121,7 @@ export function PurchaseSteps({ jobId, business, initial }: { jobId: string; bus
   return (
     <div className="ap-purchase">
       {p.confirm_only ? (
-        <p className="note">Confirm-only order: nothing is paid through Haggle; you arrange payment with {business} under its terms.</p>
+        <p className="ap-sub">Confirm-only order: nothing is paid through Haggle; you arrange payment with {business} under its terms.</p>
       ) : index >= 0 ? (
         <ol className="ap-steps" aria-label="Purchase progress">
           {STEPS.map((s, i) => (
@@ -128,13 +133,13 @@ export function PurchaseSteps({ jobId, business, initial }: { jobId: string; bus
       ) : null}
 
       <div aria-live="polite" className="ap-status">
-        {p.summary && <p className={p.stage === "settled_verified" ? "note ap-ok" : "note ap-wait"}>{p.summary}</p>}
-        {p.next && <p className="muted ap-sub">Next: {p.next}</p>}
-        {note && <p className="muted ap-sub">{note}</p>}
+        {p.summary && <p className={p.stage === "settled_verified" ? "ap-ok" : "ap-wait"}>{p.summary}</p>}
+        {p.next && <p className="ap-sub">Next: {p.next}</p>}
+        {note && <p className="ap-sub">{note}</p>}
         {error && (
           <p className="note note-risk" role="alert">
             {error.message}
-            {error.fix && <span className="ap-sub">{error.fix}</span>}
+            {error.fix && <span className="ap-sub"> {error.fix}</span>}
           </p>
         )}
       </div>
@@ -148,12 +153,12 @@ export function PurchaseSteps({ jobId, business, initial }: { jobId: string; bus
           {confirming === "booked" && <p>Only if you confirmed the date, the total and every must-have with {business} directly. Haggle then asks them how to pay.</p>}
           {confirming === "cancel" && <p>Cancel the booking with {business}? Haggle tells them not to hold it. Don&apos;t pay them after this.</p>}
           <div className="ap-actions">
-            <button type="button" className="btn btn-primary" onClick={() => act(confirming)} disabled={sending} aria-busy={sending}>
-              {sending ? "Sending…" : confirming === "paid" ? `Yes, I paid ${amount}` : confirming === "booked" ? "Yes, it's booked" : "Yes, cancel it"}
-            </button>
-            <button type="button" className="btn" onClick={() => setConfirming(null)} disabled={sending}>
+            <Button variant={confirming === "cancel" ? "danger" : "primary"} onClick={() => act(confirming)} pending={sending}>
+              {confirming === "paid" ? `Yes, I paid ${amount}` : confirming === "booked" ? "Yes, it's booked" : "Yes, cancel it"}
+            </Button>
+            <Button variant="quiet" onClick={() => setConfirming(null)} disabled={sending}>
               Back
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -161,19 +166,19 @@ export function PurchaseSteps({ jobId, business, initial }: { jobId: string; bus
       {!confirming && (p.can.report_paid || p.can.accept_booking || p.can.cancel) && (
         <div className="ap-actions">
           {p.can.accept_booking && (
-            <button type="button" className="btn btn-primary" onClick={() => setConfirming("booked")}>
+            <Button variant="primary" onClick={() => setConfirming("booked")}>
               The booking is confirmed
-            </button>
+            </Button>
           )}
           {p.can.report_paid && (
-            <button type="button" className="btn btn-primary" onClick={() => setConfirming("paid")}>
+            <Button variant="primary" onClick={() => setConfirming("paid")}>
               I&apos;ve paid the vendor
-            </button>
+            </Button>
           )}
           {p.can.cancel && (
-            <button type="button" className="btn" onClick={() => setConfirming("cancel")}>
+            <Button onClick={() => setConfirming("cancel")}>
               Cancel this booking
-            </button>
+            </Button>
           )}
         </div>
       )}

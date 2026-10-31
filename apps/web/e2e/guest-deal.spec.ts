@@ -54,7 +54,7 @@ test("a demo guest starts a deal in chat, approves and pays the recommended quot
   // simulated sellers move on each server request; the page's 25 s long-poll alone is slow to drive
   // them, so reload while waiting (as a person refreshing would), checking the CSP on every load.
   await expect(page).toHaveURL(/\/deals\/[^/]+$/);
-  const quotesHead = page.locator(".dash-head", { has: page.getByRole("heading", { name: "Quotes" }) });
+  const quotesHead = page.getByRole("region", { name: "Quotes" });
   let polls = 0;
   await expect(async () => {
     if (polls++) {
@@ -66,7 +66,7 @@ test("a demo guest starts a deal in chat, approves and pays the recommended quot
       await page.locator("form", { has: answer }).locator("textarea").fill("Yes, plates and cutlery for 40 please.");
       await answer.click();
     }
-    await expect(quotesHead.getByText("Final", { exact: true })).toBeVisible({ timeout: 2_000 });
+    await expect(quotesHead.getByText("Ready to approve", { exact: true })).toBeVisible({ timeout: 2_000 });
   }).toPass({ timeout: 90_000 });
   await checkCsp();
 
