@@ -1,5 +1,6 @@
-// /vendors: the businesses this workspace may contact, each with the consent it rests on; add one
-// (with an attestation), remove one, or find businesses in public listings. Haggle contacts only these.
+// /vendors, "Saved businesses": optional. Haggle finds businesses for each request itself; here the
+// user saves favorites and businesses that agreed to calls or texts, each with the consent it rests on
+// (add one with an attestation, remove one, or find businesses in public listings).
 // The list is read here on the server; after a change the panel re-renders this page (router.refresh).
 import { RetryButton } from "@/components/shell/RetryButton";
 import { VendorsPanel } from "@/components/vendors/VendorsPanel";
@@ -30,11 +31,11 @@ export default async function VendorsPage() {
       ) : (
         <>
           <header className="vend-head">
-            <h1>Vendors</h1>
+            <h1>Saved businesses</h1>
           </header>
           <div className="ui-sheet vend-error" role="alert">
             <p>
-              <strong>Your vendors couldn&apos;t be loaded.</strong> {error?.message} {error?.fix}
+              <strong>Your saved businesses couldn&apos;t be loaded.</strong> {error?.message} {error?.fix}
             </p>
             <RetryButton />
           </div>

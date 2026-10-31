@@ -27,6 +27,11 @@
     font-size: var(--t-36);
   }
 }
+.vend-intro {
+  margin-top: var(--s-2);
+  max-width: 60ch;
+  color: var(--ink-3);
+}
 
 /* ---------- the search bar ---------- */
 .vend-find {

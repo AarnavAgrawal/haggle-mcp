@@ -1,7 +1,7 @@
 // Haggle's reply as readable text. Model text (which can quote business text) is never HTML: it is
 // split into paragraphs and "-" / "1." lists and rendered as React text nodes. The only links are
 // internal: a deal's page (/deals/job_…, or a bare job id) reads "the deal board" instead of the id,
-// and /vendors reads "Vendors". A leading "DEMO:" becomes the Demo marker.
+// and /vendors reads "Saved businesses". A leading "DEMO:" becomes the Demo marker.
 import Link from "next/link";
 import { Fragment, type ReactNode } from "react";
 import { Badge } from "@/components/ui/Badge";
@@ -71,7 +71,7 @@ export function inline(line: string): ReactNode[] {
       const words = article ? `${article} ${d}eal` : d === "D" ? "The deal" : "the deal";
       out.push(<Link key={k++} href={dealHref(namedId)}>{words}</Link>);
     } else if (bareId) out.push(<Link key={k++} href={dealHref(bareId)}>this deal</Link>);
-    else if (whole) out.push(<Link key={k++} href="/vendors">Vendors</Link>);
+    else if (whole) out.push(<Link key={k++} href="/vendors">Saved businesses</Link>);
     last = at + whole.length;
   }
   if (last < line.length) out.push(line.slice(last));

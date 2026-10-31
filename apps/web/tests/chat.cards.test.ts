@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { runTool } from "../lib/chat/agent.ts";
 import { applyEvent } from "../lib/chat/events.ts";
 import { toDisplay } from "../lib/chat/history.ts";
-import { briefFromInput, formatDay, formatTime, storedToolCard, toolCard } from "../lib/chat/cards.ts";
+import { briefFromInput, formatDay, formatTime, startMessage, storedToolCard, toolCard } from "../lib/chat/cards.ts";
 
 const input = {
   request: {
@@ -40,6 +40,36 @@ describe("chat cards", () => {
     expect(card).toMatchObject({ kind: "preview", demo: true, contact: [{ name: "Harbor Table", channel: "email" }, { name: "Golden Grill", channel: "phone" }], blocked: [{ name: "Bay BBQ", reason: "no consent" }] });
     // Contact details never reach the card.
     expect(JSON.stringify(card)).not.toContain("x@y.z");
+  });
+
+  it("the preview lists businesses Haggle found apart, and the user can remove one before starting", () => {
+    const data = {
+      mode: "live", dry_run: true,
+      would_contact: [
+        { name: "Bay Plumbing", channel: "email", contact_state: "authorized" },
+        { name: "Ace Plumbing & Drain", channel: "email", contact_state: "will_authorize_on_start", business_ref: "aws:AcePlace01", email: "jobs@ace.example", found_via: { listing: "Amazon Location Service", ref: "aws:AcePlace01", email_from: "website" }, hours_today: "Open today 8am–5pm" },
+        { name: "Bolt Plumbing", channel: "email", contact_state: "will_authorize_on_start", business_ref: "aws:BoltPlace02", found_via: { listing: "Amazon Location Service", ref: "aws:BoltPlace02", email_from: "listing" } },
+        { name: "Bad Ref", channel: "email", contact_state: "will_authorize_on_start", business_ref: "javascript:alert(1)" },
+      ],
+      blocked: [],
+    };
+    const card = toolCard("deal", { request: { what: "fix a leaking pipe", area: "Oakland, CA" }, dry_run: true }, data);
+    expect(card).toMatchObject({
+      kind: "preview", contact: [{ name: "Bay Plumbing", channel: "email" }],
+      found: [
+        { name: "Ace Plumbing & Drain", ref: "aws:AcePlace01", listing: "Amazon Location Service", email_from: "website", hours_today: "Open today 8am–5pm" },
+        { name: "Bolt Plumbing", ref: "aws:BoltPlace02", listing: "Amazon Location Service", email_from: "listing" },
+      ],
+    });
+    expect(JSON.stringify(card)).not.toMatch(/jobs@ace|javascript/);
+    const found = card!.kind === "preview" ? card!.found : [];
+    // Start the deal: the kept businesses by name and ref; with one removed, only the other; with all removed, none.
+    expect(startMessage(found)).toBe("Yes, start the deal. Include these businesses Haggle found (confirm_discovered): Ace Plumbing & Drain (aws:AcePlace01), Bolt Plumbing (aws:BoltPlace02).");
+    expect(startMessage(found, new Set(["aws:BoltPlace02"]))).toBe("Yes, start the deal. Include these businesses Haggle found (confirm_discovered): Ace Plumbing & Drain (aws:AcePlace01).");
+    expect(startMessage(found, new Set(["aws:AcePlace01", "aws:BoltPlace02"]))).toMatch(/without the businesses Haggle found \(confirm_discovered: \[\]\)/);
+    expect(startMessage([])).toBe("Yes, start the deal.");
+    // A real deal that waits for the user's yes (needs_confirmation) shows the same preview.
+    expect(toolCard("deal", { request: { what: "fix a leaking pipe" } }, { ...data, dry_run: undefined, needs_confirmation: true })).toMatchObject({ kind: "preview", found: [{ ref: "aws:AcePlace01" }, { ref: "aws:BoltPlace02" }] });
   });
 
   it("needs_info becomes a checklist of what's missing", () => {

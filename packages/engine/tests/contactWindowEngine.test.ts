@@ -4,7 +4,7 @@
 // and never after a reply, a bounce or an opt-out. Fake clock in America/Los_Angeles, incl. DST.
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CONTACT_WINDOW, zonedInstant } from "../src/workflow/contactWindow.ts";
-import { dealWith, liveEngine, vendorReply } from "./helpers/liveEngine.ts";
+import { dealWith, GOLDEN_BUDGET, GOLDEN_REQUEST_NO_BUDGET, liveEngine, vendorReply } from "./helpers/liveEngine.ts";
 
 const LA = "America/Los_Angeles";
 const la = (y: number, m: number, d: number, h: number, min = 0) => zonedInstant(y, m, d, h * 60 + min, LA);
@@ -84,6 +84,22 @@ describe("reminders to a silent business", () => {
     await env.engine.advanceJob(d.jobId);
     expect(env.emails).toHaveLength(3);
     expect((await env.engine.contactStatuses(d.jobId))[0]).toMatchObject({ contact_status: "awaiting_reply", reminders_sent: 2 });
+  });
+
+  it("a business with published opening hours (a found business) gets its reminder only while it is open", async () => {
+    const env = windowed(la(2026, 10, 21, 10)); // Wed 10:00
+    // Open weekdays 13:00-17:00 (LA): the reminder due Fri 12:00 waits until it may be contacted (13:30, 30 min after opening).
+    const opening_hours = { timezone: LA, source: "Amazon Location Service", display: ["Mon-Fri 13:00-17:00"], intervals: [1, 2, 3, 4, 5].map((day) => ({ day, startMinute: 13 * 60, endMinute: 17 * 60 })) };
+    const deal = await env.engine.deal({ request: GOLDEN_REQUEST_NO_BUDGET, budget_usd: GOLDEN_BUDGET, businesses: [{ ...V, opening_hours, timezone: LA }] });
+    expect(env.emails).toHaveLength(1);
+    env.clock.set(la(2026, 10, 23, 12, 0));
+    await env.engine.advanceJob(deal.job_id);
+    env.clock.set(la(2026, 10, 23, 13, 15));
+    await env.engine.advanceJob(deal.job_id);
+    expect(env.emails).toHaveLength(1);
+    env.clock.set(la(2026, 10, 23, 13, 30));
+    await env.engine.advanceJob(deal.job_id);
+    expect(env.emails.map((e) => e.idempotencyKey)).toEqual([expect.stringMatching(/^rfq:/), expect.stringMatching(/^reminder:.*:1$/)]);
   });
 
   it("never after a reply (even a held one), a bounce or an opt-out", async () => {

@@ -98,21 +98,22 @@ export function VendorsPanel({ list, canAdd, cantAddReason }: { list: VendorList
   return (
     <>
       <header className="vend-head">
-        <h1>Vendors</h1>
+        <h1>Saved businesses</h1>
         {addBlocked ? null : (
           <Button variant="primary" onClick={openBlank}>
             <Icon name="plus" />
-            Add a vendor
+            Save a business
           </Button>
         )}
       </header>
+        <p className="vend-intro">Optional. Haggle finds businesses for each request itself. Save your favorites here, and businesses that agreed to calls or texts.</p>
 
       <FindBusinesses inputRef={searchRef} isVendor={(name) => known.has(canonName(name))} canAdd={!addBlocked} onAdd={openFor} onAddBlank={openBlank} />
 
       <section className="vend-section" aria-labelledby="vend-list-h">
         <div className="vend-section-head">
           <h2 id="vend-list-h" ref={listHeadRef} tabIndex={-1}>
-            Your vendors {vendors.length ? <span className="vend-count num">{vendors.length}</span> : null}
+            Your saved businesses {vendors.length ? <span className="vend-count num">{vendors.length}</span> : null}
           </h2>
           {addBlocked && canAdd ? <p className="vend-limit">{addBlocked}</p> : null}
         </div>
@@ -126,7 +127,7 @@ export function VendorsPanel({ list, canAdd, cantAddReason }: { list: VendorList
           <EmptyState
             className="vend-empty"
             headingLevel={3}
-            title="No vendors yet"
+            title="No saved businesses yet"
             action={
               <>
                 <Button variant="primary" onClick={() => searchRef.current?.focus()}>

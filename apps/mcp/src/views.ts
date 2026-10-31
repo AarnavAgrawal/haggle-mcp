@@ -150,6 +150,13 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   dry_run: z.boolean().optional(),
   would_contact: z.array(z.looseObject({ name: z.string(), channel: z.string().optional() })).optional(),
   blocked: z.array(z.looseObject({ name: z.string(), contact_state: z.string() })).optional(),
+  /**
+   * deal: businesses Haggle found in public listings wait for the human's yes (would_contact entries with
+   * contact_state "will_authorize_on_start"); nothing was sent. Call deal again with confirm_discovered.
+   */
+  needs_confirmation: z.boolean().optional(),
+  /** deal: whether Haggle searched for businesses itself, and why it found none (no area, nothing nearby, listings down, off). */
+  discovery: z.looseObject({ status: z.string(), reason: z.string().optional(), found: z.number().int() }).optional(),
   /** deal: the essentials a business needs to quote are missing (intake); nothing was sent. Ask the user, then call deal again. */
   needs_info: z.object({
     category: z.string(), label: z.string(),

@@ -1,15 +1,16 @@
 // The deal tool's results as cards (DESIGN.md "Chat"): the preview (what Haggle understood and who it
-// will contact, with Start the deal / Change something), what Haggle still needs, and the started
+// will contact, including businesses Haggle found that the user can remove before starting, with Start
+// the deal / Change something), what Haggle still needs, and the started
 // deal (named by its request, linked to its board; never the job id). Every value comes from the card
 // model in lib/chat/cards.ts and renders as text.
 import Link from "next/link";
-import { memo, useId, type ReactNode } from "react";
+import { memo, useId, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Button, buttonClass } from "@/components/ui/Button";
 import { Icon, channelIcon } from "@/components/ui/Icon";
 import { Price } from "@/components/ui/Price";
 import { Status } from "@/components/ui/Status";
-import type { Brief, Contact, ToolCard } from "@/lib/chat/cards";
+import { startMessage, type Brief, type Contact, type FoundBusiness, type ToolCard } from "@/lib/chat/cards";
 
 const CHANNEL_WORDS: Record<string, string> = { email: "Email", phone: "Phone call", imessage: "Text", a2a: "Agent" };
 
@@ -26,6 +27,31 @@ function Contacts({ list }: { list: Contact[] }) {
           {c.channel ? <span className="cc-contact-channel">{CHANNEL_WORDS[c.channel] ?? c.channel}</span> : null}
         </li>
       ))}
+    </ul>
+  );
+}
+
+/** Businesses Haggle found: where each email came from, today's hours, and a remove control while the card is active. */
+function FoundList({ list, removed, active, onToggle }: { list: FoundBusiness[]; removed: ReadonlySet<string>; active: boolean; onToggle: (ref: string) => void }) {
+  return (
+    <ul className="cc-contacts cc-found">
+      {list.map((f) => {
+        const out = removed.has(f.ref);
+        return (
+          <li key={f.ref} data-removed={out || undefined}>
+            <Icon name="mail" />
+            <span className="cc-contact-name">{out ? <s>{f.name}</s> : f.name}</span>
+            <span className="cc-contact-channel">
+              {out ? "Removed" : `Will email · from its ${f.email_from === "listing" ? "listing" : "website"} (${f.listing})${f.hours_today ? ` · ${f.hours_today}` : ""}`}
+            </span>
+            {active ? (
+              <Button size="s" variant="quiet" onClick={() => onToggle(f.ref)} aria-label={`${out ? "Keep" : "Remove"} ${f.name}`}>
+                {out ? "Keep" : "Remove"}
+              </Button>
+            ) : null}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -62,10 +88,19 @@ function BriefList({ brief }: { brief: Brief }) {
   );
 }
 
-function PreviewCard({ card, active, onStart, onChange }: { card: Extract<ToolCard, { kind: "preview" }>; active: boolean; onStart: () => void; onChange: () => void }) {
+function PreviewCard({ card, active, onStart, onChange }: { card: Extract<ToolCard, { kind: "preview" }>; active: boolean; onStart: (message: string) => void; onChange: () => void }) {
   const id = useId();
   const b = card.brief;
-  const n = card.contact.length;
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
+  const toggle = (ref: string) =>
+    setRemoved((r) => {
+      const next = new Set(r);
+      if (next.has(ref)) next.delete(ref);
+      else next.add(ref);
+      return next;
+    });
+  const kept = card.found.filter((f) => !removed.has(f.ref)).length;
+  const n = card.contact.length + kept;
   return (
     <article className="chat-card cc-preview" aria-labelledby={`${id}-t`}>
       <header className="cc-head">
@@ -97,7 +132,13 @@ function PreviewCard({ card, active, onStart, onChange }: { card: Extract<ToolCa
           <h3 id={`${id}-w`} className="cc-label">
             {n ? `Haggle will contact ${n}` : "No one can be contacted yet"}
           </h3>
-          {n ? <Contacts list={card.contact} /> : null}
+          {card.contact.length ? <Contacts list={card.contact} /> : null}
+          {card.found.length ? (
+            <>
+              <p className="cc-soft cc-small">Found by Haggle. Starting saves each one to your businesses and emails it (email only).</p>
+              <FoundList list={card.found} removed={removed} active={active} onToggle={toggle} />
+            </>
+          ) : null}
           {card.blocked.length ? (
             <ul className="cc-blocked">
               {card.blocked.map((x) => (
@@ -112,7 +153,7 @@ function PreviewCard({ card, active, onStart, onChange }: { card: Extract<ToolCa
       {active ? (
         <footer className="cc-foot">
           {n ? (
-            <Button variant="primary" onClick={onStart}>
+            <Button variant="primary" onClick={() => onStart(startMessage(card.found, removed))}>
               Start the deal
             </Button>
           ) : null}
@@ -210,7 +251,7 @@ export function StartedCard({ jobId, card }: { jobId: string; card?: Extract<Too
   );
 }
 
-export const DealCard = memo(function DealCard({ card, active, onStart, onFocusComposer }: { card: ToolCard; active: boolean; onStart: () => void; onFocusComposer: (placeholder?: string) => void }) {
+export const DealCard = memo(function DealCard({ card, active, onStart, onFocusComposer }: { card: ToolCard; active: boolean; onStart: (message: string) => void; onFocusComposer: (placeholder?: string) => void }) {
   switch (card.kind) {
     case "preview":
       return <PreviewCard card={card} active={active} onStart={onStart} onChange={() => onFocusComposer("What should change?")} />;

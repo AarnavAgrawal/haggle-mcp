@@ -54,7 +54,11 @@ export function toolError(text: string): HaggleError {
   return new HaggleError("TOOL_ERROR", text, "");
 }
 
-export function haggleClient(cfg: HaggleConfig, workspaceId: string) {
+/**
+ * `actor`: the signed-in user this client acts for (x-haggle-actor). The server records it when the user
+ * starts a deal with businesses Haggle found (they are saved to the user's businesses with who confirmed).
+ */
+export function haggleClient(cfg: HaggleConfig, workspaceId: string, opts: { actor?: string } = {}) {
   const f = cfg.fetchImpl ?? fetch;
   let id = 0;
   async function rpc<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
@@ -63,6 +67,7 @@ export function haggleClient(cfg: HaggleConfig, workspaceId: string) {
       headers: {
         "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": PROTOCOL,
         "x-haggle-service-token": cfg.serviceToken, "x-haggle-workspace": workspaceId,
+        ...(opts.actor ? { "x-haggle-actor": opts.actor } : {}),
       },
       body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
       cache: "no-store",

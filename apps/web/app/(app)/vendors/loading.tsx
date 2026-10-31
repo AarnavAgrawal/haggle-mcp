@@ -4,9 +4,9 @@ import "@/components/vendors/vendors.css";
 
 export default function Loading() {
   return (
-    <main className="shell vend-page" aria-busy="true" aria-label="Loading vendors">
+    <main className="shell vend-page" aria-busy="true" aria-label="Loading saved businesses">
       <div className="vend-head">
-        <h1>Vendors</h1>
+        <h1>Saved businesses</h1>
         <Skeleton w={150} h={40} />
       </div>
       <div className="vend-find">
