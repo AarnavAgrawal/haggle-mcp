@@ -143,11 +143,6 @@
 .onb-money input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) {
   padding-left: 26px;
 }
-/* Workaround: ui.css's input[aria-invalid] border loses to its own base input selector (higher
-   specificity), so an invalid field shows no red border. Restated here with enough weight. */
-.auth .field-invalid input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) {
-  border-color: var(--risk);
-}
 .onb-terms {
   display: flex;
   align-items: flex-start;

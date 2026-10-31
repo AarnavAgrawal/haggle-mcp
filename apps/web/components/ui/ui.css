@@ -140,9 +140,8 @@ label {
   font-weight: 600;
   margin-bottom: 6px;
 }
-input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
-select,
-textarea {
+/* :where() keeps the base at zero specificity so state rules (invalid, focus) and page rules win. */
+:where(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), select, textarea) {
   width: 100%;
   min-height: 40px;
   padding: 8px 12px;
@@ -155,9 +154,7 @@ textarea {
   line-height: 1.4;
   transition: border-color 120ms ease-out;
 }
-input:not([type="checkbox"]):not([type="radio"]):hover,
-select:hover,
-textarea:hover {
+:where(input:not([type="checkbox"]):not([type="radio"]), select, textarea):hover {
   border-color: var(--ink-3);
 }
 textarea {
