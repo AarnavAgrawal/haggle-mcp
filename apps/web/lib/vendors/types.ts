@@ -32,6 +32,8 @@ export interface FoundBusiness {
   website?: string;
   maps_url?: string;
   phone_published: boolean;
+  /** Addresses the business publishes on its own website (public; adding one still needs the user's attestation). */
+  emails?: string[];
   contact_state: string;
   contact_summary: string;
 }

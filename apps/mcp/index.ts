@@ -1199,6 +1199,9 @@ export const listDeals = server.tool(
     }),
 );
 
+/** How long discover waits for the found businesses' websites (all in parallel). */
+const DISCOVER_WEBSITE_BUDGET_MS = 6_000;
+
 export const discover = server.tool(
   {
     name: "discover",
@@ -1237,6 +1240,10 @@ export const discover = server.tool(
         try {
           found = ((await placesDiscover({ apiKey: rt.placesKey, ...(rt.placesFetch ? { fetch: rt.placesFetch } : {}) }, category, where, count)) ?? []).map((b) => ({ ...b, category, area: where }));
           discoveredFor(workspaceId).remember(found);
+          // Each business's own website, in parallel and within a few seconds: the addresses it publishes
+          // let the user add it by email without copying one. A slow site just has none.
+          const budget = (b: Discovered) => new Promise<Discovered>((done) => { const t = setTimeout(() => done(b), DISCOVER_WEBSITE_BUDGET_MS); t.unref?.(); });
+          found = await Promise.all(found.map((b) => Promise.race([withWebsite(b, rt, discoveredFor(workspaceId)), budget(b)])));
           pub = { status: "ok", message: `${found.length} ${category} business(es) found near ${where} in Google Maps listings.` };
         } catch (e) {
           if (!(e instanceof PlacesError)) throw e;
@@ -1250,6 +1257,7 @@ export const discover = server.tool(
           name: b.name, business_ref: b.business_ref, ...(b.address ? { address: b.address } : {}), ...(b.rating !== undefined ? { rating: b.rating, review_count: b.review_count ?? 0 } : {}),
           ...(b.website ? { website: b.website } : {}), ...(b.maps_url ? { maps_url: b.maps_url } : {}), phone_published: !!b.phone, in_area: b.in_area, score: b.score, rank_reasons: b.rank_reasons,
           contact_state: st.state, contact_summary: st.summary, source: b.source, attribution: b.attribution, fetched_at: b.fetched_at,
+          ...(b.website_evidence?.emails.length ? { website_emails: b.website_evidence.emails.slice(0, 3) } : {}),
         };
       });
       // Every configured vendor (ready first); contacts stay server-side, phone numbers are never echoed.

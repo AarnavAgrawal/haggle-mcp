@@ -99,6 +99,7 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
                           ) : null}
                           <span>{f.phone_published ? "Phone listed publicly" : "No phone listed"}</span>
                         </div>
+                        <div className="hint">{f.emails?.length ? `Email on its website: ${f.emails[0]}` : "No email found on its website"}</div>
                       </div>
                       <div className="vend-actions">
                         {isVendor ? (
@@ -114,7 +115,7 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
                 })}
               </ul>
               <p className="hint">
-                Listings: Google Maps. To add one, copy the business&apos;s email from its website; a phone call or text needs the business&apos;s agreement or an existing relationship.
+                Listings: Google Maps. Adding one fills in the email from its website, when there is one; a phone call or text needs the business&apos;s agreement or an existing relationship.
               </p>
             </>
           )}

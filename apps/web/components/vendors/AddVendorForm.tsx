@@ -9,6 +9,8 @@ import { vendorApi, type VendorApiError } from "./api";
 export interface VendorPrefill {
   key: number;
   name: string;
+  /** An address the business publishes on its own website, when one was found. */
+  contact?: string;
   note?: string;
   consent_basis?: ConsentBasis;
 }
@@ -29,7 +31,7 @@ export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | n
   useEffect(() => {
     if (!prefill) return;
     setName(prefill.name);
-    setContact("");
+    setContact(prefill.contact ?? "");
     setChannel("email");
     setBasis(prefill.consent_basis ?? "");
     setNote(prefill.note ?? "");

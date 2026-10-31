@@ -75,6 +75,13 @@ describe("discover results", () => {
     expect(contactWords(r.found[0]!, true).label).toBe("Haggle may contact it");
   });
 
+  it("keeps up to three well-formed website emails, lowercased", () => {
+    const r = toDiscoverResult({ mode: "live", public_discovery: { status: "ok", message: "1 found" }, found: [{ name: "Casa Lunch", business_ref: "place:1", website_emails: ["Orders@CasaLunch.com", "not an email", 7, "a@b.co", "c@d.co", "e@f.co"] }] });
+    expect(r.found[0]!.emails).toEqual(["orders@casalunch.com", "a@b.co", "c@d.co"]);
+    const none = toDiscoverResult({ mode: "live", found: [{ name: "Quiet", business_ref: "place:2", website_emails: [] }] });
+    expect(none.found[0]).not.toHaveProperty("emails");
+  });
+
   it("says when discovery is off", () => {
     expect(toDiscoverResult({ mode: "mock", public_discovery: { status: "not_configured", message: "Real-business discovery is off" } })).toMatchObject({ status: "not_configured", found: [] });
   });

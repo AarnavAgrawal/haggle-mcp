@@ -27,11 +27,15 @@ export function toDiscoverResult(data: Record<string, unknown>): DiscoverResult 
     const website = safeHttpUrl(f.website);
     const maps = safeHttpUrl(f.maps_url);
     const address = text(f.address);
+    const emails = (Array.isArray(f.website_emails) ? f.website_emails : [])
+      .flatMap((e) => (typeof e === "string" && e.length <= 254 && /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(e.trim()) ? [e.trim().toLowerCase()] : []))
+      .slice(0, 3);
     return [{
       name, business_ref: text(f.business_ref, 200) ?? name,
       ...(address ? { address } : {}), ...(rating !== undefined ? { rating, review_count: num(f.review_count) ?? 0 } : {}),
       ...(website ? { website } : {}), ...(maps ? { maps_url: maps } : {}),
       phone_published: f.phone_published === true,
+      ...(emails.length ? { emails } : {}),
       contact_state: text(f.contact_state, 40) ?? "discovered", contact_summary: text(f.contact_summary, 300) ?? "",
     }];
   });
