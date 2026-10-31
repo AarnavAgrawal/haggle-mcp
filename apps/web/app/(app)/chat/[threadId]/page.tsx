@@ -1,11 +1,9 @@
 import { notFound } from "next/navigation";
 import { Chat } from "@/components/chat/Chat";
-import { ThreadSidebar, type ThreadSummary } from "@/components/chat/ThreadSidebar";
 import { toDisplay } from "@/lib/chat/history";
-import { listThreads, loadMessages } from "@/lib/chat/store";
+import { loadMessages } from "@/lib/chat/store";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { requireHaggle } from "@/lib/workspace";
-import "../chat.css";
 
 export const dynamic = "force-dynamic";
 
@@ -13,16 +11,7 @@ export const dynamic = "force-dynamic";
 export default async function ThreadPage({ params }: { params: Promise<{ threadId: string }> }) {
   const { threadId } = await params;
   const { user, workspaceId } = await requireHaggle();
-  const owner = { userId: user.id, workspaceId };
-  const db = supabaseAdmin();
-  const [loaded, threads] = await Promise.all([loadMessages(db, threadId, owner), listThreads(db, owner).catch((): ThreadSummary[] => [])]);
+  const loaded = await loadMessages(supabaseAdmin(), threadId, { userId: user.id, workspaceId });
   if (!loaded) notFound();
-  return (
-    <>
-      <div className="chat-layout">
-        <ThreadSidebar threads={threads} activeId={loaded.thread.id} />
-        <Chat key={loaded.thread.id} threadId={loaded.thread.id} initial={toDisplay(loaded.messages, loaded.thread.job_id)} />
-      </div>
-    </>
-  );
+  return <Chat key={loaded.thread.id} threadId={loaded.thread.id} title={loaded.thread.title} initial={toDisplay(loaded.messages, loaded.thread.job_id)} />;
 }

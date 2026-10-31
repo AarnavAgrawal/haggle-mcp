@@ -50,7 +50,7 @@ describe("chat cards", () => {
 
   it("a started deal is named by its request, never by its id", () => {
     const card = toolCard("deal", { ...input, dry_run: undefined }, { mode: "mock", job_id: "job_77", request_details: { what: "lunch catering", headcount: 40, when: "Thu Nov 5, 12:00", place: "San Francisco, CA", budget_usd: 1200 }, contacted: [{ business: "Harbor Table", channel: "email" }], not_contacted: [] }, "job_77");
-    expect(card).toEqual({ kind: "started", demo: true, job_id: "job_77", title: "Lunch catering for 40", when: "Thu Nov 5, 12:00", where: "San Francisco, CA", budget_usd: 1200, contacted: [{ name: "Harbor Table", channel: "email" }], not_contacted: 0 });
+    expect(card).toEqual({ kind: "started", demo: true, job_id: "job_77", title: "Lunch catering for 40", when: "Thu, Nov 5, 12 pm", where: "San Francisco, CA", budget_usd: 1200, contacted: [{ name: "Harbor Table", channel: "email" }], not_contacted: 0 });
     expect(toolCard("get_quotes", {}, {})).toBeUndefined();
     expect(toolCard("deal", {}, { ok: false })).toBeUndefined();
   });

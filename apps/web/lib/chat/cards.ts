@@ -156,8 +156,9 @@ export function toolCard(name: string, input: unknown, data: unknown, jobId?: st
     const what = str(rd?.what) ?? brief?.what;
     const r = obj(i.request);
     const title = what ? titleOf(what, rd?.headcount ?? r?.quantity) : "Your deal";
-    const when = str(rd?.when) ?? brief?.when;
-    const where = str(rd?.place) ?? brief?.where;
+    // The same words as the preview card; the server's own summary when there was no input.
+    const when = brief?.when ?? str(rd?.when);
+    const where = brief?.where ?? str(rd?.place);
     const budget = num(rd?.budget_usd) ?? brief?.budget_usd;
     return {
       kind: "started", demo, job_id: jobId, title,
