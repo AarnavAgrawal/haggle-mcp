@@ -824,7 +824,7 @@ export const approve = server.tool(
     ...viewIf({ name: "approval", description: "Haggle approval card: business, amount, deposit, cap, status and receipt" }),
   },
   async ({ job_id, quote_id, action }, ctx) =>
-    run(ctx, async ({ engine, mode }) => {
+    run(ctx, async ({ rt, engine, mode }) => {
       // Out-of-band policy (always in live mode): the client's form and the card's button can't prove a
       // human made the call, so only the approver's coded text (or email, when enabled) approves.
       const strict = engine.outOfBandApprovalsOnly;
@@ -910,7 +910,8 @@ export const approve = server.tool(
         return ok(await approvalView(engine, mode, job_id, quote_id, d.status, { demo: "DEMO MODE: simulated human approval (this client has no approval card or form)", next: d.next, ...(d.reason ? { reason: d.reason } : {}) }), `Approved by a SIMULATED human: ${d.words} (${summary}). next: ${d.next}`);
       }
       if (channel === "imessage" && canIMessage && !offered.imessage) {
-        const next = "The iMessage couldn't be sent (has the approver texted `connect @haggle`?). Approve on the card, or fix iMessage and call approve again.";
+        const connect = (await rt.channels().catch(() => null))?.connectCommand ?? "connect @<buyer handle>";
+        const next = `The iMessage couldn't be sent (has the approver texted \`${connect}\` to the Inkbox router number?). Approve on the card, or fix iMessage and call approve again.`;
         const v = await approvalView(engine, mode, job_id, quote_id, "pending_human", { next, reason: ["imessage_not_sent", ...notSent, note].filter(Boolean).join(" · ") });
         return ok(v, `iMessage approval request NOT sent (${summary}). ${how} next: ${next}`, canView ? { "haggle/approval": { approval_id: approval.id, code: approval.code } } : undefined);
       }
