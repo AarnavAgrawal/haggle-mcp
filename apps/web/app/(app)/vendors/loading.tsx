@@ -33,8 +33,7 @@ export default function Loading() {
           {[200, 150, 180].map((w, i) => (
             <div key={i} className="vend-skel-row">
               <Skeleton w={w} h={16} />
-              <Skeleton w={72} h={14} className="vt-wide" />
-              <Skeleton w={190} h={14} className="vt-wide" />
+              <Skeleton w={210} h={14} className="vt-wide" />
               <Skeleton w={150} h={14} className="vt-mid" />
               <Skeleton w={64} h={14} />
             </div>

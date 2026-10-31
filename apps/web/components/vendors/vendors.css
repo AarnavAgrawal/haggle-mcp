@@ -338,7 +338,7 @@
   }
 }
 .vt-name {
-  min-width: 180px;
+  min-width: 190px;
 }
 .vend-table tbody th.vt-name {
   padding-left: 8px;
@@ -405,8 +405,16 @@
 .vt-channel .icon {
   color: var(--ink-3);
 }
-.vt-contact {
-  max-width: 240px;
+/* The contact gives way first: max-width 0 + a share of the width lets it truncate in an auto table. */
+.vend-table td.vt-contact {
+  width: 34%;
+  max-width: 0;
+}
+.vt-contact .vt-channel {
+  display: flex;
+}
+.vt-channel .vt-contact-text {
+  min-width: 0;
 }
 .vt-contact-text {
   display: block;
@@ -475,6 +483,16 @@
 }
 .vt-narrow-only {
   display: none !important;
+}
+
+/* Touch: row controls get a 40px target. */
+@media (pointer: coarse) {
+  .vt-toggle,
+  .vend-table .btn-s,
+  .vr-act .btn-s,
+  .vr-head .btn-s {
+    min-height: 40px;
+  }
 }
 
 /* loading.tsx */

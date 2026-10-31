@@ -24,8 +24,7 @@ export function VendorTable({ vendors, fresh, onRemoved }: { vendors: VendorView
         <thead>
           <tr>
             <th scope="col">Business</th>
-            <th scope="col" className="vt-wide">Reached by</th>
-            <th scope="col" className="vt-wide">Contact</th>
+            <th scope="col" className="vt-wide">Reached at</th>
             <th scope="col" className="vt-mid">How they agreed</th>
             <th scope="col" className="vt-mid">Open today</th>
             <th scope="col" className="vt-actions">
@@ -81,7 +80,7 @@ function VendorRow({ v, fresh, expanded, onToggle, onRemoved }: { v: VendorView;
     <Fragment>
       <tr className={`vt-row${fresh ? " vt-fresh" : ""}${expanded ? " vt-open" : ""}`}>
         <th scope="row" className="vt-name">
-          <button type="button" className="vt-toggle" aria-expanded={expanded} aria-controls={detailsId} onClick={onToggle}>
+          <button type="button" className="vt-toggle" data-vendor={v.contact} aria-expanded={expanded} aria-controls={detailsId} onClick={onToggle}>
             <Icon name="chevron-right" className="vt-chev" />
             <span className="vt-name-text">{v.name}</span>
           </button>
@@ -91,14 +90,11 @@ function VendorRow({ v, fresh, expanded, onToggle, onRemoved }: { v: VendorView;
           </span>
           {v.suppressed ? <Status tone="risk" className="vt-supp">{SUPPRESSED[v.suppressed]}</Status> : null}
         </th>
-        <td className="vt-wide">
+        <td className="vt-wide vt-contact" title={`${channelLabel(v.channel)}: ${v.contact}`}>
           <span className="vt-channel">
-            <Icon name={channelIcon(v.channel)} />
-            {channelLabel(v.channel)}
+            <Icon name={channelIcon(v.channel)} label={channelLabel(v.channel)} />
+            <span className="vt-contact-text">{contact}</span>
           </span>
-        </td>
-        <td className="vt-wide vt-contact" title={v.contact}>
-          <span className="vt-contact-text">{contact}</span>
         </td>
         <td className="vt-mid vt-basis">{basisLabel(v.consent.basis)}</td>
         <td className="vt-mid vt-hours" suppressHydrationWarning>
@@ -133,7 +129,7 @@ function VendorRow({ v, fresh, expanded, onToggle, onRemoved }: { v: VendorView;
       </tr>
       {failure ? (
         <tr className="vt-fail">
-          <td colSpan={6}>
+          <td colSpan={5}>
             <p className="note note-risk" role="alert">
               {failure.message} <span className="fix">{failure.fix}</span>
             </p>
@@ -141,7 +137,7 @@ function VendorRow({ v, fresh, expanded, onToggle, onRemoved }: { v: VendorView;
         </tr>
       ) : null}
       <tr className="vt-details" id={detailsId} hidden={!expanded}>
-        <td colSpan={6}>
+        <td colSpan={5}>
           <dl className="vt-dl">
             <div className="vt-narrow-only">
               <dt>How they agreed</dt>

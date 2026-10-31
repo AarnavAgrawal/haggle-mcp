@@ -41,10 +41,13 @@ export function VendorsPanel({ list, canAdd, cantAddReason }: { list: VendorList
       usedForm.current = false;
       setBlankKey((k) => k + 1);
     }
+    fromResult.current = false;
     setPrefill(null);
     setAdding(true);
   };
+  const fromResult = useRef(false);
   const openFor = (b: FoundBusiness) => {
+    fromResult.current = true;
     const email = b.emails?.[0];
     setPrefill({
       key: Date.now(),
@@ -69,6 +72,12 @@ export function VendorsPanel({ list, canAdd, cantAddReason }: { list: VendorList
         change({ type: "add", vendor });
         router.refresh();
       });
+      // The drawer returns focus to what opened it. A search result's "Add" button is replaced by
+      // "Your vendor", so after adding from a result, focus moves to the new row instead.
+      if (fromResult.current) {
+        fromResult.current = false;
+        setTimeout(() => document.querySelector<HTMLElement>(`[data-vendor="${CSS.escape(vendor.contact)}"]`)?.focus(), 300);
+      }
     },
     [change, router],
   );
