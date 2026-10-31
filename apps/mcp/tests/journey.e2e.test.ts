@@ -97,7 +97,10 @@ afterAll(() => {
 describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
   it("tool metadata sends procurement straight to deal, which renders the board", async () => {
     const init = await rpc(ready, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "journey", version: "1" } });
-    expect(init.instructions).toMatch(/call deal FIRST/);
+    // Intake first (one compact message for the essentials), then deal; needs_info sends nothing.
+    expect(init.instructions).toMatch(/in ONE short message, ask the user for the essentials that are missing/);
+    expect(init.instructions).toMatch(/Then call deal with the request and budget_usd/);
+    expect(init.instructions).toMatch(/If deal returns needs_info, nothing was sent/);
     expect(init.instructions).toMatch(/Don't call ask, discover or business_profile first/);
     const { tools } = await rpc(ready, "tools/list");
     const t = Object.fromEntries(tools.map((x: { name: string }) => [x.name, x]));

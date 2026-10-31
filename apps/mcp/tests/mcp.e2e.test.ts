@@ -128,10 +128,15 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     const invalid = await call("deal", { request: { what: "x" } }); // schema rejection before the handler runs
     expect(invalid.isError).toBe(true);
     expect(invalid.content[0].text).toMatch(/Input validation error.*request\.what/);
-    // The catering default needs quantity + date; any other request describes its answers with ask[].
+    // Intake: catering needs a headcount and a date (and where) before anything is sent; the missing ones come
+    // back as questions for the user (not an error). Going ahead anyway still needs the catering default's facts.
     const noQty = await call("deal", { request: { what: "lunch catering", area: "SF" }, businesses: [{ name: "X", email: "x@x.test" }] });
-    expect(errorOf(noQty)).toMatchObject({ error: { code: "INVALID_INPUT" }, next: "deal" });
-    const badAsk = await call("deal", { request: { what: "fix a sink", area: "SF", ask: [{ key: "price", label: "Price", type: "money" }], payable_field: "nope" }, businesses: [{ name: "X", email: "x@x.test" }] });
+    expect(noQty.isError).toBeFalsy();
+    expect(noQty.structuredContent).toMatchObject({ ok: false, job: null, needs_info: { category: "catering", missing: [{ key: "headcount", field: "quantity" }, { key: "date", field: "date" }] }, mode: "mock" });
+    expect(noQty.content[0].text).toMatch(/NEEDS INFO \(nothing sent\)[\s\S]*1\. How many people\?[\s\S]*next: Nothing was sent\. Ask the user ALL of these in ONE short message/);
+    const anyway = await call("deal", { request: { what: "lunch catering", area: "SF" }, businesses: [{ name: "X", email: "x@x.test" }], proceed_anyway: true });
+    expect(errorOf(anyway)).toMatchObject({ error: { code: "INVALID_INPUT" }, next: "deal" });
+    const badAsk = await call("deal", { request: { what: "fix a leaking sink", area: "SF", date: "2099-01-05", ask: [{ key: "price", label: "Price", type: "money" }], payable_field: "nope" }, businesses: [{ name: "X", email: "x@x.test" }] });
     expect(errorOf(badAsk)).toMatchObject({ error: { code: "bad_ask" } });
     const noJob = await call("wait_for_update", { job_id: "job_nope", cursor: "0", timeout_s: 0 });
     expect(errorOf(noJob)).toMatchObject({ ok: false, mode: "mock", error: { code: "job_not_found" }, next: "deal" });
@@ -389,6 +394,19 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
   it("the Inkbox webhook route is off in mock mode", async () => {
     const r = await fetch(`${BASE}/webhooks/inkbox`, { method: "POST", body: "{}" });
     expect(r.status).toBe(404);
+  });
+
+  it("intake: a vague repair request gets the right questions (even on a dry run); with the answers it previews", async () => {
+    const businesses = [{ name: "Harbor Table", email: "orders@harbor-table.sim.haggle.dev" }];
+    const vague = await call("deal", { request: { what: "plumber" }, businesses, dry_run: true });
+    expect(vague.isError).toBeFalsy();
+    expect(vague.structuredContent.needs_info).toMatchObject({ category: "home_repair", label: "Home repair" });
+    expect(vague.structuredContent.needs_info.missing.map((q: { key: string }) => q.key)).toEqual(["problem", "where", "timing"]);
+    expect(vague.structuredContent.needs_info.helpful.length).toBeGreaterThan(0);
+    expect(vague.structuredContent.next).toMatch(/proceed_anyway: true only if the user explicitly says/);
+    const answered = await call("deal", { request: { what: "plumber", area: "Oakland, CA", details: [{ label: "Problem", value: "leak under the kitchen sink" }, { label: "Urgency", value: "this week" }] }, businesses, dry_run: true });
+    expect(answered.structuredContent).toMatchObject({ dry_run: true });
+    expect(answered.structuredContent.needs_info).toBeUndefined();
   });
 
   it("get_identity, any-request deals, conversation, guarded send_message and cancel_deal", async () => {

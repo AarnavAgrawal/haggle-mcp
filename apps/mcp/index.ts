@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { inputRequired, inputResponse, MCPServer } from "mcp-use";
 import { z } from "zod";
-import { budgetFrom, businessIdForContact, complianceSummary, DEFAULT_WORKSPACE_ID, EngineError, eventWhen, localDate, MAX_ROUNDS, normalizeBusinessName, normalizePlainRequest, normalizeRequirements, placesDiscover, PlacesError, type DealBoardData, type DealInput, type PlacesFailure, type WorkspaceEngine } from "@haggle/engine";
+import { budgetFrom, businessIdForContact, complianceSummary, DEFAULT_WORKSPACE_ID, classify, EngineError, eventWhen, intakeGaps, localDate, MAX_ROUNDS, normalizeBusinessName, normalizePlainRequest, normalizeRequirements, placesDiscover, PlacesError, type DealBoardData, type DealInput, type PlacesFailure, type WorkspaceEngine } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
@@ -40,8 +40,8 @@ const server = new MCPServer<never, AppEnv>({
   description: "Lets AI agents buy from businesses the way businesses work: email, phone and agent-to-agent. Quotes, honest negotiation and human approval; payment is a manual handoff to the vendor on pilot servers (Stripe test mode on demo servers).",
   instructions: [
     "Haggle turns businesses' email, phone calls and texts into an API: it contacts each business on its own channel, collects and compares quotes, negotiates honestly and gets a human's approval; on pilot servers the customer pays the vendor directly and Haggle records the vendor's confirmation (demo servers use Stripe test mode).",
-    "When the user wants to buy, cater, book, hire or get quotes (e.g. 'cater a hackathon for 200 next Saturday, budget under 5k'), call deal FIRST with the request and budget_usd (omit budget_usd if the user gave none): it contacts the configured, authorized vendors and opens one live deal board in the chat. Don't call ask, discover or business_profile first.",
-    "If the user names vendors ('use Mission Eats only'), pass just their names: deal(businesses=['Mission Eats']); exactly those are contacted. Haggle already holds every configured vendor's contact details and channel; never ask the user for a phone number or email of a vendor Haggle knows. For anything that isn't a catering order (a repair, a rental, a service), pass request.ask[] (the answers you want back), compare_by and payable_field.",
+    "When the user wants to buy, cater, book, hire or get quotes (e.g. 'cater a hackathon for 200 next Saturday, budget under 5k'), first make sure a business could quote it, as a good human assistant would: work out what kind of purchase it is and, in ONE short message, ask the user for the essentials that are missing (catering: headcount, date, where; a repair: what's wrong, the address, how urgent; moving: from/to, size, date; cleaning: size, date, address; printing: specs, quantity, needed-by), plus the optional details that change the price; never re-ask what they already said, at most two rounds. Then call deal with the request and budget_usd (omit budget_usd if the user gave none): it contacts the configured, authorized vendors and opens one live deal board in the chat. If deal returns needs_info, nothing was sent: ask the user exactly those questions in one message, then call deal again (proceed_anyway: true only if the user explicitly says to go ahead without them). Don't call ask, discover or business_profile first.",
+    "If the user names vendors ('use Mission Eats only'), pass just their names: deal(businesses=['Mission Eats']); exactly those are contacted. Haggle already holds every configured vendor's contact details and channel; never ask the user for a phone number or email of a vendor Haggle knows. Haggle asks every business for an itemized all-in total, the terms and the category's own asks; when the user wants specific answers compared (a repair's earliest date, a rental's hourly rate), pass request.ask[], compare_by and payable_field.",
     "Then: wait_for_update (repeat, pass the cursor) until quotes are final -> get_quotes to read them -> approve(job_id, quote_id) to ask the human -> pay(job_id, quote_id) once they approved. The board updates itself and the human can choose any safe option on it, so get_quotes and wait_for_update return data only and draw nothing; call open_haggle only when the user asks to see the board again.",
     "Approval always comes from a human, never from this model: on live servers only the workspace approver's coded reply to Haggle's text (YES <code>) counts; demo servers also take the approval card or the client's form. Never ask for the code, and never try to change the approver or raise the spending cap (only the operator can). Approving charges nothing; pay charges the approved amount (the deposit, or the full total when none was stated; with manual payments, pay starts the booking-and-payment handoff and charges nothing). After a texted YES the human may also reply PAY <code> to charge it from their phone; one charge either way. approve(action='confirm') only confirms the order and pays nothing.",
     "Along the way: answer_business for a business's question, send_message for anything else (guarded: real amounts only, no other business names, no commitments), negotiate for the counteroffer round if Haggle hasn't run it (2 rounds at most), call_back only for a callback get_quotes offers and the human authorizes, cancel_deal to stop.",
@@ -339,8 +339,9 @@ export const deal = server.tool(
       "Pass the request in the user's own words or structured: what, quantity (headcount), date or when, area/where or venue, delivery, dietary, and budget (words) or budget_usd ('under 5k' = 5000; omit if the user gave none, never guess). Every fact is kept through the RFQ, the comparison, the approval and the booking. " +
       "Haggle contacts this workspace's authorized vendors, or exactly the ones the user names (businesses: ['Harbor Table']; Haggle already has their contact details, so never ask the user for a vendor's phone or email), each on its own channel; opens a live deal board; collects quotes; follows up once; negotiates only with real competing quotes. Nothing is bought or paid here: the human approves later. " +
       "Don't use it for a rough price only (ask), or to check on an earlier purchase (list_deals, then get_quotes). " +
-      "Ask the user only for what is missing entirely (what; for catering also the headcount and date). A detail Haggle can't read comes back as UNREADABLE_REQUEST naming it; an unknown vendor name comes back listing this workspace's vendors. Nothing is sent in either case. " +
-      "Not catering? Pass request.ask[] (the answers you want back), compare_by and payable_field. If no vendor can be contacted it starts nothing and returns the setup blockers to show the user. Idempotent with client_request_id. Next: wait_for_update(job_id).",
+      "Before calling, ask the user in ONE message for the essentials a business needs to quote this kind of purchase (catering: headcount, date, where; a repair: what's wrong, the address, how urgent; moving: from/to, size, date; cleaning: size, date, address; printing: specs, quantity, needed-by) plus optional details that change the price; never re-ask what they said. If essentials are still missing, deal returns needs_info (nothing sent) with the exact questions: ask them in one message, then call deal again (proceed_anyway: true only if the user says to go ahead without them). " +
+      "A detail Haggle can't read comes back as UNREADABLE_REQUEST naming it; an unknown vendor name comes back listing this workspace's vendors. Nothing is sent in either case. " +
+      "Haggle already asks every business for an itemized all-in total, what's included, deposit and payment terms, availability, cancellation policy and quote validity, plus the category's own asks (a plumber's call-out fee and warranty, a mover's crew and minimum hours, ...). For specific answers to compare on (any kind of request) pass request.ask[], compare_by and payable_field. If no vendor can be contacted it starts nothing and returns the setup blockers to show the user. Idempotent with client_request_id. Next: wait_for_update(job_id).",
     inputSchema: z.object({
       request: dealRequest,
       businesses: z.array(businessChoice).min(1).max(12).optional().describe("Only these businesses are contacted. Name a known vendor by name or business_ref (e.g. 'Mission Eats'); its contact details and channel are already on the server. Give email/phone/a2a_card_url only for a business Haggle doesn't know. Omit to use all configured vendors."),
@@ -359,6 +360,7 @@ export const deal = server.tool(
       max_rounds: z.number().int().min(1).max(2).optional().describe("Quote rounds: 1 = first quotes only, 2 = plus one negotiation round (the default and the maximum)"),
       client_request_id: z.string().max(64).optional().describe("Reuse to get the same job back instead of contacting businesses again"),
       dry_run: z.boolean().optional().describe("Preview only: resolve who would be contacted and on which channel, send nothing and start no job. Use only if the user asks for a preview."),
+      proceed_anyway: z.boolean().optional().describe("Only when the user explicitly said to go ahead without the details a needs_info result asked for: contact businesses with what is known"),
     }),
     outputSchema: DealBoardPlus,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: true },
@@ -383,8 +385,27 @@ export const deal = server.tool(
         ...(facts.quantity !== undefined ? { quantity: facts.quantity } : {}), ...(facts.date ? { date: facts.date } : {}), ...(facts.time ? { time: facts.time } : {}),
         ...(facts.area ? { area: facts.area } : {}), ...(facts.venue ? { venue: facts.venue } : {}),
       } as Omit<typeof plainRest, "area" | "venue"> & { quantity?: number; date?: string; time?: string; area?: string; venue?: string };
-      // The catering default needs a headcount and a date; any other request describes its answers with ask[].
-      if (!R.ask?.length && (R.quantity === undefined || R.date === undefined)) {
+      // Intake (how a good human assistant buys): a business can't quote without the essentials for this
+      // kind of purchase (catering: headcount, date, where; a repair: what's wrong, where, how urgent; ...).
+      // Missing ones come back as questions for the user, in one message; nothing is sent. The user may
+      // explicitly say to go ahead anyway (proceed_anyway).
+      if (!input.proceed_anyway) {
+        const gaps = intakeGaps({ what: R.what, quantity: R.quantity, unit: R.unit, date: R.date, date_until: R.date_until, time: R.time, area: R.area, venue: R.venue, details: R.details, ask: R.ask, requirements: R.requirements.map((q) => (typeof q === "string" ? { text: q } : q)) });
+        if (!gaps.complete) {
+          const next = "Nothing was sent. Ask the user ALL of these in ONE short message (the optional ones marked optional), restate the brief in one line once they answer, then call deal again with the answers in request (each question names its field; anything else goes in details[{label, value}]). Call deal with proceed_anyway: true only if the user explicitly says to go ahead without them.";
+          const v = DealBoardPlus.parse({ ok: false, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode, needs_info: { category: gaps.category, label: gaps.label, missing: gaps.missing, helpful: gaps.helpful, brief: gaps.brief }, next });
+          return ok(v, [
+            `NEEDS INFO (nothing sent): to quote this ${gaps.label.toLowerCase()} request a business needs:`,
+            ...gaps.missing.map((q, i) => `${i + 1}. ${q.question} [${q.field}]`),
+            ...(gaps.helpful.length ? ["Optional (these change the price):", ...gaps.helpful.map((q) => `- ${q.question} [${q.field}]`)] : []),
+            `So far: ${gaps.brief}`,
+            `next: ${next}`,
+          ].join("\n"));
+        }
+      }
+      // The catering default needs a headcount and a date, even when going ahead anyway. Any other request is
+      // quoted on its total, with intake's vendor asks (or the answers it describes with ask[]).
+      if (!R.ask?.length && classify(R) === "catering" && (R.quantity === undefined || R.date === undefined)) {
         const missing = [R.quantity === undefined ? "headcount (quantity)" : null, R.date === undefined ? "date (date or when)" : null].filter(Boolean).join(" and ");
         return fail(mode, "INVALID_INPUT", `A catering request needs a ${missing}. Nothing was sent.`, "Ask the user for it (words are fine: 'about 60 people', 'Saturday Nov 14 at 11:30am'), or describe what you need back with request.ask[] for a non-catering request.", "deal");
       }

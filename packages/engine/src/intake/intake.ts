@@ -73,7 +73,8 @@ const detail = (r: IntakeInput, label: RegExp, value?: RegExp) => (r.details ?? 
 /** The request's own words: what, details and requirements. */
 const words = (r: IntakeInput) => [r.what, ...(r.details ?? []).map((d) => `${d.label} ${d.value}`), ...(r.requirements ?? []).map((q) => q.text)].join(" \n ");
 const whereGiven = (r: IntakeInput) => filled(r.area) || filled(r.venue) || detail(r, /\b(address|location|where|venue|site|neighbou?rhood|zip)\b/i);
-const whenGiven = (r: IntakeInput) => filled(r.date) || filled(r.time) || detail(r, /\b(when|date|timing|urgen\w*|deadline|availab\w*|by)\b/i) || /\b(asap|urgent\w*|emergency|today|tomorrow|this week|next week|any ?time|flexible)\b/i.test(words(r));
+// Asking every business for its earliest date (ask[]) means "as soon as you can": timing is given.
+const whenGiven = (r: IntakeInput) => filled(r.date) || filled(r.time) || (r.ask ?? []).some((f) => /\b(earliest|availab\w*|soonest|start)\b/i.test(`${f.key.replace(/_/g, " ")} ${f.label}`)) || detail(r, /\b(when|date|timing|urgen\w*|deadline|availab\w*|by)\b/i) || /\b(asap|urgent\w*|emergency|today|tomorrow|this week|next week|any ?time|flexible)\b/i.test(words(r));
 /** Meaningful words in `what` ("fix a leaking pipe" -> 3: fix, leaking, pipe). */
 const whatWords = (r: IntakeInput) => r.what.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !/^(a|an|the|of|for|to|my|our|some|and|in|on|at|need|needs|want|get|quote|quotes)$/.test(w)).length;
 

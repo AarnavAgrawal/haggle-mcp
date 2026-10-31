@@ -50,6 +50,8 @@ describe("intakeGaps", () => {
     const ok = intakeGaps({ what: "fix a leaking pipe", area: "Oakland, CA", details: [{ label: "Urgency", value: "this week" }] });
     expect(ok.category).toBe("home_repair");
     expect(ok.complete).toBe(true);
+    // Asking every business for its earliest date is timing ("as soon as you can").
+    expect(intakeGaps({ what: "fix a leaking kitchen sink", area: "SF", ask: [{ key: "earliest_date", label: "Earliest date" }] }).complete).toBe(true);
     // "ASAP" in the user's words is timing too.
     expect(intakeGaps({ what: "plumbing repair", area: "Oakland", details: [{ label: "Problem", value: "toilet keeps running, ASAP" }] }).complete).toBe(true);
   });
