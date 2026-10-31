@@ -56,8 +56,9 @@ export type SenderTrustReason =
 
 export type TrustVerdict =
   // "inkbox-org-identity": a same-org Inkbox identity pinned on the job, outbound not verified (see live/inkbox.ts).
-  // "external-reply-token" / "external-dmarc-aligned": a reply from outside Inkbox proven by inbound/senderAuth.ts.
-  | { trusted: true; address: string; reason: "trusted" | "inkbox-org-identity" | "external-reply-token" | "external-dmarc-aligned"; evidence: AuthEvidence }
+  // "external-thread-reply" / "external-sender-only" / "external-dmarc-aligned": mail from outside Inkbox
+  // accepted by inbound/senderAuth.ts ("external-reply-token": the legacy reply token, stored rows only).
+  | { trusted: true; address: string; reason: "trusted" | "inkbox-org-identity" | "external-reply-token" | "external-thread-reply" | "external-sender-only" | "external-dmarc-aligned"; evidence: AuthEvidence }
   | { trusted: false; retryable: boolean; reason: SenderTrustReason | "no-expected-address" | InkboxTrustReason; evidence: AuthEvidence };
 
 /** Inkbox (v5) verdicts: see live/inkbox.ts `inkboxSenderTrust`. */

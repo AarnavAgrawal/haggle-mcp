@@ -36,7 +36,6 @@ describe("live mode fails closed, naming the variable", () => {
     const r = checkConfig({ ...LIVE, HAGGLE_ENV: "staging", SUPABASE_DB_URL: "mysql://hunter2pw@x", HAGGLE_EXTERNAL_SENDERS: "reply_token", HAGGLE_REPLY_TOKEN_SECRET: "short", HAGGLE_TICK_SECRET: "tiny", HAGGLE_ALERT_WEBHOOK_URL: "http://hooks.example/SECRETVALUE", HAGGLE_AI_MAX_CALLS_PER_JOB: "-3", HAGGLE_AI_DAILY_TOKEN_BUDGET: "1e9", HAGGLE_DB_POOL_MAX: "50", HAGGLE_ENABLE_PAYMENTS: "true", STRIPE_SECRET_KEY: "sk_live_SECRETVALUE" });
     expect(r.errors).toEqual([
       "SUPABASE_DB_URL is not a postgres:// connection string",
-      "HAGGLE_REPLY_TOKEN_SECRET must be at least 16 characters with HAGGLE_EXTERNAL_SENDERS=reply_token",
       "STRIPE_CUSTOMER_ID is required with HAGGLE_ENABLE_PAYMENTS=true",
       "STRIPE_PAYMENT_METHOD_ID is required with HAGGLE_ENABLE_PAYMENTS=true",
       "STRIPE_SECRET_KEY must be a test-mode key (sk_test_); live Stripe keys are refused",

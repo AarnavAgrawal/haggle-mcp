@@ -154,7 +154,7 @@ export async function replayPipeline(o: { buyer: string; vendors: ReplayVendor[]
   async function seedTrial(run: { jobId: string; businessId: string; to: string; send: { id: string; messageId: string; threadId?: string | null } }, otherIds: string[] = []): Promise<ReplayDeal> {
     const base = deals[0]![0]!;
     const job = (await repo.getJob(base.jobId))!;
-    await repo.insertJob({ ...job, id: run.jobId, short_code: "TRIAL" }); // email-trial-lib TRIAL_CODE: the test email carries [HG-TRIAL]
+    await repo.insertJob({ ...job, id: run.jobId, short_code: "TRIAL" }); // email-trial-lib TRIAL_CODE (the test email carries no subject tag, like a real RFQ)
     const business = { ...base.business, job_id: run.jobId, business_id: run.businessId, email: run.to.toLowerCase(), thread_id: run.send.threadId ?? null, rfq_message_id: run.send.messageId, references: [run.send.messageId] };
     await repo.insertBusinesses([business]);
     for (const [i, id] of [run.send.messageId, ...otherIds].entries()) {

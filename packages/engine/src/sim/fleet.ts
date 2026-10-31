@@ -243,35 +243,51 @@ export class SimFleet implements EmailPort, ExtractorPort, PhonePort {
     if (p) {
       const key = msg.idempotencyKey.split(":")[0] ?? "";
       const trigger: Trigger | null = key === "rfq" ? "rfq" : key === "counter" ? "counter" : key === "answer" ? "answer" : key === "followup" ? "followup" : key === "accept" || key === "reissue" ? "accept" : key === "pay" ? "payment" : key === "cancel" ? "cancel" : null;
-      const jobId = msg.idempotencyKey.split(":")[1] ?? "";
+      const jobId = trigger === "rfq" || trigger === "counter" || key === "rfq" ? (msg.idempotencyKey.split(":")[1] ?? "") : this.jobFor(msg);
+      if (jobId) this.jobOfMessage.set(outId, jobId);
       if (trigger) {
         const countKey = `${p.email}:${trigger}`;
         const count = (this.counts.get(countKey) ?? 0) + 1;
         this.counts.set(countKey, count);
-        const r = p.reply(trigger, { jobId: trigger === "rfq" || trigger === "counter" ? jobId : this.jobFor(msg), inbox: msg.from, msg, nowMs: this.opts.now().getTime(), count });
-        if (r) this.schedule(p, msg, outId, r);
+        const r = p.reply(trigger, { jobId, inbox: msg.from, msg, nowMs: this.opts.now().getTime(), count });
+        if (r) this.schedule(p, msg, outId, r, jobId);
       }
     }
     return { providerId: `sim_out_${this.prefix}_${n}`, status: "queued", idempotentReplay: false, messageId: outId };
   }
 
-  /** The job id is recoverable from the RFQ carrying the same [HG-code] (one shared inbox serves every job). */
+  /** Which job each simulated Message-ID (ours out, the persona's in) belongs to. */
+  private jobOfMessage = new Map<string, string>();
+
+  /**
+   * The job a later email belongs to: from the thread it continues (the Message-IDs it replies to),
+   * else the RFQ to the same persona with the same subject (subjects carry no code any more), else
+   * the newest RFQ to that persona.
+   */
   private jobFor(msg: OutboundEmail): string {
+    for (const id of [msg.thread?.inReplyTo, ...(msg.thread?.references ?? [])].filter((x): x is string => !!x).reverse()) {
+      const j = this.jobOfMessage.get(id);
+      if (j) return j;
+    }
+    const bare = (s: string) => s.replace(/^\s*re:\s*/i, "").trim();
+    const rfqs = this.sent.filter((s) => s.idempotencyKey.startsWith("rfq:") && s.to === msg.to);
     const code = subjectShortCode(msg.subject);
-    const rfq = this.sent.find((s) => s.idempotencyKey.startsWith("rfq:") && (code ? subjectShortCode(s.subject) === code : s.from === msg.from));
+    const rfq = (code ? rfqs.find((s) => subjectShortCode(s.subject) === code) : undefined) ?? rfqs.find((s) => bare(s.subject) === bare(msg.subject) && s.from === msg.from) ?? rfqs.at(-1);
     return rfq?.idempotencyKey.split(":")[1] ?? "";
   }
 
-  private schedule(p: Persona, out: OutboundEmail, outId: string, r: Reply) {
+  private schedule(p: Persona, out: OutboundEmail, outId: string, r: Reply, jobId: string) {
     const n = ++this.seq;
     const id = `sim_in_${this.prefix}_${n}`;
+    const inId = `<sim-in-${this.prefix}-${n}@${p.email.split("@")[1]}>`;
+    if (jobId) this.jobOfMessage.set(inId, jobId);
     if (r.extraction) this.extractions.set(id, dated(r.extraction, this.opts.now().getTime()));
     this.queue.push({
       dueMs: this.opts.now().getTime() + p.delayMs * (this.opts.delayScale ?? 1),
       attachments: r.attachments ?? [],
       msg: {
-        providerEventId: `sim_evt_${this.prefix}_${n}`, eventType: "email.received", providerEmailId: id, threadId: `sim-thread-${p.email}-${subjectShortCode(out.subject) ?? out.from}`,
-        messageId: `<sim-in-${this.prefix}-${n}@${p.email.split("@")[1]}>`, inReplyTo: [outId], references: [...(out.thread?.references ?? []), outId],
+        providerEventId: `sim_evt_${this.prefix}_${n}`, eventType: "email.received", providerEmailId: id, threadId: `sim-thread-${p.email}-${jobId || out.from}`,
+        messageId: inId, inReplyTo: [outId], references: [...(out.thread?.references ?? []), outId],
         from: p.email, to: [out.from], subject: out.subject.startsWith("Re:") ? out.subject : `Re: ${out.subject}`, bodyText: r.text,
         attachments: [], attachmentsDownloadUrl: null,
       },

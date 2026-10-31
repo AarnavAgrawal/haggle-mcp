@@ -85,27 +85,37 @@ describe("text routing helpers", () => {
 });
 
 describe("two workspaces on one text line (in memory)", () => {
-  it("one vendor number on deals in two workspaces: a code-less text is held for both, never guessed; its deal code routes it to that deal only", async () => {
+  it("one vendor number on deals in two workspaces: a text that doesn't say which is held for both, never guessed; the business is asked in words, and naming the request (or an old deal code) routes it", async () => {
     const repo = new InMemoryRepository();
-    const { engine } = instance(repo);
+    const { engine, texts } = instance(repo);
     await workspaces(repo, engine, { ws_alpha: ALPHA_HUMAN, ws_beta: BETA_HUMAN });
     const a = await engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: GRILL, channel: "imessage" }] });
-    const b = await engine.forWorkspace("ws_beta").deal({ request, budget_usd, businesses: [{ name: "Golden Grill", phone: GRILL, channel: "imessage" }] });
+    const b = await engine.forWorkspace("ws_beta").deal({ request: { ...request, what: "dinner buffet", quantity: 25 }, budget_usd, businesses: [{ name: "Golden Grill", phone: GRILL, channel: "imessage" }] });
+    for (const t of texts.filter((x) => x.to === GRILL)) expect(t.text).not.toMatch(/HG-/); // no codes to the business
     const r = await engine.ingestText({ messageId: "g1", from: GRILL, text: "$1,020 total all-in, delivered, $100 deposit", inbound: true });
     expect(r).toEqual({ jobId: null, outcome: "ambiguous_workspace" });
     expect(await inbound(repo, a.job_id)).toEqual([]);
     expect(await inbound(repo, b.job_id)).toEqual([]);
     for (const id of [a.job_id, b.job_id]) {
       const held = (await repo.listEvents(id)).find((e) => e.data.kind === "text_held");
-      expect(String(held?.data.summary)).toMatch(new RegExp(`include HG-${(await repo.getJob(id))!.short_code}`));
-      expect(String(held?.data.summary)).not.toMatch(/1,020/); // nothing of the text reaches either deal
+      expect(String(held?.data.summary)).toMatch(/asked Golden Grill which request/);
+      expect(String(held?.data.summary)).not.toMatch(/1,020|HG-/); // nothing of the text reaches either deal
     }
+    // The business is asked once, in plain words, listing only the requests it was contacted about.
+    const which = texts.filter((x) => x.to === GRILL && /more than one request/.test(x.text));
+    expect(which).toHaveLength(1);
+    expect(which[0]!.text).toMatch(/dinner buffet for 25/);
+    expect(which[0]!.text).not.toMatch(/HG-|Haggle/);
+    // Naming the request routes it to that deal only.
+    expect(await engine.ingestText({ messageId: "g1b", from: GRILL, text: "For the dinner buffet for 25: $980 total all-in, delivered", inbound: true })).toEqual({ jobId: b.job_id, outcome: "stored" });
+    expect(await inbound(repo, b.job_id)).toHaveLength(1);
+    expect(await inbound(repo, a.job_id)).toEqual([]);
     // Webhook redelivery of the held text: still nothing routed.
     expect((await engine.ingestText({ messageId: "g1", from: GRILL, text: "$1,020 total all-in, delivered, $100 deposit", inbound: true })).outcome).toBe("duplicate");
     const code = (await repo.getJob(a.job_id))!.short_code;
     expect(await engine.ingestText({ messageId: "g2", from: GRILL, text: `HG-${code} $1,020 total all-in, delivered, $100 deposit`, inbound: true })).toEqual({ jobId: a.job_id, outcome: "stored" });
     expect(await inbound(repo, a.job_id)).toHaveLength(1);
-    expect(await inbound(repo, b.job_id)).toEqual([]);
+    expect(await inbound(repo, b.job_id)).toHaveLength(1);
   });
 
   it("a human who approves for two workspaces: a bare answer is held and they're asked for the deal code; the coded answer reaches that deal's business only, without the code", async () => {

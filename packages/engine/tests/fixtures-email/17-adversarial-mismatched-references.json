@@ -1,7 +1,7 @@
 {
   "name": "adversarial-mismatched-references",
   "client": "Unknown client",
-  "notes": "Token and subject tag present, but In-Reply-To/References name a message Haggle never sent.",
+  "notes": "In-Reply-To/References name a message Haggle never sent, and the vendor has two open deals on the mailbox: it can't be attributed by sender alone, so it is held for operator review (ambiguous_sender), never guessed.",
   "event": {
     "agent_identities": []
   },
@@ -32,10 +32,10 @@
     "createdAt": "2026-10-21T17:20:00.000Z"
   },
   "expect": {
-    "outcome": "quarantined:identity_unverified",
+    "outcome": "quarantined:ambiguous_sender",
     "stored_as": "quarantine",
     "sender_trusted": false,
-    "quarantine_reason": "identity_unverified:not_in_our_thread",
+    "quarantine_reason": "ambiguous_sender",
     "quote_total_usd": null
   }
 }

@@ -592,11 +592,23 @@ describe("one Inkbox identity for every workspace: inbound events reach only the
     for (const id of [a.job_id, b.job_id]) {
       expect((await env.repo.listMessages(id)).some((m) => m.direction === "in")).toBe(false);
       const held = (await env.repo.listEvents(id)).find((e) => e.data.kind === "call_held");
-      expect(String(held?.data.summary)).toMatch(new RegExp(`HG-${(await env.repo.getJob(id))!.short_code}`));
+      expect(String(held?.data.summary)).toMatch(/in writing/);
+      expect(String(held?.data.summary)).not.toMatch(/HG-/);
       expect(String(held?.data.summary)).not.toMatch(/990/);
     }
     expect((await env.repo.findMessageByProviderId("call-ended:in_amb"))).toMatchObject({ job_id: null, kind: "quarantine", quarantine_reason: "ambiguous_caller" });
     expect((await env.engine.ingestCall({ callId: "in_amb", outcome: "completed", transcript: "x", direction: "inbound", remoteNumber: SHARED_VENDOR })).outcome).toBe("duplicate");
+  });
+
+  it("an inbound call from a number on two deals is read into the one request the transcript describes (no codes)", async () => {
+    const env = setup({ trustInboundCallerId: true, callDelayMs: 60 * 60_000 });
+    await workspace(env, "ws_alpha", ALPHA_HUMAN);
+    await workspace(env, "ws_beta", BETA_HUMAN);
+    const a = await env.engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "Shared Grill", phone: SHARED_VENDOR }] });
+    const b = await env.engine.forWorkspace("ws_beta").deal({ request: { ...request, what: "dinner buffet", quantity: 25 }, budget_usd, businesses: [{ name: "Shared Grill", phone: SHARED_VENDOR }] });
+    const r = await env.engine.ingestCall({ callId: "in_desc", outcome: "completed", transcript: "agent: Which request is this about? remote: The dinner buffet for 25. $990 total all-in. agent: The dinner buffet for 25, got it.", direction: "inbound", remoteNumber: SHARED_VENDOR });
+    expect(r).toMatchObject({ jobId: b.job_id });
+    expect((await env.repo.listMessages(a.job_id)).some((m) => m.direction === "in")).toBe(false);
   });
 
   it("the 'which deal?' text never reveals another workspace's deal code the number was never given", async () => {

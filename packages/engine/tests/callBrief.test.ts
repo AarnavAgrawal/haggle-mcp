@@ -49,6 +49,7 @@ describe("a flexible date window", async () => {
     const text = HaggleEngine.rfqIMessageText("Sunset Kitchen", flex);
     expect(text).toContain("Mon, Oct 19-Fri, Oct 23 (flexible)");
     expect(text.length).toBeLessThanOrEqual(159);
-    expect(text).toMatch(/HG-AB12$/); // the reference code survives the length limit
+    expect(text).toMatch(/Total \+ deposit\?$/); // no reference code to the business
+    expect(text).not.toMatch(/HG-/);
   });
 });

@@ -237,6 +237,16 @@ export class InMemoryRepository implements Repository {
       .filter((b) => codes.has(b.short_code) || (q.threadId !== null && b.thread_id === q.threadId) || (b.rfq_message_id !== null && ids.has(norm(b.rfq_message_id))) || this.messages.some((m) => m.direction === "out" && m.business_id === b.business_id && m.job_id === b.job_id && m.rfc_message_id !== null && ids.has(norm(m.rfc_message_id))));
   }
 
+  async findOpenBusinessesBySender(address: string, inboxes: string[]) {
+    const from = address.trim().toLowerCase();
+    const boxes = new Set(inboxes.map((x) => x.trim().toLowerCase()));
+    return this.businesses
+      .filter((b) => (b.email ?? "").toLowerCase() === from)
+      .map((b) => ({ b, j: this.jobs.get(b.job_id) }))
+      .filter(({ j }) => !!j && !["paid", "confirmed", "cancelled", "failed"].includes(j.state) && boxes.has(j.inbox.toLowerCase()))
+      .map(({ b, j }) => ({ ...clone(b), short_code: j!.short_code }));
+  }
+
   /** Strictly increasing message times (like Postgres's microseconds), so "after" never ties. */
   private lastMessageMs = 0;
   async insertMessage(m: NewMessage) {

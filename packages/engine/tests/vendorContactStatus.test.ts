@@ -72,20 +72,22 @@ describe("contact status per business", () => {
   it("replied, quarantined reply, opted out (verified: everywhere; unverified: this deal), awaiting reply", async () => {
     const env = liveEngine();
     const d = await twoVendors(env);
-    // V answers properly; W's answer lacks the reference: held.
-    await vendorReply(env, d.bv, d.token(d.bv.business_id));
-    await vendorReply(env, d.bw, d.token(d.bw.business_id), { subject: "Re: Quote request", bodyText: "$1,300 total" });
+    // V answers properly; W's answer fails its provider's authentication (DMARC fail): held.
+    const dmarcFail = (): TrustVerdict => ({ trusted: false, retryable: false, reason: "unverified-external-sender", evidence: { dmarc: "fail", dmarcPolicy: "reject", dmarcFromDomain: "westside.example", spf: null, alignedDkimDomains: [] } });
+    await vendorReply(env, d.bv, "");
+    await vendorReply(env, d.bw, "", { subject: "Re: Quote request", bodyText: "$1,300 total" }, dmarcFail);
     await env.engine.advanceJob(d.jobId);
     expect(await d.status(d.bv)).toMatchObject({ contact_status: "replied", line: "Replied" });
-    expect(await d.status(d.bw)).toMatchObject({ contact_status: "quarantined_reply", line: expect.stringMatching(/no reference code/) });
-    // W then writes STOP with its token: verified opt-out, suppressed everywhere.
-    await vendorReply(env, d.bw, d.token(d.bw.business_id), { bodyText: "STOP" });
+    expect(await d.status(d.bw)).toMatchObject({ contact_status: "quarantined_reply", line: expect.stringMatching(/failed authentication/) });
+    // W then replies STOP in Haggle's thread: verified opt-out, suppressed everywhere.
+    await vendorReply(env, d.bw, "", { bodyText: "STOP" });
     expect(await d.status(d.bw)).toMatchObject({ contact_status: "opted_out", line: expect.stringMatching(/won't contact them again/) });
 
     const env2 = liveEngine();
     const e = await twoVendors(env2);
     const unverified = (): TrustVerdict => ({ trusted: false, retryable: false, reason: "unverified-external-sender", evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
-    await vendorReply(env2, e.bv, d.token(d.bv.business_id) /* not this deal's token */, { bodyText: "Please stop emailing us." }, unverified);
+    // A new email (not a reply), matched only by its address: honoured on this deal, never suppressed everywhere.
+    await vendorReply(env2, e.bv, "", { bodyText: "Please stop emailing us.", inReplyTo: [], references: [], threadId: null }, unverified);
     expect(await e.status(e.bv)).toMatchObject({ contact_status: "opted_out", line: expect.stringMatching(/unverified/) });
     expect(await env2.repo.findSuppressions([V.email])).toEqual([]);
     expect(await e.status(e.bw)).toMatchObject({ contact_status: "awaiting_reply", reminders_sent: 0 });

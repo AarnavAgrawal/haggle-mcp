@@ -120,7 +120,6 @@ export function checkConfig(env: Env = process.env): ConfigReport {
   if (mode === "live") {
     for (const k of LIVE_REQUIRED) if (!set(env[k])) errors.push(`${k} is required in live mode`);
     if (set(env.SUPABASE_DB_URL) && !isPostgresUrl(env.SUPABASE_DB_URL!)) errors.push("SUPABASE_DB_URL is not a postgres:// connection string");
-    if (env.HAGGLE_EXTERNAL_SENDERS === "reply_token" && (env.HAGGLE_REPLY_TOKEN_SECRET?.trim().length ?? 0) < 16) errors.push("HAGGLE_REPLY_TOKEN_SECRET must be at least 16 characters with HAGGLE_EXTERNAL_SENDERS=reply_token");
     if (truthy(env.HAGGLE_ENABLE_PAYMENTS) && env.HAGGLE_PAYMENTS?.trim() !== "manual") {
       for (const k of ["STRIPE_SECRET_KEY", "STRIPE_CUSTOMER_ID", "STRIPE_PAYMENT_METHOD_ID"]) if (!set(env[k])) errors.push(`${k} is required with HAGGLE_ENABLE_PAYMENTS=true`);
       if (set(env.STRIPE_SECRET_KEY) && !env.STRIPE_SECRET_KEY!.trim().startsWith("sk_test_")) errors.push("STRIPE_SECRET_KEY must be a test-mode key (sk_test_); live Stripe keys are refused");

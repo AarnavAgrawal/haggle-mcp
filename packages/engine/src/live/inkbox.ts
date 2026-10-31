@@ -1,6 +1,6 @@
 // LIVE MODE (v5): Inkbox adapters for the engine ports. The buyer is one Inkbox agent identity
-// (`haggle`); every job shares its mailbox and replies are matched by thread, In-Reply-To and the
-// [HG-code] subject tag. This file is the only place Inkbox is called.
+// (`haggle`); every job shares its mailbox and replies are matched by thread and In-Reply-To/References
+// (Haggle's own Message-IDs; no code is sent). This file is the only place Inkbox is called.
 //
 // Sender trust. Inkbox mail webhooks carry no DKIM/DMARC results, so an address alone proves
 // nothing. A reply is trusted only when the sender is an Inkbox agent identity AND the same RFC

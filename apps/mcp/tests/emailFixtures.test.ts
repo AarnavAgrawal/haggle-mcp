@@ -93,7 +93,7 @@ describe("fixtures-email: real client layouts and adversarial mail through the w
     const job = (await p.repo.getJob(v.jobId))!;
     const f = fixtures.find((x) => x.name === "gmail-web-top-posted")!;
     const r = await p.deliver(fillPlaceholders(f.detail, { BUYER, VENDOR: VENDOR.email, TOKEN: v.token, RFQ_MESSAGE_ID: v.rfqMessageId, RFQ_SUBJECT: p.mailbox.sent[0]!.subject, WHAT: job.request.what, AREA: job.request.area }));
-    expect(r).toMatchObject({ outcome: "stored", trust_reason: "external-reply-token", quote_total_usd: 1150, approvable: false });
+    expect(r).toMatchObject({ outcome: "stored", trust_reason: "external-thread-reply", quote_total_usd: 1150, approvable: false });
   });
 });
 

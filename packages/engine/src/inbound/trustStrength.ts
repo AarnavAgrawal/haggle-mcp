@@ -1,5 +1,6 @@
-// PURE: conversation continuity vs sender identity. A reply verified only by Haggle's reply token
-// ("external-reply-token") proves that whoever wrote it holds the email Haggle sent to that address,
+// PURE: conversation continuity vs sender identity. A reply verified only by naming Haggle's own
+// Message-ID ("external-thread-reply"; before 2026-10-30 the reply token, "external-reply-token")
+// proves that whoever wrote it holds the email Haggle sent to that address,
 // the strength of an email-verification link; anyone with access to the mailbox, or a forwarded
 // copy whose recipient then spoofs the From, passes it. That is enough to read a quote (the human
 // still approves out of band), never enough on its own to name a payee, settle a payment, or be
@@ -10,8 +11,14 @@
 // operator confirmed the quote's content, not who controls the sending mailbox, so payment details,
 // a payee or a binding confirmation arriving that way still need their own check.
 
-/** Trust reasons that prove only continuity with Haggle's thread, not who sent the mail. */
-export const CONTINUITY_ONLY_REASONS: ReadonlySet<string> = new Set(["external-reply-token", "operator_verified"]);
+/**
+ * Trust reasons that prove only continuity with Haggle's thread, not who sent the mail:
+ * "external-thread-reply" (a reply naming one of Haggle's own Message-IDs, from the pinned address),
+ * "external-sender-only" (a new email from the pinned address of a business with exactly one open
+ * deal: weaker still, no thread at all), and "external-reply-token" (the legacy reply token, before
+ * 2026-10-30; kept for stored rows).
+ */
+export const CONTINUITY_ONLY_REASONS: ReadonlySet<string> = new Set(["external-thread-reply", "external-sender-only", "external-reply-token", "operator_verified"]);
 
 /**
  * Trust reasons that rest on a phone number the sender claims (decision H2/H1, 2026-10-22): a text from
@@ -25,10 +32,10 @@ export function provesSenderIdentity(m: { sender_trusted: boolean | null; trust_
   return m.sender_trusted === true && !!m.trust_reason && !CONTINUITY_ONLY_REASONS.has(m.trust_reason) && !TEXT_OR_CALLER_ID_REASONS.has(m.trust_reason);
 }
 
-export const CONTINUITY_ONLY_WARNING = "the sender was verified only by Haggle's reply reference (anyone with access to that email thread could send this), not by its mail provider: confirm these payment details with the business by phone before paying";
+export const CONTINUITY_ONLY_WARNING = "the sender was verified only by its reply in Haggle's email thread (anyone with access to that email thread could send this), not by its mail provider: confirm these payment details with the business by phone before paying";
 
 /** What the human is told when a binding confirmation arrives from a continuity-only sender. */
-export const UNVERIFIED_CONFIRMATION_WARNING = "this confirmation was verified only by Haggle's reply reference, not by the business's mail provider: confirm the booking with the business on a number you already know before relying on it or paying";
+export const UNVERIFIED_CONFIRMATION_WARNING = "this confirmation was verified only by its reply in Haggle's email thread, not by the business's mail provider: confirm the booking with the business on a number you already know before relying on it or paying";
 
 /** What the human is told when a binding confirmation arrives by text (or a caller-ID-matched call). */
 export const TEXT_CONFIRMATION_WARNING = "this confirmation came by text from the business's number, which can't prove who sent it: confirm the booking with the business on a number you already know before relying on it or paying";

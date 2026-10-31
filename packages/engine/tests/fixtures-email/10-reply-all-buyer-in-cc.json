@@ -37,7 +37,7 @@
     "outcome": "stored",
     "stored_as": "reply",
     "sender_trusted": true,
-    "trust_reason": "external-reply-token",
+    "trust_reason": "external-thread-reply",
     "quarantine_reason": null,
     "quote_total_usd": 1150
   }

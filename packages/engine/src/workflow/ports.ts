@@ -224,12 +224,14 @@ export interface EngineConfig {
   voiceWorkspaceId?: string;
   /**
    * Replies from mailboxes Inkbox can't authenticate (Gmail, Outlook, a vendor's own domain).
-   * "off" (default): never trusted. "reply_token": trusted only from the pinned address, in Haggle's
-   * own thread, quoting the business's reply token (inbound/senderAuth.ts), with no failing
-   * authentication evidence. Needs replyTokenSecret.
+   * "off" (default): never trusted. "reply_token" (name kept for existing deployments; no token is
+   * sent any more): trusted only from the pinned address with no failing authentication evidence,
+   * as a reply naming one of Haggle's own Message-IDs (continuity), with an aligned DMARC pass
+   * (identity), or as a new email from a business with exactly one open deal on the mailbox (the
+   * weakest: a quote at most). See inbound/senderAuth.ts.
    */
   externalSenders?: "off" | "reply_token";
-  /** Server secret (>= 16 chars) for reply tokens. Required with externalSenders "reply_token". */
+  /** Legacy and unused (reply tokens are no longer sent). Accepted so old configs keep working. */
   replyTokenSecret?: string;
   /** This process's name in job leases (default: one random id per process). */
   instanceId?: string;

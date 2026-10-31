@@ -64,7 +64,7 @@ List the production **project ref**, not the shared pooler host: the pooler host
 | `HAGGLE_ENV` | `development` \| `staging` \| `production`; anything else is refused. Set it explicitly on every deployed server (a live server without it logs a warning) |
 | `HAGGLE_PROD_DB_HOSTS` | production hosts / Supabase project refs (set it on every environment, so dev and staging can recognize production) |
 | `HAGGLE_ALLOW_PROD_DB` | `true` only for a deliberate operator task |
-| `HAGGLE_REPLY_TOKEN_SECRET` | ≥ 16 characters when `HAGGLE_EXTERNAL_SENDERS=reply_token` |
+| `HAGGLE_REPLY_TOKEN_SECRET` | legacy, unused since 2026-10-30 (no reply tokens are sent) |
 | `HAGGLE_TICK_SECRET` | ≥ 16 characters, or empty (`/internal/tick` is disabled) |
 | `HAGGLE_ENABLE_PAYMENTS=true` | needs `STRIPE_SECRET_KEY` (an `sk_test_` key; live keys are refused), `STRIPE_CUSTOMER_ID` and `STRIPE_PAYMENT_METHOD_ID`, unless `HAGGLE_PAYMENTS=manual` |
 | `HAGGLE_ALERT_WEBHOOK_URL` | `https://` only (a Slack-compatible incoming webhook; the URL is itself a secret) |

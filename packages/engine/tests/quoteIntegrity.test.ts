@@ -63,7 +63,7 @@ describe("quote revisions and approvals", () => {
     // Unknown all-in total: still ranked (soft, decision 1) but not approvable (decision 19).
     expect(v1).toMatchObject({ total_usd: 4500, deposit_usd: 1000, approvable: false });
     expect(board.recommended_quote_id).toBeUndefined(); // never recommended before the all-in total is known
-    expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 40 vegetarian meals; Total must include delivery and all fees; the all-in total including delivery, tax and any fees\? HG-/);
+    expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 40 vegetarian meals; Total must include delivery and all fees; the all-in total including delivery, tax and any fees\?$/);
     await expect(e.requestApproval(deal.job_id, v1.quote_id, "view")).rejects.toBeTruthy(); // the live mistake can't happen any more
 
     await text(e, "im_2", "yes 40 veggie meals . $250 extra for delivery");
@@ -118,7 +118,7 @@ describe("quote revisions and approvals", () => {
     expect(board.state).toBe("negotiating");
     const sid = board.quotes[0]!.business_id;
     expect(board.stages![sid]).toMatchObject({ stage: "countered", negotiation: "countered", first_total_usd: 4500, current_total_usd: 4500 }); // a counter is not a price
-    expect(soft.texts.at(-1)!.text).toBe("Thanks! AI assistant for a customer again. Our client's target is $4,000.00 total. Anything you can do to get closer (delivery or deposit)? Ref HG-" + (await soft.repo.getJob(d2.job_id))!.short_code);
+    expect(soft.texts.at(-1)!.text).toBe("Thanks! AI assistant for a customer again. Our client's target is $4,000.00 total. Anything you can do to get closer (delivery or deposit)?");
     // The business revises: the new price shows as negotiated, with the original kept as history.
     await text(soft.engine, "im_s2", "Best we can do is $4.2k total, $800 deposit, 45 veg, delivery included");
     await soft.engine.advanceJob(d2.job_id);

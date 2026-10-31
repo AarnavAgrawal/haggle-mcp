@@ -127,6 +127,10 @@ Channel rules:
 - **SMS:** not used (10DLC). Use iMessage.
 - **Seller phone persona:** `setIncomingCallAction({ incomingCallAction: IncomingCallAction.HOSTED_AGENT })` + `setHostedAgentConfig({ voice, instructions })` (the config is replaced in full on each call).
 - **Dev webhooks:** `connect(inkbox, { name, forwardTo })` from `@inkbox/sdk/tunnels/connect`, or `npx mcp-use dev --tunnel`.
+- **No codes to businesses (2026-10-30).** Nothing Haggle sends a business carries a reference code: email subjects are `Quote request: <what>, <quantity>, <date>` (every later email on the deal reuses it; threaded sends get `Re:`), no reply token (`HGR-…`) in subject or body, no `Ref HG-…` in texts, no reference in call reasons or the inbound voice instructions (open requests are listed in words: "lunch catering, 40 people, on 2026-11-03"), no `job_id` in the emailed `rfq.json`. Codes to the **approver** stay (`YES/NO/APPROVE/PAY/CALL/CANCEL <code>`, `(HG-…)`): they are a security feature.
+- **Matching a business's email (in order):** (1) the Inkbox thread id; (2) In-Reply-To/References naming one of Haggle's own outbound Message-IDs to that business (any of them: RFQ, reminder, counter); (3) a legacy `[HG-<code>]` subject tag (older threads) plus From = the pinned address; (4) job-inbox recipient (mock); (5) a **new email** (no thread signal) from a pinned address: the deal only when that sender has exactly one open deal on the receiving mailbox (`matched_via: sender_only`), several → held as `ambiguous_sender` for operator review. Rules 1–2 from any other address are quarantined `sender_mismatch`.
+- **Trust for mail from outside Inkbox** (`HAGGLE_EXTERNAL_SENDERS=reply_token`; the name is kept, no token is sent): from the pinned address and no DMARC/SPF failure, then aligned DMARC pass → `external-dmarc-aligned` (identity); a reply naming Haggle's Message-ID → `external-thread-reply` (continuity: may quote, never confirm a booking, name a payee or settle on its own); a rule-3/5 match → `external-sender-only` (weakest: a quote at most; a STOP stops that deal only; never read for bookings or payment details). Otherwise quarantined `identity_unverified:*`. Legacy `external-reply-token` rows read as continuity-only.
+- **Texts and inbound calls without codes:** a business number on several open deals is matched by an old code it quotes, else (same workspace) the deal with an unanswered ask, else the latest. Across workspaces, a text that describes exactly one of the requests (what, how many, when) routes there; otherwise it is held and the business is asked once, in plain words, which request it means (only when the requests differ). The voice agent asks a caller with several requests which one and repeats it; a transcript describing exactly one is read into that deal, else it is held.
 
 ## 5. Quote protocol over email
 
@@ -135,7 +139,7 @@ A2A tasks carry the same JSON shapes in the task body.
 
 | Part | Direction | Required keys |
 |---|---|---|
-| `rfq.json` | buyer → seller | `protocol:"haggle.v0"`, `type:"rfq"`, `job_id`, `what`, `requirements[{id,label,mandatory}]`, `reply_by`; optional `quantity{amount,unit}`, `date`, `location`, `budget_hint_usd` |
+| `rfq.json` | buyer → seller | `protocol:"haggle.v0"`, `type:"rfq"`, `what` (`job_id` only in the A2A task data, never in email), `requirements[{id,label,mandatory}]`, `reply_by`; optional `quantity{amount,unit}`, `date`, `location`, `budget_hint_usd` |
 | `quote.json` | seller → buyer | `protocol`, `type:"quote"`, `job_id`, `total_usd`; optional `items[{description,quantity,unit_price_usd,total_usd,tags[]}]`, `subtotal_usd`, `delivery_usd`, `tax_usd`, `fees[{label,amount_usd}]`, `per_head_usd`, `deposit_usd`, `payment_terms`, `fulfillment_date`, `meets{req_id:bool}`, `valid_until`, `round` |
 | `counter.json` | buyer → seller | `protocol`, `type:"counter"`, `job_id`, `round`, `target_total_usd`, `basis` (must cite a real competing quote), `respond_by` |
 

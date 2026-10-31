@@ -88,7 +88,7 @@ Set in the Manufact dashboard (or `mcp-use servers env set <server-id> KEY=VALUE
 | `INKBOX_WEBHOOK_SECRET` | the production subscription's signing secret | yes |
 | `INKBOX_IDENTITY` | the production handle | |
 | `HAGGLE_ENABLE_CALLS`, `HAGGLE_ENABLE_IMESSAGE` | `true` once each channel is tested on staging (both off by default). Leave `HAGGLE_ENABLE_SMS` off until the 10DLC registration is approved; `HAGGLE_ENABLE_A2A` only with allowlisted Agent Cards | |
-| `HAGGLE_EXTERNAL_SENDERS` + `HAGGLE_REPLY_TOKEN_SECRET` | `reply_token` + a 16+ character secret, so real vendors' replies from their own mail servers are accepted | yes (the secret) |
+| `HAGGLE_EXTERNAL_SENDERS` | `reply_token`, so real vendors' replies from their own mail servers are accepted (a reply in Haggle's thread, an aligned DMARC pass, or a new email from a vendor with one open deal; no token is sent any more, and `HAGGLE_REPLY_TOKEN_SECRET` is unused) | no |
 | `ANTHROPIC_API_KEY` | the server's key | yes |
 | `HAGGLE_AI_MAX_CALLS_PER_JOB` | e.g. `60` | |
 | `HAGGLE_AI_DAILY_TOKEN_BUDGET` | your daily cap, e.g. `5000000` (production warns when unset) | |

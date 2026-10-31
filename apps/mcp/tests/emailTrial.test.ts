@@ -77,11 +77,11 @@ describe("evaluateReply runs captured mail through the engine's inbound function
   it("a normal Gmail reply verifies, its quoted history is cut, and the token is seen", () => {
     const run = sentRun();
     const e = evaluateReply(reply(run), run, ids(run));
-    expect(e).toMatchObject({ verdict: "ok:external-reply-token", match: "business:thread", token_in_subject: true, token_in_body: true, token_in_own_words: false, in_reply_to_ours: true, quoted_history_cut: true, own_words_preview: "We can do it: $1,150 total.", body_source: "text", opt_out: false, bounce: false });
+    expect(e).toMatchObject({ verdict: "ok:external-thread-reply", match: "business:thread", token_in_subject: true, token_in_body: true, token_in_own_words: false, in_reply_to_ours: true, quoted_history_cut: true, own_words_preview: "We can do it: $1,150 total.", body_source: "text", opt_out: false, bounce: false });
   });
-  it("edited subject + quote deleted is token_missing; a fresh email is not_in_our_thread; a forward from another address is from_mismatch", () => {
+  it("edited subject + quote deleted still verifies by its Message-ID; a fresh email is not_in_our_thread; a forward from another address is from_mismatch", () => {
     const run = sentRun();
-    expect(evaluateReply(reply(run, { subject: "Quote", bodyText: "$1,150 total." }), run, ids(run)).verdict).toBe("identity_unverified:token_missing");
+    expect(evaluateReply(reply(run, { subject: "Quote", bodyText: "$1,150 total." }), run, ids(run)).verdict).toBe("ok:external-thread-reply");
     expect(evaluateReply(reply(run, { inReplyTo: null, references: null, threadId: "thr_new", subject: `Quote ${run.token}` }), run, ids(run)).verdict).toBe("identity_unverified:not_in_our_thread");
     const fwd = evaluateReply(reply(run, { fromAddress: OTHER, subject: `Fwd: ${run.subject}` }), run, ids(run));
     expect(fwd.verdict).toBe("identity_unverified:from_mismatch");
@@ -90,17 +90,17 @@ describe("evaluateReply runs captured mail through the engine's inbound function
   it("a token only in quoted text is noted; an HTML-only reply is read from its HTML", () => {
     const run = sentRun();
     const quotedOnly = evaluateReply(reply(run, { subject: "Re: catering" }), run, ids(run));
-    expect(quotedOnly.verdict).toBe("ok:external-reply-token");
+    expect(quotedOnly.verdict).toBe("ok:external-thread-reply");
     expect(quotedOnly.notes).toContain("token only in quoted text");
     const html = evaluateReply(reply(run, { bodyText: null, bodyHtml: `<div>$1,150 total</div><blockquote>${run.token}</blockquote>` }), run, ids(run));
-    expect(html).toMatchObject({ body_source: "html", verdict: "ok:external-reply-token", own_words_preview: "$1,150 total" });
+    expect(html).toMatchObject({ body_source: "html", verdict: "ok:external-thread-reply", own_words_preview: "$1,150 total" });
   });
   it("if the stored Message-ID differs from the send-time one, the report shows replies failing only because of it", () => {
     const run = sentRun();
     const stored = "<0100019AfinalSES@email.amazonses.com>";
     const e = evaluateReply(reply(run, { inReplyTo: stored, references: [stored] }), run, ids(run, stored));
     expect(e.verdict).toBe("identity_unverified:not_in_our_thread");
-    expect(e.verdict_any_known_id).toBe("ok:external-reply-token");
+    expect(e.verdict_any_known_id).toBe("ok:external-thread-reply");
     expect(compareMessageIds(run.send!.messageId, stored, null)).toMatchObject({ send_time_equals_stored: false, verdict: expect.stringMatching(/^MISMATCH/) });
     expect(compareMessageIds(run.send!.messageId, run.send!.messageId.toLowerCase(), null)).toMatchObject({ send_time_equals_stored: true, verdict: expect.stringMatching(/^OK/) });
   });
@@ -122,7 +122,7 @@ describe("report redaction", () => {
     expect(json).not.toContain(run.secret);
     expect(report.summary).toMatchObject({ replies: 1, verified: 1 });
     const md = renderMarkdown(report);
-    expect(md).toContain("ok:external-reply-token");
+    expect(md).toContain("ok:external-thread-reply");
     expect(md).not.toContain(ME);
     expect(md).toContain("- [ ] Normal reply");
   });

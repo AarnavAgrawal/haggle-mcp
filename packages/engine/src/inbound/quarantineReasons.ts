@@ -12,10 +12,11 @@ export interface QuarantineExplanation {
 }
 
 const T: Record<string, QuarantineExplanation> = {
+  // Legacy: before 2026-10-30 Haggle sent a reply token (HGR-…) and required it. Kept for stored rows.
   "identity_unverified:token_missing": {
-    explanation: "The email came from the business's address in Haggle's thread, but without Haggle's reference code (HGR-…), so the sender couldn't be verified.",
-    action: "Ask the business to press Reply on Haggle's email and keep the subject line (or paste the reference), or confirm the quote by phone.",
-    board: "Unverified sender: no reference code. Ask them to reply to Haggle's email, keeping the subject",
+    explanation: "The email came from the business's address in Haggle's thread, but without Haggle's old reference code (HGR-…), so the sender couldn't be verified.",
+    action: "Ask the business to press Reply on Haggle's email, or confirm the quote by phone.",
+    board: "Unverified sender: no reference code. Ask them to reply to Haggle's email",
   },
   "identity_unverified:not_in_our_thread": {
     explanation: "The email doesn't reply to any message Haggle sent this business (no matching In-Reply-To/References): a new email, or a forged one.",
@@ -48,9 +49,14 @@ const T: Record<string, QuarantineExplanation> = {
     board: "Email to an unknown deal inbox",
   },
   no_signal: {
-    explanation: "The email couldn't be matched to any deal (no thread, reference or job code).",
+    explanation: "The email couldn't be matched to any deal: it doesn't reply to Haggle's email, and its sender has no open deal on this mailbox.",
     action: "If it is a vendor's reply, ask them to reply in Haggle's email thread.",
     board: "Email not matched to any deal",
+  },
+  ambiguous_sender: {
+    explanation: "A new email (not a reply) from a business with more than one open deal on this mailbox, so Haggle can't tell which request it is about.",
+    action: "Read it and release it to the right deal (quarantine release), or ask the business to reply in Haggle's email thread for that request.",
+    board: "Email from a business on several deals: held until someone picks the deal",
   },
   bounce: {
     explanation: "A delivery failure report names an email Haggle sent: the address doesn't accept mail.",
@@ -69,8 +75,8 @@ const T: Record<string, QuarantineExplanation> = {
   },
   // Not quarantined but never read: stored untrusted (the trust verdict's reason).
   "unverified-external-sender": {
-    explanation: "Mail from outside Inkbox can't be authenticated, and this server doesn't accept reply-token verification for it.",
-    action: "To accept real vendors' replies, an operator enables HAGGLE_EXTERNAL_SENDERS=reply_token (with HAGGLE_REPLY_TOKEN_SECRET); otherwise confirm by phone.",
+    explanation: "Mail from outside Inkbox can't be authenticated, and this server doesn't accept thread-reply verification for it.",
+    action: "To accept real vendors' replies, an operator enables HAGGLE_EXTERNAL_SENDERS=reply_token (a reply in Haggle's thread from the address it wrote to); otherwise confirm by phone.",
     board: "Unverified sender: outside email isn't accepted on this server",
   },
   "sender-not-verifiable": {

@@ -250,7 +250,8 @@ describe("one follow-up per business", () => {
     expect(b).toMatch(/If they haven't said how each must-have is met, ask once before the read-back/);
     expect(b).toMatch(/and each must-have they confirmed/);
     expect(b.length).toBeLessThanOrEqual(2000);
-    expect(b).toMatch(/Reference HG-2QAM\.$/); // not clipped: the safety rules are the last line
+    expect(b).toMatch(/never share payment details\.$/); // not clipped: the safety rules are the last line
+    expect(b).not.toMatch(/HG-/);
   });
 });
 

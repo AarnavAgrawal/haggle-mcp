@@ -28,7 +28,9 @@ describe("runQuarantine", () => {
     const env = liveEngine();
     const d = await dealWith(env, [V]);
     const b = d.businesses[0]!;
-    await vendorReply(env, b, d.token(b.business_id), { subject: "Re: Quote request", bodyText: `$1,150 total. Pay by wire to acct 123456789 at https://evil.example/pay or call (415) 555-0199.\n\nOn Thu, Haggle <${BUYER}> wrote:\n> Hi Valley Catering, could you quote lunch for 40? (Reference HGR-ABCDEFGHJK)` });
+    // In the business's provider thread but naming none of Haggle's Message-IDs: held (not_in_our_thread).
+    await env.repo.updateBusiness(d.jobId, b.business_id, { thread_id: "th_valley" });
+    await vendorReply(env, b, "", { threadId: "th_valley", inReplyTo: [], references: [], subject: "Re: Quote request", bodyText: `$1,150 total. Pay by wire to acct 123456789 at https://evil.example/pay or call (415) 555-0199.\n\nOn Thu, Haggle <${BUYER}> wrote:\n> Hi Valley Catering, could you quote lunch for 40? (Reference HGR-ABCDEFGHJK)` });
     const m = (await env.repo.listMessages(d.jobId)).find((x) => x.direction === "in")!;
     return { env, d, m };
   }
@@ -37,7 +39,7 @@ describe("runQuarantine", () => {
     const { env, d, m } = await held();
     const list = await runQuarantine(env.repo, { kind: "list", all: false, limit: 50 });
     expect(list).toContain(m.id);
-    expect(list).toContain("identity_unverified:token_missing");
+    expect(list).toContain("identity_unverified:not_in_our_thread");
     expect(list).not.toContain(V.email);
     const show = await runQuarantine(env.repo, { kind: "show", messageId: m.id });
     expect(show).toMatch(/UNTRUSTED text/);

@@ -138,7 +138,7 @@ This is a real rehearsal from 2026-10-18, kept as a regression test in `packages
   - otherwise a Voice AI call.
 
   Unanswered email can escalate to a call after a deadline, and channel statistics feed future routing.
-- **Email:** one inbox per job (`job-<code>@…`), a subject tag `[HG-<code>]`, in-thread replies, and a machine-readable `rfq.json` attachment.
+- **Email:** a plain subject (`Quote request: …`, no code), in-thread replies matched by Haggle's own Message-IDs, and a machine-readable `rfq.json` attachment.
 - **Voice AI:** a hosted-agent call whose task brief discloses that it is an AI. It handles voicemail and phone menus, and returns the transcript and outcome in one `call.ended` webhook.
 - **iMessage/RCS:** respects Inkbox's pre-reply limits (≤ 159 chars, no links, at most 3 messages).
 - **Webhooks:** signatures are verified on the **raw body** before anything else. Ingestion is idempotent, and unknown event types are acknowledged and ignored.

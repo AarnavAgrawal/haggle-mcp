@@ -238,6 +238,16 @@ export class PostgresRepository implements Repository {
         where m.direction = 'out' and lower(btrim(m.rfc_message_id, '<>')) = any(${ids})`);
   }
 
+  async findOpenBusinessesBySender(address: string, inboxes: string[]) {
+    const boxes = inboxes.map((x) => x.trim().toLowerCase());
+    if (!boxes.length) return [];
+    // job_businesses_email_lower_idx (126).
+    return rows<JobBusinessRow & { short_code: string }>(await this.sql`
+      select b.*, j.short_code from job_businesses b join jobs j on j.id = b.job_id
+      where lower(b.email) = ${address.trim().toLowerCase()} and lower(j.inbox) = any(${boxes})
+        and j.state not in ('paid','confirmed','cancelled','failed')`);
+  }
+
   async insertMessage(m: NewMessage) {
     const r = await this.sql`insert into messages ${this.sql(this.vals({ ...m, id: newId("msg") }))} on conflict do nothing returning *`;
     return row<MessageRow>(r[0]);

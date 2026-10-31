@@ -1,7 +1,7 @@
 {
   "name": "adversarial-token-from-other-vendor",
   "client": "Gmail web",
-  "notes": "The vendor's reply in its own thread carries the other vendor's token from the same deal.",
+  "notes": "The vendor's reply in its own thread pastes the other vendor's legacy token. Tokens mean nothing now: it names this vendor's RFQ from this vendor's address, so it is this vendor's reply (continuity).",
   "event": {
     "agent_identities": []
   },
@@ -32,10 +32,11 @@
     "createdAt": "2026-10-21T17:20:00.000Z"
   },
   "expect": {
-    "outcome": "quarantined:identity_unverified",
-    "stored_as": "quarantine",
-    "sender_trusted": false,
-    "quarantine_reason": "identity_unverified:token_missing",
-    "quote_total_usd": null
+    "outcome": "stored",
+    "stored_as": "reply",
+    "sender_trusted": true,
+    "quarantine_reason": null,
+    "quote_total_usd": 1150,
+    "trust_reason": "external-thread-reply"
   }
 }

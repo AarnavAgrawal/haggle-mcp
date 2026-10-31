@@ -35,7 +35,7 @@
     "outcome": "opted_out",
     "stored_as": "reply",
     "sender_trusted": true,
-    "trust_reason": "external-reply-token",
+    "trust_reason": "external-thread-reply",
     "quote_total_usd": null
   }
 }

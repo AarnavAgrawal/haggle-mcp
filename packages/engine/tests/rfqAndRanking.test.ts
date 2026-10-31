@@ -10,8 +10,8 @@ describe("buildRfqEmail", () => {
     location: "San Francisco, CA", requirements: ["At least 12 vegetarian meals", "Delivery included"], replyBy: new Date("2026-10-17T21:30:00Z"),
   });
 
-  it("tags the subject so replies can be matched", () => {
-    expect(out.subject).toBe("[HG-7F3K] Quote request: lunch catering, 40 people, Thursday October 22");
+  it("a plain subject with no reference code (replies are matched by Haggle's Message-IDs)", () => {
+    expect(out.subject).toBe("Quote request: lunch catering, 40 people, Thursday October 22");
   });
 
   it("discloses that the sender is an AI agent and lists hard requirements and the deadline", () => {

@@ -27,7 +27,7 @@ export const RESERVED_WORKSPACE_IDS: readonly string[] = [LEGACY_POOLED_WORKSPAC
  * A tenant: one buyer (agent + human approver). Jobs, settings and approvals are scoped to it; an
  * MCP connection is bound to one workspace by its bearer token or connector secret (stored only as
  * SHA-256 hashes). Ported from haggle-testing src/comms/workspace.ts; the Inkbox buyer identity
- * stays shared (one `haggle` mailbox), replies are still matched by thread and [HG-code].
+ * stays shared (one `haggle` mailbox) unless HAGGLE_MAILBOX_PER_WORKSPACE gives it its own (migration 126); replies are matched by thread and Haggle's Message-IDs.
  */
 export interface WorkspaceRow {
   id: string;
@@ -468,6 +468,11 @@ export interface Repository {
   updateBusiness(jobId: string, businessId: string, patch: Partial<JobBusinessRow>, opts?: { ifStatus?: JobBusinessRow["status"][] }): Promise<void>;
   /** Candidates for matching an inbound email: by job short codes, thread id, or our Message-IDs. */
   findBusinessCandidates(q: { shortCodes: string[]; threadId: string | null; messageIds: string[] }): Promise<(JobBusinessRow & { short_code: string })[]>;
+  /**
+   * Businesses on OPEN deals whose pinned email is `address` (case-insensitive) and whose deal's inbox
+   * is one of `inboxes` (the receiving mailbox): matching a new email that isn't a reply (matching.ts rule 5).
+   */
+  findOpenBusinessesBySender(address: string, inboxes: string[]): Promise<(JobBusinessRow & { short_code: string })[]>;
 
   // messages
   /** Idempotent: returns null when provider_email_id or idempotency_key already exists. */

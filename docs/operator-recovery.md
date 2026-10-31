@@ -124,7 +124,7 @@ These behaviours are tested in `apps/mcp/tests/lifecycleControls.test.ts` (simul
 
 ## 8. Held texts (`ambiguous_workspace`)
 
-Haggle has one text line. A text from a number that is on deals in more than one workspace, and that doesn't say which deal it answers (no `HG-<code>`, no approval code only one of them has), is never routed by guess. It is held for review, and the human is asked to resend it with the deal code.
+Haggle has one text line. A text from a number that is on deals in more than one workspace, and that doesn't say which deal it answers (no `HG-<code>`, no approval code only one of them has), is never routed by guess. It is held for review; the human is asked to resend it with the deal code, and a business is asked in plain words which request it means (a text describing exactly one of them routes there).
 
 If you know which open deal it answers (you phoned the vendor, or the human told you), route it:
 

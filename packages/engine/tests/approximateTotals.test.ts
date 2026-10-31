@@ -197,7 +197,7 @@ describe("approximate totals in a deal", () => {
     expect(v1).toMatchObject({ total_usd: 900, total_approximate: true, approvable: false });
     await expect(e.requestApproval(deal.job_id, v1.quote_id, "view")).rejects.toMatchObject({ code: "total_not_firm" });
     const ask = texts.at(-1)!.text;
-    expect(ask).toMatch(/^Thanks! Can you confirm: your firm all-in total \(you said about \$900\) and the deposit\? HG-[A-Z0-9]+$/);
+    expect(ask).toMatch(/^Thanks! Can you confirm: your firm all-in total \(you said about \$900\) and the deposit\?$/);
     expect(ask.length).toBeLessThanOrEqual(159);
     expect(ask).not.toMatch(/https?:|www\./);
 
@@ -216,10 +216,10 @@ describe("approximate totals in a deal", () => {
     expect(a.payment_cents).toBe(90_000);
   });
 
-  it("a long confirm-once text keeps the reference code and the firm-total ask whole", () => {
+  it("a long confirm-once text keeps the firm-total ask whole, with no reference code", () => {
     const text = HaggleEngine.confirmIMessageText(["At least 40 vegetarian meals", "Total must include delivery and all fees, setup, staffing and cleanup by 5pm", "your firm all-in total (you said about $4,500) and the deposit"], "AB12CD");
     expect(text.length).toBeLessThanOrEqual(159);
-    expect(text).toMatch(/your firm all-in total \(you said about \$4,500\) and the deposit\? HG-AB12CD$/);
+    expect(text).toMatch(/your firm all-in total \(you said about \$4,500\) and the deposit\?$/);
   });
 });
 

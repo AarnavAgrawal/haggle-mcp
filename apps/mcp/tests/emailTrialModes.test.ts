@@ -116,7 +116,7 @@ describe("captured replies through the real pipeline (dry-run and collect)", () 
     inReplyTo: run.send!.messageId, references: [run.send!.messageId], attachmentMetadata: null, createdAt: "2026-10-23T09:05:00Z", ...o,
   });
 
-  it("a normal reply becomes a token-verified quote; edited-subject-no-quote, fresh email, forward, and a reply to another id are quarantined", async () => {
+  it("a normal reply and an edited-subject-no-quote reply become thread-verified quotes; a fresh email, a forward and a reply to another id are held", async () => {
     const run = sentRun();
     const caps = [
       reply(run),
@@ -127,11 +127,11 @@ describe("captured replies through the real pipeline (dry-run and collect)", () 
       reply(run, { attachmentMetadata: [{ filename: "quote.pdf", content_type: "application/pdf", size: 1000 }], bodyText: "Quote attached, $1,150 total" }),
     ];
     const r = await replayCaptures(run, caps);
-    // The test email carries [HG-TRIAL] like a real RFQ: a reply naming another Message-ID is matched by the tag and fails the thread check; a fresh email with a new subject matches no deal.
-    expect(r.map((x) => x.outcome)).toEqual(["stored", "quarantined:identity_unverified", "quarantined:no_signal", "quarantined:sender_mismatch", "quarantined:identity_unverified", "stored"]);
-    expect(r[0]).toMatchObject({ trust_reason: "external-reply-token", quote_total_usd: 1150, approvable: false }); // keyword reader offline: never approvable
-    expect(r.slice(1, 3).map((x) => x.quarantine_reason)).toEqual(["identity_unverified:token_missing", "no_signal"]);
-    expect(r[4]!.quarantine_reason).toBe("identity_unverified:not_in_our_thread");
+    // Like a real RFQ the test email carries no code: a reply naming none of Haggle's Message-IDs is a new email to the engine, and the trial vendor has two open deals in the replay, so it is held (ambiguous_sender).
+    expect(r.map((x) => x.outcome)).toEqual(["stored", "stored", "quarantined:ambiguous_sender", "quarantined:sender_mismatch", "quarantined:ambiguous_sender", "stored"]);
+    expect(r[0]).toMatchObject({ trust_reason: "external-thread-reply", quote_total_usd: 1150, approvable: false }); // keyword reader offline: never approvable
+    expect(r.slice(1, 3).map((x) => x.quarantine_reason ?? null)).toEqual([null, "ambiguous_sender"]);
+    expect(r[4]!.quarantine_reason).toBe("ambiguous_sender");
     expect(r[5]!.notes).toEqual(["1 attachment(s) not replayed offline"]);
 
     const evals = caps.map((c) => evaluateReply(c, run, { sendTime: run.send!.messageId, stored: run.send!.messageId, ses: null }));
@@ -139,7 +139,7 @@ describe("captured replies through the real pipeline (dry-run and collect)", () 
     expect(report.replies[0]!.pipeline).toMatchObject({ outcome: "stored", quote_total_usd: 1150 });
     // The pure verdict and the pipeline agree on every reply.
     for (const x of report.replies) expect(x.verdict.startsWith("ok:"), x.id).toBe(x.pipeline!.outcome === "stored");
-    expect(renderMarkdown(report)).toMatch(/\| pipeline \|[\s\S]*stored \(external-reply-token\) quote \$1150 \(not approvable\)/);
+    expect(renderMarkdown(report)).toMatch(/\| pipeline \|[\s\S]*stored \(external-thread-reply\) quote \$1150 \(not approvable\)/);
   });
 
   it("if the mailbox's Message-ID differs from the send-time one, replies fail in the pipeline exactly as the report warns", async () => {
@@ -147,7 +147,7 @@ describe("captured replies through the real pipeline (dry-run and collect)", () 
     const stored = "<stored-differs@email.amazonses.com>";
     const caps = [reply(run, { inReplyTo: stored, references: [stored], threadId: "thr_other" })];
     const [r] = await replayCaptures(run, caps);
-    expect(r).toMatchObject({ outcome: "quarantined:identity_unverified", quarantine_reason: "identity_unverified:not_in_our_thread" });
+    expect(r).toMatchObject({ outcome: "quarantined:ambiguous_sender", quarantine_reason: "ambiguous_sender" });
     expect(compareMessageIds(run.send!.messageId, stored, null).verdict).toMatch(/^MISMATCH/);
   });
 
@@ -160,6 +160,6 @@ describe("captured replies through the real pipeline (dry-run and collect)", () 
     writeFileSync(join(dir, "raw", "in_1.json"), JSON.stringify(reply(run, { id: "in_1" })));
     const d = spawnSync(process.execPath, ["scripts/email-trial.ts", "dry-run", "--to", ME, "--run", dir], { cwd: APP, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" }, encoding: "utf8", timeout: 60_000 });
     expect(d.status).toBe(0);
-    expect(d.stdout).toMatch(/in_1\s+stored\s+external-reply-token\s+quote \$1150/);
+    expect(d.stdout).toMatch(/in_1\s+stored\s+external-thread-reply\s+quote \$1150/);
   }, 90_000);
 });

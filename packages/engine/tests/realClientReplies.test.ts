@@ -94,27 +94,27 @@ describe("replies as real clients write them (simulated shapes): legitimate repl
   for (const [name, layout] of Object.entries(clients)) {
     it(`${name}: verified, and only the business's own words are read`, async () => {
       const env = setup();
-      const { jobId, b, rfq } = await dealWith(env);
-      expect(rfq.subject).toContain(replyToken(SECRET, jobId, b.business_id));
+      const { jobId, rfq } = await dealWith(env);
+      expect(`${rfq.subject} ${rfq.bodyText}`).not.toMatch(/HGR-|\[HG-/); // no codes to the business
       expect((await reply(env, rfq, layout(OWN, rfq))).outcome).toBe("stored");
       await env.engine.advanceJob(jobId);
       const q = (await env.engine.getQuotes(jobId)).quotes;
       expect(q.map((x) => x.total_usd)).toEqual([1150]);
       const m = (await env.repo.listMessages(jobId)).find((x) => x.direction === "in")!;
-      expect(m).toMatchObject({ sender_trusted: true, trust_reason: "external-reply-token" });
+      expect(m).toMatchObject({ sender_trusted: true, trust_reason: "external-thread-reply" });
     });
   }
 
-  it("an edited subject still verifies through the quoted body; a reply with neither (quote deleted, subject rewritten) is a false rejection by design", async () => {
+  it("an edited subject, or a reply with the quote deleted and the subject rewritten, still verifies: it names Haggle's Message-ID", async () => {
     const env = setup();
     const { rfq } = await dealWith(env);
     expect((await reply(env, rfq, { ...clients.gmailWeb(OWN, rfq), subject: "Catering quote for you" })).outcome).toBe("stored");
     const env2 = setup();
     const d2 = await dealWith(env2);
-    expect((await reply(env2, d2.rfq, { subject: "Catering quote for you", bodyText: OWN })).outcome).toBe("quarantined:identity_unverified");
+    expect((await reply(env2, d2.rfq, { subject: "Catering quote for you", bodyText: OWN })).outcome).toBe("stored");
   });
 
-  it("a short reply keeps the token in the Re: subject even with no quoted history", async () => {
+  it("a short reply with no quoted history is read", async () => {
     const env = setup();
     const { jobId, rfq } = await dealWith(env);
     expect((await reply(env, rfq, { subject: reSubject(rfq.subject), bodyText: "$1,150 total. $345 deposit." })).outcome).toBe("stored");
@@ -170,17 +170,18 @@ describe("suspicious replies stay quarantined, whatever the client", () => {
     expect((await env.engine.getQuotes(jobId)).quotes).toHaveLength(0);
   });
 
-  it("a fresh email from the pinned address carrying the token but no reference to our message is quarantined (not_in_our_thread)", async () => {
-    const env = setup();
-    const { rfq } = await dealWith(env);
-    expect((await reply(env, rfq, { subject: rfq.subject, bodyText: OWN }, { inReplyTo: [], references: [], threadId: null })).outcome).toBe("quarantined:identity_unverified");
-  });
-
-  it("a forged reply naming a Message-ID that isn't ours, with a token for another business, is quarantined", async () => {
+  it("a fresh email from the pinned address with no reference to our message is, at most, a sender-only quote (lowest trust)", async () => {
     const env = setup();
     const { jobId, rfq } = await dealWith(env);
-    const other = replyToken(SECRET, jobId, "biz_other");
-    expect((await reply(env, rfq, { subject: `Re: [HG-X] (ref ${other})`, bodyText: OWN }, { inReplyTo: [rfq.messageId] })).outcome).toBe("quarantined:identity_unverified");
+    expect((await reply(env, rfq, { subject: rfq.subject, bodyText: OWN }, { inReplyTo: [], references: [], threadId: null })).outcome).toBe("stored");
+    expect((await env.repo.listMessages(jobId)).find((x) => x.direction === "in")).toMatchObject({ trust_reason: "external-sender-only", matched_via: "sender_only" });
+  });
+
+  it("a forged reply naming a Message-ID that isn't ours, from a vendor on two open deals, is held (never guessed)", async () => {
+    const env = setup();
+    const { rfq } = await dealWith(env);
+    await dealWith(env);
+    expect((await reply(env, rfq, { subject: "Re: Quote request", bodyText: OWN }, { inReplyTo: ["<forged@realcaterer.example>"], references: [] })).outcome).toBe("quarantined:ambiguous_sender");
   });
 });
 
