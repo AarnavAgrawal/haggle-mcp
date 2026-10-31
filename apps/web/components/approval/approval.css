@@ -190,9 +190,18 @@
   .ap-docked {
     bottom: var(--s-2);
   }
-  .ap-line-actions,
-  .ap-line-actions .btn {
-    width: 100%;
+  /* Docked on a phone: one compact line, so the sheet above stays readable. */
+  .ap-line {
+    gap: var(--s-2) var(--s-3);
+  }
+  .ap-what {
+    flex-basis: 150px;
+  }
+  .ap-title {
+    font-size: var(--t-16);
+  }
+  .ap-terms {
+    font-size: var(--t-14);
   }
   .ap-confirm .ap-actions .btn-primary {
     flex: 1 1 auto;
