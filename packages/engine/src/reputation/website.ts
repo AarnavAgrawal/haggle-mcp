@@ -3,13 +3,14 @@
 // - Read-only GET of the home page (and /contact when linked), honouring robots.txt, https/http only,
 //   public hosts only (no IP literals, localhost or private ranges), 4 s timeout, 400 KB cap, ≤3 redirects.
 // - Website text is untrusted data: only fixed patterns are extracted (emails, phones, price phrases,
-//   title/description); nothing in it is ever followed or obeyed.
+//   title/description, schema.org opening hours); nothing in it is ever followed or obeyed.
 // - A published price is an advertised claim ("from $25/person"), never a quote: nothing is binding
 //   until the business confirms it to Haggle directly.
 import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
+import { websiteHours, type WeeklyHours } from "./hours.ts";
 
 export interface WebsiteEvidence {
   url: string;
@@ -23,6 +24,8 @@ export interface WebsiteEvidence {
   phones: string[];
   /** Advertised prices with the sentence they came from. Claims, not quotes. */
   price_claims: { text: string; amount_usd: number; excerpt: string }[];
+  /** Opening hours the site publishes as schema.org data (JSON-LD or microdata); no timezone of their own. */
+  hours?: WeeklyHours;
 }
 
 type Fetch = (url: string, init: { method: string; headers: Record<string, string>; redirect: "manual"; signal?: AbortSignal }) => Promise<{ ok: boolean; status: number; headers: { get(n: string): string | null }; text(): Promise<string> }>;
@@ -160,7 +163,8 @@ export function extractWebsite(html: string, pageUrl: string): Omit<WebsiteEvide
     if (!amount || price_claims.length >= 5) continue;
     price_claims.push({ text: `advertised from $${m[2]}${m[3] ? ` per ${m[3]}` : ""}`, amount_usd: amount, excerpt: m[1]!.trim().slice(0, 160) });
   }
-  return { ...(title ? { title } : {}), ...(description ? { description } : {}), emails, phones, price_claims };
+  const hours = websiteHours(html);
+  return { ...(title ? { title } : {}), ...(description ? { description } : {}), emails, phones, price_claims, ...(hours ? { hours } : {}) };
 }
 
 /** Fetch and extract a business website. Never throws: failures are a status. */

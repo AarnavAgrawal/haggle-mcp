@@ -5,7 +5,7 @@
 // channel is enabled and set up. Everything else is reported with the exact blocker and who can
 // fix it, before any deal starts. Nothing here contacts anyone.
 import type { Channel } from "@haggle/core";
-import { businessIdForContact, normalizeBusinessName } from "@haggle/engine";
+import { asWeeklyHours, businessIdForContact, normalizeBusinessName, validTimezone, type WeeklyHours } from "@haggle/engine";
 
 export interface DemoVendor {
   key: string;
@@ -240,21 +240,28 @@ export interface WorkspaceVendor {
   email?: string;
   phone?: string;
   channel: Channel;
+  /** Its published opening hours and timezone, kept when it was added from a listing (calls and texts wait for them). */
+  opening_hours?: WeeklyHours;
+  timezone?: string;
 }
 
 /** One vendor per name (an email row and a phone row of "Mission Eats" are one vendor); the operator's channel wins. */
-export function workspaceVendorList(rows: { name: string; contact: string; channel?: Channel | null }[]): WorkspaceVendor[] {
-  const byName = new Map<string, { name: string; email?: string; phone?: string; channel?: Channel }>();
+export function workspaceVendorList(rows: { name: string; contact: string; channel?: Channel | null; opening_hours?: unknown; timezone?: string | null }[]): WorkspaceVendor[] {
+  const byName = new Map<string, { name: string; email?: string; phone?: string; channel?: Channel; opening_hours?: WeeklyHours; timezone?: string }>();
   for (const r of rows) {
     const key = canonical(r.name);
     const v = byName.get(key) ?? { name: r.name };
     if (r.contact.includes("@")) v.email ??= r.contact;
     else v.phone ??= r.contact;
     if (r.channel && !v.channel) v.channel = r.channel;
+    const h = asWeeklyHours(r.opening_hours);
+    if (h && !v.opening_hours) v.opening_hours = h;
+    if (validTimezone(r.timezone) && !v.timezone) v.timezone = r.timezone;
     byName.set(key, v);
   }
   return [...byName.entries()].map(([key, v]) => ({
     name: v.name, business_ref: key.replace(/\s+/g, "_"), ...(v.email ? { email: v.email } : {}), ...(v.phone ? { phone: v.phone } : {}),
+    ...(v.opening_hours ? { opening_hours: v.opening_hours } : {}), ...(v.timezone ? { timezone: v.timezone } : {}),
     channel: v.channel && (v.channel === "email" ? v.email : v.phone) ? v.channel : v.email ? "email" : "phone",
   }));
 }

@@ -71,6 +71,8 @@ import { closeSubject, decideChargeResume, decideClaim, holdSubject, redactError
 import { planRecovery, type StuckFinding } from "./recovery.ts";
 import type { OperatorReviewRow, OutboxRow, RateSlot } from "../store/types.ts";
 import { DEFAULT_CONTACT_TIMEZONE, decideFirstContact, decideFollowUp, localLabel } from "./contactWindow.ts";
+import { callSlot, textSlot } from "./businessHours.ts";
+import { asWeeklyHours, validTimezone, type WeeklyHours } from "../reputation/hours.ts";
 import { contactStatusOf, type BusinessContactStatus } from "../inbound/contactStatus.ts";
 /** Contact states the board lists per business (the rest are implied by its status). */
 const NOTABLE_CONTACT = new Set<BusinessContactStatus["contact_status"]>(["bounced", "failed", "opted_out", "quarantined_reply", "scheduled"]);
@@ -124,6 +126,9 @@ export interface DealBusiness {
   channel?: Channel;
   source?: Business["source"];
   simulated?: boolean;
+  /** Published opening hours (its listing or website): calls and texts wait until it is open. */
+  opening_hours?: WeeklyHours | null;
+  timezone?: string | null;
 }
 
 export interface DealInput {
@@ -697,6 +702,7 @@ export class HaggleEngine {
       source: b.source ?? "agent", simulated: b.simulated ?? mode === "mock", status: reachable ? "pending" : "unavailable", thread_id: null, rfq_message_id: null,
       last_inbound_message_id: null, references: [], contacted_at: null, last_reply_at: null, followups_sent: 0, countered_round: 0,
       send_attempts: 0, next_attempt_at: null, escalated_at: null,
+      ...(asWeeklyHours(b.opening_hours) ? { opening_hours: asWeeklyHours(b.opening_hours) } : {}), ...(validTimezone(b.timezone) ? { timezone: b.timezone } : {}),
     })));
     await this.repo.appendEvent(job.id, "state", { from: null, to: "created" });
     for (const p of planned.filter((x) => !x.reachable)) {
@@ -1237,6 +1243,12 @@ export class HaggleEngine {
     await this.fire(job.id, { type: "rfqs_sent" });
   }
 
+  /** A business's published hours (its timezone filled in from the row), or null when unknown. */
+  private hoursOf(b: JobBusinessRow | undefined): WeeklyHours | null {
+    const h = asWeeklyHours(b?.opening_hours);
+    return h ? { ...h, timezone: h.timezone ?? (validTimezone(b?.timezone) ? b!.timezone! : null) } : null;
+  }
+
   /** The timezone contact hours are counted in: the configured one, else the workspace's. */
   private async contactTimezone(job: JobRow): Promise<string> {
     return this.d.config.contactWindow?.timezone ?? (await this.repo.getWorkspace(job.workspace_id))?.timezone ?? DEFAULT_CONTACT_TIMEZONE;
@@ -1249,6 +1261,20 @@ export class HaggleEngine {
    */
   private async deferFirstContact(job: JobRow, b: JobBusinessRow): Promise<boolean> {
     const cfg = this.d.config.contactWindow;
+    // A text waits until the business is open by its published hours (and the contact window allows it).
+    const open = b.channel === "imessage" ? this.hoursOf(b) : null;
+    if (open) {
+      const tz = await this.contactTimezone(job);
+      const until = textSlot(this.now(), open, cfg, tz);
+      if (until) {
+        const at = until.toISOString();
+        if (b.next_attempt_at !== at) {
+          await this.repo.updateBusiness(job.id, b.business_id, { next_attempt_at: at }, { ifStatus: ["pending"] });
+          await this.repo.appendEvent(job.id, "reply", { business_id: b.business_id, contact_window: "deferred", at, summary: `Text to ${b.name} scheduled for ${localLabel(until, open.timezone ?? tz)} (it's closed now, by its published hours)` });
+        }
+        return true;
+      }
+    }
     if (!cfg || (b.channel !== "email" && b.channel !== "imessage")) return false;
     const tz = await this.contactTimezone(job);
     const d = decideFirstContact(this.now(), new Date(job.collect_until), cfg, tz);
@@ -3796,8 +3822,9 @@ export class HaggleEngine {
 
   /**
    * When a call to this number may be placed: never during another call to it, not within the
-   * cooldown after the last one (either direction), and only inside call hours in the workspace's
-   * timezone. Returns null when it may be placed now, else when to try again.
+   * cooldown after the last one (either direction), only inside call hours in the workspace's
+   * timezone, and, when the business's opening hours are known, only while it is open (not in its
+   * first or last 30 minutes; businessHours.ts). Returns null when it may be placed now, else when to try again.
    */
   private async callBlockedUntil(job: JobRow, phone: string, kind?: MessageRow["kind"], opts: { gap?: boolean } = {}): Promise<Date | null> {
     const now = this.now();
@@ -3815,9 +3842,10 @@ export class HaggleEngine {
       if (opts.gap !== false && last && now.getTime() - last < cooldown) return new Date(last + cooldown);
     }
     const hours = this.d.config.callHours;
-    if (hours) {
+    const open = this.hoursOf((await this.repo.getBusinesses(job.id)).find((x) => x.phone === phone));
+    if (hours || open) {
       const tz = (await this.repo.getWorkspace(job.workspace_id))?.timezone ?? "America/Los_Angeles";
-      if (!isWithinCallHours(now, tz, hours)) return nextCallHoursStart(now, tz, hours);
+      return callSlot(now, { callHours: hours, timezone: tz, business: open });
     }
     return null;
   }
@@ -5919,7 +5947,7 @@ export class HaggleEngine {
   }
 
   /** Operator only (scripts/workspace-admin.ts): authorize a vendor contact for one workspace, recording the consent. */
-  async addWorkspaceVendor(v: { workspace_id: string; contact: string; name: string; consent: string; added_by: string; channel?: Channel | null }) {
+  async addWorkspaceVendor(v: { workspace_id: string; contact: string; name: string; consent: string; added_by: string; channel?: Channel | null; opening_hours?: WeeklyHours | null; timezone?: string | null; business_ref?: string | null }) {
     const contact = v.contact.includes("@") ? normalizeAddress(v.contact) : v.contact.replace(/[\s().-]/g, "");
     if (!EMAIL_RE.test(contact) && !E164_RE.test(contact)) throw new EngineError("bad_contact", "A vendor contact is an email address or an E.164 phone number.", "Fix the contact.", "none");
     if (v.channel && (v.channel === "email") !== contact.includes("@")) throw new EngineError("bad_channel", `Channel ${v.channel} doesn't fit ${contact}.`, "Email for an address; phone (a call) or imessage (a text) for a number.", "none");

@@ -1,7 +1,9 @@
 "use client";
 // "Find businesses": public listings through the MCP discover tool. Finding a business never lets Haggle
-// contact it; "Add as vendor" prefills the form (email by default; a call or text needs stronger consent).
-// Listing text is plain text; only http(s) websites and Maps links are links.
+// contact it; "Add as vendor" prefills the form (email by default; a call or text needs stronger consent)
+// and carries the listing ref, so the server keeps the business's opening hours with the vendor.
+// Listing text is plain text; only http(s) websites and Maps links are links. A rating or Maps link
+// shows only when the listing has one (Amazon Location listings have neither).
 import { useState } from "react";
 import { contactWords } from "@/lib/vendors/discover";
 import type { DiscoverResult, FoundBusiness } from "@/lib/vendors/types";
@@ -37,7 +39,7 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
     <section className="section" aria-labelledby="find-h">
       <div className="section-head">
         <h2 id="find-h">Find businesses</h2>
-        <p>Search Google listings for real businesses near you. Haggle contacts none of them until you add one as a vendor.</p>
+        <p>Search public listings for real businesses near you. Haggle contacts none of them until you add one as a vendor.</p>
       </div>
       <form className="vend-search" onSubmit={search}>
         <div>
@@ -86,6 +88,7 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
                           <span className={`chip chip-${cw.tone}`}>{cw.label}</span>
                         </div>
                         {f.address ? <div className="hint">{f.address}</div> : null}
+                        {f.hours_today ? <div className="hint">{f.hours_today}</div> : null}
                         <div className="hint vend-links">
                           {f.website ? (
                             <a href={f.website} target="_blank" rel="noopener noreferrer nofollow">
@@ -99,7 +102,7 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
                           ) : null}
                           <span>{f.phone_published ? "Phone listed publicly" : "No phone listed"}</span>
                         </div>
-                        <div className="hint">{f.emails?.length ? `Email on its website: ${f.emails[0]}` : "No email found on its website"}</div>
+                        <div className="hint">{f.emails?.length ? `Published email: ${f.emails[0]}` : "No published email found"}</div>
                       </div>
                       <div className="vend-actions">
                         {isVendor ? (
@@ -115,7 +118,7 @@ export function FindBusinesses({ vendorNames, onAdd }: { vendorNames: string[]; 
                 })}
               </ul>
               <p className="hint">
-                Listings: Google Maps. Adding one fills in the email from its website, when there is one; a phone call or text needs the business&apos;s agreement or an existing relationship.
+                Listings: {result.attribution ?? "public listings"}. Adding one fills in the email it publishes, when there is one; a phone call or text needs the business&apos;s agreement or an existing relationship. Haggle calls or texts a business only while it is open.
               </p>
             </>
           )}

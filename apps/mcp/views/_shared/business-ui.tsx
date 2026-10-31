@@ -31,7 +31,7 @@ export function Stars({ rating, count }: { rating: number | undefined; count: nu
   );
 }
 
-/** "Website" and "Google Maps" buttons; each opens only on click and only for http(s) URLs. */
+/** "Website" and "Google Maps" buttons (the Maps one only when the listing has a Maps link); each opens only on click and only for http(s) URLs. */
 export function ExternalLinks({ website, mapsUrl }: { website?: string; mapsUrl?: string }) {
   const openExternal = useOpenExternal();
   const site = safeUrl(website);

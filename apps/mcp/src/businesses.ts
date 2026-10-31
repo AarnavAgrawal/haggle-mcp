@@ -7,7 +7,7 @@
 // send. Selection is exact and fails closed: an unknown, ambiguous or unreachable choice starts nothing
 // and never falls back to other businesses.
 import type { Channel, Profile } from "@haggle/core";
-import { businessIdForContact, DEFAULT_WORKSPACE_ID, normalizeBusinessName, placeDetails, PlacesError, websiteEvidence, type ContactLearning, type FoundBusiness, type WebsiteEvidence } from "@haggle/engine";
+import { businessIdForContact, DEFAULT_WORKSPACE_ID, hoursToday, LISTING_KEYS_HINT, normalizeBusinessName, PlacesError, validTimezone, websiteEvidence, type ContactLearning, type FoundBusiness, type WebsiteEvidence, type WeeklyHours } from "@haggle/engine";
 import type { Runtime } from "./runtime.ts";
 import { businessRef, findVendors, findWorkspaceVendors, workspaceVendorList, workspaceVendorReadiness, type ChannelStatus, type RosterEntry, type WorkspaceVendor } from "./vendors.ts";
 
@@ -49,10 +49,14 @@ export interface Discovered extends FoundBusiness {
   website_evidence?: WebsiteEvidence;
 }
 
+/** A listing ref this server can look up: "aws:<Amazon Location PlaceId>" or "place:<Google place id>". */
+export const LISTING_REF = /^(aws|place):/;
+
 /**
  * Businesses found by recent discover calls, so an agent can select them by name or ref. In memory
- * only and short-lived (Google Maps Platform terms: Places content isn't stored; the place id, kept
- * in the ref, can be re-fetched fresh with Place Details).
+ * only and short-lived (listing terms: Amazon Location SingleUse results and Google Places content
+ * aren't stored; the id, kept in the ref, can be re-fetched fresh, with IntendedUse=Storage when the
+ * result is stored).
  */
 export class DiscoveryRegistry {
   private readonly items = new Map<string, { b: Discovered; at: number }>();
@@ -104,6 +108,39 @@ export async function withWebsite(b: Discovered, rt: Runtime, reg: DiscoveryRegi
 
 // ───────────────────────────── contact routes and states ─────────────────────────────
 
+/** Emails the business publishes: its listing's first, then its own website's (deduplicated, at most 3). */
+export function publishedEmails(b: Discovered): string[] {
+  return [...new Set([...(b.listing_emails ?? []), ...(b.website_evidence?.emails ?? [])].map((e) => e.toLowerCase()))].slice(0, 3);
+}
+
+/** Its opening hours: the listing's win; else its website's, in the listing's timezone when it gave one. */
+export function hoursOf(b: Pick<Discovered, "hours" | "timezone" | "website_evidence">): WeeklyHours | undefined {
+  if (b.hours) return b.hours;
+  const w = b.website_evidence?.hours;
+  return w ? { ...w, timezone: w.timezone ?? (validTimezone(b.timezone) ? b.timezone : null) } : undefined;
+}
+
+/** "Open today 9am–5pm" for a found business, or undefined when its hours are unknown. */
+export function hoursLine(b: Pick<Discovered, "hours" | "timezone" | "website_evidence">, fallbackTimezone: string, now = new Date()): string | undefined {
+  const h = hoursOf(b);
+  return h ? hoursToday(h, now, fallbackTimezone) : undefined;
+}
+
+/**
+ * What is stored with a found business when it is put on a deal or added as a vendor: its hours and
+ * timezone. Listing data is stored only from a fresh lookup made with IntendedUse=Storage (Amazon
+ * Location; browsing results are SingleUse and Google Places content is never stored), else the hours
+ * its own website publishes. Never throws: unknown hours are simply absent.
+ */
+export async function storedListing(b: Pick<Discovered, "business_ref" | "website_evidence">, rt: Pick<Runtime, "listing">): Promise<{ opening_hours?: WeeklyHours; timezone?: string }> {
+  let fresh: FoundBusiness | null = null;
+  if (rt.listing?.kind === "amazon" && rt.listing.owns(b.business_ref)) fresh = await rt.listing.details(b.business_ref, { intendedUse: "Storage" }).catch(() => null);
+  const merged = { hours: fresh?.hours, timezone: fresh?.timezone, website_evidence: b.website_evidence };
+  const h = hoursOf(merged);
+  const tz = h?.timezone ?? merged.timezone;
+  return { ...(h ? { opening_hours: h } : {}), ...(tz ? { timezone: tz } : {}) };
+}
+
 /** Discovered → contact found → authorized (allowlisted and the channel can send) → verified responsive. */
 export type ContactState = "discovered" | "contact_found" | "authorized" | "verified_responsive";
 
@@ -111,7 +148,7 @@ export interface Route {
   channel: Channel;
   /** Masked phone or email (full contacts stay server-side). */
   contact: string;
-  found_via: "operator configuration" | "Google Places listing" | "business website";
+  found_via: "operator configuration" | "business website" | `${FoundBusiness["source"]} listing`;
   authorized: boolean;
   ready: boolean;
   blocker?: string;
@@ -168,9 +205,11 @@ export function vendorRoutes(v: RosterEntry): Route[] {
 export function discoveredRoutes(b: Discovered, rt: Runtime, ch: ChannelStatus): { routes: Route[]; contacts: { email?: string; phone?: string }[] } {
   const can = (c: { email?: string; phone?: string }) => rt.engine.canContact(c);
   const phone = e164(b.phone);
-  const emails = b.website_evidence?.emails ?? [];
+  const listed = new Set((b.listing_emails ?? []).map((e) => e.toLowerCase()));
+  const emails = [...new Set([...listed, ...(b.website_evidence?.emails ?? []).map((e) => e.toLowerCase())])];
   const contacts = [...emails.map((email) => ({ email })), ...(phone ? [{ phone }] : [])];
-  const routes = [...emails.map((e) => routeFor("email", e, "business website", can, ch)), ...(phone ? [routeFor("phone", phone, "Google Places listing", can, ch)] : [])];
+  const listing = `${b.source} listing` as const;
+  const routes = [...emails.map((e) => routeFor("email", e, listed.has(e) ? listing : "business website", can, ch)), ...(phone ? [routeFor("phone", phone, listing, can, ch)] : [])];
   return { routes, contacts };
 }
 
@@ -209,7 +248,7 @@ export type Selection =
 
 /** The connection's workspace: its operator-authorized vendors, and learning from its own deals only. */
 export interface SelectionScope {
-  vendors: { name: string; contact: string; channel?: Channel | null }[];
+  vendors: { name: string; contact: string; channel?: Channel | null; opening_hours?: unknown; timezone?: string | null }[];
   learning: LearningSource;
   /** This workspace's discover results (default: the default workspace's). */
   discovered?: DiscoveryRegistry;
@@ -253,11 +292,11 @@ export async function resolveSelection(refs: string[], rt: Runtime, scope?: Sele
       continue;
     }
     let hits: Discovered[] = [];
-    if (/^place:/.test(ref)) {
+    if (LISTING_REF.test(ref)) {
       const known = reg.get(ref);
       if (known) hits = [known];
-      else if (rt.placesKey) {
-        const fresh = await placeDetails({ apiKey: rt.placesKey, ...(rt.placesFetch ? { fetch: rt.placesFetch } : {}) }, ref.slice(6)).catch((e) => { if (e instanceof PlacesError) return null; throw e; });
+      else if (rt.listing?.owns(ref)) {
+        const fresh = await rt.listing.details(ref).catch((e) => { if (e instanceof PlacesError) return null; throw e; });
         if (fresh) { const d = { ...fresh, category: "", area: "" }; reg.remember([d]); hits = [d]; }
       }
     } else hits = reg.find(ref);
@@ -273,7 +312,7 @@ export async function resolveSelection(refs: string[], rt: Runtime, scope?: Sele
     const names = [...mine.map((v) => `${v.name} (${v.business_ref}, authorized for this workspace)`), ...roster.map((r) => `${r.name} (${businessRef(r)})`)].join(", ") || "none";
     return {
       ok: false, code: "unknown_business", message: `Haggle doesn't know ${unknown.map((u) => `"${u.ref}"`).join(", ")}. Nothing was sent.`,
-      fix: `Ask the user which business they meant. Configured vendors: ${names}.${rt.placesKey ? " To find real businesses, call discover(category, area) first, then select them by name." : " Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY)."}`,
+      fix: `Ask the user which business they meant. Configured vendors: ${names}.${rt.listing ? " To find real businesses, call discover(category, area) first, then select them by name." : ` Real-business discovery is off on this server (no ${LISTING_KEYS_HINT}).`}`,
       details: unknown,
     };
   }
@@ -307,12 +346,14 @@ export function freshness(at: string, now = Date.now()): EvidenceItem["freshness
 export function listingEvidence(b: Discovered, now = Date.now()): EvidenceItem[] {
   const at = b.fetched_at;
   const f = freshness(at, now);
-  const src = "Google Places (Google Maps)";
+  const src = `${b.source} (${b.attribution})`;
   const items: EvidenceItem[] = [
     { kind: "third_party_listing", statement: `Listed as ${b.primary_type?.replace(/_/g, " ") ?? (b.types[0]?.replace(/_/g, " ") || "a business")}${b.address ? ` at ${b.address}` : ""}, open for business`, source: src, observed_at: at, freshness: f, confidence: 0.8 },
   ];
   if (b.phone || b.website) items.push({ kind: "third_party_listing", statement: `Publishes ${[b.phone && "a phone number", b.website && `a website (${b.website})`].filter(Boolean).join(" and ")}`, source: src, observed_at: at, freshness: f, confidence: 0.8, caveat: "a published contact is not permission to contact" });
   if (b.rating !== undefined && b.review_count) items.push({ kind: "third_party_reputation", statement: `${b.rating}★ from ${b.review_count} Google reviews`, source: src, observed_at: at, freshness: f, confidence: Math.min(0.9, 0.3 + b.review_count / 200), caveat: "reviews say nothing about availability or capacity for your order" });
+  if (b.listing_emails?.length) items.push({ kind: "third_party_listing", statement: `Publishes email ${b.listing_emails.join(", ")}`, source: src, observed_at: at, freshness: f, confidence: 0.7, caveat: "a published contact is not permission to contact" });
+  if (b.hours) items.push({ kind: "third_party_listing", statement: `Opening hours: ${b.hours.display.join("; ")}${b.hours.timezone ? ` (${b.hours.timezone})` : ""}`, source: src, observed_at: at, freshness: f, confidence: 0.7, caveat: "Haggle calls and texts only while it is open, not in its first or last 30 minutes" });
   if (b.summary) items.push({ kind: "third_party_listing", statement: b.summary, source: src, observed_at: at, freshness: f, confidence: 0.6 });
   if (b.price_level) items.push({ kind: "third_party_listing", statement: `Google price level: ${b.price_level.replace(/^PRICE_LEVEL_/, "").toLowerCase().replace(/_/g, " ")}`, source: src, observed_at: at, freshness: f, confidence: 0.4, caveat: "a coarse signal, not a price" });
   return items;
@@ -326,6 +367,7 @@ export function websiteItems(w: WebsiteEvidence | undefined, now = Date.now()): 
     ...(w.description ? [{ kind: "vendor_claim" as const, statement: `Says: "${w.description.slice(0, 200)}"`, source: w.url, observed_at: w.fetched_at, freshness: f, confidence: 0.5 }] : []),
     ...w.price_claims.map((p) => ({ kind: "vendor_claim" as const, statement: `${p.text} ("${p.excerpt.slice(0, 120)}")`, source: w.url, observed_at: w.fetched_at, freshness: f, confidence: 0.4, caveat: "an advertised starting price, not a quote: only a quote to Haggle is binding" })),
     ...(w.emails.length ? [{ kind: "vendor_claim" as const, statement: `Publishes email ${w.emails.join(", ")}`, source: w.url, observed_at: w.fetched_at, freshness: f, confidence: 0.6, caveat: "a published contact is not permission to contact" }] : []),
+    ...(w.hours ? [{ kind: "vendor_claim" as const, statement: `Opening hours: ${w.hours.display.join("; ")}`, source: w.url, observed_at: w.fetched_at, freshness: f, confidence: 0.5, caveat: "the business's own site; its listing's hours win when both exist" }] : []),
   ];
 }
 

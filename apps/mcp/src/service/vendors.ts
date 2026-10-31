@@ -6,12 +6,16 @@
 //   POST /internal/vendors/remove   { contact } (x-haggle-actor required)
 // Consent rules: a public listing allows email only (no calls or texts to a business that only has a
 // public listing); a call or text needs an existing relationship or the business's agreement.
+// business_ref (optional): the listing the vendor was found in ("aws:<PlaceId>" / "place:<id>"); its
+// opening hours and timezone are looked up (Amazon Location IntendedUse=Storage, else its website's
+// hours) and stored with the vendor, so calls and texts reach it only while it is open.
 // Limits: at most MAX_VENDORS per workspace and MAX_ADDS_PER_DAY additions per workspace per UTC day.
 // The daily count is shared by every server process on the database (take_rate_slot, migration 124);
 // on a store without it, or while it fails, each process counts in memory. The slot is taken before
 // the insert (concurrent adds can't overshoot); re-authorizing an existing vendor takes none.
 import { z } from "zod";
-import { simulatedContact, type Channel, type HaggleEngine } from "@haggle/engine";
+import { asWeeklyHours, simulatedContact, type Channel, type HaggleEngine, type ListingProvider } from "@haggle/engine";
+import { discoveredFor, LISTING_REF, storedListing } from "../businesses.ts";
 import { engineError, fail, serviceGuard, type ServiceApp, type ServiceContext } from "./http.ts";
 
 export const MAX_VENDORS = 100;
@@ -66,7 +70,7 @@ function dailyAdds(daily: DailyAdds) {
   };
 }
 export interface VendorRouteOptions {
-  guard?: (c: ServiceContext, opts: { workspace?: boolean }) => Promise<{ rt: { engine: VendorEngine; mode: "mock" | "live" }; workspaceId: string | null; actor: string | null } | Response>;
+  guard?: (c: ServiceContext, opts: { workspace?: boolean }) => Promise<{ rt: { engine: VendorEngine; mode: "mock" | "live"; listing?: ListingProvider }; workspaceId: string | null; actor: string | null } | Response>;
   daily?: DailyAdds;
   now?: () => Date;
 }
@@ -81,7 +85,18 @@ const AddBody = z.object({
   channel: z.enum(["email", "phone", "imessage"]).optional(),
   consent_basis: z.enum(CONSENT_BASES),
   note: z.string().max(300).transform(plain).optional(),
+  business_ref: z.string().max(520).regex(/^(aws|place):[A-Za-z0-9_=+/-]{3,515}$/, "a listing ref from Find businesses (aws:… or place:…)").optional(),
 });
+
+/**
+ * The hours to store with a vendor added from a listing: from this workspace's recent discover result
+ * (its website's hours) plus a Storage lookup of the listing; {} when unknown or unreachable.
+ */
+async function listedHours(ws: string, ref: string, rt: { listing?: ListingProvider }) {
+  if (!LISTING_REF.test(ref)) return {};
+  const known = discoveredFor(ws).get(ref);
+  return storedListing(known ?? { business_ref: ref }, rt).catch(() => ({}));
+}
 const RemoveBody = z.object({ contact: z.string().min(3).max(254).transform(normalizeContact) });
 const issues = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
 
@@ -115,6 +130,7 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
       return {
         name: r.name, contact: r.contact, channel: r.channel ?? (r.contact.includes("@") ? "email" : "phone"),
         consent: { basis: consentBasisOf(r.consent), text: r.consent }, added_by: r.added_by, added_at: r.created_at,
+        ...(asWeeklyHours(r.opening_hours) ? { hours: asWeeklyHours(r.opening_hours)!.display } : {}),
         contactable: !s, ...(s ? { suppressed: s } : {}),
       };
     });
@@ -156,14 +172,15 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
     if (!replacing && existing.length >= MAX_VENDORS) return fail(c, 409, "VENDOR_LIMIT", `This workspace already has ${existing.length} vendors (the limit is ${MAX_VENDORS}).`, "Remove vendors you no longer use, then add this one.");
     // A new vendor takes one of the day's additions before it is stored; re-authorizing one takes none.
     if (!replacing && !(await daily.take(g.rt.engine, ws))) return fail(c, 429, "DAILY_LIMIT", `This workspace added ${MAX_ADDS_PER_DAY} vendors today (the daily limit).`, "Try again tomorrow (UTC).");
+    const listed = b.business_ref ? { ...(await listedHours(ws, b.business_ref, g.rt)), business_ref: b.business_ref } : {};
     try {
       const row = await g.rt.engine.addWorkspaceVendor({
-        workspace_id: ws, contact: b.contact, name: b.name, channel: channel as Channel,
+        workspace_id: ws, contact: b.contact, name: b.name, channel: channel as Channel, ...listed,
         consent: consentText(b.consent_basis, b.note || undefined, g.actor, now()), added_by: `web:${g.actor}`.slice(0, 120),
       });
       return c.json({
         ok: true, replaced: replacing,
-        vendor: { name: row.name, contact: row.contact, channel: row.channel ?? channel, consent: { basis: b.consent_basis, text: row.consent }, added_by: row.added_by, added_at: row.created_at, contactable: true },
+        vendor: { name: row.name, contact: row.contact, channel: row.channel ?? channel, consent: { basis: b.consent_basis, text: row.consent }, added_by: row.added_by, added_at: row.created_at, contactable: true, ...(asWeeklyHours(row.opening_hours) ? { hours: asWeeklyHours(row.opening_hours)!.display } : {}) },
         next: `Haggle may now contact ${row.name} by ${channel === "email" ? "email" : channel === "phone" ? "a Voice AI call" : "text"} on this workspace's deals.`,
       }, replacing ? 200 : 201);
     } catch (err) {

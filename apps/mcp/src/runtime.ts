@@ -1,11 +1,11 @@
 // Builds the engine for the configured mode. Mock mode (default) needs no credentials and is
 // labelled DEMO everywhere; live mode needs every variable below and refuses to start partially.
 import { readFileSync } from "node:fs";
-import { createMockEngine, fleetBusinesses, log, PostgresRepository, type BrainAdapter, type HaggleEngine, type InboundReconciler, type InkboxMailApi, type InkboxTrustPolicy, type Persona, type QuoteExtraction } from "@haggle/engine";
+import { createMockEngine, fleetBusinesses, log, PostgresRepository, type BrainAdapter, type ListingProvider, type HaggleEngine, type InboundReconciler, type InkboxMailApi, type InkboxTrustPolicy, type Persona, type QuoteExtraction } from "@haggle/engine";
 import { makeBrain } from "./brain.ts";
 import { assertConfig, haggleEnv, LIVE_REQUIRED } from "./config.ts";
 import type { RuntimeOps } from "./health.ts";
-import { fixtureFetchers, type PlacesFetch, type WebFetch } from "./fixtures.ts";
+import { fixtureFetchers, type WebFetch } from "./fixtures.ts";
 import { mockDemoConfig } from "./timings.ts";
 import { buildRoster, type ChannelStatus, type RosterEntry } from "./vendors.ts";
 import { hashSecret, outOfBandApprovals } from "./workspace.ts";
@@ -27,10 +27,12 @@ export type Runtime = {
   missing: string[];
   /** The demo vendors and whether each can be contacted now (never contacts anyone). */
   roster: () => Promise<RosterEntry[]>;
-  /** Google Places key for public discovery/reputation (absent = off; never invented). */
-  placesKey?: string;
-  /** Mock rehearsals only: a recorded Places/website fixture instead of the network (HAGGLE_PLACES_FIXTURE). */
-  placesFetch?: PlacesFetch;
+  /**
+   * Public-listing discovery (absent = off; never invented): Amazon Location Service when
+   * AWS_LOCATION_API_KEY is set, else Google Places (GOOGLE_PLACES_API_KEY). Mock rehearsals use a
+   * recorded fixture instead of the network (HAGGLE_PLACES_FIXTURE).
+   */
+  listing?: ListingProvider;
   webFetch?: { fetch: WebFetch; resolve: (host: string) => Promise<string[]> };
   /** Which channels can send right now (the same checks the roster uses), for discovered businesses. */
   channels: () => Promise<ChannelStatus>;
@@ -119,7 +121,7 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
   };
   runtime = mockWorkspaces(m.engine, env.HAGGLE_MOCK_WORKSPACES).then(() => ({
     mode: "mock" as const, engine: m.engine, brain, tick: () => m.fleet.deliverDue(), missing: [], roster: async () => roster, channels, ops,
-    ...(fx ? { placesKey: "fixture", placesFetch: fx.places, webFetch: { fetch: fx.web, resolve: fx.resolve } } : {}),
+    ...(fx ? { listing: fx.listing, webFetch: { fetch: fx.web, resolve: fx.resolve } } : {}),
   }));
   return runtime;
 }

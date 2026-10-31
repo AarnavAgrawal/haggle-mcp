@@ -43,7 +43,7 @@ export function VendorsPanel({ initial, canAdd, cantAddReason }: { initial: Vend
 
       <FindBusinesses
         vendorNames={list.vendors.map((v) => v.name)}
-        onAdd={(b) => setPrefill({ key: Date.now(), name: b.name, ...(b.emails?.[0] ? { contact: b.emails[0] } : {}), consent_basis: "public_listing_email", note: `Found in public listings${b.website ? `; email from ${b.website}` : ""}` })}
+        onAdd={(b) => setPrefill({ key: Date.now(), name: b.name, business_ref: b.business_ref, ...(b.emails?.[0] ? { contact: b.emails[0] } : {}), consent_basis: "public_listing_email", note: `Found in public listings${b.emails?.[0] ? `; email ${b.emails[0]} published by the business` : ""}` })}
       />
 
       {canAdd ? (

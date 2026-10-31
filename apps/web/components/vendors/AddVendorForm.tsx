@@ -13,6 +13,8 @@ export interface VendorPrefill {
   contact?: string;
   note?: string;
   consent_basis?: ConsentBasis;
+  /** The listing it was found in: the server keeps its opening hours with the vendor. */
+  business_ref?: string;
 }
 
 export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | null; onAdded: (message: string) => void }) {
@@ -22,6 +24,7 @@ export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | n
   const [basis, setBasis] = useState<ConsentBasis | "">("");
   const [note, setNote] = useState("");
   const [attested, setAttested] = useState(false);
+  const [businessRef, setBusinessRef] = useState<string | undefined>(undefined);
   const [errors, setErrors] = useState<Partial<Record<FormField, string>>>({});
   const [failure, setFailure] = useState<VendorApiError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -35,6 +38,7 @@ export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | n
     setChannel("email");
     setBasis(prefill.consent_basis ?? "");
     setNote(prefill.note ?? "");
+    setBusinessRef(prefill.business_ref);
     setAttested(false);
     setErrors({});
     setFailure(null);
@@ -48,7 +52,7 @@ export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | n
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setFailure(null);
-    const input = { name, contact, channel: effective || undefined, consent_basis: basis || undefined, note, attested };
+    const input = { name, contact, channel: effective || undefined, consent_basis: basis || undefined, note, attested, ...(businessRef ? { business_ref: businessRef } : {}) };
     const v = validateVendorForm(input);
     if (!v.ok) {
       setErrors(v.errors);
@@ -68,6 +72,7 @@ export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | n
     setChannel("");
     setBasis("");
     setNote("");
+    setBusinessRef(undefined);
     setAttested(false);
     onAdded(r.next);
   }

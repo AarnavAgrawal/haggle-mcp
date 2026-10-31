@@ -1,7 +1,7 @@
 /**
  * Business profile (business_profile): everything Haggle knows about one business, each fact with its
  * source. Whether Haggle may contact it (contact badge), where it is, its website and Google Maps
- * links, the evidence grouped by kind (verified by Haggle / Google listing & reviews / the business's
+ * links, the evidence grouped by kind (verified by Haggle / public listing & reviews / the business's
  * own claims / Haggle's estimates) and what is still unknown. For a business that has quoted, the
  * learned "API" too: how it prices, what it needs up front, how it negotiates, and the history.
  *

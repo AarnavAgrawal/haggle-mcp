@@ -85,6 +85,8 @@ _MVP audit (2026-10-17, main 54b2d47, deployed as calm-spark 0.5.0+54b2d47). PAS
 
 ## Blockers
 
+- Aarnav (operator): create an Amazon Location API key (geo-places:SearchText, GetPlace, Geocode) and set `AWS_LOCATION_API_KEY` / `AWS_LOCATION_REGION`; apply `125_engine_business_hours.sql` and record it in the ledger before deploying the server that stores hours.
+
 Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 - Team, org split (blocks A2A, calls, and trusted multi-seller replies): buyer `haggle` is in Yash's Inkbox org; sellers, `haggle-buyer` and the only phone number are in Aarnav's. Recommendation: run the demo from `haggle-buyer`. Aarnav creates its agent-scoped API key + webhook signing secret and gives them to Yash through the env file (not chat); Yash points the webhook at calm-spark and sets `INKBOX_API_KEY`/`INKBOX_IDENTITY`/`INKBOX_WEBHOOK_SECRET`/`HAGGLE_DEMO_FLEET` on Manufact. Alternative: an admin adds an outbound A2A allow for `@bay-catering-sf` on `haggle` (plus inbound `@haggle` on Bay).
@@ -105,8 +107,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-30 · Aarnav · Discovery on Amazon Location Service (Google Places kept as fallback/ratings): `published_emails` (listing, then website), opening hours (listing, else the website's schema.org) shown as "Open today …" and stored with deals and listed vendors (migration 125); calls and first texts wait until the business is open (30-min margins, its timezone, inside call hours). Consent rule unchanged. Full suite 1,936 passed / 35 skipped; migrations verified on Docker Postgres.
 - 2026-10-30 · Aarnav · Judgment on quotes: a price far below the usual range ($50 for dinner for 100) is flagged price_implausible (brain too_low verdict, a conservative food floor, or a short Claude judgment for categories without price data): not recommended or cited in counters, not approvable until the vendor confirms (Haggle asks once); a confirmation keeps a caveat, a correction is judged again; the brain never learns from it. Warned on the board, web deal page and approval card. Not yet deployed
-
 - 2026-10-30 · Aarnav · Production on tryhaggle.tech (Cloudflare DNS, DNS-only; sign-in moved). Find businesses: discover reads each found business's website and returns its published emails; Add as vendor fills the email in. Full suite 1,895 passed. Not yet redeployed; calls (shared number, consented vendors only) and Places key ready to turn on with it
 - 2026-10-30 · Aarnav · Live server no longer lists unconfigured demo vendors (a workspace with no vendors is told to add real businesses on /vendors); web app redesigned (aligned layout, Archivo, quote ledger with negotiated-price sticker, two-column deal page, full-height chat, plain-words next step); full suite 1,894 passed, guest browser flow passed. Not yet redeployed
 - 2026-10-30 · Aarnav · Production test deploy of `aarnav-prod` (e16e0c6): new Supabase project (all 28 migrations, ledger clean), Manufact `haggle-prod` (wild-forge-smbdu, live, manual payment, `/ready` all OK), web on Vercel (haggle-prod.vercel.app, Google sign-in), Inkbox `haggle-buyer` webhook; email-only. Not yet done: a real deal end to end

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { inputRequired, inputResponse, MCPServer } from "mcp-use";
 import { z } from "zod";
-import { budgetFrom, businessIdForContact, complianceSummary, DEFAULT_WORKSPACE_ID, EngineError, eventWhen, localDate, MAX_ROUNDS, normalizeBusinessName, normalizePlainRequest, normalizeRequirements, placesDiscover, PlacesError, type DealBoardData, type DealInput, type PlacesFailure, type WorkspaceEngine } from "@haggle/engine";
+import { budgetFrom, businessIdForContact, complianceSummary, DEFAULT_WORKSPACE_ID, EngineError, eventWhen, localDate, MAX_ROUNDS, normalizeBusinessName, normalizePlainRequest, normalizeRequirements, DEFAULT_CONTACT_TIMEZONE, LISTING_KEYS_HINT, PlacesError, type DealBoardData, type DealInput, type PlacesFailure, type WeeklyHours, type WorkspaceEngine } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
 import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
@@ -11,7 +11,7 @@ import { historyOnly } from "./src/brain.ts";
 import { ApprovalOut, BusinessProfile, Conversation, dealStartedBoard, DealBoardPlus, emptyBoard, Estimates, Identity, pendingByTextNext, requestDetails, toApproval, toDealBoardPlus, waitOutput } from "./src/views.ts";
 import { webAppOn } from "./src/service/approvals.ts";
 import { blockerLines, businessRef, findVendors, rosterBusinessId, workspaceVendorList, type ChannelStatus, type RosterEntry } from "./src/vendors.ts";
-import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, historyEvidence, learningFor, listingEvidence, requestCategory, resolveSelection, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered, type Selected } from "./src/businesses.ts";
+import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, historyEvidence, hoursLine, hoursOf, learningFor, LISTING_REF, listingEvidence, publishedEmails, requestCategory, resolveSelection, storedListing, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered, type Selected } from "./src/businesses.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
 import { limitsMiddleware } from "./src/limits.ts";
 import { ConfigError } from "./src/config.ts";
@@ -282,7 +282,7 @@ const businessInput = z.object({
   channel: z.enum(["email", "phone", "a2a", "imessage"]).optional().describe("Preferred channel when several are possible; 'imessage' texts the business at `phone` (by iMessage when enabled, where it must have texted connect @<buyer> first; otherwise by SMS)"),
 }).refine((b) => b.channel !== "imessage" || b.phone || !b.email, { message: "channel 'imessage' needs the business's phone number" });
 /** A vendor by name or business_ref ("Mission Eats", "mission_eats"), or a new business with its contact. */
-const businessChoice = z.union([z.string().min(1).max(120), businessInput]);
+const businessChoice = z.union([z.string().min(1).max(520), businessInput]); // a name, or a listing ref ("aws:<PlaceId>" can be long)
 const hasContact = (b: z.infer<typeof businessInput>) => !!(b.email || b.phone || b.a2a_card_url);
 
 const jobId = z.string().min(4).max(64).describe("job_id returned by deal");
@@ -419,9 +419,13 @@ export const deal = server.tool(
       const ownDefault = own.length > 0 && category === "catering";
       let rosterTotal = roster.length;
       const fromVendorEntry = (r: RosterEntry) => ({ name: r.name, channel: r.channel, simulated: true, ...(r.email ? { email: r.email } : {}), ...(r.phone ? { phone: r.phone } : {}), ...(r.a2a_card_url ? { a2a_card_url: r.a2a_card_url } : {}) });
-      const toSend = (x: Extract<Selected, { send?: unknown }>) => x.kind === "vendor" ? fromVendorEntry(x.vendor) : { name: x.name, channel: x.send!.channel, simulated: false, source: "web" as const, ...(x.send!.email ? { email: x.send!.email } : {}), ...(x.send!.phone ? { phone: x.send!.phone } : {}) };
+      // Opening hours stored with each business (calls and texts wait until it is open): a workspace vendor's
+      // from its row; a found business's from a fresh listing lookup made for storage (storedListing).
+      const stored = new Map<string, { opening_hours?: WeeklyHours; timezone?: string }>();
+      const hoursFor = (x: Selected) => x.kind === "workspace_vendor" ? { ...(x.vendor.opening_hours ? { opening_hours: x.vendor.opening_hours } : {}), ...(x.vendor.timezone ? { timezone: x.vendor.timezone } : {}) } : x.kind === "discovered" ? stored.get(x.business_ref) ?? {} : {};
+      const toSend = (x: Extract<Selected, { send?: unknown }>) => x.kind === "vendor" ? fromVendorEntry(x.vendor) : { name: x.name, channel: x.send!.channel, simulated: false, source: "web" as const, ...(x.send!.email ? { email: x.send!.email } : {}), ...(x.send!.phone ? { phone: x.send!.phone } : {}), ...hoursFor(x) };
 
-      let businesses: (z.infer<typeof businessInput> & { simulated?: boolean; source?: "web" | "agent" })[];
+      let businesses: (z.infer<typeof businessInput> & { simulated?: boolean; source?: "web" | "agent"; opening_hours?: WeeklyHours; timezone?: string })[];
       let preview: { name: string; business_ref?: string; channel?: string; contact_state: string; ready: boolean; reason?: string }[] = [];
       if (fromRoster && ownDefault) {
         const sel = await resolveSelection(workspaceVendorList(own).map((v) => v.name), rt, { vendors: own, learning: engine, discovered: discoveredFor(engine.workspaceId) });
@@ -435,8 +439,8 @@ export const deal = server.tool(
           // The configured vendors sell something else (e.g. demo caterers for a plumbing job): never substitute them.
           const sells = [...new Set(fullRoster.map((r) => r.category))].join(", ");
           return fail(mode, "no_vendors_for_category", `This server's configured vendors are ${sells} vendors; none offer ${category}. Nothing was sent.`,
-            rt.placesKey ? `Call discover(category='${category}', area) to find real ${category} businesses, then deal(businesses=['<name>']) for the ones the user picks.` : `Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY), so Haggle can't find ${category} businesses here. Tell the user; don't substitute other vendors.`,
-            rt.placesKey ? "discover" : "none");
+            rt.listing ? `Call discover(category='${category}', area) to find real ${category} businesses, then deal(businesses=['<name>']) for the ones the user picks.` : `Real-business discovery is off on this server (no ${LISTING_KEYS_HINT}), so Haggle can't find ${category} businesses here. Tell the user; don't substitute other vendors.`,
+            rt.listing ? "discover" : "none");
         }
         businesses = roster.filter((r) => r.ready).map(fromVendorEntry);
         preview = roster.map((r) => ({ name: r.name, business_ref: businessRef(r), channel: r.channel, contact_state: r.ready ? "authorized" : "contact_found", ready: r.ready, ...(r.blocker ? { reason: r.blocker } : {}) }));
@@ -452,6 +456,7 @@ export const deal = server.tool(
           return fail(mode, code, `${unreachable.map((x) => `${x.name}: ${x.status.summary}`).join(" ")} Nothing was sent (no other business was contacted instead).`,
             "Tell the user which business can't be reached and why; contact others only if the user says so. Use deal(dry_run=true) to preview who can be reached.", "none");
         }
+        if (!input.dry_run) for (const x of sel.selected) if (x.kind === "discovered" && x.send) stored.set(x.business_ref, await storedListing(x.found, rt));
         let i = 0;
         businesses = given.flatMap((b) => { if (hasContact(b)) return [b]; const x = sel.selected[i++]!; return x.send ? [toSend(x)] : []; });
         // One business named twice ("Mission Eats", "mission_eats") is contacted once.
@@ -1207,11 +1212,12 @@ export const discover = server.tool(
     name: "discover",
     title: "Find businesses",
     description:
-      "Find businesses for a request: real businesses from public listings (Google Places, when configured on this server) ranked by relevance and credible reviews, plus this server's configured demo vendors, each on its channel (email, a text, a Voice AI call, A2A). " +
+      "Find businesses for a request: real businesses from public listings (Amazon Location Service or Google Places, whichever this server has configured) ranked by relevance, being in the area, published contacts and, where the listing has them, credible reviews, plus this server's configured demo vendors, each on its channel (email, a text, a Voice AI call, A2A). " +
       "Each comes with how Haggle can reach it: discovered (no contact), contact found (published, but NOT authorized: finding a phone or email is not permission), authorized, or verified responsive. " +
       "Use it when the user wants options or a kind of business Haggle has no vendors for (a plumber, a print shop, a repair), or asks who Haggle would contact. Then business_profile(name) for the evidence, and deal(businesses=['<name>', …], dry_run=true) to check who can actually be contacted. " +
       "If public discovery isn't configured it says so; it never substitutes demo vendors for real results. Read-only; contacts nobody. Not needed before a deal with the configured vendors. " +
-      "Draws one results card listing every business found (rating, reviews, address, website and Maps links, contact state) and the demo vendors, so there is no need to call business_profile for each one just to show the list.",
+      "Each found business also carries the emails it publishes (its listing's, then its website's) and today's opening hours when known; Haggle calls and texts a business only while it is open. " +
+      "Draws one results card listing every business found (address, hours, website, rating and Maps link where the listing has them, contact state) and the demo vendors, so there is no need to call business_profile for each one just to show the list.",
     inputSchema: z.object({
       category: z.string().min(2).max(100).optional().describe("What kind of business, in the user's words: 'catering', 'plumber', 'print shop', 'office repairs'"),
       area: z.string().min(2).max(200).optional().describe("City or address (defaults to the settings area)"),
@@ -1224,7 +1230,7 @@ export const discover = server.tool(
       found: z.array(z.looseObject({ name: z.string(), business_ref: z.string(), contact_state: z.string() })),
     }),
     annotations: { readOnlyHint: true, openWorldHint: true },
-    ...viewIf({ name: "business-list", description: "Haggle business list: businesses found in public listings with ratings, reviews, address, links and whether Haggle may contact them, plus the configured vendors" }),
+    ...viewIf({ name: "business-list", description: "Haggle business list: businesses found in public listings with address, hours, links (and ratings where the listing has them) and whether Haggle may contact them, plus the configured vendors" }),
   },
   async ({ count, category, area }, ctx) =>
     run(ctx, async ({ rt, engine, mode, workspaceId }) => {
@@ -1233,18 +1239,18 @@ export const discover = server.tool(
       // never means Haggle may contact it; deal refuses anything not on the operator's allowlist.
       let found: Discovered[] = [];
       let pub: { status: "ok" | "not_requested" | "not_configured" | "no_area" | PlacesFailure; message: string };
-      if (!category) pub = { status: "not_requested", message: rt.placesKey ? "Pass a category (and area) to search public listings for real businesses." : "Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY)." };
-      else if (!rt.placesKey) pub = { status: "not_configured", message: `Real-business discovery is off on this server: GOOGLE_PLACES_API_KEY isn't set, so Haggle did not search for ${category} businesses. No demo vendors were substituted.` };
+      if (!category) pub = { status: "not_requested", message: rt.listing ? "Pass a category (and area) to search public listings for real businesses." : `Real-business discovery is off on this server (no ${LISTING_KEYS_HINT}).` };
+      else if (!rt.listing) pub = { status: "not_configured", message: `Real-business discovery is off on this server: no listing key is set (${LISTING_KEYS_HINT}), so Haggle did not search for ${category} businesses. No demo vendors were substituted.` };
       else if (!where) pub = { status: "no_area", message: "Pass an area (city or address) to search public listings." };
       else {
         try {
-          found = ((await placesDiscover({ apiKey: rt.placesKey, ...(rt.placesFetch ? { fetch: rt.placesFetch } : {}) }, category, where, count)) ?? []).map((b) => ({ ...b, category, area: where }));
+          found = (await rt.listing.discover(category, where, count)).map((b) => ({ ...b, category, area: where }));
           discoveredFor(workspaceId).remember(found);
           // Each business's own website, in parallel and within a few seconds: the addresses it publishes
           // let the user add it by email without copying one. A slow site just has none.
           const budget = (b: Discovered) => new Promise<Discovered>((done) => { const t = setTimeout(() => done(b), DISCOVER_WEBSITE_BUDGET_MS); t.unref?.(); });
           found = await Promise.all(found.map((b) => Promise.race([withWebsite(b, rt, discoveredFor(workspaceId)), budget(b)])));
-          pub = { status: "ok", message: `${found.length} ${category} business(es) found near ${where} in Google Maps listings.` };
+          pub = { status: "ok", message: `${found.length} ${category} business(es) found near ${where} in ${rt.listing.source} listings.` };
         } catch (e) {
           if (!(e instanceof PlacesError)) throw e;
           pub = { status: e.code, message: `${e.message} Nothing was substituted.` };
@@ -1253,11 +1259,16 @@ export const discover = server.tool(
       const ch = await rt.channels();
       const foundOut = found.map((b) => {
         const st = contactStatus(discoveredRoutes(b, rt, ch).routes, null);
+        const emails = publishedEmails(b);
+        const h = hoursOf(b);
+        const today = hoursLine(b, DEFAULT_CONTACT_TIMEZONE);
         return {
           name: b.name, business_ref: b.business_ref, ...(b.address ? { address: b.address } : {}), ...(b.rating !== undefined ? { rating: b.rating, review_count: b.review_count ?? 0 } : {}),
           ...(b.website ? { website: b.website } : {}), ...(b.maps_url ? { maps_url: b.maps_url } : {}), phone_published: !!b.phone, in_area: b.in_area, score: b.score, rank_reasons: b.rank_reasons,
           contact_state: st.state, contact_summary: st.summary, source: b.source, attribution: b.attribution, fetched_at: b.fetched_at,
-          ...(b.website_evidence?.emails.length ? { website_emails: b.website_evidence.emails.slice(0, 3) } : {}),
+          // Listing emails first, then the website's: the user can add the business by email without copying one.
+          ...(emails.length ? { published_emails: emails } : {}),
+          ...(h && today ? { hours_today: today, hours: { display: h.display.slice(0, 7), source: h.source, ...(h.timezone ? { timezone: h.timezone } : {}) } } : {}),
         };
       });
       // Every configured vendor (ready first); contacts stay server-side, phone numbers are never echoed.
@@ -1279,8 +1290,8 @@ export const discover = server.tool(
         { ok: true, mode, ready, total: roster.length, businesses, found: foundOut, public_discovery: pub, next, ...(rt.configErrors?.length ? { config_errors: rt.configErrors } : {}) },
         [
           category ? `Public discovery (${pub.status}): ${pub.message}` : `Public discovery: ${pub.message}`,
-          ...foundOut.map((f, i) => `${i + 1}. ${f.name}${f.rating !== undefined ? ` ${f.rating}★ (${f.review_count} reviews)` : ""}${f.address ? `, ${f.address}` : ""} [${f.business_ref}] · ${f.rank_reasons.join("; ")} · contact: ${f.contact_state.replace(/_/g, " ")}`),
-          ...(found.length ? ["Listings: Google Maps."] : []),
+          ...foundOut.map((f, i) => `${i + 1}. ${f.name}${f.rating !== undefined ? ` ${f.rating}★ (${f.review_count} reviews)` : ""}${f.address ? `, ${f.address}` : ""}${f.hours_today ? ` · ${f.hours_today}` : ""} [${f.business_ref}] · ${f.rank_reasons.join("; ")} · contact: ${f.contact_state.replace(/_/g, " ")}`),
+          ...(found.length ? [`Listings: ${found[0]!.attribution}.`] : []),
           `Configured demo vendors (${roster[0]?.category ?? "none"}${rosterFits ? "" : `; none offer ${wanted}`}): ${ready} of ${roster.length} ready: ${roster.map((r) => `${r.name} [${channelLabel(r.channel, ch)}] ${r.ready ? "ready" : "NOT READY"}`).join("; ")}.`,
           ...(rosterFits ? blockerLines(roster) : []),
           `next: ${next}`,
@@ -1318,10 +1329,10 @@ export const businessProfile = server.tool(
     title: "Business profile",
     description:
       "Everything Haggle knows about one business, each fact with its source, date and kind: verified (what Haggle itself saw: quotes it received, replies, response speed), " +
-      "third-party listing and reviews (Google Maps), vendor claims (the business's own website; an advertised price is not a quote), Haggle's estimates, and what is still unknown (availability, capacity, today's price). " +
+      "third-party listing (and reviews, where the listing has them), vendor claims (the business's own website; an advertised price is not a quote), Haggle's estimates, and what is still unknown (availability, capacity, today's price). " +
       "Also how Haggle can reach it (discovered / contact found / authorized / verified responsive). Takes the same names deal does: a configured vendor, or a business from discover. Read-only. " +
       "Not needed before deal (deal(businesses=['<name>']) works directly); use it when the user asks about a business or to compare options.",
-    inputSchema: z.object({ business: z.string().min(2).max(200).describe("Business name, business_ref ('mission_eats', 'place:…') or id") }),
+    inputSchema: z.object({ business: z.string().min(2).max(520).describe("Business name, business_ref ('mission_eats', 'aws:…', 'place:…') or id") }),
     outputSchema: BusinessProfile.loose(),
     annotations: { readOnlyHint: true, openWorldHint: true },
     ...viewIf({ name: "business-profile", description: "Haggle business profile: what Haggle learned about a business" }),
@@ -1337,14 +1348,14 @@ export const businessProfile = server.tool(
       if (hits.length > 1) return fail(mode, "ambiguous_business", `"${business}" could be ${hits.map((h) => h.name).join(" or ")}.`, "Ask the user which one they meant, then pass that exact name.", "business_profile");
       const vendor = hits[0];
       let found: Discovered | null = null;
-      if (!vendor && (/^place:/.test(business) || scope.discovered.find(business).length)) {
+      if (!vendor && (LISTING_REF.test(business) || scope.discovered.find(business).length)) {
         const sel = await resolveSelection([business], rt, scope);
         if (!sel.ok) return fail(mode, sel.code, sel.message.replace(" Nothing was sent.", ""), sel.fix, "business_profile");
         const x = sel.selected[0]!;
         if (x.kind === "discovered") found = await withWebsite(x.found, rt, scope.discovered);
       }
       const name = vendor?.name ?? found?.name ?? business;
-      const contact = vendor ? { email: vendor.email ?? null, phone: vendor.phone ?? null } : found ? { email: found.website_evidence?.emails[0] ?? null, phone: e164(found.phone) } : { email: null, phone: null };
+      const contact = vendor ? { email: vendor.email ?? null, phone: vendor.phone ?? null } : found ? { email: publishedEmails(found)[0] ?? null, phone: e164(found.phone) } : { email: null, phone: null };
       const engineId = vendor ? rosterBusinessId(vendor) : contact.email || contact.phone ? businessIdForContact({ email: contact.email, phone: contact.email ? null : contact.phone }, name) : null;
       const hint = { name, ...(contact.email ? { email: contact.email } : {}), ...(contact.phone ? { phone: contact.phone } : {}) };
       const shared = engineId ? (await brain.coreProfile(engineId, hint)) ?? (vendor ? await byName(vendor.name) : null)
@@ -1355,7 +1366,7 @@ export const businessProfile = server.tool(
       const p = historyOnly(shared, (jobId) => isSeedJob(jobId) || own.has(jobId), { exact: true });
       if (!vendor && !found && !p) {
         return fail(mode, "NOT_LEARNED", `Haggle doesn't know ${business}: it isn't a configured vendor, wasn't in a recent discover result, and Haggle has no quotes from it${mode === "live" ? " (sample data is never shown as history)" : ""}.`,
-          rt.placesKey ? "Call discover(category, area) to find real businesses, then ask about one by name." : "Real-business discovery is off on this server (no GOOGLE_PLACES_API_KEY); configured vendors are listed by discover.", "deal");
+          rt.listing ? "Call discover(category, area) to find real businesses, then ask about one by name." : `Real-business discovery is off on this server (no ${LISTING_KEYS_HINT}); configured vendors are listed by discover.`, "deal");
       }
       const learning = await learningFor(engine, name, contact);
       const ch = await rt.channels();
@@ -1368,7 +1379,7 @@ export const businessProfile = server.tool(
       ];
       const who = vendor
         ? { business_ref: businessRef(vendor), configured_vendor: true, ready: vendor.ready, channel: vendor.channel }
-        : found ? { business_ref: found.business_ref, configured_vendor: false, public_listing: { source: found.source, attribution: found.attribution, ...(found.maps_url ? { maps_url: found.maps_url } : {}), ...(found.website ? { website: found.website } : {}) } }
+        : found ? { business_ref: found.business_ref, configured_vendor: false, public_listing: { source: found.source, attribution: found.attribution, ...(found.maps_url ? { maps_url: found.maps_url } : {}), ...(found.website ? { website: found.website } : {}), ...(hoursLine(found, DEFAULT_CONTACT_TIMEZONE) ? { hours_today: hoursLine(found, DEFAULT_CONTACT_TIMEZONE) } : {}) } }
         : { configured_vendor: false };
       const next = status.state === "authorized" || status.state === "verified_responsive"
         ? `For a real quote from ${name}, call deal(request, budget_usd, businesses=['${name}']): Haggle already has its contact details; only ${name} is contacted.`

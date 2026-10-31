@@ -128,7 +128,9 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `HAGGLE_ALLOWED_RECIPIENTS` | Extra contacts outreach may reach (comma-separated); discovery is not permission | PII | server | optional | optional | optional | optional | free text; warning |  |
 | `HAGGLE_DEMO_FLEET` | Simulated fleet offered by discover in live mode | PII | server | – | optional | optional | optional | free text; warning |  |
 | `HAGGLE_DEMO_VENDORS` | Operator-configured demo vendor contacts | PII | server | – | optional | optional | optional | free text; warning |  |
-| `GOOGLE_PLACES_API_KEY` | Google Places key for public discovery/reputation (absent = off) | yes | server | – | optional | optional | optional | free text; warning |  |
+| `AWS_LOCATION_API_KEY` | Amazon Location Service API key (geo-places:SearchText, GetPlace, Geocode) for public discovery and opening hours; wins over Google Places (absent = Google, else off) | yes | server | – | optional | optional | optional | free text; warning |  |
+| `AWS_LOCATION_REGION` | AWS region of the Amazon Location API key |  | server | – | optional | optional | optional | an AWS region such as us-east-1; warning | `us-east-1` |
+| `GOOGLE_PLACES_API_KEY` | Google Places key for public reputation, and discovery when AWS_LOCATION_API_KEY is unset (absent = off) | yes | server | – | optional | optional | optional | free text; warning |  |
 | `HAGGLE_MIGRATIONS_DIR` | Where /ready finds supabase/migrations when not found by walking up |  | server | optional | optional | optional | optional | free text; warning |  |
 | `HAGGLE_AUTH` | Mock only: required turns on workspace auth (live always requires it) |  | server | optional | – | – | – | `open` \| `required`; warning |  |
 | `SUPABASE_URL` | Brain profile store (Supabase REST URL); with SUPABASE_SERVICE_ROLE_KEY |  | brain | – | optional | optional | optional | http(s) URL; warning |  |
@@ -140,7 +142,7 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `HAGGLE_SIM_DELAY_SCALE` | Simulated seller reply delay multiplier (0 = instant) |  | server | optional | optional | optional | **refused** | free text; warning |  |
 | `HAGGLE_MOCK_VENDORS` | none: rehearse a server with no vendor set up |  | server | optional | optional | optional | **refused** | free text; warning |  |
 | `HAGGLE_MOCK_PERSONAS_FILE` | Scripted simulated vendors (JSON file) |  | server | optional | optional | optional | **refused** | free text; warning |  |
-| `HAGGLE_PLACES_FIXTURE` | Recorded Places/website responses for discovery rehearsals |  | server | optional | optional | optional | **refused** | free text; warning |  |
+| `HAGGLE_PLACES_FIXTURE` | Recorded listing (Google Places or Amazon Location) and website responses for discovery rehearsals |  | server | optional | optional | optional | **refused** | free text; warning |  |
 | `HAGGLE_MOCK_DATABASE_URL` | Throwaway Postgres for mock restart rehearsals (never a real database) | yes | server | optional | optional | optional | **refused** | `postgres://` URL (conditional); **error** |  |
 | `HAGGLE_MOCK_BRAIN_FILE` | Brain file kept across mock restarts |  | server | optional | optional | optional | **refused** | free text; warning |  |
 | `HAGGLE_MOCK_WORKSPACES` | Mock workspaces JSON (tests and rehearsals of auth/isolation) | yes | server | optional | optional | optional | **refused** | free text; warning |  |

@@ -89,7 +89,7 @@ export type EvidenceGroupKey = "verified" | "listing" | "claims" | "estimates" |
 
 const GROUP_TITLE: Record<EvidenceGroupKey, string> = {
   verified: "Verified by Haggle",
-  listing: "Google listing & reviews",
+  listing: "Public listing & reviews",
   claims: "The business's own website (claims)",
   estimates: "Haggle's estimates",
   other: "Other",
