@@ -156,6 +156,7 @@ describe("quotes comparison (fixture board)", () => {
     const winner = "Bay Catering: best value 0.77 — $995 (negotiated down from $1,150), delivery included.";
     expect(recommendationSentence({ ...sel("recommended: best val…"), value: { explanation: { winner, others: [] } } })).toBe("$995 (negotiated down from $1,150), delivery included.");
     expect(valueNote(winner)).toBe("$995 (negotiated down from $1,150), delivery included.");
+    expect(valueNote("Harbor Table (value 0.76): Bay Catering is ahead on terms")).toBe("Bay Catering is ahead on terms");
     expect(recommendationSentence({})).toBeNull();
   });
 });

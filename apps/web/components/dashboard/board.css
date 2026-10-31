@@ -933,7 +933,7 @@
 }
 .aside-facts > div {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1fr);
+  grid-template-columns: 96px minmax(0, 1fr);
   gap: var(--s-2);
 }
 .aside-facts dt {

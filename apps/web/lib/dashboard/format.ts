@@ -201,7 +201,12 @@ const CLIPPED = /(?:…|\.{3})\.?$/;
 
 /** The value ranking's explanation for a person: "Bay Catering: best value 0.77 — $995 …" -> "$995 …". */
 export function valueNote(s: string): string {
-  return sentence(s.replace(/^[^:]{1,80}:\s*best value\s+[\d.]+\s*[—–-]\s*/i, "").trim());
+  return sentence(
+    s
+      .replace(/^[^:]{1,80}:\s*best value\s+[\d.]+\s*[—–-]\s*/i, "")
+      .replace(/^[^:()]{1,80}\(value\s+[\d.]+\):\s*/i, "")
+      .trim(),
+  );
 }
 
 /**
