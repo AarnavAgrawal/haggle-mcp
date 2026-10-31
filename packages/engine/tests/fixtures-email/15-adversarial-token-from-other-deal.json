@@ -1,7 +1,7 @@
 {
   "name": "adversarial-token-from-other-deal",
   "client": "Gmail web",
-  "notes": "The vendor's reply in deal B's thread carries deal A's token (e.g. pasted from the other RFQ).",
+  "notes": "The vendor's reply in deal B's thread pastes deal A's legacy token. Tokens mean nothing now: the Message-ID it names is deal B's RFQ, so it is read into deal B only, never deal A.",
   "event": {
     "agent_identities": []
   },
@@ -32,11 +32,12 @@
     "createdAt": "2026-10-21T17:20:00.000Z"
   },
   "expect": {
-    "outcome": "quarantined:identity_unverified",
-    "stored_as": "quarantine",
-    "sender_trusted": false,
-    "quarantine_reason": "identity_unverified:token_missing",
-    "quote_total_usd": null
+    "outcome": "stored",
+    "stored_as": "reply",
+    "sender_trusted": true,
+    "quarantine_reason": null,
+    "quote_total_usd": 1150,
+    "trust_reason": "external-thread-reply"
   },
   "deal": "other_deal"
 }

@@ -285,7 +285,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     ] });
     expect(deal.contacted.map((c) => [c.business, c.channel])).toEqual(expect.arrayContaining([["Harbor Table", "email"], ["Sunset Kitchen", "imessage"]]));
     expect(sent).toHaveLength(2); // the two email RFQs
-    expect(texts).toEqual([{ to: "+14155550111", text: expect.stringMatching(/^Hi Sunset Kitchen, I'm an AI assistant for a customer\..{0,140}HG-/), idempotencyKey: expect.any(String) }]);
+    expect(texts).toEqual([{ to: "+14155550111", text: expect.stringMatching(/^Hi Sunset Kitchen, I'm an AI assistant for a customer\..{0,140}Total \+ deposit\?$/), idempotencyKey: expect.any(String) }]);
     expect(texts[0]!.text.length).toBeLessThanOrEqual(159);
     expect(calls).toHaveLength(0); // scheduled, not yet placed
 
@@ -366,7 +366,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
     clock.advance(60_000);
     const newer = await engine.deal({ request, budget_usd, businesses: [{ name: "Sunset Kitchen", phone: "+14155550111", channel: "imessage" }] });
     const olderCode = (await repo.getJob(older.job_id))!.short_code;
-    expect(texts[0]!.text).toContain(`HG-${olderCode}`);
+    expect(texts[0]!.text).not.toMatch(/HG-/); // no code to the business; an old one it quotes still routes
     expect(await engine.ingestIMessage({ messageId: "im_x1", from: "+14155550111", text: `For HG-${olderCode}: $1,080 total, 14 vegetarian, delivered`, isGroup: false })).toMatchObject({ jobId: older.job_id, outcome: "stored" });
     expect(await engine.ingestIMessage({ messageId: "im_x2", from: "+14155550111", text: "$1,050 total, 14 vegetarian, delivered", isGroup: false })).toMatchObject({ jobId: newer.job_id, outcome: "stored" });
     expect(await engine.ingestIMessage({ messageId: "im_x3", from: "+14155550999", text: "$1 total", isGroup: false })).toMatchObject({ jobId: null }); // unknown sender never lands on a job
@@ -487,7 +487,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
       expect(board.quotes[0]).toMatchObject({ meets_requirements: false });
       expect(board.rejected).toEqual([]);
       expect(board.state).toBe("collecting"); // waits for the answer instead of failing
-      expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 12 vegetarian meals; any deposit and when it's due; your cancellation policy\? HG-/);
+      expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 12 vegetarian meals; any deposit and when it's due; your cancellation policy\?$/);
 
       expect((await engine.ingestIMessage({ messageId: "im_a", from: "+14155550111", text: "Yes, 45 vegetarian", isGroup: false })).outcome).toBe("stored");
       await engine.advanceJob(deal.job_id);

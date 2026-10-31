@@ -3,7 +3,7 @@
 // The machine-readable `rfq.json` part is added once its fields are frozen (contract D8).
 //
 // Adapted from quote-broker@8a68559 src/channels/outreach.ts (Partner). Changes for Haggle v3:
-// [HG-<code>] subject tag, replies go to the per-job inbox, a reply-by time, hard requirements
+// a plain subject (no reference code), a reply-by time, hard requirements
 // listed explicitly, and the budget is only revealed when policy says so (default: not shown).
 import { vendorAsksFor } from "../intake/intake.ts";
 
@@ -79,9 +79,18 @@ export function quantityText(quantity: number | undefined, unit: string | undefi
   return quantity === undefined ? null : `${quantity} ${unit ?? "people"}`;
 }
 
+/**
+ * "Quote request: lunch, 40 people, Tuesday November 3". No reference code: replies are matched by
+ * the thread and Haggle's own Message-IDs (inbound/matching.ts). Every later email to the business
+ * on the deal reuses this subject, so it threads with the RFQ.
+ */
+export function quoteRequestSubject(r: { what: string; quantity?: number; unit?: string; date?: string }): string {
+  return [`Quote request: ${r.what}`, quantityText(r.quantity, r.unit), r.date ? humanDate(r.date) : null].filter(Boolean).join(", ");
+}
+
 export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string } {
   const qty = quantityText(i.quantity, i.unit);
-  const subject = [`[HG-${i.shortCode}] Quote request: ${i.what}`, qty, i.date ? humanDate(i.date) : null].filter(Boolean).join(", ");
+  const subject = quoteRequestSubject(i);
   const replyBy = `${humanDate(i.replyBy.toISOString().slice(0, 10))} ${String(i.replyBy.getUTCHours()).padStart(2, "0")}:${String(i.replyBy.getUTCMinutes()).padStart(2, "0")} UTC`;
   const people = i.unit === undefined || i.unit === "people";
   const customer = i.customer?.trim() || "a customer";

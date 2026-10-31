@@ -75,7 +75,7 @@ describe("follow-ups stay on the channel the business was first contacted on", (
     expect(toGrill.length).toBeGreaterThanOrEqual(2);
     expect(toGrill.some((x) => /exact all-in total/.test(x.text))).toBe(true);
     for (const x of toGrill) {
-      expect(x.text).toMatch(/Ref HG-[A-Z0-9]+$|HG-[A-Z0-9]+$/); // the reference code survives any clipping
+      expect(x.text).not.toMatch(/HG-/); // no reference code to the business
       expect(x.text).not.toMatch(/Haggle/);
     }
     expect(emails).toHaveLength(0);
@@ -294,7 +294,7 @@ describe("introduces itself as an AI assistant for the customer, never as Haggle
       { name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Golden Grill", phone: GRILL, channel: "imessage" }, { name: "Mission Eats", phone: MISSION },
     ] });
     expect(emails[0]!.bodyText).toMatch(/I'm an AI assistant reaching out on behalf of Acme Labs/);
-    expect(texts[0]!.text).toMatch(/^Hi Golden Grill, I'm an AI assistant for Acme Labs\..*(Ref )?HG-[A-Z0-9]+$/);
+    expect(texts[0]!.text).toMatch(/^Hi Golden Grill, I'm an AI assistant for Acme Labs\..*Total \+ deposit\?$/);
     expect(texts[0]!.text.length).toBeLessThanOrEqual(159);
     expect(calls[0]!.reason).toMatch(/Hi, I'm an AI assistant calling on behalf of Acme Labs/);
     for (const s of [emails[0]!.bodyText, texts[0]!.text, calls[0]!.reason]) expect(s).not.toMatch(/Haggle/);
@@ -309,12 +309,13 @@ describe("introduces itself as an AI assistant for the customer, never as Haggle
     expect(plain.texts[0]!.text).toMatch(/I'm an AI assistant for a customer\./);
   });
 
-  it("a long RFQ text is clipped in the middle, keeping the AI disclosure and the reference code", () => {
+  it("a long RFQ text is clipped in the middle, keeping the AI disclosure and the ask (no reference code)", () => {
     const job = { short_code: "ZQ9R", request: { ...request, what: "dinner catering with a very long description of everything", area: "Y Combinator HQ, 320 Pioneer Way, Mountain View, CA", details: [{ label: "Company", value: "Some Extremely Long Startup Name Incorporated" }] } } as never;
     const t = HaggleEngine.rfqIMessageText("Golden Grill and Catering Company", job);
     expect(t.length).toBeLessThanOrEqual(159);
     expect(t).toMatch(/I'm an AI assistant for /);
-    expect(t).toMatch(/(Ref )?HG-ZQ9R$/);
+    expect(t).toMatch(/Total \+ deposit\?$/);
+    expect(t).not.toMatch(/HG-/);
     expect(t).not.toMatch(/https?:|\d{3}[\s.-]\d{3}[\s.-]\d{4}/);
   });
 

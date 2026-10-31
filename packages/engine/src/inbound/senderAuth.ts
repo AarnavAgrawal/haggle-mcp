@@ -1,14 +1,17 @@
 // PURE: identity checks for mail and texts from outside Inkbox (real vendors on Gmail, Outlook,
 // their own domains), plus opt-out and bounce recognition. Inkbox authenticates only its own
-// identities and exposes no SPF/DKIM/DMARC results for other mail, so a From address and a thread
-// are never proof. A reply counts as the pinned business only with all of:
+// identities and exposes no SPF/DKIM/DMARC results for other mail, so a From address alone is never
+// proof. A reply counts as the pinned business ("external-thread-reply", continuity only) with all of:
 //   1. From = the address Haggle wrote to (the snapshot on the job);
-//   2. In-Reply-To/References naming one of Haggle's own outbound Message-IDs to that business;
-//   3. the business's reply token (an HMAC of job + business under a server secret, sent only to
-//      that address in the subject and body of every email to it), quoted back in the reply;
-//   4. no authentication failure in whatever evidence the provider does give (DMARC/SPF fail).
-// When a provider supplies an aligned DMARC pass (or aligned DKIM) for the pinned domain, that
-// stands in for the token. Anything else is quarantined: "identity_unverified".
+//   2. In-Reply-To/References naming one of Haggle's own outbound Message-IDs to that business
+//      (provider-generated and unguessable: only someone holding Haggle's email to that address has one);
+//   3. no authentication failure in whatever evidence the provider does give (DMARC/SPF fail).
+// An aligned DMARC pass (or aligned DKIM) for the pinned domain proves the sender outright
+// ("external-dmarc-aligned"). A new email (not a reply) from the pinned address, matched only because
+// the sender has one open deal ("sender_only"), is accepted as "external-sender-only": the weakest
+// level, a quote at most. Anything else is quarantined: "identity_unverified".
+// Until 2026-10-30 Haggle also sent a reply token (HGR-…) and required it; it is no longer sent or
+// required (replyToken stays only so stored legacy tokens can be recognised and masked).
 import { createHmac } from "node:crypto";
 import type { AuthEvidence } from "./types.ts";
 import { normalizeAddress, normalizeMessageId } from "./matching.ts";
@@ -37,22 +40,23 @@ export function authPassedFor(e: AuthEvidence, pinned: string): boolean {
   return (/^pass$/i.test(e.dmarc ?? "") && (e.dmarcFromDomain ?? "").toLowerCase() === d) || e.alignedDkimDomains.some((x) => x.toLowerCase() === d);
 }
 
-export type ExternalReplyVerdict = { ok: true; reason: "external-reply-token" | "external-dmarc-aligned" } | { ok: false; reason: "identity_unverified"; detail: string };
+export type ExternalReplyVerdict = { ok: true; reason: "external-thread-reply" | "external-dmarc-aligned" | "external-sender-only" } | { ok: false; reason: "identity_unverified"; detail: string };
 
 export function verifyExternalReply(i: {
   from: string; pinned: string; inReplyTo: string[]; references: string[]; ourMessageIds: (string | null)[];
-  subject: string | null; bodyText: string | null; token: string; evidence: AuthEvidence;
+  evidence: AuthEvidence;
+  /** Matched only by sender (one open deal, no thread signal): accepted at the lowest level. */
+  senderOnly?: boolean;
 }): ExternalReplyVerdict {
   const no = (detail: string): ExternalReplyVerdict => ({ ok: false, reason: "identity_unverified", detail });
   if (normalizeAddress(i.from) !== normalizeAddress(i.pinned)) return no("from_mismatch");
   if (authFailed(i.evidence)) return no("auth_failed");
+  if (authPassedFor(i.evidence, i.pinned)) return { ok: true, reason: "external-dmarc-aligned" };
   const ours = new Set(i.ourMessageIds.filter((x): x is string => !!x).map(normalizeMessageId));
   const inThread = [...i.inReplyTo, ...i.references].some((x) => ours.has(normalizeMessageId(x)));
-  if (!inThread) return no("not_in_our_thread");
-  if (authPassedFor(i.evidence, i.pinned)) return { ok: true, reason: "external-dmarc-aligned" };
-  const hay = `${i.subject ?? ""}\n${i.bodyText ?? ""}`.toUpperCase();
-  if (!hay.includes(i.token.toUpperCase())) return no("token_missing");
-  return { ok: true, reason: "external-reply-token" };
+  if (inThread) return { ok: true, reason: "external-thread-reply" };
+  if (i.senderOnly) return { ok: true, reason: "external-sender-only" };
+  return no("not_in_our_thread");
 }
 
 /**

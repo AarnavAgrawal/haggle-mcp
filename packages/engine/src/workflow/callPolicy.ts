@@ -62,7 +62,7 @@ export function buildVoiceInstructions(customer: string, jobs: VoiceJob[]): stri
   const block = (j: VoiceJob, withDetails: boolean) => {
     const r = j.request;
     const what = [r.what, r.quantity !== undefined ? `${r.quantity} ${r.unit ?? "people"}` : null, r.date ? `on ${r.date}` : null, r.area ? `in ${r.area}` : null].filter(Boolean).join(", ");
-    const lines = [`[HG-${j.shortCode}] ${what}.`, `Businesses: ${j.businesses.map((b) => `${b.name}${b.phone ? ` (${b.phone})` : ""}`).join("; ")}.`];
+    const lines = [`- ${what}.`, `Businesses: ${j.businesses.map((b) => `${b.name}${b.phone ? ` (${b.phone})` : ""}`).join("; ")}.`];
     if (withDetails) {
       for (const d of r.details ?? []) lines.push(`${d.label}: ${d.value}.`);
       const reqs = r.requirements.filter((x) => x.hard).map((x) => x.text);
@@ -72,7 +72,9 @@ export function buildVoiceInstructions(customer: string, jobs: VoiceJob[]): stri
     lines.push(`Find out: ${find.join("; ")}.`);
     return lines.join(" ");
   };
-  const head = [...rules, "", "Open requests (match the caller by their number or business name):"];
+  // No reference codes: when the caller's business is on more than one open request, ask which one in
+  // plain words (by what, how many and when) and say it back in the call, so the transcript names it.
+  const head = [...rules, "If the caller could be calling about more than one of the requests below, ask which one by describing each (what, how many, when), and repeat the one they pick.", "", "Open requests (match the caller by their number or business name):"];
   for (const withDetails of [true, false]) {
     for (let n = jobs.length; n > 0; n--) {
       const text = [...head, ...jobs.slice(0, n).map((j) => block(j, withDetails))].join("\n");

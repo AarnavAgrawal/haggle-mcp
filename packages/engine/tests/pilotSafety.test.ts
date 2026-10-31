@@ -68,59 +68,64 @@ function mail(env: Env, b: { rfq_message_id: string | null }, n: number, over: P
   return env.engine.ingest({ providerEventId: `ev${n}`, eventType: "message.received", providerEmailId: `in_${n}`, threadId: `th${n}`, messageId: `<in_${n}@realcaterer.example>`, inReplyTo: [rfq], references: [rfq], from: VENDOR, to: ["haggle@inkboxmail.test"], subject: "Re: Quote request", bodyText: "We can do it: $1,150 total, delivered. $345 deposit.", attachments: [], attachmentsDownloadUrl: null, ...over }, trust);
 }
 
-describe("real external email (Gmail/Outlook) is accepted only with proof beyond From and thread", () => {
-  const cfg = { externalSenders: "reply_token" as const, replyTokenSecret: SECRET };
+describe("real external email (Gmail/Outlook) is accepted only with proof beyond a From address", () => {
+  const cfg = { externalSenders: "reply_token" as const };
 
-  it("every email to the business carries its reply token; a reply that keeps it, from the pinned address, in our thread, becomes a quote", async () => {
+  it("no email to the business carries a code or token; a reply naming Haggle's Message-ID, from the pinned address, becomes a quote", async () => {
     const env = setup(cfg);
     const { jobId, b } = await dealWith(env);
     const token = replyToken(SECRET, jobId, b.business_id);
-    expect(env.emails[0]!.subject).toContain(token);
-    expect(env.emails[0]!.bodyText).toContain(token);
+    expect(env.emails[0]!.subject).toMatch(/^Quote request: /);
+    expect(`${env.emails[0]!.subject}\n${env.emails[0]!.bodyText}`).not.toMatch(/HGR-|HG-|\bref\b/i);
+    expect(env.emails[0]!.bodyText).not.toContain(token);
     expect((await mail(env, b, 1, { subject: env.emails[0]!.subject.replace(/^/, "Re: ") })).outcome).toBe("stored");
     await env.engine.advanceJob(jobId);
     const q = (await env.engine.getQuotes(jobId)).quotes.find((x) => x.business === "Real Caterer")!;
     expect(q.total_usd).toBe(1150);
     const m = (await env.repo.listMessages(jobId)).find((x) => x.direction === "in")!;
-    expect(m).toMatchObject({ sender_trusted: true, trust_reason: "external-reply-token" });
+    expect(m).toMatchObject({ sender_trusted: true, trust_reason: "external-thread-reply" });
   });
 
-  it("a forged reply with the right From and thread but no token is quarantined, never a quote", async () => {
+  it("a new email (no Message-ID of ours) from the pinned address of a business with one open deal is a quote at the lowest trust", async () => {
     const env = setup(cfg);
     const { jobId, b } = await dealWith(env);
-    expect((await mail(env, b, 2, { subject: "Re: Quote request", bodyText: "Updated: $1 total. $1 deposit." })).outcome).toBe("quarantined:identity_unverified");
+    expect((await mail(env, b, 2, { inReplyTo: [], references: [], threadId: "new", subject: "Our quote", bodyText: "We can do it: $1,200 total." })).outcome).toBe("stored");
+    const m = (await env.repo.listMessages(jobId)).find((x) => x.direction === "in")!;
+    expect(m).toMatchObject({ sender_trusted: true, trust_reason: "external-sender-only", matched_via: "sender_only" });
     await env.engine.advanceJob(jobId);
-    expect((await env.engine.getQuotes(jobId)).quotes).toHaveLength(0);
+    expect((await env.engine.getQuotes(jobId)).quotes.find((x) => x.business === "Real Caterer")!.total_usd).toBe(1200);
   });
 
-  it("a wrong or guessed token, or the token outside our thread, is quarantined", async () => {
+  it("a new email from a business with two open deals on the mailbox is held for review, never guessed", async () => {
     const env = setup(cfg);
-    const { jobId, b } = await dealWith(env);
-    const token = replyToken(SECRET, jobId, b.business_id);
-    expect((await mail(env, b, 3, { subject: "Re: ref HGR-AAAAAAAAAA" })).outcome).toBe("quarantined:identity_unverified");
-    // The token without In-Reply-To/References to Haggle's own message (a new thread naming the job code).
-    const job = (await env.repo.getJob(jobId))!;
-    expect((await mail(env, b, 4, { inReplyTo: [], references: [], threadId: "new", subject: `[HG-${job.short_code}] ${token}` })).outcome).toBe("quarantined:identity_unverified");
-    // The token from another address is a sender mismatch.
-    expect((await mail(env, b, 5, { from: "attacker@gmail.example", subject: `Re: ${token}` })).outcome).toMatch(/^quarantined/);
+    const d1 = await dealWith(env);
+    const d2 = await dealWith(env);
+    expect((await mail(env, d1.b, 3, { inReplyTo: [], references: [], threadId: "new", subject: "Updated", bodyText: "Updated: $1 total. $1 deposit." })).outcome).toBe("quarantined:ambiguous_sender");
+    for (const id of [d1.jobId, d2.jobId]) {
+      await env.engine.advanceJob(id);
+      expect((await env.engine.getQuotes(id)).quotes).toHaveLength(0);
+    }
+    // A reply naming a Message-ID that isn't Haggle's is not a reply to Haggle: held the same way.
+    expect((await mail(env, d1.b, 4, { inReplyTo: ["<forged@realcaterer.example>"], references: [], threadId: "new2" })).outcome).toBe("quarantined:ambiguous_sender");
+    // Another address in Haggle's thread is a sender mismatch.
+    expect((await mail(env, d1.b, 5, { from: "attacker@gmail.example" })).outcome).toMatch(/^quarantined/);
   });
 
-  it("explicit authentication failure evidence overrides the token", async () => {
+  it("explicit authentication failure evidence overrides the thread", async () => {
     const env = setup(cfg);
-    const { jobId, b } = await dealWith(env);
-    const token = replyToken(SECRET, jobId, b.business_id);
+    const { b } = await dealWith(env);
     const dmarcFail = (): TrustVerdict => ({ trusted: false, retryable: false, reason: "unverified-external-sender", evidence: { ...noEvidence, dmarc: "fail", dmarcFromDomain: "realcaterer.example" } });
-    expect((await mail(env, b, 6, { subject: `Re: ${token}` }, dmarcFail)).outcome).toBe("quarantined:identity_unverified");
+    expect((await mail(env, b, 6, {}, dmarcFail)).outcome).toBe("quarantined:identity_unverified");
   });
 
-  it("off by default, and refuses to start without a secret", async () => {
+  it("off by default, and needs no secret any more", async () => {
     const env = setup();
     const { jobId, b } = await dealWith(env);
-    expect(env.emails[0]!.subject).not.toMatch(/HGR-/);
+    expect(env.emails[0]!.subject).not.toMatch(/HGR-|HG-/);
     await mail(env, b, 7);
     await env.engine.advanceJob(jobId);
     expect((await env.engine.getQuotes(jobId)).quotes).toHaveLength(0);
-    expect(() => setup({ externalSenders: "reply_token" })).toThrow(/replyTokenSecret/);
+    expect(() => setup({ externalSenders: "reply_token" })).not.toThrow();
   });
 });
 

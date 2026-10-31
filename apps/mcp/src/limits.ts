@@ -129,7 +129,7 @@ export function limitsMiddleware(o: LimitsOptions) {
   return async (c: LimitContext, next: () => Promise<void>): Promise<Response | void> => {
     const path = c.req.path;
     const isMcp = path === o.basePath || /^\/c\/[^/]+\/mcp$/.test(path);
-    const isWebhook = path === webhookPath;
+    const isWebhook = path === webhookPath || path.startsWith(`${webhookPath}/`); // + per-workspace identities
     if ((isMcp || isWebhook) && c.req.method === "POST") {
       const cap = isWebhook ? cfg.webhookMaxBytes : cfg.mcpMaxBytes;
       if ((await bodySize(c.req.raw, cap)) > cap) {

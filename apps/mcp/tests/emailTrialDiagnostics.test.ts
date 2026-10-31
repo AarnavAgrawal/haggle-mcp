@@ -63,12 +63,12 @@ describe("(a) Message-ID chain", () => {
     const viaStored = evaluateReply(gmail(run, { inReplyTo: stored, references: [stored] }), run, idsOf(run, stored, "0100019aStored-0000"));
     expect(viaStored.message_id_chain).toMatchObject({ send_time: { in_reply_to: false, references: false }, record: "stored", verdict: expect.stringMatching(/engine must record the stored id/) });
     expect(viaStored.verdict).toBe("identity_unverified:not_in_our_thread");
-    expect(viaStored.verdict_any_known_id).toBe("ok:external-reply-token");
+    expect(viaStored.verdict_any_known_id).toBe("ok:external-thread-reply");
     // The mailbox stores what send() returned, but SES rewrote the header recipients saw (region domain differs too).
     const ses = "<0100019aSesOnly-0000@us-west-2.amazonses.com>";
     const viaSes = evaluateReply(gmail(run, { inReplyTo: ses, references: [ses] }), run, idsOf(run, run.send!.messageId, "0100019aSesOnly-0000"));
     expect(viaSes.message_id_chain).toMatchObject({ record: "ses", verdict: expect.stringMatching(/must record the SES Message-ID/) });
-    expect(viaSes.verdict_any_known_id).toBe("ok:external-reply-token");
+    expect(viaSes.verdict_any_known_id).toBe("ok:external-thread-reply");
   });
   it("no headers at all, or only foreign ids, is said plainly", () => {
     const run = sentRun();
@@ -84,12 +84,12 @@ describe("(b) reply-token survival and how the engine would match", () => {
     for (const [e, client] of [[evaluateReply(gmail(run), run, idsOf(run)), "gmail"], [evaluateReply(outlook(runO), runO, idsOf(runO)), "outlook"], [evaluateReply(ios(run), run, idsOf(run)), "ios"]] as const) {
       expect(e.token, client).toEqual({ where: ["subject", "quoted text"], summary: "subject + quoted text", engine_sees_it: true });
       expect(e.engine.match_by, client).toBe("header+token");
-      expect(e.verdict, client).toBe("ok:external-reply-token");
+      expect(e.verdict, client).toBe("ok:external-thread-reply");
       expect(e.quoted_history_cut, client).toBe(true);
       expect(e.own_words_preview, client).not.toMatch(/THIS IS A TEST/);
     }
   });
-  it("quote deleted, subject kept: subject only; edited subject, quote kept: quoted text only; both removed: header only (token_missing)", () => {
+  it("quote deleted, subject kept: subject only; edited subject, quote kept: quoted text only; both removed: header only, still verified (no token needed)", () => {
     const run = sentRun();
     expect(evaluateReply(gmail(run, { bodyText: "$1,150 total." }), run, idsOf(run)).token.summary).toBe("subject");
     const edited = evaluateReply(gmail(run, { subject: "pricing for the 23rd" }), run, idsOf(run));
@@ -97,8 +97,8 @@ describe("(b) reply-token survival and how the engine would match", () => {
     expect(edited.notes).toContain("token only in quoted text");
     expect(edited.engine.match_by).toBe("header+token"); // the engine searches the whole body
     const stripped = evaluateReply(gmail(run, { subject: "pricing", bodyText: "$1,150 total." }), run, idsOf(run));
-    expect(stripped).toMatchObject({ token: { summary: "not found", engine_sees_it: false }, engine: { match_by: "header" }, verdict: "identity_unverified:token_missing" });
-    expect(stripped.quarantine).toMatchObject({ reason: "identity_unverified:token_missing", explanation: expect.stringMatching(/without Haggle's reference code/), next_step: expect.stringMatching(/scenario 2\/3/) });
+    expect(stripped).toMatchObject({ token: { summary: "not found", engine_sees_it: false }, engine: { match_by: "header" }, verdict: "ok:external-thread-reply" });
+    expect(stripped.quarantine).toBeNull();
   });
   it("a token pasted into the reporter's own words is seen there; a forward from another address is a sender mismatch", () => {
     const run = sentRun();
@@ -130,16 +130,16 @@ describe("(d) quarantine reason and (e) keyword extraction, through the pipeline
     expect(evals[0]!.extraction).toMatchObject({ reader: KEYWORD_READER, total_usd: 1150, deposit_usd: 345, approvable: false, why_not_approvable: expect.any(String) });
     expect(evals[0]!.quarantine).toBeNull();
     expect(KEYWORD_READER).toMatch(/not Claude/);
-    expect(evals[1]).toMatchObject({ extraction: null, quarantine: { reason: "identity_unverified:token_missing" } });
-    expect(evals[2]!.quarantine).toMatchObject({ reason: "no_signal", explanation: expect.stringMatching(/couldn't be matched to any deal/) });
+    expect(evals[1]).toMatchObject({ extraction: { total_usd: 1150 }, quarantine: null }); // no token needed: its Message-ID verifies it
+    expect(evals[2]!.quarantine).toMatchObject({ reason: "ambiguous_sender", explanation: expect.stringMatching(/more than one open deal/) });
   });
   it("an ID mismatch is explained as an engine fix, not a tester problem", async () => {
     const run = sentRun(GMAIL, "<a1b2c3@inkboxmail.test>");
     const ses = "<0100019aSes-0000@email.amazonses.com>";
     const cap = gmail(run, { inReplyTo: ses, references: [ses], threadId: "thr_ses" });
     const [e] = withPipeline([evaluateReply(cap, run, idsOf(run, ses, "0100019aSes-0000"))], await replayCaptures(run, [cap]));
-    expect(e!.pipeline).toMatchObject({ outcome: "quarantined:identity_unverified" });
-    expect(e!.quarantine).toMatchObject({ reason: "identity_unverified:not_in_our_thread", next_step: expect.stringMatching(/^Engine fix, not a tester problem: this reply names the stored Message-ID/) });
+    expect(e!.pipeline).toMatchObject({ outcome: "quarantined:ambiguous_sender" }); // no Haggle id: a new email, and the vendor has two open deals
+    expect(e!.quarantine).toMatchObject({ reason: "ambiguous_sender", next_step: expect.stringMatching(/^Engine fix, not a tester problem: this reply names the stored Message-ID/) });
   });
 });
 
@@ -149,7 +149,7 @@ describe("overall verdict", () => {
     const evals = [gmail(run), ios(run), gmail(run, { subject: "pricing", bodyText: "$1,150 total." }), gmail(run, { fromAddress: OUTLOOK })].map((c) => evaluateReply(c, run, idsOf(run)));
     const v = overallVerdict(run, evals);
     expect(v.label).toBe("READY");
-    expect(v.line).toMatch(/^READY: replies match by Message-ID \(3\/3 replies name the send-time id; 2\/3 verified with the token\); 1 held/);
+    expect(v.line).toMatch(/^READY: replies match by Message-ID \(3\/3 replies name the send-time id; 3\/3 verified\)\.$/);
   });
   it("READY for Outlook too, though it drops References", () => {
     const run = sentRun(OUTLOOK);

@@ -144,7 +144,9 @@ describe("call policy", () => {
     expect(text.length).toBeLessThanOrEqual(MAX_VOICE_INSTRUCTIONS);
     expect(text).toMatch(/AI assistant/);
     expect(text).toMatch(/Never agree to buy/);
-    expect(text).toMatch(/\[HG-AB0\]/);
+    expect(text).toMatch(/^- lunch catering, 40 people/m);
+    expect(text).not.toMatch(/HG-/);
+    expect(text).toMatch(/ask which one by describing each/);
     expect(buildVoiceInstructions("a customer", [])).toMatch(/no open requests/);
     // The customer's AI assistant, never a brand.
     expect(text).toMatch(/Hi, I'm an AI assistant working on behalf of a customer/);
@@ -188,7 +190,7 @@ describe("any kind of request (custom ask, compare_by, payable_field)", { timeou
     const { engine, fleet, clock } = setup({ personas: [rapid, bayPipe] });
     const deal = await engine.deal({ request: PLUMBING, max_rounds: 1, businesses: [{ name: rapid.name, email: rapid.email }, { name: bayPipe.name, email: bayPipe.email }] });
     const rfq = fleet.sent.find((s) => s.to === rapid.email)!;
-    expect(rfq.subject).toMatch(/^\[HG-[A-Z0-9]{4}\] Quote request: fix a leaking kitchen sink$/);
+    expect(rfq.subject).toMatch(/^Quote request: fix a leaking kitchen sink$/);
     expect(rfq.bodyText).toMatch(/Could you reply by .* with:\n- Total price\n- Earliest date\n- Deposit \(if you can\)/);
     expect(rfq.bodyText).toMatch(/Fixture: kitchen sink/);
     expect(rfq.bodyText).not.toMatch(/People:|delivery/);
@@ -406,7 +408,8 @@ describe("approval lockout, waits, workspaces, voice context", { timeout: 120_00
     const deal = await engine.deal({ request: PLUMBING, businesses: [{ name: rapid.name, email: rapid.email }] });
     await new Promise((r) => setTimeout(r, 20));
     const code = (await engine.loadJob(deal.job_id)).short_code;
-    expect(set.at(-1)).toMatch(new RegExp(`\\[HG-${code}\\] fix a leaking kitchen sink`));
+    expect(set.at(-1)).toMatch(/^- fix a leaking kitchen sink/m);
+    expect(set.at(-1)).not.toContain(`HG-${code}`);
     expect(set.at(-1)).toMatch(/Find out: Total price; Earliest date; Deposit/);
     await engine.cancel(deal.job_id);
     await new Promise((r) => setTimeout(r, 20));

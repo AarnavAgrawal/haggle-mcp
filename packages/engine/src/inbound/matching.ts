@@ -6,7 +6,11 @@
 //   - A business match by thread or Message-ID also requires the From address to be that
 //     business's snapshot address. Anyone else posting into the thread is quarantined, so a
 //     forwarded or spoofed reply can never become that business's quote or invoice.
-//   - Subject tag is [HG-<code>].
+//   - Subject tag is [HG-<code>]. Haggle no longer puts it in subjects (2026-10-30); it is still read
+//     so replies in older threads keep matching.
+//   - Rule 5 (no codes): a new email, not a reply, from a business's pinned address, matches when that
+//     sender has exactly one open deal on the receiving mailbox ("sender_only", lower trust: never
+//     enough for binding terms; see workflow/engine.ts ingest). Several -> held as "ambiguous_sender".
 // Anything else is unmatched. An inbound email never creates a job.
 
 export interface BusinessCandidate {
@@ -16,6 +20,8 @@ export interface BusinessCandidate {
   email: string; // immutable per-job snapshot
   threadId: string | null;
   outboundMessageId: string | null;
+  /** Every Message-ID of Haggle's emails to this business on this job (the RFQ, reminders, counters, …). */
+  outboundMessageIds?: string[];
 }
 
 /** A pending approval whose reply we are waiting for (the human's inbox). */
@@ -39,13 +45,13 @@ export interface MatchInput {
   from: string;
 }
 
-type Via = "thread" | "message_id" | "subject_tag";
+export type Via = "thread" | "message_id" | "subject_tag" | "sender_only";
 
 export type MatchResult =
   | { kind: "business"; businessId: string; jobId: string; via: Via }
   | { kind: "approval"; approvalId: string; jobId: string; via: Via }
   | { kind: "quarantine"; reason: "sender_mismatch"; businessId: string; jobId: string; via: Via }
-  | { kind: "unmatched"; reason: "unknown_job_inbox" | "no_signal" };
+  | { kind: "unmatched"; reason: "unknown_job_inbox" | "no_signal" | "ambiguous_sender" };
 
 const SUBJECT_TAG = /\[HG-([A-Z0-9]{4,8})\]/i;
 const JOB_INBOX = /^job-([a-z0-9]{4,8})@(.+)$/i;
@@ -79,6 +85,8 @@ export function matchInbound(
   businesses: BusinessCandidate[],
   approvals: ApprovalCandidate[] = [],
   inboxDomain?: string,
+  /** Businesses on OPEN deals on the receiving mailbox whose pinned address is the sender (rule 5). */
+  openBySender: BusinessCandidate[] = [],
 ): MatchResult {
   // 0. A job inbox recipient narrows every candidate to that job.
   if (inboxDomain) {
@@ -111,7 +119,7 @@ export function matchInbound(
     const hits = (id: string | null) => id !== null && refs.has(normalizeMessageId(id));
     const a = approvals.find((c) => hits(c.outboundMessageId));
     if (a) return approvalHit(a, "message_id");
-    const b = businesses.find((c) => hits(c.outboundMessageId));
+    const b = businesses.find((c) => hits(c.outboundMessageId)) ?? businesses.find((c) => (c.outboundMessageIds ?? []).some(hits));
     if (b) return businessHit(b, "message_id");
   }
 
@@ -130,6 +138,15 @@ export function matchInbound(
     const b = businesses.find((c) => normalizeAddress(c.email) === from);
     if (b) return { kind: "business", businessId: b.businessId, jobId: b.jobId, via: "subject_tag" };
   }
+
+  // 5. A new email (no thread signal of ours) from a pinned address: the deal only when the sender
+  //    has exactly one open deal on this mailbox. Never a guess between several.
+  const mine = new Map(openBySender.filter((c) => normalizeAddress(c.email) === from).map((c) => [`${c.jobId}\u0000${c.businessId}`, c]));
+  if (mine.size === 1) {
+    const b = [...mine.values()][0]!;
+    return { kind: "business", businessId: b.businessId, jobId: b.jobId, via: "sender_only" };
+  }
+  if (mine.size > 1) return { kind: "unmatched", reason: "ambiguous_sender" };
 
   return { kind: "unmatched", reason: "no_signal" };
 }

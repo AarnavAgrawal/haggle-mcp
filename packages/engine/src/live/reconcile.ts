@@ -52,6 +52,11 @@ type Deps = {
    */
   catchUp?: Partial<CatchUpParams> | false;
   cursorScope?: string;
+  /**
+   * A workspace's own mailbox (HAGGLE_MAILBOX_PER_WORKSPACE): its mail is matched only to that
+   * mailbox's deals (engine.ingest { mailbox }). Unset for the shared buyer mailbox.
+   */
+  ingestMailbox?: string;
 };
 
 const TERMINAL = new Set(["paid", "confirmed", "cancelled", "failed"]);
@@ -300,7 +305,7 @@ export class InboundReconciler {
         const msg = inkboxToInbound(payload, detail);
         const trust = await inkboxSenderTrust(api, payload as never, detail, senderTrust);
         if (!trust.trusted && trust.retryable) return "retry";
-        const r = await this.d.engine.ingest(msg, trustForSender(trust, msg.from));
+        const r = await this.d.engine.ingest(msg, trustForSender(trust, msg.from), this.d.ingestMailbox ? { mailbox: this.d.ingestMailbox } : {});
         return r.outcome === "duplicate" ? "skip" : { channel: "email", providerId: id, jobId: r.jobId, outcome: r.outcome };
       });
     }
@@ -401,5 +406,61 @@ export class InboundReconciler {
       });
     }
     return calls.length >= limit;
+  }
+}
+
+/**
+ * The shared mailbox's reconciler plus one per active workspace mailbox (HAGGLE_MAILBOX_PER_WORKSPACE),
+ * each sweeping its own mailbox with its own catch-up marks (cursor scope = the mailbox). Workspace
+ * reconcilers are created as their mailboxes become active (`mailboxes()`) and sweep mail only.
+ */
+export type ReconcilerGroupDeps = { mailboxes: () => Promise<string[]>; make: (mailbox: string) => InboundReconciler; jobInbox: (jobId: string) => Promise<string | null>; log?: (event: string, data: Record<string, unknown>) => void };
+
+export class ReconcilerGroup {
+  private readonly perMailbox = new Map<string, InboundReconciler>();
+  private readonly primary: InboundReconciler;
+  private readonly d: ReconcilerGroupDeps;
+  constructor(primary: InboundReconciler, d: ReconcilerGroupDeps) {
+    this.primary = primary;
+    this.d = d;
+  }
+
+  noteHandled(key: string) {
+    this.primary.noteHandled(key);
+    for (const r of this.perMailbox.values()) r.noteHandled(key);
+  }
+
+  private async workspaceReconcilers(): Promise<InboundReconciler[]> {
+    try {
+      for (const m of await this.d.mailboxes()) {
+        const k = m.toLowerCase();
+        if (!this.perMailbox.has(k)) this.perMailbox.set(k, this.d.make(k));
+      }
+    } catch (e) {
+      this.d.log?.("reconcile_mailboxes_unavailable", { error: (e as Error).message?.slice(0, 200) });
+    }
+    return [...this.perMailbox.values()];
+  }
+
+  async sweepAll(): Promise<SweepResult> {
+    const out = await this.primary.sweepAll();
+    for (const r of await this.workspaceReconcilers()) {
+      const x = await r.sweepAll();
+      out.recovered.push(...x.recovered);
+      out.errors += x.errors;
+    }
+    return out;
+  }
+
+  /** The shared mailbox's sweep for the job, plus its own mailbox's when the deal has one. */
+  async sweepJob(jobId: string): Promise<number> {
+    let n = await this.primary.sweepJob(jobId);
+    const inbox = (await this.d.jobInbox(jobId).catch(() => null))?.toLowerCase();
+    if (inbox) {
+      await this.workspaceReconcilers();
+      const r = this.perMailbox.get(inbox);
+      if (r) n += await r.sweepJob(jobId);
+    }
+    return n;
   }
 }

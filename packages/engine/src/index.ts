@@ -55,6 +55,7 @@ export * from "./live/extractors.ts";
 export * from "./live/fleet.ts";
 export * from "./payments/disabledPayer.ts";
 export * from "./live/inkbox.ts";
+export * from "./live/workspaceMailboxes.ts";
 export * from "./live/reconcile.ts";
 export * from "./live/transient.ts";
 export * from "./payments/stripe.ts";

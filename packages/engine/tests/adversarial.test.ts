@@ -152,12 +152,14 @@ describe("spoofed senders and stolen threads", () => {
     } finally { e.restore(); }
   });
 
-  it("reply-token mode: a spoofed From in the stolen thread without the token is quarantined", async () => {
-    const e = await env({ externalSenders: "reply_token", replyTokenSecret: SECRET });
+  it("reply_token mode: a reply in Haggle's thread from the pinned address is continuity only (a quote, never identity); another address in it is quarantined", async () => {
+    const e = await env({ externalSenders: "reply_token" });
     try {
       const d = await dealWith(e, [V]);
-      expect((await reply(e, d, V, "Total: $1 delivered.", {}, external)).outcome).toBe("quarantined:identity_unverified");
+      expect((await reply(e, d, { email: "spoofer@evil.example", thread: V.email }, "Total: $1 delivered.", {}, external)).outcome).toBe("quarantined:sender_mismatch");
       expect(await current(e, d.jobId)).toHaveLength(0);
+      expect((await reply(e, d, V, "Total: $1,150 delivered.", {}, external)).outcome).toBe("stored");
+      expect((await e.repo.listMessages(d.jobId)).find((m) => m.direction === "in" && m.kind === "reply")).toMatchObject({ sender_trusted: true, trust_reason: "external-thread-reply" });
     } finally { e.restore(); }
   });
 

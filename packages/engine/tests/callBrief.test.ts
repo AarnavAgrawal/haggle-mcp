@@ -57,7 +57,7 @@ describe("HaggleEngine.callBrief: intake content", () => {
     const reqs = Array.from({ length: 6 }, (_, i) => `Requirement number ${i} with quite a lot of words in it to fill space`);
     const b = HaggleEngine.callBrief("Bay Movers", long, reqs);
     expect(b.length).toBeLessThanOrEqual(2000);
-    expect(b).toMatch(/Never agree to buy, book or pay, and never share payment details\. Reference HG-AB12\.$/);
+    expect(b).toMatch(/Never agree to buy, book or pay, and never share payment details\.$/);
     expect(b).toContain("the all-in total, itemized");
   });
 });
@@ -70,7 +70,7 @@ describe("HaggleEngine.rfqIMessageText: the ask", () => {
     expect(t.length).toBeLessThanOrEqual(159);
     const crowded = HaggleEngine.rfqIMessageText("Sunset Kitchen", { short_code: "AB12", request: { what: "lunch catering", quantity: 40, date: "2026-10-22", time: "12:00", area: "San Francisco, CA", requirements: [{ id: "v", kind: "dietary", text: "12 vegetarian", min_count: 12, hard: true }, { id: "d", kind: "delivery", text: "Delivered", hard: true }] } } as never);
     expect(crowded.length).toBeLessThanOrEqual(159);
-    expect(crowded).toMatch(/(All-in total|Total) \+ deposit\? Ref HG-AB12$|All-in total, [^?]+\? (Ref )?HG-AB12$/);
+    expect(crowded).toMatch(/(All-in total|Total)( \+ |, )[^?]+\?$/); // the ask ends it: no reference code to the business
   });
 });
 
@@ -90,6 +90,7 @@ describe("a flexible date window", async () => {
     const text = HaggleEngine.rfqIMessageText("Sunset Kitchen", flex);
     expect(text).toContain("Mon, Oct 19-Fri, Oct 23 (flexible)");
     expect(text.length).toBeLessThanOrEqual(159);
-    expect(text).toMatch(/HG-AB12$/); // the reference code survives the length limit
+    expect(text).toMatch(/(All-in total|Total)( \+ |, )[^?]+\?$/); // no reference code to the business
+    expect(text).not.toMatch(/HG-/);
   });
 });

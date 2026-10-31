@@ -20,7 +20,6 @@ const ERRORS: [string, Record<string, string>, RegExp][] = [
   ["development on a 'production' URL", { ...LIVE, HAGGLE_ENV: "development", HAGGLE_PROD_DB_HOSTS: "", SUPABASE_DB_URL: "postgres://u:hunter2pw@db.example/haggle_production" }, /points at a production database/],
   ["live without a required key", { ...LIVE, INKBOX_WEBHOOK_SECRET: "" }, /^INKBOX_WEBHOOK_SECRET is required in live mode$/],
   ["live with a non-postgres URL", { ...LIVE, SUPABASE_DB_URL: "https://hunter2pw.example" }, /^SUPABASE_DB_URL is not a postgres:\/\/ connection string$/],
-  ["reply tokens with a short secret", { ...LIVE, HAGGLE_EXTERNAL_SENDERS: "reply_token", HAGGLE_REPLY_TOKEN_SECRET: "SECRETVALUE" }, /^HAGGLE_REPLY_TOKEN_SECRET must be at least 16/],
   ["Stripe payments without the customer", { ...LIVE, HAGGLE_ENABLE_PAYMENTS: "true", STRIPE_SECRET_KEY: "sk_test_SECRETVALUE", STRIPE_PAYMENT_METHOD_ID: "pm_x" }, /^STRIPE_CUSTOMER_ID is required/],
   ["a live Stripe key", { ...LIVE, HAGGLE_ENABLE_PAYMENTS: "true", STRIPE_SECRET_KEY: "sk_live_SECRETVALUE", STRIPE_CUSTOMER_ID: "cus_x", STRIPE_PAYMENT_METHOD_ID: "pm_x" }, /^STRIPE_SECRET_KEY must be a test-mode key/],
   ["a mock database that isn't postgres", { HAGGLE_MOCK_DATABASE_URL: "mysql://u:hunter2pw@x/y" }, /^HAGGLE_MOCK_DATABASE_URL is not a postgres:\/\/ connection string$/],

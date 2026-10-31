@@ -6,7 +6,7 @@
 // when HAGGLE_ENABLE_PAYMENTS=true and the key is sk_test_ (refuses to start otherwise); without the
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
-  businessIdForContact, listingProviderFromEnv, MAX_ROUNDS, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
+  businessIdForContact, listingProviderFromEnv, MAX_ROUNDS, WorkspaceMailboxes, inkboxAdminApi, ReconcilerGroup, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
   withHeuristicFallback, AiUsageMeter, aiUsageSink, aiLimitsFromEnv, hydrateAiMeter, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
 } from "@haggle/engine";
 import { haggleEnv } from "./config.ts";
@@ -110,10 +110,28 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // and before a negotiation round closes or "all quotes are in" goes out. HAGGLE_RECONCILE=false: off.
   const reconcileOn = env.HAGGLE_RECONCILE !== "false";
   let reconciler: InboundReconciler | null = null;
+  let reconcilers: Pick<InboundReconciler, "noteHandled" | "sweepAll" | "sweepJob"> | null = null;
+  // A mailbox per workspace (HAGGLE_MAILBOX_PER_WORKSPACE; off by default): needs an org-level Inkbox key and the public URL.
+  const perWorkspaceOn = /^(true|1|on|yes)$/i.test(env.HAGGLE_MAILBOX_PER_WORKSPACE?.trim() ?? "");
+  const adminKey = env.INKBOX_ADMIN_API_KEY?.trim();
+  const webhookBase = env.HAGGLE_WEBHOOK_BASE_URL?.trim();
+  if (perWorkspaceOn && (!adminKey || !webhookBase?.startsWith("https://"))) logger.warn("mailbox_per_workspace_off", { reason: "HAGGLE_MAILBOX_PER_WORKSPACE needs INKBOX_ADMIN_API_KEY and an https HAGGLE_WEBHOOK_BASE_URL; every deal uses the shared mailbox" });
+  const mailboxes = perWorkspaceOn && adminKey && webhookBase?.startsWith("https://")
+    ? new WorkspaceMailboxes({ repo, admin: inkboxAdminApi(adminKey), webhookBaseUrl: webhookBase, sharedMailbox: buyerMailbox, log: (event, data) => logger.info(event, data) })
+    : null;
+  /** The mailbox an inbound message arrived in: its recipient when that is ours, else its deal's, else the shared one. */
+  const mailboxOf = async (m: { to_address: string | null; job_id: string | null }) => {
+    if (!mailboxes) return buyerMailbox;
+    const to = m.to_address?.trim().toLowerCase();
+    if (to && (await mailboxes.isOurs(to))) return to;
+    const inbox = m.job_id ? (await repo.getJob(m.job_id))?.inbox : null;
+    return inbox && (await mailboxes.isOurs(inbox)) ? inbox.toLowerCase() : buyerMailbox;
+  };
   const engine = new HaggleEngine({
     repo,
-    ...(reconcileOn ? { reconcile: (jobId: string) => reconciler?.sweepJob(jobId) ?? Promise.resolve(0) } : {}),
-    email: inkboxEmail(api, buyerMailbox),
+    ...(reconcileOn ? { reconcile: (jobId: string) => reconcilers?.sweepJob(jobId) ?? Promise.resolve(0) } : {}),
+    email: inkboxEmail(api, buyerMailbox, mailboxes ? { isWorkspaceMailbox: (a) => mailboxes.isOurs(a) } : {}),
+    ...(mailboxes ? { mailboxes } : {}),
     ...(phonePort ? { phone: phonePort } : {}),
     ...(a2aPort ? { a2a: a2aPort } : {}),
     ...(imessagePort ? { imessage: imessagePort } : {}),
@@ -121,7 +139,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     // Inbound callbacks: keep the Voice AI's answering instructions in sync with open requests (calls on only).
     ...(phonePort && env.HAGGLE_SYNC_VOICE_CONTEXT !== "false" ? { voice: voice() } : {}),
     extractor,
-    attachments: inkboxAttachments(api, buyerMailbox),
+    attachments: inkboxAttachments(api, mailboxes ? mailboxOf : buyerMailbox),
     brain,
     payer: disabledPayer("Payments are not enabled on this server (HAGGLE_ENABLE_PAYMENTS is off); nothing was charged."),
     ...(stripe ? { stripe } : {}),
@@ -174,6 +192,15 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       },
     })
     : null;
+  // Each workspace mailbox is swept too (mail only, its own catch-up marks), its mail matched to its own deals.
+  reconcilers = reconciler && mailboxes
+    ? new ReconcilerGroup(reconciler, {
+      mailboxes: async () => (await mailboxes.mailboxes()).map((r) => r.mailbox!),
+      jobInbox: async (jobId) => (await repo.getJob(jobId))?.inbox ?? null,
+      log,
+      make: (mailbox) => new InboundReconciler({ engine, repo, jobMinIntervalMs: timings.reconcileJobMinIntervalMs, log, cursorScope: mailbox, ingestMailbox: mailbox, sources: { mail: { api, buyerMailbox: mailbox, senderTrust, identityAddresses } } }),
+    })
+    : reconciler;
   const sweepEvery = Math.max(1, Math.round(timings.reconcileEveryMs / TICK_MS));
   let ticks = 0;
   // A background failure is logged every time and alerted (deduplicated: at most once per 30 min per kind).
@@ -181,7 +208,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     logger.error(event, { error: e });
     void alerts.alert({ key: event, severity: "warn", summary: `${event.replace(/_/g, " ")} on the live server`, details: { error: (e as Error)?.message?.slice(0, 200) ?? String(e) } });
   };
-  const sweep = () => (reconciler ? reconciler.sweepAll().then(() => undefined, (e) => backgroundFailed("reconcile_failed", e)) : Promise.resolve());
+  const sweep = () => (reconcilers ? reconcilers.sweepAll().then(() => undefined, (e) => backgroundFailed("reconcile_failed", e)) : Promise.resolve());
   // Backup tick: deadlines advance even when no agent is calling. One per process: a dev hot reload
   // re-runs this with a new engine, and the old engine's tick (old code) must stop, or two engines
   // advance the same jobs (live 2026-10-18: both parsed one reply).
@@ -218,7 +245,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   setTimeout(() => void sweep(), 5_000).unref();
   // Public-listing discovery: Amazon Location Service (AWS_LOCATION_API_KEY), else Google Places, else off.
   const listing = listingProviderFromEnv(env);
-  logger.info("live_ready", { buyer: buyerMailbox, ai_limits: ai.snapshot().limits, alerts: alerts.enabled, stall_check_s: stallEveryS > 0 ? stallEveryS : false, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: env.HAGGLE_PAYMENTS === "manual" ? "manual-handoff" : stripe ? "stripe-test" : "disabled", external_senders: env.HAGGLE_EXTERNAL_SENDERS === "reply_token" ? "reply_token" : "off", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", discovery: listing?.kind ?? "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false });
+  logger.info("live_ready", { buyer: buyerMailbox, ai_limits: ai.snapshot().limits, alerts: alerts.enabled, stall_check_s: stallEveryS > 0 ? stallEveryS : false, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: env.HAGGLE_PAYMENTS === "manual" ? "manual-handoff" : stripe ? "stripe-test" : "disabled", external_senders: env.HAGGLE_EXTERNAL_SENDERS === "reply_token" ? "reply_token" : "off", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, mailbox_per_workspace: mailboxes !== null, discovery: listing?.kind ?? "off", reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false });
   // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
   let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };
   const channels = async (): Promise<ChannelStatus> => {
@@ -234,5 +261,5 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     ...(brainStore.checkSchema ? { brain: { checkSchema: () => brainStore.checkSchema!() } } : {}),
     providers: { inkbox: true, anthropic: true, payments: env.HAGGLE_PAYMENTS === "manual" ? "manual" as const : stripe ? "stripe_test" as const : "disabled" as const, alerts: alerts.enabled },
   };
-  return { mode: "live", engine, brain, missing: [], roster, channels, configErrors: vendorConfig.errors, ops, ...(listing ? { listing } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript }, ...(reconciler ? { reconciler } : {}) };
+  return { mode: "live", engine, brain, missing: [], roster, channels, configErrors: vendorConfig.errors, ops, ...(listing ? { listing } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript, ...(mailboxes ? { workspaceIdentity: (h: string) => mailboxes.byHandle(h) } : {}) }, ...(reconcilers ? { reconciler: reconcilers } : {}) };
 });

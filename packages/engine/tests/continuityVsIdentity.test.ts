@@ -68,7 +68,7 @@ async function tokenQuote(env: Env) {
   expect((await d.reply("Yes: $1,150 total, delivered.")).outcome).toBe("stored");
   await env.engine.advanceJob(d.jobId);
   const msg = (await env.repo.listMessages(d.jobId)).find((m) => m.direction === "in")!;
-  expect(msg).toMatchObject({ sender_trusted: true, trust_reason: "external-reply-token" });
+  expect(msg).toMatchObject({ sender_trusted: true, trust_reason: "external-thread-reply" });
   expect(provesSenderIdentity(msg)).toBe(false);
   const q = (await env.engine.getQuotes(d.jobId)).quotes[0]!;
   return { ...d, q };

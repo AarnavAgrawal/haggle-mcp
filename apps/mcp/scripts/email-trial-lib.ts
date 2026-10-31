@@ -337,7 +337,7 @@ export function newRun(o: { to: string; buyerMailbox: string; now: Date; random?
   const jobId = `job_${runId}`;
   const businessId = `biz_${rnd(4).toString("hex")}`;
   const token = replyToken(secret, jobId, businessId);
-  return { runId, startedAt: o.now.toISOString(), buyerMailbox: normalizeAddress(o.buyerMailbox), to: o.to, secret, jobId, businessId, token, subject: `[HAGGLE TEST] [HG-${TRIAL_CODE}] Reply-handling trial (ref ${token})` };
+  return { runId, startedAt: o.now.toISOString(), buyerMailbox: normalizeAddress(o.buyerMailbox), to: o.to, secret, jobId, businessId, token, subject: `[HAGGLE TEST] Reply-handling trial (ref ${token})` }; // no [HG-…] tag: real RFQs carry none (2026-10-30)
 }
 
 /** The one clearly-labelled TEST email: no purchase, explains itself, carries the token like a real RFQ. */
@@ -491,7 +491,7 @@ export function evaluateReply(detail: InkboxMessageDetail, run: TrialRun, ids: {
     [{ businessId: run.businessId, jobId: run.jobId, shortCode: TRIAL_CODE, email: run.to, threadId: run.send?.threadId ?? null, outboundMessageId: ourSend }],
   );
   const verify = (ours: (string | null)[]) => {
-    const v = verifyExternalReply({ from, pinned: run.to, inReplyTo: msg.inReplyTo, references: msg.references, ourMessageIds: ours, subject: msg.subject, bodyText: msg.bodyText, token: run.token, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
+    const v = verifyExternalReply({ from, pinned: run.to, inReplyTo: msg.inReplyTo, references: msg.references, ourMessageIds: ours, evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } });
     return v.ok ? `ok:${v.reason}` : `${v.reason}:${v.detail}`;
   };
   const body = msg.bodyText ?? "";
@@ -517,9 +517,9 @@ export function evaluateReply(detail: InkboxMessageDetail, run: TrialRun, ids: {
   const pinned = strictAddress(from) !== null && strictAddress(from) === strictAddress(run.to);
   const matchBy: MatchBy = !pinned ? "sender_mismatch" : header && engineSees ? "header+token" : header ? "header" : engineSees ? "token" : "none";
   const engineSummary = {
-    "header+token": "matches by Message-ID header and verifies by token: accepted as the business's reply",
-    header: "matches by Message-ID header, but the token is gone: quarantined (identity_unverified:token_missing)",
-    token: "token present, but no Haggle Message-ID the engine records in its headers: quarantined (identity_unverified:not_in_our_thread)",
+    "header+token": "matches by Message-ID header: accepted as the business's reply (the engine no longer needs the token)",
+    header: "matches by Message-ID header: accepted as the business's reply",
+    token: "no Haggle Message-ID in its headers: a new email to the engine, read only when the vendor has exactly one open deal (lowest trust), else held (ambiguous_sender)",
     none: "neither a recorded Message-ID nor the token: not matched as the business's reply",
     sender_mismatch: "from another address than Haggle wrote to: quarantined whatever its headers or token",
   }[matchBy];
@@ -545,7 +545,7 @@ export function evaluateReply(detail: InkboxMessageDetail, run: TrialRun, ids: {
 export function explainReason(reason: string, chain?: MessageIdChain): { reason: string; explanation: string; next_step: string } {
   const e = explainQuarantine(reason);
   let next = e.action;
-  if (reason.endsWith(":not_in_our_thread") && chain && (chain.record === "stored" || chain.record === "ses")) {
+  if ((reason.endsWith(":not_in_our_thread") || reason === "ambiguous_sender") && chain && (chain.record === "stored" || chain.record === "ses")) {
     next = `Engine fix, not a tester problem: this reply names the ${chain.record === "ses" ? "SES" : "stored"} Message-ID, but the engine records send()'s return value. Record that id after sending before any pilot; report it to the coordinator.`;
   } else if (reason.endsWith(":not_in_our_thread")) next = `Expected for a new email (scenario 8). For a reply made with Reply, the client dropped the thread headers: note the client. ${e.action}`;
   else if (reason.endsWith(":token_missing")) next = `Expected for scenario 2/3 when the subject and quote were both removed. Otherwise note the client: it stripped the reference. ${e.action}`;
@@ -594,7 +594,7 @@ export function overallVerdict(run: Pick<TrialRun, "to">, replies: ReplyEvaluati
   const sendTime = by("send_time");
   if (sendTime) {
     const rest = n - verified;
-    return { label: "READY", line: `READY: replies match by Message-ID (${sendTime}/${n} replies name the send-time id; ${verified}/${n} verified with the token)${rest ? `; ${rest} held: see each reply's quarantine reason (expected for the edited-subject, fresh-email scenarios)` : ""}.` };
+    return { label: "READY", line: `READY: replies match by Message-ID (${sendTime}/${n} replies name the send-time id; ${verified}/${n} verified)${rest ? `; ${rest} held: see each reply's quarantine reason (expected for the edited-subject, fresh-email scenarios)` : ""}.` };
   }
   const other = by("stored") + by("ses");
   if (other) {

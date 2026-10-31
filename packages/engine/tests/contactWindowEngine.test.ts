@@ -70,7 +70,7 @@ describe("reminders to a silent business", () => {
     expect(r1.thread?.inReplyTo).toMatch(/^<em_1_/);
     expect(r1.subject).toBe(rfq.subject);
     expect(r1.bodyText).toMatch(/reply STOP/);
-    expect(r1.bodyText).toContain(d.token(d.businesses[0]!.business_id));
+    expect(`${r1.subject}\n${r1.bodyText}`).not.toMatch(/HGR-|HG-/); // no code: threaded on the RFQ's Message-ID
     // Due again Mon 14:00 (Fri 7h + Sat 11h + Mon 6h). Saturday 18:00 is too soon; Monday 23:00 is outside the window.
     env.clock.set(la(2026, 10, 24, 18));
     await env.engine.advanceJob(d.jobId);

@@ -12,19 +12,21 @@ const V = { name: "Valley Catering", email: "orders@valley.example" };
 const W = { name: "Westside Kitchen", email: "hello@westside.example" };
 const HOW = "phoned Valley Catering at the number on its website; they confirmed $1,150 total";
 
-async function tokenlessReply(env: LiveEnv) {
+/** A message the provider put in the business's thread that names none of Haggle's Message-IDs: held (not_in_our_thread). */
+async function threadOnlyReply(env: LiveEnv) {
   const d = await dealWith(env, [V, W]);
   const b = d.businesses.find((x) => x.email === V.email)!;
-  const r = await vendorReply(env, b, d.token(b.business_id), { subject: "Re: Quote request", bodyText: `We can do it: $1,150 total, delivered. Call me at (415) 555-0199 or write ${V.email}.\n\nOn Thu, Haggle <${BUYER}> wrote:\n> Budget: up to $2,000 total` });
+  await env.repo.updateBusiness(d.jobId, b.business_id, { thread_id: "th_valley" });
+  const r = await vendorReply(env, b, "", { threadId: "th_valley", inReplyTo: [], references: [], subject: "Re: Quote request", bodyText: `We can do it: $1,150 total, delivered. Call me at (415) 555-0199 or write ${V.email}.\n\nOn Thu, Haggle <${BUYER}> wrote:\n> Budget: up to $2,000 total` });
   expect(r.outcome).toBe("quarantined:identity_unverified");
   const held = (await env.repo.listMessages(d.jobId)).find((m) => m.direction === "in")!;
   return { ...d, b, held };
 }
 
 async function releaseFlow(env: LiveEnv) {
-  const { jobId, b, held } = await tokenlessReply(env);
+  const { jobId, b, held } = await threadOnlyReply(env);
   const [entry] = await env.engine.quarantined({ jobId });
-  expect(entry).toMatchObject({ message_id: held.id, reason: "identity_unverified:token_missing", decision: null, job_id: jobId, business_id: b.business_id });
+  expect(entry).toMatchObject({ message_id: held.id, reason: "identity_unverified:not_in_our_thread", decision: null, job_id: jobId, business_id: b.business_id });
   // The preview is redacted, quoted history cut, untrusted text only.
   expect(entry!.preview).toContain("$1,150 total");
   expect(entry!.preview).not.toMatch(/555-0199|orders@valley|Budget: up to/);
@@ -33,11 +35,11 @@ async function releaseFlow(env: LiveEnv) {
   const r = await env.engine.releaseQuarantined({ messageId: held.id, verifiedBy: "Dana (ops)", how: HOW });
   expect(r).toMatchObject({ ok: true, jobId, businessId: b.business_id });
   const m = (await env.repo.getMessage(held.id))!;
-  expect(m).toMatchObject({ kind: "reply", sender_trusted: true, trust_reason: "operator_verified", quarantine_reason: "identity_unverified:token_missing" });
+  expect(m).toMatchObject({ kind: "reply", sender_trusted: true, trust_reason: "operator_verified", quarantine_reason: "identity_unverified:not_in_our_thread" });
   const [res] = await env.repo.listQuarantineResolutions({ messageId: held.id });
-  expect(res).toMatchObject({ decision: "released", original_reason: "identity_unverified:token_missing", original_trust_reason: "unverified-external-sender", resolved_by: "Dana (ops)", verification: HOW, released_trust_reason: "operator_verified" });
+  expect(res).toMatchObject({ decision: "released", original_reason: "identity_unverified:not_in_our_thread", original_trust_reason: "unverified-external-sender", resolved_by: "Dana (ops)", verification: HOW, released_trust_reason: "operator_verified" });
   expect(res!.resolved_at).toBeTruthy();
-  expect((await env.repo.listEvents(jobId)).find((e) => e.type === "quarantine_released")?.data).toMatchObject({ message_id: held.id, original_reason: "identity_unverified:token_missing", verified_by: "Dana (ops)" });
+  expect((await env.repo.listEvents(jobId)).find((e) => e.type === "quarantine_released")?.data).toMatchObject({ message_id: held.id, original_reason: "identity_unverified:not_in_our_thread", verified_by: "Dana (ops)" });
 
   // The next advance reads it as a quote; it is never proof of identity.
   await env.engine.advanceJob(jobId);
@@ -67,7 +69,7 @@ describe("release", () => {
 
   it("refuses without who and how, twice, onto another deal or business, or once the deal is past approval", async () => {
     const env = liveEngine();
-    const { jobId, b, held } = await tokenlessReply(env);
+    const { jobId, b, held } = await threadOnlyReply(env);
     const other = (await env.repo.getBusinesses(jobId)).find((x) => x.business_id !== b.business_id)!;
     expect(await env.engine.releaseQuarantined({ messageId: held.id, verifiedBy: "", how: HOW })).toMatchObject({ ok: false, code: "bad_input" });
     expect(await env.engine.releaseQuarantined({ messageId: held.id, verifiedBy: "Dana", how: "ok" })).toMatchObject({ ok: false, code: "bad_input" });
@@ -92,9 +94,10 @@ describe("release", () => {
   it("a message that matched no deal needs --job and --business, and only from that business's address on file", async () => {
     const env = liveEngine();
     const d = await dealWith(env, [V]);
+    await dealWith(env, [V]); // V on two open deals: its new email can't be attributed by sender alone
     const b = d.businesses[0]!;
     const fresh = (from: string, k: string) => env.engine.ingest({ providerEventId: `ev_${k}`, eventType: "message.received", providerEmailId: `in_${k}`, threadId: null, messageId: `<${k}@mail.gmail.com>`, inReplyTo: [], references: [], from, to: [BUYER], subject: "catering quote", bodyText: "Hi! $1,150 total for 40 people.", attachments: [], attachmentsDownloadUrl: null }, () => ({ trusted: false, retryable: false, reason: "unverified-external-sender", evidence: { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf: null, alignedDkimDomains: [] } }));
-    expect((await fresh(V.email, "u1")).outcome).toBe("quarantined:no_signal");
+    expect((await fresh(V.email, "u1")).outcome).toBe("quarantined:ambiguous_sender");
     expect((await fresh("someone@else.example", "u2")).outcome).toBe("quarantined:no_signal");
     const [fromVendor, fromStranger] = [(await env.repo.findMessageByProviderId("in_u1"))!, (await env.repo.findMessageByProviderId("in_u2"))!];
     expect(await env.engine.releaseQuarantined({ messageId: fromVendor.id, verifiedBy: "Dana", how: HOW })).toMatchObject({ ok: false, code: "needs_target" });
@@ -106,7 +109,7 @@ describe("release", () => {
 
   it("a suppressed (opted-out) business's held mail stays held", async () => {
     const env = liveEngine();
-    const { b, held } = await tokenlessReply(env);
+    const { b, held } = await threadOnlyReply(env);
     await env.repo.addSuppression({ contact: b.email!, reason: "opt_out", job_id: null, evidence: "STOP" });
     expect(await env.engine.releaseQuarantined({ messageId: held.id, verifiedBy: "Dana", how: HOW })).toMatchObject({ ok: false, code: "suppressed" });
   });
@@ -115,7 +118,7 @@ describe("release", () => {
 describe("reject", () => {
   it("records the decision and changes nothing; no second decision", async () => {
     const env = liveEngine();
-    const { jobId, held } = await tokenlessReply(env);
+    const { jobId, held } = await threadOnlyReply(env);
     expect(await env.engine.rejectQuarantined({ messageId: held.id, by: "Dana", why: "vendor says it never sent this" })).toMatchObject({ ok: true, jobId });
     expect((await env.repo.getMessage(held.id))!).toMatchObject({ kind: "quarantine", sender_trusted: false });
     expect(await env.engine.releaseQuarantined({ messageId: held.id, verifiedBy: "Dana", how: HOW })).toMatchObject({ ok: false, code: "already_resolved" });
@@ -135,7 +138,7 @@ describe.skipIf(!PG_URL)("quarantine review on Postgres (migration 112)", { time
       const { held } = await releaseFlow(env);
       // Append-only, and no trust flip without a release.
       const [res] = await pg.listQuarantineResolutions({ messageId: held.id });
-      expect(res).toMatchObject({ decision: "released", original_reason: "identity_unverified:token_missing" });
+      expect(res).toMatchObject({ decision: "released", original_reason: "identity_unverified:not_in_our_thread" });
       await expect((pg as unknown as { sql: (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown> }).sql`update quarantine_resolutions set resolved_by = 'x' where id = ${res!.id}`).rejects.toThrow(/append-only/);
     } finally {
       await pg.close();
@@ -146,7 +149,7 @@ describe.skipIf(!PG_URL)("quarantine review on Postgres (migration 112)", { time
     const pg = new PostgresRepository(PG_URL!);
     try {
       const env = liveEngine({ repo: pg });
-      const { held } = await tokenlessReply(env);
+      const { held } = await threadOnlyReply(env);
       expect(await env.engine.rejectQuarantined({ messageId: held.id, by: "Dana", why: "vendor says it never sent this" })).toMatchObject({ ok: true });
       await expect(pg.updateMessage(held.id, { kind: "reply", sender_trusted: true, trust_reason: "operator_verified" })).rejects.toThrow(/recorded operator release/);
       expect(await env.engine.releaseQuarantined({ messageId: held.id, verifiedBy: "Dana", how: HOW })).toMatchObject({ ok: false, code: "already_resolved" });

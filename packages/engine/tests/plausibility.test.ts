@@ -203,7 +203,7 @@ describe("Claude's judgment for a category with no price data", () => {
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatchObject({ what: FAUCET.what, total_usd: 5, job_id: deal.job_id });
     const ask = texts.at(-1)!.text;
-    expect(ask).toMatch(/^Thanks! Can you confirm: is \$5 the full total for fix a leaking kitchen faucet, and what does it include\? HG-[A-Z0-9]+$/);
+    expect(ask).toMatch(/^Thanks! Can you confirm: is \$5 the full total for fix a leaking kitchen faucet, and what does it include\?$/);
     expect(ask.length).toBeLessThanOrEqual(159);
 
     await e.ingestIMessage({ messageId: "im_2", from: SUNSET.phone, text: "Yes", isGroup: false });

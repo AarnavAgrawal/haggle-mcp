@@ -1574,6 +1574,18 @@ server.post("/webhooks/inkbox", async (c) => {
   return c.json(r.body, r.status, r.retryAfterS ? { "Retry-After": String(r.retryAfterS) } : undefined);
 });
 
+/** Inkbox mail webhooks for a workspace's own identity (HAGGLE_MAILBOX_PER_WORKSPACE), verified with that identity's key. */
+server.post("/webhooks/inkbox/:handle", async (c) => {
+  let rt: Runtime;
+  try {
+    rt = await getRuntime();
+  } catch {
+    return c.json({ error: "not configured" }, 503);
+  }
+  const r = await handleInkboxWebhook(rt, await c.req.text(), c.req.raw.headers, undefined, c.req.param("handle"));
+  return c.json(r.body, r.status, r.retryAfterS ? { "Retry-After": String(r.retryAfterS) } : undefined);
+});
+
 /**
  * POST /internal/tick (Bearer HAGGLE_TICK_SECRET): advance every open deal, so deadlines,
  * follow-ups and email -> call escalations happen even when no agent is polling (an external

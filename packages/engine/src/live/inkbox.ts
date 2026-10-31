@@ -1,6 +1,6 @@
 // LIVE MODE (v5): Inkbox adapters for the engine ports. The buyer is one Inkbox agent identity
-// (`haggle`); every job shares its mailbox and replies are matched by thread, In-Reply-To and the
-// [HG-code] subject tag. This file is the only place Inkbox is called.
+// (`haggle`); every job shares its mailbox and replies are matched by thread and In-Reply-To/References
+// (Haggle's own Message-IDs; no code is sent). This file is the only place Inkbox is called.
 //
 // Sender trust. Inkbox mail webhooks carry no DKIM/DMARC results, so an address alone proves
 // nothing. A reply is trusted only when the sender is an Inkbox agent identity AND the same RFC
@@ -84,14 +84,19 @@ async function withRetry<T>(fn: () => Promise<T>, sleep = (ms: number) => new Pr
   }
 }
 
-/** EmailPort over the buyer identity's mailbox. In-thread messages reply with inReplyToMessageId. */
-export function inkboxEmail(api: InkboxMailApi, buyerMailbox: string, opts: { sleep?: (ms: number) => Promise<void> } = {}): EmailPort {
+/**
+ * EmailPort over the buyer identity's mailbox, or a workspace's own mailbox (HAGGLE_MAILBOX_PER_WORKSPACE:
+ * `isWorkspaceMailbox` says whether an address is an active one). In-thread messages reply with inReplyToMessageId.
+ */
+export function inkboxEmail(api: InkboxMailApi, buyerMailbox: string, opts: { sleep?: (ms: number) => Promise<void>; isWorkspaceMailbox?: (address: string) => Promise<boolean> } = {}): EmailPort {
   return {
     async send(msg: OutboundEmail): Promise<SendOutcome> {
-      if (msg.from.toLowerCase() !== buyerMailbox.toLowerCase()) throw new Error("outbound mail must come from the buyer identity mailbox");
+      const from = msg.from.trim().toLowerCase();
+      const ours = from === buyerMailbox.toLowerCase() || (opts.isWorkspaceMailbox ? await opts.isWorkspaceMailbox(from) : false);
+      if (!ours) throw new Error("outbound mail must come from the buyer identity mailbox or a workspace mailbox");
       let sent;
       try {
-        sent = await withRetry(() => api.send(buyerMailbox, {
+        sent = await withRetry(() => api.send(from, {
           to: [msg.to],
           subject: msg.thread ? replySubject(msg.subject) : msg.subject,
           bodyText: msg.bodyText,
@@ -271,7 +276,7 @@ async function readCapped(res: Response, cap: number): Promise<Buffer | null> {
  * claim (a "PDF" that isn't one is skipped rather than failing the whole reply's read). A provider
  * outage (5xx, 429, network) throws a retryable error; a missing attachment (4xx) a permanent one.
  */
-export function inkboxAttachments(api: InkboxMailApi, buyerMailbox: string, fetchImpl: typeof fetch = fetch): AttachmentPort {
+export function inkboxAttachments(api: InkboxMailApi, buyerMailbox: string | ((m: MessageRow) => Promise<string>), fetchImpl: typeof fetch = fetch): AttachmentPort {
   return {
     async load(m: MessageRow): Promise<ExtractedFile[]> {
       const files: ExtractedFile[] = await inlineAttachments.load(m);
@@ -287,7 +292,9 @@ export function inkboxAttachments(api: InkboxMailApi, buyerMailbox: string, fetc
         if (a.size_bytes > cap) continue;
         let url: string;
         try {
-          ({ url } = await api.getAttachment(buyerMailbox, m.provider_email_id, a.filename));
+          // The mailbox the message arrived in (a workspace mailbox, or the shared one).
+          const mailbox = typeof buyerMailbox === "string" ? buyerMailbox : await buyerMailbox(m);
+          ({ url } = await api.getAttachment(mailbox, m.provider_email_id, a.filename));
         } catch (e) {
           if (e instanceof InkboxAPIError) throw downloadError("link", e.statusCode);
           if (e instanceof InkboxConnectionError) throw new Error("attachment link: fetch failed (Inkbox unreachable)");

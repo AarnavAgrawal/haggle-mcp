@@ -108,7 +108,7 @@ describe("Inkbox email loop through the engine", () => {
     const deal = await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Gate Kitchen", email: seller }, { name: "QuickCater", email: "quickcater@sellers.example" }], client_request_id: "inkbox-1" });
     expect(deal).toMatchObject({ mode: "live", inbox: BUYER, state: "collecting" });
     expect(api.sent.map((s) => s.o.to[0])).toEqual([seller, "quickcater@sellers.example"]);
-    expect(api.sent[0]!.o.subject).toMatch(/^\[HG-[A-Z0-9]{4}\] /);
+    expect(api.sent[0]!.o.subject).toMatch(/^Quote request: /);
     expect(api.sent[0]!.o.attachments![0]!.filename).toBe("rfq.json");
     // Retrying deal() with the same client_request_id sends nothing new.
     await engine.deal({ request, budget_usd, businesses: [{ name: "Golden Gate Kitchen", email: seller }], client_request_id: "inkbox-1" });

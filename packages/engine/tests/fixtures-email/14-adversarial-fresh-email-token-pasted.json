@@ -1,7 +1,7 @@
 {
   "name": "adversarial-fresh-email-token-pasted",
   "client": "Gmail web (new message)",
-  "notes": "A brand-new email (not a reply) from the vendor's address with the token pasted: not in Haggle's thread.",
+  "notes": "A brand-new email (not a reply) from the vendor's address carrying an old [HG-code] subject tag (and a pasted legacy token): no Haggle Message-ID, so it is matched by the tag and the pinned sender only and read at the lowest trust (external-sender-only: a quote at most, never a booking, payee or payment).",
   "event": {
     "agent_identities": []
   },
@@ -30,10 +30,11 @@
     "createdAt": "2026-10-21T17:20:00.000Z"
   },
   "expect": {
-    "outcome": "quarantined:identity_unverified",
-    "stored_as": "quarantine",
-    "sender_trusted": false,
-    "quarantine_reason": "identity_unverified:not_in_our_thread",
-    "quote_total_usd": null
+    "outcome": "stored",
+    "stored_as": "reply",
+    "sender_trusted": true,
+    "quarantine_reason": null,
+    "quote_total_usd": 1150,
+    "trust_reason": "external-sender-only"
   }
 }

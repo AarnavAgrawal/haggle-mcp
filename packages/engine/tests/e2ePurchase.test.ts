@@ -132,7 +132,9 @@ describe("SIMULATED end-to-end purchase: three realistic vendors, re-confirmatio
     ]);
     expect(emails.map((e) => e.to).sort()).toEqual(Object.values(VENDORS).sort());
     const biz = Object.fromEntries((await repo.getBusinesses(jobId)).map((b) => [b.name, b]));
-    expect(emails[0]!.subject).toContain(replyToken(SECRET, jobId, biz[emails[0]!.to === VENDORS.harbor ? "Harbor Table" : emails[0]!.to === VENDORS.grill ? "Golden Grill" : "Sunset Kitchen"]!.business_id));
+    expect(emails[0]!.subject).toMatch(/^Quote request: /);
+    expect(`${emails[0]!.subject}${emails[0]!.bodyText}`).not.toMatch(/HGR-|HG-/);
+    void biz;
 
     // 2. Replies, as real clients format them.
     clock.advance(8 * 60_000);
