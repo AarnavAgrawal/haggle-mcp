@@ -287,7 +287,7 @@ describe("message guard on agent-written messages, get_conversation", { timeout:
     const bay = board.businesses.find((b) => b.name === "Bay Catering")!;
     // Bay's quote.json states the total and deposit but no cancellation policy: decision-critical for catering (intake), so it is asked.
     await expect(engine.sendMessage(deal.job_id, bay.business_id, { askMissing: true })).resolves.toMatchObject({ sent: true });
-    expect(fleet.sent.at(-1)!.text ?? JSON.stringify(fleet.sent.at(-1))).toMatch(/cancellation policy/);    await expect(engine.sendMessage(deal.job_id, harbor.business_id, {})).rejects.toMatchObject({ code: "bad_message" });
+    expect(JSON.stringify((await engine.getConversation(deal.job_id, bay.business_id)).entries.at(-1))).toMatch(/cancellation policy/);    await expect(engine.sendMessage(deal.job_id, harbor.business_id, {})).rejects.toMatchObject({ code: "bad_message" });
   });
 });
 
