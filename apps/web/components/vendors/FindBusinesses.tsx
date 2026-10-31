@@ -17,7 +17,8 @@ interface Props {
   inputRef?: Ref<HTMLInputElement>;
   isVendor: (name: string) => boolean;
   canAdd: boolean;
-  onAdd: (b: FoundBusiness) => void;
+  /** `searched`: what was searched for ("plumber"), kept as what the business does. */
+  onAdd: (b: FoundBusiness, searched: string) => void;
   /** Open the add form empty (when search can't help). */
   onAddBlank: () => void;
 }
@@ -131,7 +132,7 @@ export function FindBusinesses({ inputRef, isVendor, canAdd, onAdd, onAddBlank }
               </div>
               <ul className="ui-sheet ui-sheet-pad-none vend-results" aria-label="Businesses found">
                 {found.map((f) => (
-                  <ResultRow key={f.business_ref} f={f} vendor={isVendor(f.name)} canAdd={canAdd} onAdd={onAdd} />
+                  <ResultRow key={f.business_ref} f={f} vendor={isVendor(f.name)} canAdd={canAdd} onAdd={(b) => onAdd(b, result.asked.category)} />
                 ))}
               </ul>
               <p className="vr-foot">

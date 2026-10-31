@@ -11,7 +11,7 @@ import { historyOnly } from "./src/brain.ts";
 import { ApprovalOut, BusinessProfile, Conversation, dealStartedBoard, DealBoardPlus, emptyBoard, Estimates, Identity, pendingByTextNext, requestDetails, toApproval, toDealBoardPlus, waitOutput } from "./src/views.ts";
 import { webAppOn } from "./src/service/approvals.ts";
 import { blockerLines, businessRef, findVendors, rosterBusinessId, workspaceVendorList, type ChannelStatus, type RosterEntry } from "./src/vendors.ts";
-import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, historyEvidence, hoursLine, hoursOf, learningFor, LISTING_REF, listingEvidence, publishedEmails, requestCategory, resolveSelection, storedListing, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered, type Selected } from "./src/businesses.ts";
+import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, historyEvidence, hoursLine, hoursOf, knownCategory, learningFor, LISTING_REF, listingEvidence, publishedEmails, requestCategory, resolveSelection, servesCategory, vendorCategory, storedListing, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered, type Selected } from "./src/businesses.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
 import { limitsMiddleware } from "./src/limits.ts";
 import { ConfigError } from "./src/config.ts";
@@ -360,7 +360,7 @@ export const deal = server.tool(
       max_rounds: z.number().int().min(1).max(2).optional().describe("Quote rounds: 1 = first quotes only, 2 = plus one negotiation round (the default and the maximum)"),
       client_request_id: z.string().max(64).optional().describe("Reuse to get the same job back instead of contacting businesses again"),
       dry_run: z.boolean().optional().describe("Preview only: resolve who would be contacted and on which channel, send nothing and start no job. Use only if the user asks for a preview."),
-      proceed_anyway: z.boolean().optional().describe("Only when the user explicitly said to go ahead without the details a needs_info result asked for: contact businesses with what is known"),
+      proceed_anyway: z.boolean().optional().describe("Only when the user explicitly said to go ahead without the details a needs_info result asked for: contact businesses with what is known. Never skips what the job is and where"),
     }),
     outputSchema: DealBoardPlus,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: true },
@@ -388,16 +388,20 @@ export const deal = server.tool(
       // Intake (how a good human assistant buys): a business can't quote without the essentials for this
       // kind of purchase (catering: headcount, date, where; a repair: what's wrong, where, how urgent; ...).
       // Missing ones come back as questions for the user, in one message; nothing is sent. The user may
-      // explicitly say to go ahead anyway (proceed_anyway).
-      if (!input.proceed_anyway) {
+      // explicitly say to go ahead anyway (proceed_anyway), which skips every essential except the floor:
+      // what the job is and where. A business is never asked to quote without those.
+      {
         const gaps = intakeGaps({ what: R.what, quantity: R.quantity, unit: R.unit, date: R.date, date_until: R.date_until, time: R.time, area: R.area, venue: R.venue, details: R.details, ask: R.ask, requirements: R.requirements.map((q) => (typeof q === "string" ? { text: q } : q)) });
-        if (!gaps.complete) {
-          const next = "Nothing was sent. Ask the user ALL of these in ONE short message (the optional ones marked optional), restate the brief in one line once they answer, then call deal again with the answers in request (each question names its field; anything else goes in details[{label, value}]). Call deal with proceed_anyway: true only if the user explicitly says to go ahead without them.";
-          const v = DealBoardPlus.parse({ ok: false, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode, needs_info: { category: gaps.category, label: gaps.label, missing: gaps.missing, helpful: gaps.helpful, brief: gaps.brief }, next });
+        const blocking = input.proceed_anyway ? gaps.floor : gaps.missing;
+        if (blocking.length) {
+          const next = input.proceed_anyway
+            ? "Nothing was sent. These can't be skipped, even when the user says to go ahead: no business can quote without knowing what the job is and where. Ask the user for them in ONE short message, then call deal again with the answers in request."
+            : "Nothing was sent. Ask the user ALL of these in ONE short message (the optional ones marked optional), restate the brief in one line once they answer, then call deal again with the answers in request (each question names its field; anything else goes in details[{label, value}]). Call deal with proceed_anyway: true only if the user explicitly says to go ahead without them (what the job is and where can never be skipped).";
+          const v = DealBoardPlus.parse({ ok: false, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode, needs_info: { category: gaps.category, label: gaps.label, missing: blocking, helpful: input.proceed_anyway ? [] : gaps.helpful, brief: gaps.brief }, next });
           return ok(v, [
             `NEEDS INFO (nothing sent): to quote this ${gaps.label.toLowerCase()} request a business needs:`,
-            ...gaps.missing.map((q, i) => `${i + 1}. ${q.question} [${q.field}]`),
-            ...(gaps.helpful.length ? ["Optional (these change the price):", ...gaps.helpful.map((q) => `- ${q.question} [${q.field}]`)] : []),
+            ...blocking.map((q, i) => `${i + 1}. ${q.question} [${q.field}]`),
+            ...(!input.proceed_anyway && gaps.helpful.length ? ["Optional (these change the price):", ...gaps.helpful.map((q) => `- ${q.question} [${q.field}]`)] : []),
             `So far: ${gaps.brief}`,
             `next: ${next}`,
           ].join("\n"));
@@ -433,11 +437,14 @@ export const deal = server.tool(
       const roster = fullRoster.filter((r) => r.category === category);
       let blockers = roster.filter((r) => !r.ready).map((r) => ({ vendor: r.name, channel: r.channel, reason: r.blocker!, fix: r.fix! }));
       const fromRoster = !input.businesses?.length;
-      // A pilot workspace's own vendors (operator-added, each with its consent) are its default roster: the
-      // agent needn't name them. They count as catering vendors (the pilot's scope); for anything else the
-      // agent names the business, and the server's demo roster is never substituted for them.
+      // A workspace's own vendors (each added with its consent) are its default roster for the kinds of
+      // work they do (category, migration 127; else what the name says): the agent needn't name them. A
+      // vendor that does something else, or whose kind isn't known, is never contacted by default, and
+      // the server's demo roster is never substituted for them.
       const own = fromRoster ? await engine.workspaceVendors() : [];
-      const ownDefault = own.length > 0 && category === "catering";
+      const ownList = workspaceVendorList(own);
+      const mine = ownList.filter((v) => servesCategory(vendorCategory(v), category));
+      const ownDefault = mine.length > 0;
       let rosterTotal = roster.length;
       const fromVendorEntry = (r: RosterEntry) => ({ name: r.name, channel: r.channel, simulated: true, ...(r.email ? { email: r.email } : {}), ...(r.phone ? { phone: r.phone } : {}), ...(r.a2a_card_url ? { a2a_card_url: r.a2a_card_url } : {}) });
       // Opening hours stored with each business (calls and texts wait until it is open): a workspace vendor's
@@ -449,7 +456,7 @@ export const deal = server.tool(
       let businesses: (z.infer<typeof businessInput> & { simulated?: boolean; source?: "web" | "agent"; opening_hours?: WeeklyHours; timezone?: string })[];
       let preview: { name: string; business_ref?: string; channel?: string; contact_state: string; ready: boolean; reason?: string }[] = [];
       if (fromRoster && ownDefault) {
-        const sel = await resolveSelection(workspaceVendorList(own).map((v) => v.name), rt, { vendors: own, learning: engine, discovered: discoveredFor(engine.workspaceId) });
+        const sel = await resolveSelection(mine.map((v) => v.name), rt, { vendors: own, learning: engine, discovered: discoveredFor(engine.workspaceId) });
         if (!sel.ok) return fail(mode, sel.code, sel.message, sel.fix, "none");
         businesses = sel.selected.filter((x) => x.send).map(toSend);
         blockers = sel.selected.filter((x) => !x.send).map((x) => ({ vendor: x.name, channel: x.kind === "workspace_vendor" ? x.vendor.channel : "email", reason: x.status.summary, fix: `Add or fix this vendor on the Vendors page of the Haggle web app (operator: scripts/workspace-admin.ts show --id ${engine.workspaceId}).` }));
@@ -470,6 +477,15 @@ export const deal = server.tool(
         const named = given.filter((b) => !hasContact(b));
         const sel = await resolveSelection(named.map((b) => b.name), rt, { vendors: await engine.workspaceVendors(), learning: engine, discovered: discoveredFor(engine.workspaceId) });
         if (!sel.ok) return fail(mode, sel.code, sel.message, sel.fix, "Ask the user, then call deal again with the business's exact name.");
+        // Never email a business about work it doesn't do: a named vendor whose kind is known and unrelated
+        // to this request (a caterer for a plumbing job) stops the deal, even on a dry run.
+        const wanted = knownCategory(R.what);
+        const kindOf = (x: Selected) => x.kind === "workspace_vendor" ? vendorCategory(x.vendor) : x.kind === "vendor" ? x.vendor.category ?? null : knownCategory(x.found.category ?? "");
+        const unrelated = wanted ? sel.selected.filter((x) => { const k = kindOf(x); return k !== null && !servesCategory(k, wanted); }) : [];
+        if (unrelated.length) {
+          return fail(mode, "vendor_unrelated", `${unrelated.map((x) => `${x.name} is listed as ${kindOf(x)}`).join("; ")}, not ${wanted}. Nothing was sent.`,
+            `Contact only businesses that do ${wanted}: name others, or omit businesses to use this workspace's ${wanted} vendors. If one of these really does ${wanted}, the user can change what it does on the Vendors page.`, "none");
+        }
         const unreachable = sel.selected.filter((x) => !x.send);
         if (unreachable.length && !input.dry_run) {
           const u = unreachable[0]!;
@@ -490,12 +506,13 @@ export const deal = server.tool(
       // Live, with no vendor to fall back on (the operator configured none): say exactly what to do, even on
       // a dry run, instead of previewing "would contact nobody".
       if (fromRoster && !ownDefault && roster.length === 0 && mode === "live") {
+        const kinds = (() => { const n = new Map<string, number>(); for (const v of ownList) { const k = vendorCategory(v) ?? "not set"; n.set(k, (n.get(k) ?? 0) + 1); } return [...n].map(([k, c]) => `${k} (${c})`).join(", "); })();
         const next = own.length
-          ? `This workspace's vendors are listed as caterers. Ask the user which of their vendors to use for this ${category} request and pass them by name in businesses, or have them add ${category} businesses on the Vendors page (/vendors). Nothing was sent.`
+          ? `None of this workspace's ${ownList.length} vendors are listed as ${category} businesses (they are: ${kinds}). Ask the user to add ${category} businesses on the Vendors page (/vendors) or set what their vendors do there; or pass by name a vendor the user says does ${category}. Nothing was sent.`
           : "This workspace has no vendors yet: ask the user to add the businesses they want quotes from on the Vendors page (/vendors), where they can also search for real businesses. Nothing was sent.";
         const v = DealBoardPlus.parse({ ok: false, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode, setup: { ready: 0, total: 0, blockers: [] }, next });
         return ok(v, [
-          own.length ? `NOT STARTED: name the vendors to use for this ${category} request. Nothing was sent.` : "NOT STARTED: this workspace has no vendors yet, so there is nobody to contact. Nothing was sent.",
+          own.length ? `NOT STARTED: none of this workspace's vendors do ${category}. Nothing was sent.` : "NOT STARTED: this workspace has no vendors yet, so there is nobody to contact. Nothing was sent.",
           `Add businesses on the Vendors page of the Haggle web app: search for real ones there or add one by email, with how it agreed to be contacted (operator: scripts/workspace-admin.ts add-vendor --id ${engine.workspaceId}).`,
           `next: ${next}`,
         ].join("\n"));

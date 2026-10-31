@@ -46,7 +46,7 @@ export function VendorsPanel({ list, canAdd, cantAddReason }: { list: VendorList
     setAdding(true);
   };
   const fromResult = useRef(false);
-  const openFor = (b: FoundBusiness) => {
+  const openFor = (b: FoundBusiness, searched: string) => {
     fromResult.current = true;
     const email = b.emails?.[0];
     setPrefill({
@@ -55,6 +55,7 @@ export function VendorsPanel({ list, canAdd, cantAddReason }: { list: VendorList
       business_ref: b.business_ref,
       ...(email ? { contact: email } : {}),
       consent_basis: "public_listing_email",
+      category: searched,
       note: `Found in public listings${email ? `; email ${email} published by the business` : ""}`,
     });
     setAdding(true);

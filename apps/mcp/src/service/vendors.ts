@@ -2,8 +2,10 @@
 // rests on (the operator's scripts/workspace-admin.ts add-vendor is the other way in). A deal contacts
 // only these vendors (plus the server allowlist); suppressions (opt-out, bounce) always win.
 //   GET  /internal/vendors          this workspace's vendors, full contact (the web shows it only to members)
-//   POST /internal/vendors          { name, contact, channel?, consent_basis, note? } (x-haggle-actor required)
+//   POST /internal/vendors          { name, contact, channel?, consent_basis, note?, business_ref?, category? } (x-haggle-actor required)
 //   POST /internal/vendors/remove   { contact } (x-haggle-actor required)
+//   POST /internal/vendors/category { contact, category | null } what it does (x-haggle-actor required); a deal
+//                                   contacts a workspace's vendors only for requests of their kind (migration 127)
 // Consent rules: a public listing allows email only (no calls or texts to a business that only has a
 // public listing); a call or text needs an existing relationship or the business's agreement.
 // business_ref (optional): the listing the vendor was found in ("aws:<PlaceId>" / "place:<id>"); its
@@ -15,7 +17,7 @@
 // the insert (concurrent adds can't overshoot); re-authorizing an existing vendor takes none.
 import { z } from "zod";
 import { asWeeklyHours, simulatedContact, type Channel, type HaggleEngine, type ListingProvider } from "@haggle/engine";
-import { discoveredFor, LISTING_REF, storedListing } from "../businesses.ts";
+import { discoveredFor, knownCategory, LISTING_REF, storedListing, vendorCategory } from "../businesses.ts";
 import { engineError, fail, serviceGuard, type ServiceApp, type ServiceContext } from "./http.ts";
 
 export const MAX_VENDORS = 100;
@@ -47,7 +49,7 @@ export class DailyAdds {
 }
 
 /** The engine calls these routes make (HaggleEngine in production; tests may pass the same). */
-type VendorEngine = Pick<HaggleEngine, "workspaceVendors" | "addWorkspaceVendor" | "removeWorkspaceVendor" | "contactSuppressions" | "getSettings"> & Partial<Pick<HaggleEngine, "takeRateSlot" | "rateSlotUsed">>;
+type VendorEngine = Pick<HaggleEngine, "workspaceVendors" | "addWorkspaceVendor" | "removeWorkspaceVendor" | "setWorkspaceVendorCategory" | "contactSuppressions" | "getSettings"> & Partial<Pick<HaggleEngine, "takeRateSlot" | "rateSlotUsed">>;
 
 /** The day's additions: the store's shared slots when it has them, else (or while they fail) this process's count. */
 function dailyAdds(daily: DailyAdds) {
@@ -86,7 +88,21 @@ const AddBody = z.object({
   consent_basis: z.enum(CONSENT_BASES),
   note: z.string().max(300).transform(plain).optional(),
   business_ref: z.string().max(520).regex(/^(aws|place):[A-Za-z0-9_=+/-]{3,515}$/, "a listing ref from Find businesses (aws:… or place:…)").optional(),
+  /** What the business does ("plumbing", or the search it came from: "plumber"); deals use it to pick vendors. */
+  category: z.string().max(40).optional(),
 });
+const CategoryBody = z.object({
+  contact: z.string().min(3).max(254).transform(normalizeContact),
+  /** null or "" clears it (the server then goes by the vendor's name). */
+  category: z.string().max(40).nullable(),
+});
+
+/** A category as stored: one Haggle knows ("plumber" -> plumbing), else the words given ("landscaping"); null when empty. */
+export function categoryInput(raw: string | null | undefined): string | null {
+  const t = (raw ?? "").trim();
+  if (!t) return null;
+  return knownCategory(t) ?? (t.toLowerCase().replace(/[^a-z ]+/g, " ").replace(/\s+/g, " ").trim() || null);
+}
 
 /**
  * The hours to store with a vendor added from a listing: from this workspace's recent discover result
@@ -129,6 +145,7 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
       const s = sup.get(r.contact.toLowerCase());
       return {
         name: r.name, contact: r.contact, channel: r.channel ?? (r.contact.includes("@") ? "email" : "phone"),
+        category: vendorCategory(r), category_set: !!r.category,
         consent: { basis: consentBasisOf(r.consent), text: r.consent }, added_by: r.added_by, added_at: r.created_at,
         ...(asWeeklyHours(r.opening_hours) ? { hours: asWeeklyHours(r.opening_hours)!.display } : {}),
         contactable: !s, ...(s ? { suppressed: s } : {}),
@@ -177,6 +194,7 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
       const row = await g.rt.engine.addWorkspaceVendor({
         workspace_id: ws, contact: b.contact, name: b.name, channel: channel as Channel, ...listed,
         consent: consentText(b.consent_basis, b.note || undefined, g.actor, now()), added_by: `web:${g.actor}`.slice(0, 120),
+        ...(categoryInput(b.category) ? { category: categoryInput(b.category) } : {}),
       });
       return c.json({
         ok: true, replaced: replacing,
@@ -197,5 +215,22 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
     const removed = await g.rt.engine.removeWorkspaceVendor(g.workspaceId!, parsed.data.contact);
     if (!removed) return fail(c, 404, "NOT_FOUND", "That contact isn't one of this workspace's vendors.", "Reload the vendor list.");
     return c.json({ ok: true, removed: parsed.data.contact, next: "Haggle won't contact this vendor on new deals, nor make first contact on a running deal; a conversation it already started continues." });
+  });
+
+  // What a vendor does: deals contact a workspace's vendors only for requests of that kind.
+  app.post("/internal/vendors/category", async (c) => {
+    const g = await guard(c, { workspace: true });
+    if (g instanceof Response) return g;
+    if (!g.actor) return fail(c, 400, "ACTOR_REQUIRED", "Changing a vendor records who changed it.", "Send x-haggle-actor with the signed-in user.");
+    const parsed = CategoryBody.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return fail(c, 400, "INVALID_INPUT", issues(parsed.error), "Pass the vendor's contact and what it does (e.g. plumbing), or null to clear it.");
+    const category = categoryInput(parsed.data.category);
+    try {
+      const changed = await g.rt.engine.setWorkspaceVendorCategory(g.workspaceId!, parsed.data.contact, category);
+      if (!changed) return fail(c, 404, "NOT_FOUND", "That contact isn't one of this workspace's vendors.", "Reload the vendor list.");
+    } catch (err) {
+      return engineError(c, err);
+    }
+    return c.json({ ok: true, contact: parsed.data.contact, category, next: category ? `Haggle will contact this vendor for ${category} requests only.` : "Cleared: Haggle goes by the vendor's name to tell what it does." });
   });
 }

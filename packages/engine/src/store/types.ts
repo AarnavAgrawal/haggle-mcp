@@ -309,6 +309,8 @@ export interface WorkspaceVendorRow {
   timezone?: string | null;
   /** The public listing it was added from ("aws:<PlaceId>", "place:<id>"), if any (migration 125). */
   business_ref?: string | null;
+  /** What it does ("plumbing", "catering"; migration 127); null = not set (inferred from its name). */
+  category?: string | null;
   created_at: string;
 }
 
@@ -469,6 +471,8 @@ export interface Repository {
   // per-workspace vendor authorization
   addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">): Promise<WorkspaceVendorRow>;
   removeWorkspaceVendor(workspaceId: string, contact: string): Promise<boolean>;
+  /** Set what a vendor does (migration 127); false when the workspace has no such vendor. */
+  setWorkspaceVendorCategory(workspaceId: string, contact: string, category: string | null): Promise<boolean>;
   listWorkspaceVendors(workspaceId: string): Promise<WorkspaceVendorRow[]>;
 
   // manual payment handoff

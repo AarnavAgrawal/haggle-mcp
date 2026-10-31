@@ -29,6 +29,10 @@ describe("validateVendorForm", () => {
 
   it("passes on a listing ref from Find businesses (for its opening hours); anything else is dropped", () => {
     expect(validateVendorForm({ ...good, business_ref: "aws:AQAAAEFjZVBsdW1i" })).toMatchObject({ ok: true, value: { business_ref: "aws:AQAAAEFjZVBsdW1i" } });
+    // What it does: optional, a suggestion's bracketed hint dropped, kept short.
+    expect(validateVendorForm({ ...good, category: "Repairs (handyman)" })).toMatchObject({ ok: true, value: { category: "Repairs" } });
+    expect(validateVendorForm({ ...good, category: "  " })).toEqual({ ok: true, value: expect.not.objectContaining({ category: expect.anything() }) });
+    expect(validateVendorForm({ ...good, category: "x".repeat(41) }).ok).toBe(false);
     expect(validateVendorForm({ ...good, business_ref: "place:ChIJace0001" })).toMatchObject({ ok: true, value: { business_ref: "place:ChIJace0001" } });
     for (const bad of ["javascript:alert(1)", "aws:<script>", 42]) expect(validateVendorForm({ ...good, business_ref: bad })).toEqual({ ok: true, value: expect.not.objectContaining({ business_ref: expect.anything() }) });
   });

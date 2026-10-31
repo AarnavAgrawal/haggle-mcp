@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { memoryLimiter } from "../lib/rateLimit.ts";
 import { HaggleError } from "../lib/haggle.ts";
-import { handleAdd, handleDiscover, handleList, handleRemove, type VendorCaller, type VendorDeps } from "../lib/vendors/route.ts";
+import { handleAdd, handleCategory, handleDiscover, handleList, handleRemove, type VendorCaller, type VendorDeps } from "../lib/vendors/route.ts";
 
 const CALLER: VendorCaller = { userId: "u1", workspaceId: "ws_u_1", actor: "ada@example.com (u1)", guest: false };
 const req = (body: unknown) => new Request("http://x/api/vendors", { method: "POST", headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) });
@@ -99,5 +99,24 @@ describe("/api/vendors", () => {
     const once = deps({ discoverLimiter: memoryLimiter(1, 60_000) }).d;
     expect((await handleDiscover(req({ category: "caterer" }), once)).status).toBe(200);
     expect((await handleDiscover(req({ category: "caterer" }), once)).status).toBe(429);
+  });
+});
+
+describe("/api/vendors/category", () => {
+  it("passes what a vendor does to the server (a hint in brackets dropped); clearing sends null", async () => {
+    const calls: { path: string; body: unknown }[] = [];
+    const d: VendorDeps = {
+      auth: async () => ({ userId: "u1", workspaceId: "ws_1", actor: "u1", guest: false }),
+      service: async <T,>(path: string, o: { body?: unknown }) => { calls.push({ path, body: o.body }); return { ok: true, category: "repairs" } as T; },
+      discover: async () => ({}), demo: false,
+    };
+    expect((await handleCategory(req({ contact: "a@b.test", category: "Repairs (handyman)" }), d)).status).toBe(200);
+    expect((await handleCategory(req({ contact: "a@b.test", category: null }), d)).status).toBe(200);
+    expect(calls).toEqual([
+      { path: "/internal/vendors/category", body: { contact: "a@b.test", category: "Repairs" } },
+      { path: "/internal/vendors/category", body: { contact: "a@b.test", category: null } },
+    ]);
+    expect((await handleCategory(req({ category: "plumbing" }), d)).status).toBe(400);
+    expect((await handleCategory(req({ contact: "a@b.test", category: "x" }), { ...d, auth: async () => ({ userId: "g", workspaceId: "ws_1", actor: "g", guest: true }) })).status).toBe(403);
   });
 });

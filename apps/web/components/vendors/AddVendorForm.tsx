@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { Icon, channelIcon } from "@/components/ui/Icon";
-import { ATTESTATION, basisAllows, CHANNEL_OPTIONS, CONSENT_OPTIONS, normalizeContact, validateVendorForm, type ConsentBasis, type FormField, type VendorChannel } from "@/lib/vendors/form";
+import { ATTESTATION, basisAllows, CATEGORY_SUGGESTIONS, CHANNEL_OPTIONS, CONSENT_OPTIONS, normalizeContact, validateVendorForm, type ConsentBasis, type FormField, type VendorChannel } from "@/lib/vendors/form";
 import type { VendorView } from "@/lib/vendors/types";
 import { vendorApi, type VendorApiError } from "./api";
 
@@ -21,6 +21,8 @@ export interface VendorPrefill {
   consent_basis?: ConsentBasis;
   /** The listing it was found in: the server keeps its opening hours with the vendor. */
   business_ref?: string;
+  /** What it does: the search it came from ("plumber"). */
+  category?: string;
 }
 
 const CHANNEL_SHORT: Record<VendorChannel, string> = { email: "Email", phone: "Phone call", imessage: "Text" };
@@ -40,6 +42,7 @@ export function AddVendorForm({ open, prefill, left, onAdded, onCancel }: Props)
   const [channel, setChannel] = useState<VendorChannel | "">(prefill ? "email" : "");
   const [basis, setBasis] = useState<ConsentBasis | "">(prefill?.consent_basis ?? "");
   const [note, setNote] = useState(prefill?.note ?? "");
+  const [category, setCategory] = useState(prefill?.category ?? "");
   const [attested, setAttested] = useState(false);
   const businessRef = prefill?.business_ref;
   const [touched, setTouched] = useState<Partial<Record<FormField, boolean>>>({});
@@ -60,7 +63,7 @@ export function AddVendorForm({ open, prefill, left, onAdded, onCancel }: Props)
 
   const kind = normalizeContact(contact)?.kind ?? (contact.includes("@") ? "email" : null);
   const effective: VendorChannel | "" = kind === "email" ? "email" : kind === "phone" && channel === "email" ? "phone" : kind === "phone" && !channel ? "phone" : channel;
-  const input = { name, contact, channel: effective || undefined, consent_basis: basis || undefined, note, attested, ...(businessRef ? { business_ref: businessRef } : {}) };
+  const input = { name, contact, channel: effective || undefined, consent_basis: basis || undefined, note, attested, category, ...(businessRef ? { business_ref: businessRef } : {}) };
   const check = validateVendorForm(input);
   const live = check.ok ? {} : check.errors;
   const errorFor = (f: FormField) => serverErrors[f] ?? (submitted || touched[f] ? live[f] : undefined);
@@ -101,6 +104,13 @@ export function AddVendorForm({ open, prefill, left, onAdded, onCancel }: Props)
         <Field label="Business name" error={errorFor("name")}>
           <input ref={nameRef} value={name} maxLength={120} autoComplete="organization" onBlur={touch("name")} onChange={(e) => (setName(e.target.value), edited("name"))} />
         </Field>
+
+        <Field label="What they do" hint="Haggle asks them only about this kind of work, e.g. plumbing or catering." error={errorFor("category")}>
+          <input value={category} maxLength={40} list="vf-categories" autoComplete="off" onBlur={touch("category")} onChange={(e) => (setCategory(e.target.value), edited("category"))} />
+        </Field>
+        <datalist id="vf-categories">
+          {CATEGORY_SUGGESTIONS.map((c) => <option key={c} value={c} />)}
+        </datalist>
 
         <Field label="Email or phone" hint="Phone numbers with the country code, like +1 415 555 0123." error={errorFor("contact")}>
           <input ref={contactRef} value={contact} maxLength={254} inputMode="email" autoComplete="off" spellCheck={false} onBlur={touch("contact")} onChange={(e) => (setContact(e.target.value), edited("contact"))} />

@@ -89,6 +89,38 @@ describe("/internal/vendors over HTTP (mock, service token)", () => {
     expect((await svc("/internal/vendors", { ws })).body.vendors.map((v: any) => v.contact)).toEqual(["+14155552161"]);
   });
 
+  it("a deal uses the workspace's vendors for that kind of work only, and refuses an unrelated one by name", async () => {
+    const ws = await provision("vendors-user-category");
+    const soon = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
+    const leak = { what: "fix a leaking kitchen sink", quantity: 1, date: soon, area: "San Francisco" };
+    // A plumber added from a "plumber" search, a caterer, and one whose name says what it does.
+    expect((await svc("/internal/vendors", { ws, actor: "u", body: { name: "Drain Pros", contact: "jobs@drainpros.test", consent_basis: "public_listing_email", category: "plumber" } })).body.vendor).toBeDefined();
+    expect((await svc("/internal/vendors", { ws, actor: "u", body: { name: "Casa Lunch", contact: "orders@casalunch.test", consent_basis: "existing_relationship", category: "catering" } })).status).toBe(201);
+    expect((await svc("/internal/vendors", { ws, actor: "u", body: { name: "Bay Plumbing Co", contact: "hi@bayplumbing.test", consent_basis: "existing_relationship" } })).status).toBe(201);
+    expect((await svc("/internal/vendors", { ws, actor: "u", body: { name: "Acme Services", contact: "acme@acme.test", consent_basis: "existing_relationship" } })).status).toBe(201);
+    const listed = (await svc("/internal/vendors", { ws })).body.vendors.map((v: any) => [v.name, v.category, v.category_set]);
+    expect(listed).toEqual([["Drain Pros", "plumbing", true], ["Casa Lunch", "catering", true], ["Bay Plumbing Co", "plumbing", false], ["Acme Services", null, false]]);
+
+    // No businesses named: the plumbers only (never the caterer, never the one whose kind is unknown).
+    const dry = await tool(ws, "deal", { request: leak, dry_run: true });
+    expect(dry.isError).not.toBe(true);
+    expect(dry.structuredContent.would_contact.map((w: any) => w.name).sort()).toEqual(["Bay Plumbing Co", "Drain Pros"]);
+
+    // Naming the caterer for a plumbing job sends nothing, even on a dry run.
+    const wrong = await tool(ws, "deal", { request: leak, businesses: ["Casa Lunch"], dry_run: true });
+    expect(wrong.isError).toBe(true);
+    const err = JSON.parse(wrong.content![0]!.text!);
+    expect(err).toMatchObject({ ok: false, error: { code: "vendor_unrelated" } });
+    expect(err.error.message).toMatch(/Casa Lunch is listed as catering, not plumbing\. Nothing was sent\./);
+
+    // The owner says what Acme does; then it is a plumber too. Clearing goes back to its name (unknown).
+    expect((await svc("/internal/vendors/category", { ws, actor: "u", body: { contact: "acme@acme.test", category: "Plumbing" } })).body).toMatchObject({ ok: true, category: "plumbing" });
+    expect((await tool(ws, "deal", { request: leak, dry_run: true })).structuredContent.would_contact.map((w: any) => w.name).sort()).toEqual(["Acme Services", "Bay Plumbing Co", "Drain Pros"]);
+    expect((await svc("/internal/vendors/category", { ws, actor: "u", body: { contact: "acme@acme.test", category: null } })).body).toMatchObject({ ok: true, category: null });
+    expect((await svc("/internal/vendors/category", { ws, actor: "u", body: { contact: "nobody@x.test", category: "plumbing" } })).status).toBe(404);
+    expect((await svc("/internal/vendors/category", { ws, body: { contact: "acme@acme.test", category: "plumbing" } })).status).toBe(400);
+  });
+
   it("refuses a call or text to a business found only in a public listing", async () => {
     const ws = await provision("vendors-user-2");
     const r = await svc("/internal/vendors", { ws, actor: "user-2", body: { name: "Listed Co", contact: "+14155552300", channel: "phone", consent_basis: "public_listing_email" } });

@@ -139,6 +139,12 @@ export class InMemoryRepository implements Repository {
     this.vendors.push(row);
     return clone(row);
   }
+  async setWorkspaceVendorCategory(workspaceId: string, contact: string, category: string | null) {
+    const v = this.vendors.find((x) => x.workspace_id === workspaceId && x.contact === contact);
+    if (!v) return false;
+    v.category = category;
+    return true;
+  }
   async removeWorkspaceVendor(workspaceId: string, contact: string) {
     const before = this.vendors.length;
     this.vendors = this.vendors.filter((x) => !(x.workspace_id === workspaceId && x.contact === contact));

@@ -282,6 +282,8 @@ export interface IntakeGaps {
   label: string;
   /** Essentials the request doesn't have yet: ask the user before contacting anyone. */
   missing: IntakeQuestion[];
+  /** The missing essentials no "go ahead anyway" can skip (what the job is, and where): nothing is sent without them. */
+  floor: IntakeQuestion[];
   /** Optional details that change the price and aren't given yet (at most 4). */
   helpful: IntakeQuestion[];
   /** One line: the brief as it stands. */
@@ -291,12 +293,20 @@ export interface IntakeGaps {
 
 const strip = ({ key, question, field }: Essential): IntakeQuestion => ({ key, question, field });
 
+/**
+ * The minimum a business must be told before Haggle contacts it, even when the user says to go ahead
+ * without the rest: what the job is and where it is. Asking a business to quote without them wastes its
+ * time and gets no usable reply (timing and the optional details can be left to the business).
+ */
+export const FLOOR_KEYS: ReadonlySet<string> = new Set(["where", "problem", "scope", "spec", "route", "headcount"]);
+
 /** What a business needs to quote that this request doesn't say yet, and the optional details worth asking for in the same message. */
 export function intakeGaps(r: IntakeInput): IntakeGaps {
   const p = profileFor(r);
   const missing = p.essentials.filter((e) => !e.has(r)).map(strip);
   const helpful = p.helpful.filter((e) => !e.has(r)).slice(0, 4).map(strip);
-  return { category: p.id, label: p.label, missing, helpful, brief: briefLine(r), complete: missing.length === 0 };
+  const floor = missing.filter((q) => FLOOR_KEYS.has(q.key));
+  return { category: p.id, label: p.label, missing, floor, helpful, brief: briefLine(r), complete: missing.length === 0 };
 }
 
 /** "lunch catering · 40 people · 2026-10-22 12:00 · YC office, San Francisco · 12 vegetarian meals" (only what is known). */

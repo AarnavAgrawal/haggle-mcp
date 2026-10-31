@@ -14,6 +14,10 @@ export interface VendorView {
   suppressed?: "opt_out" | "bounce";
   /** Its published opening hours, when it was added from a listing that has them. */
   hours?: string[];
+  /** What it does ("plumbing"): set by the user, else read from its name; null = unknown (never contacted by default). */
+  category?: string | null;
+  /** The user set the category (rather than the server reading it from the name). */
+  category_set?: boolean;
 }
 
 export interface VendorList {

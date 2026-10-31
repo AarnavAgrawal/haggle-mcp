@@ -18,6 +18,9 @@ export const CHANNEL_OPTIONS: { value: VendorChannel; label: string }[] = [
   { value: "imessage", label: "Text message" },
 ];
 
+/** What a vendor does: suggestions for the free-text field (the server maps "plumber" to plumbing). Deals use it to pick vendors. */
+export const CATEGORY_SUGGESTIONS = ["Catering", "Plumbing", "Electrical", "Repairs (handyman)", "Cleaning", "Moving", "Printing", "Event rentals", "Photography", "Entertainment"];
+
 export const ATTESTATION = "I confirm this business agreed to be contacted this way, or I have an existing relationship with it.";
 
 export interface VendorFormInput {
@@ -29,6 +32,8 @@ export interface VendorFormInput {
   attested?: unknown;
   /** The public listing it was found in ("aws:…" / "place:…"): the server stores its opening hours. */
   business_ref?: unknown;
+  /** What the business does ("Plumbing"); a deal contacts it only for that kind of request. */
+  category?: unknown;
 }
 /** What /api/vendors sends on to the MCP server (POST /internal/vendors). */
 export interface AddVendorBody {
@@ -38,8 +43,9 @@ export interface AddVendorBody {
   consent_basis: ConsentBasis;
   note?: string;
   business_ref?: string;
+  category?: string;
 }
-export type FormField = "name" | "contact" | "channel" | "consent_basis" | "note" | "attested";
+export type FormField = "name" | "contact" | "channel" | "consent_basis" | "note" | "attested" | "category";
 export type FormResult = { ok: true; value: AddVendorBody } | { ok: false; errors: Partial<Record<FormField, string>> };
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -89,11 +95,14 @@ export function validateVendorForm(i: VendorFormInput): FormResult {
 
   const note = plain(str(i.note));
   if (note.length > 300) errors.note = "Keep the note under 300 characters.";
+  // "Repairs (handyman)" -> "Repairs": the server maps it to a category it knows.
+  const category = plain(str(i.category)).replace(/\s*\(.*\)$/, "");
+  if (category.length > 40) errors.category = "Keep it short, e.g. plumbing.";
   if (i.attested !== true) errors.attested = "Confirm that this business agreed to be contacted, or that you already work with it.";
 
   if (Object.keys(errors).length || !contact || !channel || !basis) return { ok: false, errors };
   // Only a listing ref Find businesses returned; anything else is dropped (it only ever adds opening hours).
   const ref = str(i.business_ref).trim();
   const businessRef = /^(aws|place):[A-Za-z0-9_=+/-]{3,515}$/.test(ref) ? ref : undefined;
-  return { ok: true, value: { name, contact: contact.value, channel, consent_basis: basis, ...(note ? { note } : {}), ...(businessRef ? { business_ref: businessRef } : {}) } };
+  return { ok: true, value: { name, contact: contact.value, channel, consent_basis: basis, ...(note ? { note } : {}), ...(businessRef ? { business_ref: businessRef } : {}), ...(category ? { category } : {}) } };
 }

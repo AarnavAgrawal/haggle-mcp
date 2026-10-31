@@ -134,8 +134,10 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(noQty.isError).toBeFalsy();
     expect(noQty.structuredContent).toMatchObject({ ok: false, job: null, needs_info: { category: "catering", missing: [{ key: "headcount", field: "quantity" }, { key: "date", field: "date" }] }, mode: "mock" });
     expect(noQty.content[0].text).toMatch(/NEEDS INFO \(nothing sent\)[\s\S]*1\. How many people\?[\s\S]*next: Nothing was sent\. Ask the user ALL of these in ONE short message/);
+    // Going ahead anyway never skips the floor (what the job is and where): the headcount is asked for again.
     const anyway = await call("deal", { request: { what: "lunch catering", area: "SF" }, businesses: [{ name: "X", email: "x@x.test" }], proceed_anyway: true });
-    expect(errorOf(anyway)).toMatchObject({ error: { code: "INVALID_INPUT" }, next: "deal" });
+    expect(anyway.structuredContent).toMatchObject({ ok: false, job: null, needs_info: { category: "catering", missing: [{ key: "headcount" }], helpful: [] } });
+    expect(anyway.structuredContent.next).toMatch(/can't be skipped, even when the user says to go ahead/);
     const badAsk = await call("deal", { request: { what: "fix a leaking sink", area: "SF", date: "2099-01-05", ask: [{ key: "price", label: "Price", type: "money" }], payable_field: "nope" }, businesses: [{ name: "X", email: "x@x.test" }] });
     expect(errorOf(badAsk)).toMatchObject({ error: { code: "bad_ask" } });
     const noJob = await call("wait_for_update", { job_id: "job_nope", cursor: "0", timeout_s: 0 });
@@ -404,6 +406,12 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     expect(vague.structuredContent.needs_info.missing.map((q: { key: string }) => q.key)).toEqual(["problem", "where", "timing"]);
     expect(vague.structuredContent.needs_info.helpful.length).toBeGreaterThan(0);
     expect(vague.structuredContent.next).toMatch(/proceed_anyway: true only if the user explicitly says/);
+    // proceed_anyway skips the timing, but never what's wrong or where.
+    const noWhere = await call("deal", { request: { what: "fix a leaking pipe under the sink" }, businesses, dry_run: true, proceed_anyway: true });
+    expect(noWhere.structuredContent.needs_info.missing.map((q: { key: string }) => q.key)).toEqual(["where"]);
+    const noTiming = await call("deal", { request: { what: "fix a leaking pipe under the sink", area: "Oakland, CA" }, businesses, dry_run: true, proceed_anyway: true });
+    expect(noTiming.structuredContent).toMatchObject({ dry_run: true });
+    expect(noTiming.structuredContent.needs_info).toBeUndefined();
     const answered = await call("deal", { request: { what: "plumber", area: "Oakland, CA", details: [{ label: "Problem", value: "leak under the kitchen sink" }, { label: "Urgency", value: "this week" }] }, businesses, dry_run: true });
     expect(answered.structuredContent).toMatchObject({ dry_run: true });
     expect(answered.structuredContent.needs_info).toBeUndefined();

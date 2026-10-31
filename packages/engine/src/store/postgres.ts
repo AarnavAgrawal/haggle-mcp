@@ -191,13 +191,26 @@ export class PostgresRepository implements Repository {
   async addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">): Promise<WorkspaceVendorRow> {
     // Hours (migration 125) are written only when known, so a database without 125 still adds vendors
     // (and one that lacks the columns gets the vendor without its hours, rather than no vendor).
+    const { category, ...rest } = v;
     const listed = v.opening_hours != null || v.timezone != null || v.business_ref != null;
+    let saved: WorkspaceVendorRow | null = null;
     if (listed) {
-      try { return await this.upsertVendor(v, true); } catch (e) { if (!missingHoursColumn(e)) throw e; }
+      try { saved = await this.upsertVendor(rest, true); } catch (e) { if (!missingHoursColumn(e)) throw e; }
     }
-    return this.upsertVendor(v, false);
+    saved ??= await this.upsertVendor(rest, false);
+    // The category (migration 127) the same way: set only when known, and a database without it still adds the vendor.
+    if (category != null && (await this.setWorkspaceVendorCategory(v.workspace_id, saved.contact, category))) saved = { ...saved, category };
+    return saved;
   }
-  private async upsertVendor(v: Omit<WorkspaceVendorRow, "created_at">, listed: boolean) {
+  async setWorkspaceVendorCategory(workspaceId: string, contact: string, category: string | null) {
+    try {
+      return (await this.sql`update workspace_vendors set category = ${category} where workspace_id = ${workspaceId} and contact = ${contact} returning contact`).length > 0;
+    } catch (e) {
+      if ((e as { code?: string })?.code === "42703") return false; // no migration 127 yet
+      throw e;
+    }
+  }
+  private async upsertVendor(v: Omit<WorkspaceVendorRow, "created_at" | "category">, listed: boolean) {
     const { opening_hours, timezone, business_ref, ...base } = v;
     const values = { ...base, channel: v.channel ?? null, ...(listed ? { opening_hours: opening_hours ?? null, timezone: timezone ?? null, business_ref: business_ref ?? null } : {}) };
     const r = listed

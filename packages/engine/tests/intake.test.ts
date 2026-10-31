@@ -124,3 +124,15 @@ describe("imessageAskVariants", () => {
     expect(imessageAskVariants({ what: "lunch catering" })[0]).toBe("All-in total, menu, deposit, cancellation policy?");
   });
 });
+
+describe("the floor: what no 'go ahead anyway' can skip", () => {
+  it("is what the job is and where; timing and the optional details can be skipped", () => {
+    expect(intakeGaps({ what: "plumber" }).floor.map((q) => q.key)).toEqual(["problem", "where"]);
+    expect(intakeGaps({ what: "fix a leaking pipe under the sink" }).floor.map((q) => q.key)).toEqual(["where"]);
+    const repair = intakeGaps({ what: "fix a leaking pipe under the sink", area: "Oakland, CA" });
+    expect(repair.missing.map((q) => q.key)).toEqual(["timing"]);
+    expect(repair.floor).toEqual([]);
+    expect(intakeGaps({ what: "lunch catering", area: "SF" }).floor.map((q) => q.key)).toEqual(["headcount"]);
+    expect(intakeGaps({ what: "lunch catering", quantity: 40, area: "SF" }).floor).toEqual([]);
+  });
+});

@@ -243,11 +243,13 @@ export interface WorkspaceVendor {
   /** Its published opening hours and timezone, kept when it was added from a listing (calls and texts wait for them). */
   opening_hours?: WeeklyHours;
   timezone?: string;
+  /** What it does (migration 127), when set; see businesses.ts vendorCategory for the name fallback. */
+  category?: string;
 }
 
 /** One vendor per name (an email row and a phone row of "Mission Eats" are one vendor); the operator's channel wins. */
-export function workspaceVendorList(rows: { name: string; contact: string; channel?: Channel | null; opening_hours?: unknown; timezone?: string | null }[]): WorkspaceVendor[] {
-  const byName = new Map<string, { name: string; email?: string; phone?: string; channel?: Channel; opening_hours?: WeeklyHours; timezone?: string }>();
+export function workspaceVendorList(rows: { name: string; contact: string; channel?: Channel | null; opening_hours?: unknown; timezone?: string | null; category?: string | null; added_by?: string | null }[]): WorkspaceVendor[] {
+  const byName = new Map<string, { name: string; email?: string; phone?: string; channel?: Channel; opening_hours?: WeeklyHours; timezone?: string; category?: string }>();
   for (const r of rows) {
     const key = canonical(r.name);
     const v = byName.get(key) ?? { name: r.name };
@@ -257,11 +259,14 @@ export function workspaceVendorList(rows: { name: string; contact: string; chann
     const h = asWeeklyHours(r.opening_hours);
     if (h && !v.opening_hours) v.opening_hours = h;
     if (validTimezone(r.timezone) && !v.timezone) v.timezone = r.timezone;
+    // An operator-added vendor from before categories (workspace-admin, the pilot's catering scope) counts as catering.
+    const kind = r.category?.trim() || (r.added_by && !r.added_by.startsWith("web:") ? "catering" : "");
+    if (kind && !v.category) v.category = kind;
     byName.set(key, v);
   }
   return [...byName.entries()].map(([key, v]) => ({
     name: v.name, business_ref: key.replace(/\s+/g, "_"), ...(v.email ? { email: v.email } : {}), ...(v.phone ? { phone: v.phone } : {}),
-    ...(v.opening_hours ? { opening_hours: v.opening_hours } : {}), ...(v.timezone ? { timezone: v.timezone } : {}),
+    ...(v.opening_hours ? { opening_hours: v.opening_hours } : {}), ...(v.timezone ? { timezone: v.timezone } : {}), ...(v.category ? { category: v.category } : {}),
     channel: v.channel && (v.channel === "email" ? v.email : v.phone) ? v.channel : v.email ? "email" : "phone",
   }));
 }

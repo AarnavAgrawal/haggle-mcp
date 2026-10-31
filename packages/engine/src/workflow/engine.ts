@@ -571,6 +571,12 @@ export function fieldText(f: AskField, v: FieldValue): string {
 const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
 const jsonPart = (filename: string, o: unknown): OutboundAttachment => ({ filename, contentType: "application/json", content: enc(o) });
 
+/** A vendor category as stored (migration 127): lower case words, e.g. "plumbing"; null when it isn't one. */
+export function vendorCategoryName(raw: string): string | null {
+  const c = raw.trim().toLowerCase().replace(/[^a-z_ ]+/g, " ").replace(/\s+/g, " ").trim();
+  return /^[a-z][a-z_ ]{1,39}$/.test(c) ? c : null;
+}
+
 export class HaggleEngine {
   private readonly d: EngineDeps;
   /** Inkbox refuses an 11th text to a number that hasn't replied: every SMS goes through this count. */
@@ -6052,12 +6058,20 @@ export class HaggleEngine {
   }
 
   /** Operator only (scripts/workspace-admin.ts): authorize a vendor contact for one workspace, recording the consent. */
-  async addWorkspaceVendor(v: { workspace_id: string; contact: string; name: string; consent: string; added_by: string; channel?: Channel | null; opening_hours?: WeeklyHours | null; timezone?: string | null; business_ref?: string | null }) {
+  async addWorkspaceVendor(v: { workspace_id: string; contact: string; name: string; consent: string; added_by: string; channel?: Channel | null; opening_hours?: WeeklyHours | null; timezone?: string | null; business_ref?: string | null; category?: string | null }) {
     const contact = v.contact.includes("@") ? normalizeAddress(v.contact) : v.contact.replace(/[\s().-]/g, "");
     if (!EMAIL_RE.test(contact) && !E164_RE.test(contact)) throw new EngineError("bad_contact", "A vendor contact is an email address or an E.164 phone number.", "Fix the contact.", "none");
     if (v.channel && (v.channel === "email") !== contact.includes("@")) throw new EngineError("bad_channel", `Channel ${v.channel} doesn't fit ${contact}.`, "Email for an address; phone (a call) or imessage (a text) for a number.", "none");
     if (v.consent.trim().length < 3) throw new EngineError("consent_required", "Record how the vendor agreed to be contacted.", "Pass the consent (who agreed, how, when).", "none");
-    return this.repo.addWorkspaceVendor({ ...v, contact, consent: v.consent.trim() });
+    const category = v.category == null ? null : vendorCategoryName(v.category);
+    return this.repo.addWorkspaceVendor({ ...v, contact, consent: v.consent.trim(), ...(category ? { category } : {}) });
+  }
+
+  /** The workspace owner (web Vendors page): set or clear what a vendor does. False when it isn't this workspace's vendor. */
+  async setWorkspaceVendorCategory(workspaceId: string, contact: string, category: string | null) {
+    const name = category == null || category.trim() === "" ? null : vendorCategoryName(category);
+    if (category != null && category.trim() !== "" && !name) throw new EngineError("bad_category", `"${category}" isn't a kind of business Haggle knows.`, "Pick what the business does, e.g. plumbing, catering or cleaning.", "none");
+    return this.repo.setWorkspaceVendorCategory(workspaceId, contact.includes("@") ? normalizeAddress(contact) : contact.replace(/[\s().-]/g, ""), name);
   }
 
   /** Read only: which of these contacts are suppressed everywhere (opted out or bounced); the web's vendor form refuses them. */

@@ -41,6 +41,34 @@ export function requestCategory(what: string): string {
   return (trade ?? first).c;
 }
 
+/** The category a phrase clearly names ("Bay Area Plumbing" -> plumbing), or null: unlike requestCategory, no last-word guess. */
+export function knownCategory(text: string): string | null {
+  const t = text.trim().toLowerCase();
+  if (CATEGORIES.some(([c]) => c === t)) return t;
+  const hits = CATEGORIES.map(([c, re]) => ({ c, at: re.exec(text)?.index ?? -1 })).filter((h) => h.at >= 0).sort((a, b) => a.at - b.at);
+  if (!hits.length) return null;
+  const trade = hits[0]!.c === "repairs" ? hits.find((h) => h.c !== "repairs" && h.c !== "catering") : undefined;
+  return (trade ?? hits[0]!).c;
+}
+
+/**
+ * What a workspace vendor does: its stored category (migration 127), else what its name says, else, for
+ * a vendor the operator added before categories (workspace-admin; the pilot's scope was catering),
+ * catering. A vendor added on the web with neither is unknown (null): never contacted by default.
+ */
+export function vendorCategory(v: { name: string; category?: string | null; added_by?: string | null }): string | null {
+  return v.category?.trim() || knownCategory(v.name) || (v.added_by && !v.added_by.startsWith("web:") ? "catering" : null);
+}
+
+/** A general repair business also takes plumbing and electrical jobs; otherwise a vendor serves only its own category. */
+const ALSO_SERVES: Record<string, string[]> = { repairs: ["plumbing", "electrical"] };
+
+/** Does a vendor of `vendorCat` serve a request of `requestCat`? Unknown (null) never does by default. */
+export function servesCategory(vendorCat: string | null, requestCat: string): boolean {
+  if (!vendorCat) return false;
+  return vendorCat === requestCat || (ALSO_SERVES[vendorCat] ?? []).includes(requestCat);
+}
+
 // ───────────────────────────── discovered businesses ─────────────────────────────
 
 export interface Discovered extends FoundBusiness {

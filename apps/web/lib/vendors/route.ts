@@ -104,6 +104,26 @@ export async function handleRemove(req: Request, deps: VendorDeps): Promise<Resp
   }
 }
 
+const CategoryBody = z.object({ contact: z.string().trim().min(3).max(254), category: z.string().trim().max(40).nullable() });
+
+/** POST /api/vendors/category { contact, category | null }: what a vendor does (deals contact it only for that). */
+export async function handleCategory(req: Request, deps: VendorDeps): Promise<Response> {
+  const who = await caller(deps);
+  if (who instanceof Response) return who;
+  if (who.guest && !deps.demo) return refuse(403, "guest_account", "Guest accounts can't change vendors.", "Sign in with your email to manage your vendors.");
+  if (!(await (deps.writeLimiter ?? fallbackWrites).take(who.userId)).ok) return refuse(429, "rate_limited", "Too many vendor changes in a minute.", "Wait a minute, then try again.");
+  const raw = await body(req);
+  if (raw instanceof Response) return raw;
+  const b = CategoryBody.safeParse(raw);
+  if (!b.success) return refuse(400, "bad_body", "Say which vendor and what it does.", "Send the vendor's contact and a short kind of work, e.g. plumbing.");
+  const category = b.data.category ? b.data.category.replace(/\s*\(.*\)$/, "") : null;
+  try {
+    return json(await deps.service("/internal/vendors/category", { workspaceId: who.workspaceId, actor: who.actor, body: { contact: b.data.contact, category } }));
+  } catch (err) {
+    return serverError(err);
+  }
+}
+
 const DiscoverBody = z.object({ category: z.string().trim().min(2).max(100), area: z.string().trim().min(2).max(200).optional().or(z.literal("").transform(() => undefined)) });
 
 /** POST /api/vendors/discover { category, area? }: public listings only; contacts nobody. */
