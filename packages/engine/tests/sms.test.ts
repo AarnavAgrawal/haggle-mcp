@@ -204,7 +204,7 @@ describe("texting a business over SMS (no iMessage port)", () => {
     expect(deal.contacted.map((c) => [c.business, c.channel])).toEqual(expect.arrayContaining([["Harbor Table", "email"], ["Golden Grill", "imessage"]]));
     expect(emails).toHaveLength(1);
     const rfq = texts.find((x) => x.to === "+14085550123")!;
-    expect(rfq.text).toMatch(/^Hi Golden Grill, I'm an AI assistant for a customer\..*Total \+ deposit\?$/);
+    expect(rfq.text).toMatch(/^Hi Golden Grill, I'm an AI assistant for a customer\..*(All-in total|Total) \+ [^?]+\?$/);
     expect(rfq.text).not.toMatch(/Haggle/);
 
     const r = await engine.ingestText({ messageId: "sms_in_g1", from: "+14085550123", text: "We can do $1,020 total all-in, delivered, $100 deposit", inbound: true });

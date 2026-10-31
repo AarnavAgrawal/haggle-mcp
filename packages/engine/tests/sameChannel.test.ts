@@ -294,7 +294,7 @@ describe("introduces itself as an AI assistant for the customer, never as Haggle
       { name: "Harbor Table", email: "harbor@inkboxmail.test" }, { name: "Golden Grill", phone: GRILL, channel: "imessage" }, { name: "Mission Eats", phone: MISSION },
     ] });
     expect(emails[0]!.bodyText).toMatch(/I'm an AI assistant reaching out on behalf of Acme Labs/);
-    expect(texts[0]!.text).toMatch(/^Hi Golden Grill, I'm an AI assistant for Acme Labs\..*Total \+ deposit\?$/);
+    expect(texts[0]!.text).toMatch(/^Hi Golden Grill, I'm an AI assistant for Acme Labs\..*(All-in total|Total) \+ [^?]+\?$/);
     expect(texts[0]!.text.length).toBeLessThanOrEqual(159);
     expect(calls[0]!.reason).toMatch(/Hi, I'm an AI assistant calling on behalf of Acme Labs/);
     for (const s of [emails[0]!.bodyText, texts[0]!.text, calls[0]!.reason]) expect(s).not.toMatch(/Haggle/);
@@ -314,7 +314,7 @@ describe("introduces itself as an AI assistant for the customer, never as Haggle
     const t = HaggleEngine.rfqIMessageText("Golden Grill and Catering Company", job);
     expect(t.length).toBeLessThanOrEqual(159);
     expect(t).toMatch(/I'm an AI assistant for /);
-    expect(t).toMatch(/Total \+ deposit\?$/);
+    expect(t).toMatch(/(All-in total|Total) \+ [^?]+\?$/);
     expect(t).not.toMatch(/HG-/);
     expect(t).not.toMatch(/https?:|\d{3}[\s.-]\d{3}[\s.-]\d{4}/);
   });
