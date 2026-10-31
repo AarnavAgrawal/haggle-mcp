@@ -107,6 +107,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-31 · Aarnav · Production texts on (e968d91): iMessage approvals (YES/PAID <code>) to the connected approver and texts with vendors who connected first; webhook adds imessage.received; SMS stays off. get_identity reports imessage_approvals ready.
+
 - 2026-10-31 · Aarnav · Production (tryhaggle.tech) on 934fa55: Amazon Location discovery checked live (real Oakland results with hours), migrations 125+126 applied and recorded, per-workspace mailboxes on (org admin key), calls on for consented vendors, webhook adds call.ended; no reference codes to businesses (replies matched by thread, else by sender with one open deal). Launch gate OK; /ready and web /api/health green.
 
 - 2026-10-30 · Aarnav · Intake and vendor asks: the agent asks the user the essentials per kind of purchase (catering, event rentals/staffing, home repair, cleaning, moving, printing, general) in one message; `deal` returns `needs_info` (nothing sent) unless `proceed_anyway`; RFQ email, first call brief and iMessage ask for an itemized all-in total, inclusions, deposit/payment terms, availability, cancellation policy, validity and the category's own asks; follow-ups fold in missing deposit/cancellation terms; business questions answered from time and venue too; approval card shows stated fees and terms
