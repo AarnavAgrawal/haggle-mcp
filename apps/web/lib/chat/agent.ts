@@ -8,6 +8,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { HaggleError, type HaggleClient } from "../haggle";
 import { isLlmTool, llmToolDefinitions } from "../tools";
+import { toolCard, type ToolCard } from "./cards";
 import { CHAT_SYSTEM_PROMPT } from "./prompt";
 
 type MessageParam = Anthropic.Beta.BetaMessageParam;
@@ -22,6 +23,8 @@ export type ChatEvent =
   | { type: "text"; delta: string }
   | { type: "tool"; name: string; status: "start" | "done" | "error"; summary: string }
   | { type: "deal"; job_id: string }
+  /** Presentation only: a deal call as a card (lib/chat/cards.ts; whitelisted fields, never meta). */
+  | { type: "card"; card: ToolCard }
   | { type: "done"; thread_id?: string }
   | { type: "error"; message: string };
 
@@ -134,6 +137,8 @@ export async function runTool(haggle: ChatHaggle, block: { id: string; name: str
     const content = cap(`${r.text}\n\ndata: ${JSON.stringify(r.data ?? {})}`, TOOL_RESULT_CAP);
     const jobId = startedJobId(block.name, input, r.data);
     onEvent({ type: "tool", name: block.name, status: "done", summary: doneSummary(block.name, input, r.text, jobId, r.data) });
+    const card = toolCard(block.name, input, r.data, jobId);
+    if (card) onEvent({ type: "card", card });
     if (jobId) onEvent({ type: "deal", job_id: jobId });
     return { result: { type: "tool_result", tool_use_id: block.id, content }, ...(jobId ? { jobId } : {}) };
   } catch (e) {

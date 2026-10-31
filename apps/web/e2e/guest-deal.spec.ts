@@ -39,10 +39,13 @@ test("a demo guest starts a deal in chat, approves and pays the recommended quot
   await box.fill("Yes, go ahead");
   await page.getByRole("button", { name: "Send" }).click();
 
-  // 4. The deal card's link to the live board.
+  // 4. The deal card's link to the live board. The reply's "DEMO:" shows as the Demo marker (its text
+  // reads "Demo: …"), and the board is linked by name, never by its job id.
   const open = page.getByRole("link", { name: "Open deal board" });
   await expect(open).toBeVisible({ timeout: 30_000 });
-  await expect(chat.getByText(/DEMO: the deal has started/)).toBeVisible({ timeout: 30_000 });
+  await expect(chat.getByText(/Demo: the deal has started/i)).toBeVisible({ timeout: 30_000 });
+  await expect(chat.getByRole("link", { name: "the deal board" })).toBeVisible();
+  await expect(chat.getByText(/job_/)).toHaveCount(0);
   await checkCsp();
   await open.click();
 

@@ -2,9 +2,10 @@
 // what the browser shows (only the text of user and assistant turns, tool activity as chips).
 import type Anthropic from "@anthropic-ai/sdk";
 import { CONTEXT_PREFIX } from "./agent";
+import { storedToolCard, type ToolCard } from "./cards";
 
 type MessageParam = Anthropic.Beta.BetaMessageParam;
-type Block = { type: string; text?: string; name?: string };
+type Block = { type: string; text?: string; name?: string; id?: string; input?: unknown; tool_use_id?: string; content?: unknown; is_error?: boolean };
 
 export const TITLE_MAX = 80;
 export const HISTORY_MAX_MESSAGES = 80;
@@ -40,11 +41,15 @@ export type DisplayItem =
   | { kind: "assistant"; text: string }
   | { kind: "tool"; name: string; status: "start" | "done" | "error"; summary: string }
   | { kind: "deal"; job_id: string }
+  | { kind: "card"; card: ToolCard }
   | { kind: "error"; text: string };
 
-/** What a stored thread looks like in the chat: typed text, assistant text, tool chips, the deal card. */
+/** What a stored thread looks like in the chat: typed text, assistant text, tool chips, deal cards, the deal card. */
 export function toDisplay(messages: MessageParam[], jobId?: string | null): DisplayItem[] {
   const out: DisplayItem[] = [];
+  // Each tool_use's result, so a deal call shows as its card (lib/chat/cards.ts).
+  const results = new Map<string, Block>();
+  for (const m of messages) if (m.role === "user") for (const b of blocks(m)) if (b.type === "tool_result" && b.tool_use_id) results.set(b.tool_use_id, b);
   for (const m of messages) {
     if (m.role === "user") {
       const text = blocks(m).filter((b) => b.type === "text" && typeof b.text === "string" && !b.text.startsWith(CONTEXT_PREFIX)).map((b) => b.text).join("\n").trim();
@@ -59,6 +64,8 @@ export function toDisplay(messages: MessageParam[], jobId?: string | null): Disp
         else out.push({ kind: "assistant", text: b.text });
       } else if (b.type === "tool_use" && b.name) {
         out.push({ kind: "tool", name: b.name, status: "done", summary: b.name.replace(/_/g, " ") });
+        const card = b.id ? storedToolCard(b.name, b.input, results.get(b.id)) : undefined;
+        if (card) out.push({ kind: "card", card });
       }
     }
   }
