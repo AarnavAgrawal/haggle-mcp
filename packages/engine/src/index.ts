@@ -86,3 +86,4 @@ export * from "./ops/costs.ts";
 export * from "./ops/metrics.ts";
 // Email trial (apps/mcp/scripts/email-trial.ts): plain-English quarantine reasons in its report.
 export { explainQuarantine, type QuarantineExplanation } from "./inbound/quarantineReasons.ts";
+export * from "./intake/intake.ts";
