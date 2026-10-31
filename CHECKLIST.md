@@ -107,6 +107,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-31 · Aarnav · Production (tryhaggle.tech) on 934fa55: Amazon Location discovery checked live (real Oakland results with hours), migrations 125+126 applied and recorded, per-workspace mailboxes on (org admin key), calls on for consented vendors, webhook adds call.ended; no reference codes to businesses (replies matched by thread, else by sender with one open deal). Launch gate OK; /ready and web /api/health green.
+
 - 2026-10-30 · Aarnav · Intake and vendor asks: the agent asks the user the essentials per kind of purchase (catering, event rentals/staffing, home repair, cleaning, moving, printing, general) in one message; `deal` returns `needs_info` (nothing sent) unless `proceed_anyway`; RFQ email, first call brief and iMessage ask for an itemized all-in total, inclusions, deposit/payment terms, availability, cancellation policy, validity and the category's own asks; follow-ups fold in missing deposit/cancellation terms; business questions answered from time and venue too; approval card shows stated fees and terms
 
 - 2026-10-30 · Aarnav · Discovery on Amazon Location Service (Google Places kept as fallback/ratings): `published_emails` (listing, then website), opening hours (listing, else the website's schema.org) shown as "Open today …" and stored with deals and listed vendors (migration 125); calls and first texts wait until the business is open (30-min margins, its timezone, inside call hours). Consent rule unchanged. Full suite 1,936 passed / 35 skipped; migrations verified on Docker Postgres.
