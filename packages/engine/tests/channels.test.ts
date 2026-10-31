@@ -487,7 +487,7 @@ describe("the MVP demo shape: email + iMessage + Voice AI vendors (real engine, 
       expect(board.quotes[0]).toMatchObject({ meets_requirements: false });
       expect(board.rejected).toEqual([]);
       expect(board.state).toBe("collecting"); // waits for the answer instead of failing
-      expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 12 vegetarian meals\? HG-/);
+      expect(texts.at(-1)!.text).toMatch(/^Thanks! Can you confirm: At least 12 vegetarian meals; any deposit and when it's due; your cancellation policy\? HG-/);
 
       expect((await engine.ingestIMessage({ messageId: "im_a", from: "+14155550111", text: "Yes, 45 vegetarian", isGroup: false })).outcome).toBe("stored");
       await engine.advanceJob(deal.job_id);

@@ -95,7 +95,7 @@ describe("follow-ups stay on the channel the business was first contacted on", (
     expect(texts.at(-1)!.text).toMatch(/Delivery included/);
     expect(emails).toHaveLength(0);
     expect(calls).toHaveLength(0);
-    expect((await engine.getQuotes(deal.job_id)).businesses[0]!.last_event).toMatch(/Asked Golden Grill for: Delivery included \(text\)/);
+    expect((await engine.getQuotes(deal.job_id)).businesses[0]!.last_event).toMatch(/Asked Golden Grill for: Delivery included, any deposit and when it's due, your cancellation policy \(text\)/);
   });
 
   it("a phone business whose call left the total unclear gets a follow-up Voice AI call (after the cooldown), never a text", async () => {

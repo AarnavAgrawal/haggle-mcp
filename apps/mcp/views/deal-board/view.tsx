@@ -38,6 +38,8 @@ type Stage = { stage: string; negotiation: string; first_total_usd?: number; cur
 /** The business's own words (untrusted data): plain text only, links flagged and never opened. */
 type VendorText = { text: string; untrusted: true; has_link: boolean };
 /** After approval under the manual handoff (Haggle moves no money); see ./purchase.ts. */
+/** One intake question for the user (deal's needs_info). */
+type IntakeQ = { key: string; question: string; field: string };
 type Purchase = PurchaseLike & {
   vendor_reply?: VendorText; instructions?: VendorText; reported_paid_at?: string; verified_at?: string; operator_attention?: string;
   summary: string; next: string; order?: string; must_haves?: string;
@@ -54,6 +56,7 @@ type Extras = {
   recommendation_note?: string;
   negotiation_estimates?: string[];
   dry_run?: boolean;
+  needs_info?: { category: string; label: string; missing: IntakeQ[]; helpful: IntakeQ[]; brief: string };
   would_contact?: { name: string; channel?: string }[];
   blocked?: { name: string; contact_state: string; channel?: string; reason?: string }[];
   setup?: { ready: number; total: number; blockers: { vendor: string; channel: string; reason: string; fix: string }[] };
@@ -144,6 +147,8 @@ export default function DealBoardView() {
           <ToolErrorNote title="No deal was started. Nothing was sent." error={ctx.error} content={ctx.content} />
         ) : ctx.status === "ready" && !initial ? (
           <ToolErrorNote title="This deal didn't load." content={ctx.content} />
+        ) : initial?.needs_info ? (
+          <NeedsInfo board={initial} />
         ) : initial?.dry_run ? (
           <DryRun board={initial} />
         ) : initial && !initial.job && initial.setup && initial.setup.ready === 0 ? (
@@ -167,6 +172,40 @@ export default function DealBoardView() {
 
 // ---------------------------------------------------------------------------
 // Before a deal: preview, setup, welcome
+
+/** deal(needs_info): what a business needs to quote that the request doesn't say yet; nothing was sent. */
+function NeedsInfo({ board }: { board: DealBoardOrEmpty }) {
+  const n = board.needs_info!;
+  return (
+    <div className="db db-welcome">
+      <header className="db-head">
+        <div className="db-title">
+          <h1>A few details first</h1>
+          <p className="hg-muted">Nothing was sent. To quote this {n.label.toLowerCase()} request, a business needs to know:</p>
+        </div>
+        <ModeBadge mode={board.mode} />
+      </header>
+      <section className="db-card" aria-label="Needed to quote">
+        <ol className="db-plain">
+          {n.missing.map((q) => (
+            <li key={q.key}>{q.question}</li>
+          ))}
+        </ol>
+      </section>
+      {n.helpful.length > 0 && (
+        <section className="db-card" aria-label="Optional details">
+          <h2>Optional (these change the price)</h2>
+          <ul className="db-plain">
+            {n.helpful.map((q) => (
+              <li key={q.key}>{q.question}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <p className="hg-muted">So far: {n.brief}</p>
+    </div>
+  );
+}
 
 /** deal(dry_run): exactly who would be contacted on which channel; nothing was sent. */
 function DryRun({ board }: { board: DealBoardOrEmpty }) {

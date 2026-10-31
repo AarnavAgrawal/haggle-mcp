@@ -285,8 +285,9 @@ describe("message guard on agent-written messages, get_conversation", { timeout:
     const convo = await engine.getConversation(deal.job_id, harbor.business_id);
     expect(convo.entries.map((e) => [e.direction, e.kind])).toEqual(expect.arrayContaining([["out", "rfq"], ["in", "reply"], ["out", "message"]]));
     const bay = board.businesses.find((b) => b.name === "Bay Catering")!;
-    await expect(engine.sendMessage(deal.job_id, bay.business_id, { askMissing: true })).rejects.toMatchObject({ code: "nothing_missing" });
-    await expect(engine.sendMessage(deal.job_id, harbor.business_id, {})).rejects.toMatchObject({ code: "bad_message" });
+    // Bay's quote.json states the total and deposit but no cancellation policy: decision-critical for catering (intake), so it is asked.
+    await expect(engine.sendMessage(deal.job_id, bay.business_id, { askMissing: true })).resolves.toMatchObject({ sent: true });
+    expect(JSON.stringify((await engine.getConversation(deal.job_id, bay.business_id)).entries.at(-1))).toMatch(/cancellation policy/);    await expect(engine.sendMessage(deal.job_id, harbor.business_id, {})).rejects.toMatchObject({ code: "bad_message" });
   });
 });
 

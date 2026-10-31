@@ -75,6 +75,11 @@
 }
 .ap-capnote { font-size: 12px; margin-top: -6px !important; }
 .ap-items { color: var(--ink-2); font-size: 12px; }
+.ap-terms { margin: 6px 0 0; font-size: 12px; color: var(--ink-2); }
+.ap-terms > div { display: flex; gap: 6px; margin: 2px 0; }
+.ap-terms dt { flex: none; color: var(--ink-3); }
+.ap-terms dt::after { content: ":"; }
+.ap-terms dd { margin: 0; overflow-wrap: anywhere; }
 .ap-refused,
 .ap-error {
   color: var(--risk);

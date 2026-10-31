@@ -24,6 +24,11 @@ export const ApprovalOut = Approval.extend({
   payment_rail: z.literal("manual").optional(),
   /** The price is far outside the usual range for what was asked (e.g. vendor confirmed a price far below it): the card warns. */
   price_warning: z.string().optional(),
+  /** The quote's extra fees and commercial terms exactly as the business stated them (untrusted text, shown before approving). */
+  terms: z.looseObject({
+    fees: z.array(z.looseObject({ label: z.string(), amount_usd: z.number().optional(), included: z.boolean().nullable(), excerpt: z.string() })).optional(),
+    deposit_terms: z.string().nullable().optional(), cancellation: z.string().nullable().optional(), exclusions: z.array(z.string()).optional(),
+  }).optional(),
 });
 export type ApprovalOut = z.infer<typeof ApprovalOut>;
 
@@ -145,6 +150,13 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   dry_run: z.boolean().optional(),
   would_contact: z.array(z.looseObject({ name: z.string(), channel: z.string().optional() })).optional(),
   blocked: z.array(z.looseObject({ name: z.string(), contact_state: z.string() })).optional(),
+  /** deal: the essentials a business needs to quote are missing (intake); nothing was sent. Ask the user, then call deal again. */
+  needs_info: z.object({
+    category: z.string(), label: z.string(),
+    missing: z.array(z.object({ key: z.string(), question: z.string(), field: z.string() })),
+    helpful: z.array(z.object({ key: z.string(), question: z.string(), field: z.string() })),
+    brief: z.string(),
+  }).optional(),
   /** Best-value ranking of eligible quotes: per-quote factors with evidence, weights and the why. */
   value: z.looseObject({
     method: z.literal("best_value"), weights: z.record(z.string(), z.number()), recommendedQuoteId: z.string().nullable(),
@@ -375,6 +387,7 @@ export function toApproval(
     ...(b.payment ? { payment: b.payment } : {}),
     ...(b.payment?.receipt_url ? { receipt_url: b.payment.receipt_url } : b.payment?.explorer_url ? { receipt_url: b.payment.explorer_url } : {}),
     ...(q?.price_note ? { price_warning: q.price_note } : {}),
+    ...(b.terms?.[quote_id] ? { terms: b.terms[quote_id] } : {}),
     mode, ...extra,
   });
 }

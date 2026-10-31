@@ -13,7 +13,24 @@ yourself. Haggle only contacts businesses on the operator's allowlist.
 
 ## Cold deal (real quotes)
 
-1. `deal` FIRST with `request`, `budget_usd` (omit it if the user gave none: Haggle never assumes one) and a
+0. Intake, like a good human assistant: work out what kind of purchase it is and ask the user, in ONE short
+   message, for the essentials a business needs to quote it, plus the optional details that change the price.
+   Never re-ask what they said; at most two rounds; then restate the brief in one line.
+   | Kind | Essentials | Worth asking (optional) |
+   | --- | --- | --- |
+   | Catering / food | headcount, date, where (venue or address) | time, cuisine, dietary needs and counts, drop-off vs staffed |
+   | Event rentals & staffing | what and how many (or hours), date, venue | start/end times, guests, indoor/outdoor, access |
+   | Home repair / trades | what's wrong and where in the home, address, how urgent | property type, make/model, access |
+   | Cleaning | size (bedrooms/baths or sq ft), date, address | deep/regular/move-out, frequency, extras, pets |
+   | Moving | from and to, size, date | stairs/elevator, packing, heavy items |
+   | Printing / merch | specs (size, material, colors), quantity, needed-by | artwork ready, delivery or pickup |
+   Answers without a request field go in `details` (`{label:"Problem", value:"leak under the kitchen sink"}`).
+   If `deal` returns `needs_info`, nothing was sent: ask exactly those questions in one message and call `deal`
+   again; pass `proceed_anyway: true` only if the user explicitly says to go ahead without them. Haggle asks
+   every business for an itemized all-in total, what's included, deposit and payment terms, availability, the
+   cancellation policy and quote validity, plus the category's own asks (e.g. a plumber's call-out fee,
+   flat vs hourly, parts, earliest arrival, warranty), so you needn't add those to `ask`.
+1. `deal` with `request`, `budget_usd` (omit it if the user gave none: Haggle never assumes one) and a
    `client_request_id` so retries never contact anyone twice. Omit `businesses` to use every configured vendor
    for the request, or pass just names (`businesses: ["Mission Eats"]`): Haggle already has their contact
    details and channel, so never ask the user for them. A business Haggle doesn't know needs its email, phone

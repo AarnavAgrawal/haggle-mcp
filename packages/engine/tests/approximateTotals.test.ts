@@ -197,7 +197,8 @@ describe("approximate totals in a deal", () => {
     expect(v1).toMatchObject({ total_usd: 900, total_approximate: true, approvable: false });
     await expect(e.requestApproval(deal.job_id, v1.quote_id, "view")).rejects.toMatchObject({ code: "total_not_firm" });
     const ask = texts.at(-1)!.text;
-    expect(ask).toMatch(/^Thanks! Can you confirm: your firm all-in total \(you said about \$900\) and the deposit\? HG-[A-Z0-9]+$/);
+    // The cancellation policy (decision-critical for catering, intake) rides along; the deposit is already in the firm ask.
+    expect(ask).toMatch(/^Thanks! Can you confirm: your cancellation policy; your firm all-in total \(you said about \$900\) and the deposit\? HG-[A-Z0-9]+$/);
     expect(ask.length).toBeLessThanOrEqual(159);
     expect(ask).not.toMatch(/https?:|www\./);
 

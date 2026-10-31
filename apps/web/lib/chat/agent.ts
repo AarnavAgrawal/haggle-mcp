@@ -133,7 +133,7 @@ export async function runTool(haggle: ChatHaggle, block: { id: string; name: str
     // Only the model-facing text and the structured data; `meta` is deliberately dropped.
     const content = cap(`${r.text}\n\ndata: ${JSON.stringify(r.data ?? {})}`, TOOL_RESULT_CAP);
     const jobId = startedJobId(block.name, input, r.data);
-    onEvent({ type: "tool", name: block.name, status: "done", summary: doneSummary(block.name, input, r.text, jobId) });
+    onEvent({ type: "tool", name: block.name, status: "done", summary: doneSummary(block.name, input, r.text, jobId, r.data) });
     if (jobId) onEvent({ type: "deal", job_id: jobId });
     return { result: { type: "tool_result", tool_use_id: block.id, content }, ...(jobId ? { jobId } : {}) };
   } catch (e) {
@@ -157,7 +157,8 @@ function startSummary(name: string, input: Record<string, unknown>): string {
   if (name === "deal" && input.dry_run === true) return "Previewing who would be contacted";
   return LABELS[name] ?? name;
 }
-function doneSummary(name: string, input: Record<string, unknown>, text: string, jobId?: string): string {
+function doneSummary(name: string, input: Record<string, unknown>, text: string, jobId?: string, data?: unknown): string {
+  if (name === "deal" && (data as { needs_info?: unknown } | null | undefined)?.needs_info) return "Needs a few details (nothing sent)";
   if (name === "deal" && input.dry_run === true) return "Preview ready (nothing sent)";
   if (jobId) return `Deal ${jobId} started`;
   return firstLine(text) || "Done";
