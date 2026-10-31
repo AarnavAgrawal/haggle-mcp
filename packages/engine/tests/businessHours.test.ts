@@ -144,9 +144,12 @@ describe("the contact slot: business hours ∩ the operator's limits", () => {
     expect(callSlot(at("2026-10-19T12:00:00Z"), { timezone: LA, business: nine5ny })!.toISOString()).toBe("2026-10-19T13:30:00.000Z"); // 09:30 EDT
   });
 
-  it("hours that never meet the call hours fall back to the call hours (today's behaviour)", () => {
+  it("hours that never meet the call hours: the business's own hours decide, never a closed business", () => {
     const nightOnly: WeeklyHours = { timezone: LA, intervals: [0, 1, 2, 3, 4, 5, 6].map((day) => ({ day, startMinute: 60, endMinute: 240 })), display: [], source: "x" };
-    expect(callSlot(at("2026-10-19T10:00:00Z"), { callHours, timezone: LA, business: nightOnly })!.toISOString()).toBe("2026-10-19T16:00:00.000Z");
+    expect(callSlot(at("2026-10-19T10:00:00Z"), { callHours, timezone: LA, business: nightOnly })).toBeNull(); // 03:00 PDT: open
+    expect(callSlot(at("2026-10-19T12:00:00Z"), { callHours, timezone: LA, business: nightOnly })!.toISOString()).toBe("2026-10-20T08:30:00.000Z"); // closed: next 01:30 PDT
+    const window = { days: [1, 2, 3, 4, 5, 6], startMinute: 8 * 60, endMinute: 19 * 60, minReplyMs: 0, firstFollowUpBusinessHours: 24, followUpGapBusinessHours: 24, maxFollowUps: 2 };
+    expect(textSlot(at("2026-10-19T12:00:00Z"), nightOnly, window, LA)!.toISOString()).toBe("2026-10-20T08:30:00.000Z");
     expect(earliestSlot(at("2026-10-19T10:00:00Z"), [{ allows: () => false, next: () => null }])).toBeNull();
   });
 

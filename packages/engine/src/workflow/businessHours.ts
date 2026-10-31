@@ -10,13 +10,14 @@ import { isOpen, nextOpen, type ContactWindowConfig } from "./contactWindow.ts";
 /**
  * Null when a call may be placed now; else the next time it may. `timezone` is the operator's (call
  * hours) and the fallback for hours that carry none. If the business's hours and the call hours never
- * meet, the call hours alone decide (today's behaviour).
+ * meet, the business's own hours decide: a closed business is never rung.
  */
 export function callSlot(now: Date, o: { callHours?: CallHours | undefined; timezone: string; business?: WeeklyHours | null | undefined }): Date | null {
   const cap: ContactRule | null = o.callHours ? { allows: (t) => isWithinCallHours(t, o.timezone, o.callHours), next: (t) => nextCallHoursStart(t, o.timezone, o.callHours!) } : null;
-  const rules = [cap, o.business ? businessHoursRule(o.business, o.timezone) : null].filter((r): r is ContactRule => r !== null);
+  const open = o.business ? businessHoursRule(o.business, o.timezone) : null;
+  const rules = [cap, open].filter((r): r is ContactRule => r !== null);
   if (!rules.length) return null;
-  const at = earliestSlot(now, rules);
+  const at = earliestSlot(now, rules) ?? (open ? earliestSlot(now, [open]) : null);
   if (at) return at.getTime() <= now.getTime() ? null : at;
   return cap && !cap.allows(now) ? cap.next(now) : null;
 }
@@ -24,11 +25,12 @@ export function callSlot(now: Date, o: { callHours?: CallHours | undefined; time
 /**
  * A first text to a business with known hours: null when it may go now (as far as its hours go; the
  * contact window is still applied by the caller), else the next time both its hours and the contact
- * window allow. Never-meeting rules fall back to the caller's usual decision (null).
+ * window allow. If they never meet, the business's own hours decide.
  */
 export function textSlot(now: Date, hours: WeeklyHours, window: ContactWindowConfig | null | undefined, timezone: string): Date | null {
   const tz = window?.timezone ?? timezone;
-  const rules: ContactRule[] = [businessHoursRule(hours, timezone), ...(window ? [{ allows: (t: Date) => isOpen(t, window, tz), next: (t: Date) => nextOpen(t, window, tz) }] : [])];
-  const at = earliestSlot(now, rules);
+  const open = businessHoursRule(hours, timezone);
+  const rules: ContactRule[] = [open, ...(window ? [{ allows: (t: Date) => isOpen(t, window, tz), next: (t: Date) => nextOpen(t, window, tz) }] : [])];
+  const at = earliestSlot(now, rules) ?? earliestSlot(now, [open]);
   return at && at.getTime() > now.getTime() ? at : null;
 }
