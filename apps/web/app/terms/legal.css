@@ -1,32 +1,134 @@
-/* Legal pages (/terms, /privacy, /acceptable-use). Uses the tokens in app/globals.css. The page keeps
-   the shared left edge; the text column is narrow for reading. */
-.legal > * {
-  max-width: 68ch;
+/* Legal pages (/terms, /privacy, /acceptable-use): a readable article column (68ch) with the three
+   policies as a quiet nav beside it. Tokens: app/globals.css. */
+.legal-bar-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
 }
+.legal-bar .btn-quiet {
+  margin-right: -12px;
+}
+
 .legal {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 68ch);
+  gap: var(--s-12);
+  align-items: start;
+  padding-block: var(--s-8) var(--s-16);
+}
+
+.legal-nav {
+  position: sticky;
+  top: var(--s-6);
+  padding-top: 6px;
+}
+.legal-nav ul {
+  display: grid;
+  gap: var(--s-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.legal-nav a {
+  position: relative;
+  display: inline-block;
+  padding: 6px 0;
+  color: var(--ink-2);
+  font-size: var(--t-15);
+  font-weight: 500;
+  text-decoration: none;
+}
+.legal-nav a:hover {
+  color: var(--ink);
+}
+.legal-nav a[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.legal-article {
+  min-width: 0;
+  font-size: var(--t-16);
   line-height: 1.65;
-}
-.legal h1 {
-  margin-top: 24px;
-  font-size: var(--t-36);
-}
-.legal h2 {
-  margin-top: 36px;
-  font-size: var(--t-21);
-}
-.legal p,
-.legal ul {
-  margin: 12px 0;
-}
-.legal li + li {
-  margin-top: 6px;
+  color: var(--ink);
 }
 .legal-draft {
-  padding: 12px 14px;
-  border-left: 3px solid var(--warn);
-  border-radius: var(--radius-s);
-  background: var(--warn-soft);
-  color: var(--ink);
-  font-weight: 600;
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: var(--r-control);
+  background: var(--hold-wash);
+  color: var(--hold);
   font-size: var(--t-14);
+  font-weight: 600;
+}
+.legal-article h1 {
+  margin-top: var(--s-6);
+  font-size: var(--t-48);
+  font-weight: 760;
+  font-stretch: 94%;
+  letter-spacing: -0.03em;
+  line-height: 1.04;
+}
+.legal-meta {
+  margin-top: var(--s-2);
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+.legal-article .legal-meta + * {
+  margin-top: var(--s-8);
+}
+.legal-article h2 {
+  margin-top: var(--s-12);
+  font-size: var(--t-24);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  scroll-margin-top: var(--s-6);
+}
+.legal-article h3 {
+  margin-top: var(--s-6);
+}
+.legal-article p,
+.legal-article ul,
+.legal-article ol {
+  margin-block: var(--s-3) 0;
+}
+.legal-article ul,
+.legal-article ol {
+  padding-left: 1.25em;
+}
+.legal-article li + li {
+  margin-top: var(--s-2);
+}
+.legal-article li::marker {
+  color: var(--ink-3);
+}
+.legal-article strong {
+  font-weight: 650;
+}
+
+@media (max-width: 860px) {
+  .legal {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-6);
+    padding-top: var(--s-2);
+  }
+  .legal-nav {
+    position: static;
+    padding-top: 0;
+    border-bottom: 1px solid var(--rule);
+    overflow-x: auto;
+  }
+  .legal-nav ul {
+    display: flex;
+    gap: var(--s-6);
+  }
+  .legal-nav a {
+    padding: 10px 0;
+    white-space: nowrap;
+    font-size: var(--t-14);
+  }
+  .legal-article h1 {
+    font-size: var(--t-36);
+  }
 }

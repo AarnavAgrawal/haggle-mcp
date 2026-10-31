@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: "Acceptable Use · Haggle" };
 
 export default function AcceptableUsePage() {
   return (
-    <LegalPage title="Acceptable Use Policy">
+    <LegalPage title="Acceptable Use Policy" current="acceptable-use">
       <p>
         Haggle emails, calls and texts real businesses in your name. These rules protect those businesses and keep the Service usable for everyone. They are
         part of the <Link href="/terms">Terms</Link>.

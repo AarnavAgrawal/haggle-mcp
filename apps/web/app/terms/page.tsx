@@ -6,7 +6,7 @@ export const metadata: Metadata = { title: "Terms · Haggle" };
 
 export default function TermsPage() {
   return (
-    <LegalPage title="Terms of Service">
+    <LegalPage title="Terms of Service" current="terms">
       <p>
         These terms are an agreement between you and [Company legal name] (&quot;Haggle&quot;, &quot;we&quot;) for the Haggle website, app and MCP server (the
         &quot;Service&quot;). By creating an account or using the Service you accept them, the <Link href="/acceptable-use">Acceptable Use policy</Link> and the{" "}
