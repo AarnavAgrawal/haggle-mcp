@@ -1,9 +1,15 @@
 "use client";
-// "Add vendor": name, email or phone, channel, how the business agreed (plain-language choices), an
-// optional note and a required attestation. The same rules run again on this app's server and on the
-// MCP server: a business found only in a public listing may be emailed, never called or texted.
-import { useEffect, useRef, useState } from "react";
+// "Add a vendor" (inside the page's drawer): name, email or phone, how Haggle reaches it, how the
+// business agreed (plain-language choices), an optional note and a required attestation. Errors show
+// inline as each field is left, using the same rules (lib/vendors/form.ts) that run again on this app's
+// server and on the MCP server: a business found only in a public listing may be emailed, never called
+// or texted. Mount it with key={prefill.key} so a prefill from Find businesses starts a fresh form.
+import { useEffect, useRef, useState, useTransition } from "react";
+import { Button } from "@/components/ui/Button";
+import { Field } from "@/components/ui/Field";
+import { Icon, channelIcon } from "@/components/ui/Icon";
 import { ATTESTATION, basisAllows, CHANNEL_OPTIONS, CONSENT_OPTIONS, normalizeContact, validateVendorForm, type ConsentBasis, type FormField, type VendorChannel } from "@/lib/vendors/form";
+import type { VendorView } from "@/lib/vendors/types";
 import { vendorApi, type VendorApiError } from "./api";
 
 export interface VendorPrefill {
@@ -17,151 +23,175 @@ export interface VendorPrefill {
   business_ref?: string;
 }
 
-export function AddVendorForm({ prefill, onAdded }: { prefill: VendorPrefill | null; onAdded: (message: string) => void }) {
-  const [name, setName] = useState("");
-  const [contact, setContact] = useState("");
-  const [channel, setChannel] = useState<VendorChannel | "">("");
-  const [basis, setBasis] = useState<ConsentBasis | "">("");
-  const [note, setNote] = useState("");
+const CHANNEL_SHORT: Record<VendorChannel, string> = { email: "Email", phone: "Phone call", imessage: "Text" };
+
+interface Props {
+  open: boolean;
+  prefill: VendorPrefill | null;
+  /** How many more vendors can be added today. */
+  left: number;
+  onAdded: (vendor: VendorView, next: string) => void;
+  onCancel: () => void;
+}
+
+export function AddVendorForm({ open, prefill, left, onAdded, onCancel }: Props) {
+  const [name, setName] = useState(prefill?.name ?? "");
+  const [contact, setContact] = useState(prefill?.contact ?? "");
+  const [channel, setChannel] = useState<VendorChannel | "">(prefill ? "email" : "");
+  const [basis, setBasis] = useState<ConsentBasis | "">(prefill?.consent_basis ?? "");
+  const [note, setNote] = useState(prefill?.note ?? "");
   const [attested, setAttested] = useState(false);
-  const [businessRef, setBusinessRef] = useState<string | undefined>(undefined);
-  const [errors, setErrors] = useState<Partial<Record<FormField, string>>>({});
+  const businessRef = prefill?.business_ref;
+  const [touched, setTouched] = useState<Partial<Record<FormField, boolean>>>({});
+  const [submitted, setSubmitted] = useState(false);
+  const [serverErrors, setServerErrors] = useState<Partial<Record<FormField, string>>>({});
   const [failure, setFailure] = useState<VendorApiError | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [pending, start] = useTransition();
+  const nameRef = useRef<HTMLInputElement>(null);
   const contactRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
+  // On open, put the caret where typing starts (after the drawer's own focus handling).
   useEffect(() => {
-    if (!prefill) return;
-    setName(prefill.name);
-    setContact(prefill.contact ?? "");
-    setChannel("email");
-    setBasis(prefill.consent_basis ?? "");
-    setNote(prefill.note ?? "");
-    setBusinessRef(prefill.business_ref);
-    setAttested(false);
-    setErrors({});
-    setFailure(null);
-    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    contactRef.current?.focus({ preventScroll: true });
-  }, [prefill]);
+    if (!open) return;
+    const id = requestAnimationFrame(() => (prefill && !prefill.contact ? contactRef : nameRef).current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [open, prefill]);
 
   const kind = normalizeContact(contact)?.kind ?? (contact.includes("@") ? "email" : null);
-  const effective: VendorChannel | "" = kind === "email" ? "email" : kind === "phone" && channel === "email" ? "phone" : channel;
+  const effective: VendorChannel | "" = kind === "email" ? "email" : kind === "phone" && channel === "email" ? "phone" : kind === "phone" && !channel ? "phone" : channel;
+  const input = { name, contact, channel: effective || undefined, consent_basis: basis || undefined, note, attested, ...(businessRef ? { business_ref: businessRef } : {}) };
+  const check = validateVendorForm(input);
+  const live = check.ok ? {} : check.errors;
+  const errorFor = (f: FormField) => serverErrors[f] ?? (submitted || touched[f] ? live[f] : undefined);
+  const touch = (f: FormField) => () => setTouched((t) => (t[f] ? t : { ...t, [f]: true }));
+  const edited = (f: FormField) => {
+    if (serverErrors[f]) setServerErrors(({ [f]: _, ...rest }) => rest);
+  };
 
-  async function submit(e: React.FormEvent) {
+  function submit(e: React.FormEvent) {
     e.preventDefault();
+    setSubmitted(true);
     setFailure(null);
-    const input = { name, contact, channel: effective || undefined, consent_basis: basis || undefined, note, attested, ...(businessRef ? { business_ref: businessRef } : {}) };
-    const v = validateVendorForm(input);
-    if (!v.ok) {
-      setErrors(v.errors);
+    if (!check.ok) {
+      // Move to the first field that needs fixing.
+      requestAnimationFrame(() => formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus());
       return;
     }
-    setErrors({});
-    setBusy(true);
-    const r = await vendorApi<{ vendor: { name: string }; next: string }>("/api/vendors", { ...input });
-    setBusy(false);
-    if (!r.ok) {
-      if (r.fields) setErrors(r.fields as Partial<Record<FormField, string>>);
-      setFailure(r.error);
-      return;
-    }
-    setName("");
-    setContact("");
-    setChannel("");
-    setBasis("");
-    setNote("");
-    setBusinessRef(undefined);
-    setAttested(false);
-    onAdded(r.next);
+    start(async () => {
+      const r = await vendorApi<{ vendor: VendorView; next: string }>("/api/vendors", { ...input });
+      if (!r.ok) {
+        if (r.fields) setServerErrors(r.fields as Partial<Record<FormField, string>>);
+        setFailure(r.error);
+        return;
+      }
+      // The drawer closes; the parent mounts a fresh form (a new key) the next time it opens.
+      onAdded(r.vendor, r.next);
+    });
   }
 
-  const err = (f: FormField) => (errors[f] ? <p className="vend-err" id={`vf-${f}-err`}>{errors[f]}</p> : null);
-  const described = (f: FormField, hint?: string) => [errors[f] ? `vf-${f}-err` : null, hint ?? null].filter(Boolean).join(" ") || undefined;
-
+  const basisError = errorFor("consent_basis");
+  const channelError = errorFor("channel");
+  const attestError = errorFor("attested");
   return (
-    <section className="section" aria-labelledby="add-h">
-    <div className="section-head">
-      <h2 id="add-h">Add a vendor</h2>
-      <p>Haggle contacts only the businesses you add, on the channel and basis you record. A business that asks Haggle to stop is never contacted again.</p>
-    </div>
-    <form ref={formRef} className="vend-form" onSubmit={submit} noValidate aria-labelledby="add-h">
-      <div className="vend-grid">
-        <div>
-          <label htmlFor="vf-name">Business name</label>
-          <input id="vf-name" value={name} maxLength={120} onChange={(e) => setName(e.target.value)} aria-invalid={!!errors.name} aria-describedby={described("name")} autoComplete="organization" />
-          {err("name")}
-        </div>
-        <div>
-          <label htmlFor="vf-contact">
-            Email or phone <span className="hint">phone with country code, e.g. +1 415 555 0123</span>
+    <form ref={formRef} className="vf" onSubmit={submit} noValidate aria-busy={pending || undefined}>
+      <div className="vf-body">
+        <p className="vf-lede">Haggle contacts only the businesses you add, only the way you record here, and never again once one asks it to stop.</p>
+
+        <Field label="Business name" error={errorFor("name")}>
+          <input ref={nameRef} value={name} maxLength={120} autoComplete="organization" onBlur={touch("name")} onChange={(e) => (setName(e.target.value), edited("name"))} />
+        </Field>
+
+        <Field label="Email or phone" hint="Phone numbers with the country code, like +1 415 555 0123." error={errorFor("contact")}>
+          <input ref={contactRef} value={contact} maxLength={254} inputMode="email" autoComplete="off" spellCheck={false} onBlur={touch("contact")} onChange={(e) => (setContact(e.target.value), edited("contact"))} />
+        </Field>
+
+        <fieldset className="vf-set" aria-describedby={channelError ? "vf-channel-err" : undefined}>
+          <legend className="field-label">Reached by</legend>
+          <div className="vf-seg">
+            {CHANNEL_OPTIONS.map((o) => {
+              const off = kind ? (kind === "email") !== (o.value === "email") : false;
+              return (
+                <label key={o.value} className={`vf-seg-opt${off ? " is-off" : ""}`}>
+                  <input type="radio" name="vf-channel" value={o.value} checked={effective === o.value} disabled={off || pending} onChange={() => (setChannel(o.value), edited("channel"))} />
+                  <Icon name={channelIcon(o.value)} />
+                  <span>{CHANNEL_SHORT[o.value]}</span>
+                </label>
+              );
+            })}
+          </div>
+          {channelError ? (
+            <p className="field-error" id="vf-channel-err">
+              {channelError}
+            </p>
+          ) : null}
+        </fieldset>
+
+        <fieldset className="vf-set" aria-describedby={basisError ? "vf-basis-err" : undefined}>
+          <legend className="field-label">How did they agree to hear from Haggle?</legend>
+          <div className="vf-choices">
+            {CONSENT_OPTIONS.map((o) => {
+              const blocked = !!effective && !basisAllows(o.value, effective);
+              return (
+                <label key={o.value} className={`vf-choice${blocked ? " is-off" : ""}`}>
+                  <input
+                    type="radio"
+                    name="vf-basis"
+                    value={o.value}
+                    checked={basis === o.value}
+                    disabled={blocked || pending}
+                    aria-invalid={basisError && basis === o.value ? true : undefined}
+                    onChange={() => (setBasis(o.value), setTouched((t) => ({ ...t, consent_basis: true })), edited("consent_basis"))}
+                  />
+                  <span className="vf-choice-text">
+                    <span className="vf-choice-label">{o.label}</span>
+                    {blocked ? <span className="vf-choice-explain">Not for calls or texts.</span> : basis === o.value ? <span className="vf-choice-explain">{o.explain}</span> : null}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {basisError ? (
+            <p className="field-error" id="vf-basis-err">
+              {basisError}
+            </p>
+          ) : null}
+        </fieldset>
+
+        <Field label="Note" optional hint={'Who agreed, how and when. "Maria, the owner, by phone on Oct 20"'} error={errorFor("note")}>
+          <textarea rows={3} maxLength={300} value={note} onBlur={touch("note")} onChange={(e) => (setNote(e.target.value), edited("note"))} />
+        </Field>
+
+        <div className="vf-attest">
+          <label className={`vf-check${attestError ? " is-invalid" : ""}`}>
+            <input type="checkbox" checked={attested} aria-invalid={attestError ? true : undefined} aria-describedby={attestError ? "vf-attest-err" : undefined} onChange={(e) => (setAttested(e.target.checked), edited("attested"))} />
+            <span>{ATTESTATION}</span>
           </label>
-          <input ref={contactRef} id="vf-contact" value={contact} maxLength={254} onChange={(e) => setContact(e.target.value)} aria-invalid={!!errors.contact} aria-describedby={described("contact")} inputMode="email" autoComplete="off" />
-          {err("contact")}
+          {attestError ? (
+            <p className="field-error" id="vf-attest-err">
+              {attestError}
+            </p>
+          ) : null}
         </div>
+
+        {failure ? (
+          <p className="note note-risk" role="alert">
+            {failure.message} <span className="fix">{failure.fix}</span>
+          </p>
+        ) : null}
       </div>
 
-      <div>
-        <label htmlFor="vf-channel">How Haggle reaches them</label>
-        <select id="vf-channel" className="vend-select" value={effective} onChange={(e) => setChannel(e.target.value as VendorChannel)} disabled={kind === "email"} aria-invalid={!!errors.channel} aria-describedby={described("channel")}>
-          {!effective ? <option value="">{kind ? "Choose a call or a text" : "Enter the email or phone first"}</option> : null}
-          {CHANNEL_OPTIONS.filter((o) => !kind || (kind === "email") === (o.value === "email")).map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        {err("channel")}
-      </div>
-
-      <fieldset className="vend-fieldset" aria-describedby={described("consent_basis")}>
-        <legend>How did this business agree to be contacted?</legend>
-        {CONSENT_OPTIONS.map((o) => {
-          const blocked = !!effective && !basisAllows(o.value, effective);
-          return (
-            <label key={o.value} className={`vend-radio${blocked ? " vend-radio-off" : ""}`}>
-              <input type="radio" name="consent_basis" value={o.value} checked={basis === o.value} onChange={() => setBasis(o.value)} disabled={blocked} />
-              <span>
-                <strong>{o.label}</strong>
-                <span className="hint vend-explain">
-                  {o.explain}
-                  {blocked ? " Not available for calls or texts." : ""}
-                </span>
-              </span>
-            </label>
-          );
-        })}
-        {err("consent_basis")}
-      </fieldset>
-
-      <div>
-        <label htmlFor="vf-note">
-          Note <span className="hint">optional: who agreed, how and when (e.g. &quot;Maria, the owner, by phone on Oct 20&quot;)</span>
-        </label>
-        <textarea id="vf-note" className="vend-textarea" rows={2} maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} aria-describedby={described("note")} />
-        {err("note")}
-      </div>
-
-      <div>
-        <label className="vend-check">
-          <input type="checkbox" checked={attested} onChange={(e) => setAttested(e.target.checked)} aria-invalid={!!errors.attested} aria-describedby={described("attested")} />
-          <span>{ATTESTATION}</span>
-        </label>
-        {err("attested")}
-      </div>
-
-      {failure ? (
-        <p className="note note-risk" role="alert">
-          {failure.message} <span className="fix">{failure.fix}</span>
-        </p>
-      ) : null}
-      <div>
-        <button className="btn btn-primary" type="submit" disabled={busy}>
-          {busy ? "Adding…" : "Add vendor"}
-        </button>
+      <div className="vf-foot">
+        <Button type="submit" variant="primary" pending={pending}>
+          {pending ? "Adding…" : "Add vendor"}
+        </Button>
+        <Button variant="quiet" onClick={onCancel} disabled={pending}>
+          Cancel
+        </Button>
+        <span className="vf-left">
+          <span className="num">{left}</span> more today
+        </span>
       </div>
     </form>
-    </section>
   );
 }

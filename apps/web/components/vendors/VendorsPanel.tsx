@@ -1,57 +1,141 @@
 "use client";
-// The vendors page's live part: the list, "Find businesses" and "Add vendor". After a change it
-// re-reads the list from /api/vendors (the MCP server is the source of truth).
-import { useState } from "react";
-import type { VendorList } from "@/lib/vendors/types";
+// The vendors page's live part: the header with "Add a vendor", Find businesses (search + results),
+// and the vendors table. The server page is the source of truth: after a change the page re-renders
+// (router.refresh in a transition), and until the fresh list arrives the change shows optimistically
+// (an added vendor appears at the top, a removed one disappears).
+import { useRouter } from "next/navigation";
+import { useCallback, useOptimistic, useRef, useState, useTransition } from "react";
+import { Button } from "@/components/ui/Button";
+import { Drawer } from "@/components/ui/Drawer";
+import { Icon } from "@/components/ui/Icon";
+import { EmptyState } from "@/components/ui/Sheet";
+import { applyVendorChange, canonName } from "@/lib/vendors/present";
+import type { FoundBusiness, VendorList, VendorView } from "@/lib/vendors/types";
 import { AddVendorForm, type VendorPrefill } from "./AddVendorForm";
 import { FindBusinesses } from "./FindBusinesses";
 import { VendorTable } from "./VendorTable";
-import { vendorApi } from "./api";
-import "./vendors.css";
 
-export function VendorsPanel({ initial, canAdd, cantAddReason }: { initial: VendorList; canAdd: boolean; cantAddReason?: string }) {
-  const [list, setList] = useState(initial);
-  const [status, setStatus] = useState<string | null>(null);
+export function VendorsPanel({ list, canAdd, cantAddReason }: { list: VendorList; canAdd: boolean; cantAddReason?: string }) {
+  const router = useRouter();
+  const [vendors, change] = useOptimistic(list.vendors, applyVendorChange);
+  const [, startRefresh] = useTransition();
+  const [adding, setAdding] = useState(false);
   const [prefill, setPrefill] = useState<VendorPrefill | null>(null);
-
-  async function refresh(message: string) {
-    setStatus(message);
-    const r = await vendorApi<Omit<VendorList, "ok">>("/api/vendors");
-    if (r.ok) setList({ ...r, ok: true });
-    else setStatus(`${message} (Couldn't reload the list: ${r.error.message} ${r.error.fix})`);
-  }
+  const [notice, setNotice] = useState<string | null>(null);
+  const [fresh, setFresh] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listHeadRef = useRef<HTMLHeadingElement>(null);
 
   const left = Math.max(0, list.limits.adds_per_day - list.limits.added_today);
+  const full = list.vendors.length >= list.limits.max_vendors;
+  const addBlocked = !canAdd ? cantAddReason ?? "You can't add vendors from this account." : full ? `You have the most vendors a workspace can have (${list.limits.max_vendors}). Remove one to add another.` : left === 0 ? "You've added as many vendors as you can today. Add more tomorrow." : null;
+
+  const known = new Set(vendors.map((v) => canonName(v.name)));
+
+  // A blank form keeps its draft between openings, until a vendor is added from it.
+  // (Remounted on the next opening, not on close, so the closing drawer doesn't flash an empty form.)
+  const [blankKey, setBlankKey] = useState(0);
+  const usedForm = useRef(false);
+  const openBlank = () => {
+    if (usedForm.current || prefill) {
+      usedForm.current = false;
+      setBlankKey((k) => k + 1);
+    }
+    setPrefill(null);
+    setAdding(true);
+  };
+  const openFor = (b: FoundBusiness) => {
+    const email = b.emails?.[0];
+    setPrefill({
+      key: Date.now(),
+      name: b.name,
+      business_ref: b.business_ref,
+      ...(email ? { contact: email } : {}),
+      consent_basis: "public_listing_email",
+      note: `Found in public listings${email ? `; email ${email} published by the business` : ""}`,
+    });
+    setAdding(true);
+  };
+
+  // Once the server has added or removed a vendor the outcome is certain: show it now (optimistic,
+  // inside a transition) and re-render the page; the optimistic list holds until the fresh one arrives.
+  const onAdded = useCallback(
+    (vendor: VendorView, next: string) => {
+      setAdding(false);
+      usedForm.current = true;
+      setFresh(vendor.contact);
+      setNotice(`${vendor.name} added. ${next}`);
+      startRefresh(() => {
+        change({ type: "add", vendor });
+        router.refresh();
+      });
+    },
+    [change, router],
+  );
+  const onRemoved = useCallback(
+    (v: VendorView) => {
+      setNotice(`${v.name} removed. Haggle won't contact it on new deals.`);
+      startRefresh(() => {
+        change({ type: "remove", contact: v.contact });
+        router.refresh();
+      });
+      // Its row (and the focused button in it) is gone: keep keyboard focus in the list.
+      requestAnimationFrame(() => listHeadRef.current?.focus());
+    },
+    [change, router],
+  );
+
   return (
     <>
-      <section className="section" aria-labelledby="list-h">
-        <div className="section-head">
-          <h2 id="list-h">
-            Your vendors <span className="muted num">{list.vendors.length}</span>
+      <header className="vend-head">
+        <h1>Vendors</h1>
+        {addBlocked ? null : (
+          <Button variant="primary" onClick={openBlank}>
+            <Icon name="plus" />
+            Add a vendor
+          </Button>
+        )}
+      </header>
+
+      <FindBusinesses inputRef={searchRef} isVendor={(name) => known.has(canonName(name))} canAdd={!addBlocked} onAdd={openFor} onAddBlank={openBlank} />
+
+      <section className="vend-section" aria-labelledby="vend-list-h">
+        <div className="vend-section-head">
+          <h2 id="vend-list-h" ref={listHeadRef} tabIndex={-1}>
+            Your vendors {vendors.length ? <span className="vend-count num">{vendors.length}</span> : null}
           </h2>
-          <p>
-            Up to {list.limits.max_vendors}. {left} more can be added today.
-          </p>
+          {addBlocked && canAdd ? <p className="vend-limit">{addBlocked}</p> : null}
         </div>
-        {status ? (
-          <p className="note vend-status" role="status">
-            {status}
-          </p>
-        ) : null}
-        <VendorTable vendors={list.vendors} onChanged={refresh} />
+        <p className="sr-only" role="status" aria-live="polite">
+          {notice ?? ""}
+        </p>
+        {!canAdd ? <p className="note vend-note">{cantAddReason}</p> : null}
+        {vendors.length ? (
+          <VendorTable vendors={vendors} fresh={fresh} onRemoved={onRemoved} />
+        ) : (
+          <EmptyState
+            className="vend-empty"
+            headingLevel={3}
+            title="No vendors yet"
+            action={
+              <>
+                <Button variant="primary" onClick={() => searchRef.current?.focus()}>
+                  <Icon name="search" />
+                  Find businesses near you
+                </Button>
+                {addBlocked ? null : <Button onClick={openBlank}>Add one you already use</Button>}
+              </>
+            }
+          >
+            Haggle asks only the businesses you add here for quotes.
+          </EmptyState>
+        )}
       </section>
 
-      <FindBusinesses
-        vendorNames={list.vendors.map((v) => v.name)}
-        onAdd={(b) => setPrefill({ key: Date.now(), name: b.name, business_ref: b.business_ref, ...(b.emails?.[0] ? { contact: b.emails[0] } : {}), consent_basis: "public_listing_email", note: `Found in public listings${b.emails?.[0] ? `; email ${b.emails[0]} published by the business` : ""}` })}
-      />
-
-      {canAdd ? (
-        <AddVendorForm prefill={prefill} onAdded={refresh} />
-      ) : (
-        <section className="section">
-          <p className="note">{cantAddReason}</p>
-        </section>
+      {addBlocked ? null : (
+        <Drawer open={adding} onClose={() => setAdding(false)} label="Add a vendor" title="Add a vendor" side="right" width="min(480px, 100vw)" className="vend-drawer">
+          <AddVendorForm key={prefill?.key ?? `blank-${blankKey}`} open={adding} prefill={prefill} left={left} onAdded={onAdded} onCancel={() => setAdding(false)} />
+        </Drawer>
       )}
     </>
   );
