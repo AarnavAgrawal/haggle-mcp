@@ -7,14 +7,14 @@ export function Footer() {
   const email = supportEmail();
   return (
     <footer className="site-footer">
-      <div className="wrap">
+      <div className="wrap site-footer-inner">
         <nav aria-label="Legal">
           <Link href="/terms">Terms</Link>
           <Link href="/privacy">Privacy</Link>
           <Link href="/acceptable-use">Acceptable use</Link>
           {email ? <a href={`mailto:${email}`}>{email}</a> : null}
         </nav>
-        <p>Haggle contacts businesses for you by email, AI phone call and text. Every call says it is an AI assistant.</p>
+        <p>Every Haggle call says it is an AI assistant.</p>
       </div>
     </footer>
   );
