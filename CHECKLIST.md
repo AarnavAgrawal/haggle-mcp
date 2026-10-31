@@ -107,6 +107,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-31 · Aarnav · Web redesign (apps/web/DESIGN.md, "marked-up quote"): new tokens and type, shared UI primitives, a persistent app rail; landing, sign-in, onboarding, legal and error pages, chat (deal cards, auto-growing composer, streaming that survives refresh), deals list and deal board (quote sheet, docked approval, plain activity), vendors, settings and account rebuilt; loading skeletons and transitions on every route, cached session lookups, Vercel region cle1. Vitest 197 passed, tsc and next build clean, Playwright tier 1 (9) and tier 2 (demo deal through approval to the booking step) pass.
 - 2026-10-31 · Aarnav · Production texts on (e968d91): iMessage approvals (YES/PAID <code>) to the connected approver and texts with vendors who connected first; webhook adds imessage.received; SMS stays off. get_identity reports imessage_approvals ready.
 
 - 2026-10-31 · Aarnav · Production (tryhaggle.tech) on 934fa55: Amazon Location discovery checked live (real Oakland results with hours), migrations 125+126 applied and recorded, per-workspace mailboxes on (org admin key), calls on for consented vendors, webhook adds call.ended; no reference codes to businesses (replies matched by thread, else by sender with one open deal). Launch gate OK; /ready and web /api/health green.
