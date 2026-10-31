@@ -11,6 +11,8 @@ import {
 
 type Sql = postgres.Sql<Record<string, never>>;
 
+/** Postgres "undefined_column" for a migration-125 column: the database hasn't applied it yet. */
+const missingHoursColumn = (e: unknown) => (e as { code?: string })?.code === "42703" && /opening_hours|timezone|business_ref/.test(String((e as Error)?.message ?? ""));
 const JSON_COLS = new Set(["request", "references", "attachments", "record", "requirement_results", "data", "opening_hours"]);
 const norm = (id: string) => id.trim().replace(/^<|>$/g, "").toLowerCase();
 
@@ -149,9 +151,16 @@ export class PostgresRepository implements Repository {
     if (!contacts.length) return [];
     return rows<SuppressionRow>(await this.sql`select * from vendor_suppressions where contact = any(${contacts.map((c) => c.toLowerCase())})`);
   }
-  async addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">) {
-    // Hours (migration 125) are written only when known, so a database without 125 still adds vendors.
+  async addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">): Promise<WorkspaceVendorRow> {
+    // Hours (migration 125) are written only when known, so a database without 125 still adds vendors
+    // (and one that lacks the columns gets the vendor without its hours, rather than no vendor).
     const listed = v.opening_hours != null || v.timezone != null || v.business_ref != null;
+    if (listed) {
+      try { return await this.upsertVendor(v, true); } catch (e) { if (!missingHoursColumn(e)) throw e; }
+    }
+    return this.upsertVendor(v, false);
+  }
+  private async upsertVendor(v: Omit<WorkspaceVendorRow, "created_at">, listed: boolean) {
     const { opening_hours, timezone, business_ref, ...base } = v;
     const values = { ...base, channel: v.channel ?? null, ...(listed ? { opening_hours: opening_hours ?? null, timezone: timezone ?? null, business_ref: business_ref ?? null } : {}) };
     const r = listed
@@ -223,9 +232,13 @@ export class PostgresRepository implements Repository {
   async insertBusinesses(list: JobBusinessRow[]) {
     if (list.length === 0) return;
     // Hours (migration 125) only when some business has them; then every row names the columns (null when unknown).
+    // A database without 125 still takes the deal, without the hours (calls then keep the usual call hours).
     const hours = list.some((b) => b.opening_hours != null || b.timezone != null);
-    const norm = list.map(({ opening_hours, timezone, ...b }) => (hours ? { ...b, opening_hours: opening_hours ?? null, timezone: timezone ?? null } : b));
-    await this.sql`insert into job_businesses ${this.sql(norm.map((b) => this.vals(b as never)) as never)}`;
+    const norm = (withHours: boolean) => list.map(({ opening_hours, timezone, ...b }) => (withHours ? { ...b, opening_hours: opening_hours ?? null, timezone: timezone ?? null } : b));
+    if (hours) {
+      try { await this.sql`insert into job_businesses ${this.sql(norm(true).map((b) => this.vals(b as never)) as never)}`; return; } catch (e) { if (!missingHoursColumn(e)) throw e; }
+    }
+    await this.sql`insert into job_businesses ${this.sql(norm(false).map((b) => this.vals(b as never)) as never)}`;
   }
   async getBusinesses(jobId: string) {
     return rows<JobBusinessRow>(await this.sql`select * from job_businesses where job_id = ${jobId} order by name`);

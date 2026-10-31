@@ -2,8 +2,9 @@
 // registry, the four contact states (found is not authorized) and evidence kinds. No network.
 import { describe, expect, it } from "vitest";
 import type { Profile } from "@haggle/core";
-import { contactEvidence, contactStatus, DiscoveryRegistry, e164, freshness, historyEvidence, listingEvidence, requestCategory, routeFor, unknowns, websiteItems, type Discovered } from "../src/businesses.ts";
-import type { ChannelStatus } from "../src/vendors.ts";
+import type { FoundBusiness, ListingProvider, WeeklyHours } from "@haggle/engine";
+import { contactEvidence, contactStatus, DiscoveryRegistry, e164, freshness, historyEvidence, hoursOf, listingEvidence, publishedEmails, requestCategory, routeFor, storedListing, unknowns, websiteItems, type Discovered } from "../src/businesses.ts";
+import { workspaceVendorList, type ChannelStatus } from "../src/vendors.ts";
 
 const CH: ChannelStatus = { email: true, imessage: true, phone: true, a2a: false, connectCommand: "connect @haggle", connected: new Set(["+15105550141"]), callsViaSharedLine: true };
 const found = (o: Partial<Discovered> & { name: string; place_id: string }): Discovered => ({
@@ -82,5 +83,42 @@ describe("evidence keeps its kind, source, time and limits", () => {
     const c = contactEvidence({ channels: { email: { contacted_jobs: 1, replied_jobs: 1, quotes: 1, response_rate: 1, confidence: 0.25 } } }, now);
     expect(c[0]).toMatchObject({ kind: "verified", caveat: "one deal: too little to call a habit" });
     expect(unknowns(false).join(" ")).toMatch(/availability.*capacity.*advertised prices are not quotes/);
+  });
+});
+
+describe("published emails and opening hours of a found business", () => {
+  const listed: WeeklyHours = { timezone: "America/Los_Angeles", intervals: [{ day: 1, startMinute: 480, endMinute: 1020 }], display: ["Mon 08:00–17:00"], source: "Amazon Location Service" };
+  const site: WeeklyHours = { timezone: null, intervals: [{ day: 2, startMinute: 420, endMinute: 1140 }], display: ["Tue 07:00–19:00"], source: "business website" };
+  const web = (hours?: WeeklyHours, emails: string[] = []) => ({ url: "https://b.example/", fetched_at: "2026-10-18T00:00:00.000Z", status: "ok" as const, emails, phones: [], price_claims: [], ...(hours ? { hours } : {}) });
+  const aws = (o: Partial<Discovered> = {}) => found({ name: "Bolt", place_id: "AQAAAEJvbHQ", business_ref: "aws:AQAAAEJvbHQ", source: "Amazon Location Service", attribution: "Amazon Location Service (data © HERE)", ...o });
+
+  it("listing emails first, then the website's; deduplicated, at most three", () => {
+    expect(publishedEmails(aws({ listing_emails: ["dispatch@b.example"], website_evidence: web(undefined, ["office@b.example", "Dispatch@b.example", "a@b.example", "c@b.example"]) }))).toEqual(["dispatch@b.example", "office@b.example", "a@b.example"]);
+  });
+
+  it("listing hours win; website hours fall back, in the listing's timezone", () => {
+    expect(hoursOf(aws({ hours: listed, website_evidence: web(site) }))).toBe(listed);
+    expect(hoursOf(aws({ timezone: "America/Los_Angeles", website_evidence: web(site) }))).toEqual({ ...site, timezone: "America/Los_Angeles" });
+    expect(hoursOf(aws())).toBeUndefined();
+    expect(listingEvidence(aws({ hours: listed })).map((e) => e.statement)).toContain("Opening hours: Mon 08:00–17:00 (America/Los_Angeles)");
+  });
+
+  it("stored hours come from a Storage lookup, never from a browsing (SingleUse) result", async () => {
+    const calls: unknown[] = [];
+    const provider = (hours?: WeeklyHours): ListingProvider => ({
+      kind: "amazon", source: "Amazon Location Service", attribution: "x", owns: (r) => r.startsWith("aws:"), discover: async () => [],
+      details: async (ref, o) => { calls.push(o?.intendedUse); return { ...aws(), ...(hours ? { hours, timezone: "America/Los_Angeles" } : {}) } as FoundBusiness; },
+    });
+    expect(await storedListing(aws({ hours: listed }), { listing: provider(listed) })).toEqual({ opening_hours: listed, timezone: "America/Los_Angeles" });
+    expect(calls).toEqual(["Storage"]);
+    // The Storage lookup has no hours: the browsing result's hours are not stored; the website's are.
+    expect(await storedListing(aws({ hours: listed, website_evidence: web(site) }), { listing: provider() })).toEqual({ opening_hours: site });
+    expect(await storedListing(aws({ hours: listed }), {})).toEqual({});
+  });
+
+  it("a workspace vendor carries its stored hours (bad rows ignored)", () => {
+    const [v] = workspaceVendorList([{ name: "Ace", contact: "+15105550141", channel: "phone", opening_hours: listed, timezone: "America/Los_Angeles" }, { name: "Ace", contact: "ace@a.example", opening_hours: { intervals: "x" } }]);
+    expect(v).toMatchObject({ phone: "+15105550141", email: "ace@a.example", opening_hours: listed, timezone: "America/Los_Angeles" });
+    expect(workspaceVendorList([{ name: "B", contact: "b@b.example", opening_hours: "Mon 9-5" }])[0]).not.toHaveProperty("opening_hours");
   });
 });

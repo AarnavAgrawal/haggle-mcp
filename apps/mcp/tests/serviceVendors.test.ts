@@ -2,12 +2,12 @@
 // service guard. Consent rules, suppression, the approver's reserved contacts, simulated contacts in
 // live mode, both limits, and workspace isolation. The HTTP path is serviceVendors.e2e.test.ts.
 import { describe, expect, it } from "vitest";
-import { disabledPayer, HaggleEngine, InMemoryRepository, StubBrain } from "@haggle/engine";
+import { amazonHours, disabledPayer, HaggleEngine, InMemoryRepository, StubBrain, type ListingProvider } from "@haggle/engine";
 import type { ServiceApp, ServiceContext, ServiceHandler } from "../src/service/http.ts";
 import { consentBasisOf, consentProblem, consentText, DailyAdds, MAX_VENDORS, registerVendorRoutes } from "../src/service/vendors.ts";
 
 /** `slots`: the store's shared rate slots ("shared", migration 124), none (an older store), or failing (the table missing). */
-async function setup(mode: "mock" | "live" = "live", now = () => new Date("2026-10-22T18:00:00Z"), slots: "shared" | "none" | "failing" = "shared") {
+async function setup(mode: "mock" | "live" = "live", now = () => new Date("2026-10-22T18:00:00Z"), slots: "shared" | "none" | "failing" = "shared", listing?: ListingProvider) {
   const repo = new InMemoryRepository({ now });
   if (slots === "none") Object.assign(repo, { takeRateSlot: undefined, rateSlotUsed: undefined });
   if (slots === "failing") Object.assign(repo, { takeRateSlot: async () => { throw new Error('relation "rate_limit_slots" does not exist'); }, rateSlotUsed: async () => { throw new Error('relation "rate_limit_slots" does not exist'); } });
@@ -27,7 +27,7 @@ async function setup(mode: "mock" | "live" = "live", now = () => new Date("2026-
       guard: async (c) => {
         const ws = c.req.header("x-haggle-workspace") ?? null;
         if (!ws || !(await repo.getWorkspace(ws))) return Response.json({ ok: false, error: { code: "UNAUTHORIZED" } }, { status: 401 });
-        return { rt: { engine, mode }, workspaceId: ws, actor: c.req.header("x-haggle-actor") ?? null };
+        return { rt: { engine, mode, ...(listing ? { listing } : {}) }, workspaceId: ws, actor: c.req.header("x-haggle-actor") ?? null };
       },
     });
     async function call(method: "GET" | "POST", path: string, body?: unknown, headers: Record<string, string> = { "x-haggle-workspace": "ws_alpha", "x-haggle-actor": "user-1" }) {
@@ -60,6 +60,29 @@ describe("consent helpers", () => {
 });
 
 describe("/internal/vendors (in process)", () => {
+  it("a vendor added from a listing keeps its opening hours (looked up for storage); a bad ref is refused", async () => {
+    const hours = amazonHours([{ Display: ["Mon-Fri: 08:00 - 17:00"], Components: [{ OpenTime: "T080000", OpenDuration: "PT09H", Recurrence: "FREQ:DAILY;BYDAY:MO,TU,WE,TH,FR" }] }], "America/Los_Angeles")!;
+    const lookups: unknown[] = [];
+    const listing: ListingProvider = {
+      kind: "amazon", source: "Amazon Location Service", attribution: "Amazon Location Service (data © HERE)", owns: (r) => r.startsWith("aws:"), discover: async () => [],
+      details: async (ref, o) => { lookups.push([ref, o?.intendedUse]); return { business_ref: ref, place_id: ref.slice(4), name: "Ace", types: [], relevance: 1, in_area: true, score: 1, rank_reasons: [], source: "Amazon Location Service", attribution: "x", fetched_at: "", merged_listings: 1, hours, timezone: "America/Los_Angeles" }; },
+    };
+    const { add, call, repo } = await setup("mock", undefined, "shared", listing); // mock: 555 numbers are simulated contacts in live
+    const r = await add({ name: "Ace Plumbing", contact: "+15105550141", channel: "phone", consent_basis: "business_agreed", business_ref: "aws:AQAAAEFjZVBsdW1i" });
+    expect(r.status).toBe(201);
+    expect(r.body.vendor.hours).toEqual(["Mon-Fri: 08:00 - 17:00"]);
+    expect(lookups).toEqual([["aws:AQAAAEFjZVBsdW1i", "Storage"]]);
+    const [row] = await repo.listWorkspaceVendors("ws_alpha");
+    expect(row).toMatchObject({ business_ref: "aws:AQAAAEFjZVBsdW1i", timezone: "America/Los_Angeles", opening_hours: { timezone: "America/Los_Angeles", source: "Amazon Location Service" } });
+    expect((await call("GET", "/internal/vendors")).body.vendors[0].hours).toEqual(["Mon-Fri: 08:00 - 17:00"]);
+    expect((await add({ name: "X", contact: "x@x.example", consent_basis: "public_listing_email", business_ref: "javascript:alert(1)" })).status).toBe(400);
+    // No listing configured: the vendor is still added, without hours.
+    const plain = await setup("mock");
+    const p = await plain.add({ name: "Bolt", contact: "+15105550177", channel: "phone", consent_basis: "business_agreed", business_ref: "aws:AQAAAEJvbHQ" });
+    expect(p.status).toBe(201);
+    expect(p.body.vendor).not.toHaveProperty("hours");
+  });
+
   it("adds with the recorded consent, lists, and removes; the deal roster sees it", async () => {
     const { call, add, engine } = await setup();
     const r = await add({ name: "  Casa Lunch ", contact: " Orders@CasaLunch.com ", consent_basis: "public_listing_email", note: "Email on their website" });

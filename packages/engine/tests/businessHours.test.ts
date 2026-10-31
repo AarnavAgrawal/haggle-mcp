@@ -1,9 +1,10 @@
 // Opening hours (Amazon Location components, schema.org on a business's own website), when a business
 // may be rung or texted (open, not in its first or last 30 minutes, its own timezone, DST-safe), and
 // the engine deferring a call to a closed business. No network.
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { afterAll, describe, expect, it } from "vitest";
 import {
-  amazonHours, asWeeklyHours, callSlot, contactableAt, createMockEngine, earliestSlot, extractWebsite, GOLDEN_REQUEST, hoursToday, nextOpenAt, openAt, textSlot, websiteHours,
+  amazonHours, asWeeklyHours, callSlot, contactableAt, createMockEngine, PostgresRepository, earliestSlot, extractWebsite, GOLDEN_REQUEST, hoursToday, nextOpenAt, openAt, textSlot, websiteHours,
   type Persona, type WeeklyHours,
 } from "../src/index.ts";
 
@@ -182,5 +183,34 @@ describe("the engine waits for a closed business", () => {
     const { budget_usd, ...request } = GOLDEN_REQUEST;
     await engine.deal({ request, budget_usd, reply_by: "2026-10-21T10:00:00Z", businesses: [{ name: shop.name, phone: shop.phone! }] });
     expect(fleet.calls).toHaveLength(1);
+  });
+});
+
+const PG_URL = process.env.HAGGLE_TEST_DATABASE_URL;
+const pg: PostgresRepository[] = [];
+afterAll(async () => { await Promise.all(pg.map((r) => r.close?.())); });
+
+describe.each(PG_URL ? ["memory", "postgres"] : ["memory"])("hours are stored with the business (%s, migration 125)", (backend) => {
+  it("a deal's business and a workspace vendor keep their hours and timezone; unknown hours stay null", async () => {
+    const repo = backend === "postgres" ? (pg.push(new PostgresRepository(PG_URL!, { max: 2 })), pg.at(-1)!) : undefined;
+    const { engine, repo: r } = createMockEngine({ ...(repo ? { repo } : {}), now: () => at("2026-10-19T20:00:00Z") });
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const tag = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const deal = await engine.deal({ request, budget_usd, reply_by: "2026-10-21T10:00:00Z", businesses: [
+      { name: `Ace ${tag}`, email: `ace-${tag}@sim.haggle.dev`, simulated: true, opening_hours: ace, timezone: LA },
+      { name: `Bolt ${tag}`, email: `bolt-${tag}@sim.haggle.dev`, simulated: true },
+    ] });
+    const rows = await r.getBusinesses(deal.job_id);
+    const a = rows.find((b) => b.name.startsWith("Ace"))!, b = rows.find((x) => x.name.startsWith("Bolt"))!;
+    expect(a.opening_hours).toEqual(ace);
+    expect(a.timezone).toBe(LA);
+    expect(b.opening_hours ?? null).toBeNull();
+    const ws = `ws_hours_${tag}`.slice(0, 60);
+    await engine.createWorkspace({ id: ws, name: "Hours", tokenHash: createHash("sha256").update(`t${tag}`).digest("hex"), connectorSecretHash: createHash("sha256").update(`c${tag}`).digest("hex") });
+    await engine.addWorkspaceVendor({ workspace_id: ws, contact: `+1415555${tag.slice(-4)}`, name: "Ace", consent: "business_agreed: owner said yes", added_by: "test", channel: "phone", opening_hours: ace, timezone: LA, business_ref: "aws:AQAAAEFjZVBsdW1i" });
+    await engine.addWorkspaceVendor({ workspace_id: ws, contact: `ace-${tag}@sim.haggle.dev`, name: "Ace", consent: "public_listing_email", added_by: "test" });
+    const vs = await engine.workspaceVendors(ws);
+    expect(vs.find((v) => v.channel === "phone")).toMatchObject({ opening_hours: ace, timezone: LA, business_ref: "aws:AQAAAEFjZVBsdW1i" });
+    expect(vs.find((v) => v.contact.includes("@"))!.opening_hours ?? null).toBeNull();
   });
 });
