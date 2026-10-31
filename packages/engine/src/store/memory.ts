@@ -33,6 +33,9 @@ import {
   type OperatorAction,
   type AiUsageRow,
   type RateSlot,
+  type SettingsAuditRow,
+  type ApproverChangeRow,
+  type WorkspaceProfilePatch,
   rateSlotProblem,
 } from "./types.ts";
 
@@ -684,6 +687,60 @@ export class InMemoryRepository implements Repository {
   async listOperatorActions(q: { workspaceId?: string; jobId?: string; actions?: OperatorAction[]; limit?: number }) {
     return this.operatorActions.filter((r) => (q.workspaceId === undefined || r.workspace_id === q.workspaceId) && (q.jobId === undefined || r.job_id === q.jobId) && (!q.actions || q.actions.includes(r.action)))
       .reverse().slice(0, q.limit ?? 200).map(clone);
+  }
+  // owner settings (migration 129): the same checks as its constraints.
+  private settingsAudit: SettingsAuditRow[] = [];
+  private approverChanges: ApproverChangeRow[] = [];
+  async updateWorkspaceProfile(id: string, patch: WorkspaceProfilePatch) {
+    const w = this.workspaces.get(id);
+    if (!w) return null;
+    if (patch.name !== undefined && !(patch.name.length >= 1 && patch.name.length <= 120)) throw new Error("workspace name check failed");
+    if (patch.sender_name != null && !(patch.sender_name.trim().length >= 1 && patch.sender_name.trim().length <= 80)) throw new Error("sender name check failed");
+    const next = { ...w, ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.timezone !== undefined ? { timezone: patch.timezone } : {}), ...(patch.sender_name !== undefined ? { sender_name: patch.sender_name } : {}) };
+    this.workspaces.set(id, next);
+    return clone(next);
+  }
+  async getSenderName(workspaceId: string) {
+    return this.workspaces.get(workspaceId)?.sender_name ?? null;
+  }
+  async appendSettingsAudit(rs: Omit<SettingsAuditRow, "at">[]) {
+    for (const r of rs) {
+      if (!/^[a-z_]{2,40}$/.test(r.field) || (r.old_value?.length ?? 0) > 300 || (r.new_value?.length ?? 0) > 300) throw new Error("settings audit check failed");
+      this.settingsAudit.push({ ...clone(r), at: this.stamp() });
+    }
+  }
+  async listSettingsAudit(workspaceId: string, limit = 50) {
+    return this.settingsAudit.filter((r) => r.workspace_id === workspaceId).reverse().slice(0, limit).map(clone);
+  }
+  async insertApproverChange(r: Omit<ApproverChangeRow, "created_at" | "decided_at" | "attempts" | "status">) {
+    if (this.approverChanges.some((x) => x.id === r.id || (r.token_hash && x.token_hash === r.token_hash))) throw Object.assign(new Error("duplicate approver change"), { code: "23505" });
+    const row: ApproverChangeRow = { ...clone(r), attempts: 0, status: "pending", created_at: this.stamp(), decided_at: null };
+    this.approverChanges.push(row);
+    return clone(row);
+  }
+  async pendingApproverChanges(workspaceId: string) {
+    return this.approverChanges.filter((r) => r.workspace_id === workspaceId && r.status === "pending").reverse().map(clone);
+  }
+  async getApproverChange(id: string) {
+    const r = this.approverChanges.find((x) => x.id === id);
+    return r ? clone(r) : null;
+  }
+  async findApproverChangeByToken(tokenHash: string) {
+    const r = this.approverChanges.find((x) => x.token_hash === tokenHash);
+    return r ? clone(r) : null;
+  }
+  async bumpApproverChangeAttempts(id: string) {
+    const r = this.approverChanges.find((x) => x.id === id && x.status === "pending");
+    if (!r) return null;
+    r.attempts += 1;
+    return clone(r);
+  }
+  async closeApproverChange(id: string, status: Exclude<ApproverChangeRow["status"], "pending">) {
+    const r = this.approverChanges.find((x) => x.id === id && x.status === "pending");
+    if (!r) return null;
+    r.status = status;
+    r.decided_at = this.stamp();
+    return clone(r);
   }
   // per-call AI usage (migration 122): append-only
   private aiUsage: AiUsageRow[] = [];

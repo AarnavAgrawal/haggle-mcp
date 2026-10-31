@@ -39,6 +39,8 @@ export interface WorkspaceRow {
   timezone: string;
   /** Set when the operator revoked the workspace: its credentials no longer resolve (migration 105). */
   revoked_at?: string | null;
+  /** The From name businesses see on this workspace's email (migration 129); null = the workspace name. */
+  sender_name?: string | null;
   created_at: string;
 }
 
@@ -662,6 +664,62 @@ export interface Repository {
   takeRateSlot?(bucket: string, key: string, windowS: number, max: number): Promise<RateSlot>;
   /** Slots taken in the current window (0 when none). Read-only. */
   rateSlotUsed?(bucket: string, key: string, windowS: number): Promise<number>;
+  // owner settings (migration 129), appended; optional so a store without them still runs (the
+  // owner's settings route then answers "apply migration 129"; operator and agent changes still save)
+  /** Change the workspace's own fields; only the given ones. Null when the workspace is unknown. */
+  updateWorkspaceProfile?(id: string, patch: WorkspaceProfilePatch): Promise<WorkspaceRow | null>;
+  /** The workspace's sender name (null when unset). */
+  getSenderName?(workspaceId: string): Promise<string | null>;
+  /** Append-only audit rows, one per changed field. */
+  appendSettingsAudit?(rows: Omit<SettingsAuditRow, "at">[]): Promise<void>;
+  /** Newest first. */
+  listSettingsAudit?(workspaceId: string, limit?: number): Promise<SettingsAuditRow[]>;
+  insertApproverChange?(row: Omit<ApproverChangeRow, "created_at" | "decided_at" | "attempts" | "status">): Promise<ApproverChangeRow>;
+  /** A workspace's changes still pending, newest first. */
+  pendingApproverChanges?(workspaceId: string): Promise<ApproverChangeRow[]>;
+  getApproverChange?(id: string): Promise<ApproverChangeRow | null>;
+  findApproverChangeByToken?(tokenHash: string): Promise<ApproverChangeRow | null>;
+  /** One more wrong code on a pending change; the row after it (null when it is no longer pending). */
+  bumpApproverChangeAttempts?(id: string): Promise<ApproverChangeRow | null>;
+  /** Move a pending change to a final status; null when it was no longer pending (one decider). */
+  closeApproverChange?(id: string, status: Exclude<ApproverChangeRow["status"], "pending">): Promise<ApproverChangeRow | null>;
+}
+
+/** Who changed a setting: the operator's scripts, an agent's tool call, or the signed-in workspace owner (web app). */
+export type SettingsActor = "operator" | "agent" | "owner";
+
+/** The workspace's own editable fields (migration 129 adds sender_name). */
+export interface WorkspaceProfilePatch {
+  name?: string;
+  timezone?: string;
+  sender_name?: string | null;
+}
+
+/** One settings change (migration 129; append-only). Phones and emails are stored masked. */
+export interface SettingsAuditRow {
+  workspace_id: string;
+  by: SettingsActor;
+  actor: string | null;
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
+  at: string;
+}
+
+/** A new approver phone or email waiting for verification (migration 129). Only hashes are stored. */
+export interface ApproverChangeRow {
+  id: string;
+  workspace_id: string;
+  kind: "phone" | "email";
+  value: string;
+  code_hash: string;
+  token_hash: string | null;
+  attempts: number;
+  status: "pending" | "confirmed" | "superseded" | "expired" | "failed";
+  requested_by: string;
+  created_at: string;
+  expires_at: string;
+  decided_at: string | null;
 }
 
 /** One take_rate_slot answer: granted or not, the window's count, and the seconds until it ends when refused (0 when granted). */

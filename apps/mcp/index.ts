@@ -1485,11 +1485,14 @@ async function scoped(ctx: unknown) {
   return (await getRuntime()).engine.forWorkspace(workspaceOf(ctx));
 }
 
+// The native settings panel is the agent's (by: "agent" via the scoped engine): it may lower the cap
+// and set the area, never change the approver or raise the cap. The owner does those in the web app
+// (POST /internal/workspaces/settings, apps/mcp/src/service/workspaces.ts).
 server.settings({
   fields: {
-    spending_cap_usd: { schema: z.number().positive().max(1_000_000), title: "Spending cap (USD)", description: "The most Haggle may charge in one payment for this workspace (enforced), and the order total above which approvals carry a caveat. Can be lowered here; only the operator can raise it. Never sent to businesses as a budget." },
-    approver_email: { schema: z.string().max(200), title: "Approver email", description: "Read-only here: set by the operator. Gets approval requests and receipts by email (a coded email reply approves only when the operator enabled it)." },
-    approver_phone: { schema: z.string().max(20), title: "Approver phone (text)", description: "Read-only here: set by the operator (an agent must never choose who approves). Approvals and updates are texted here: reply YES <code> to approve. On a manual-payment (pilot) server, reply PAID <code> after paying the vendor directly; on a Stripe test-mode server, PAY <code> charges it. For iMessage the approver must first text connect @<buyer handle>." },
+    spending_cap_usd: { schema: z.number().positive().max(1_000_000), title: "Spending cap (USD)", description: "The most Haggle may charge in one payment for this workspace (enforced), and the order total above which approvals carry a caveat. Can be lowered here; only a human can raise it (the workspace owner in Haggle's Settings, or the operator). Never sent to businesses as a budget." },
+    approver_email: { schema: z.string().max(200), title: "Approver email", description: "Read-only here: set by the workspace owner in Haggle's Settings (after a confirm link) or the operator. Gets approval requests and receipts by email (a coded email reply approves only when the operator enabled it)." },
+    approver_phone: { schema: z.string().max(20), title: "Approver phone (text)", description: "Read-only here: set by the workspace owner in Haggle's Settings (after a texted code) or the operator; an agent must never choose who approves. Approvals and updates are texted here: reply YES <code> to approve. On a manual-payment (pilot) server, reply PAID <code> after paying the vendor directly; on a Stripe test-mode server, PAY <code> charges it. For iMessage the approver must first text connect @<buyer handle>." },
     default_area: { schema: z.string().max(200), title: "Default area", description: "City or address used when a request has no area (empty = none)." },
   },
   layout: [{ kind: "group", title: "Spending and approval", items: [{ kind: "property", property: "spending_cap_usd" }, { kind: "property", property: "approver_email" }, { kind: "property", property: "approver_phone" }, { kind: "property", property: "default_area" }] }],
