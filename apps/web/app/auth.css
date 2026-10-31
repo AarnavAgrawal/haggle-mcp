@@ -1,0 +1,193 @@
+/* One sheet centered on the desk, the wordmark above it: sign in, onboarding, and the error and
+   not-found pages (app/login, app/onboarding, app/error.tsx, app/not-found.tsx). Tokens: globals.css. */
+.auth {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  min-height: calc(100dvh - 96px);
+  padding: clamp(32px, 9vh, 96px) var(--gutter) var(--s-12);
+}
+.auth-brand {
+  margin-bottom: var(--s-6);
+  font-size: var(--t-30);
+}
+.auth-sheet {
+  width: 100%;
+  max-width: 420px;
+  padding: 28px 32px 32px;
+}
+.auth-wide {
+  max-width: 520px;
+}
+.auth-sheet h1 {
+  font-size: var(--t-24);
+  font-weight: 720;
+  letter-spacing: -0.015em;
+}
+.auth-sub {
+  margin-top: var(--s-1);
+  color: var(--ink-2);
+  font-size: var(--t-15);
+}
+.auth-notice {
+  margin-top: var(--s-4);
+}
+.auth-google {
+  margin-top: var(--s-6);
+  gap: 10px;
+}
+.auth-or {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: var(--s-4) 0;
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+.auth-or::before,
+.auth-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+.auth-form {
+  display: grid;
+  gap: var(--s-3);
+}
+.auth-sent {
+  padding: 14px 16px;
+  border-radius: var(--r-control);
+  background: var(--pen-wash);
+  font-size: var(--t-15);
+}
+.auth-sent-title {
+  margin-bottom: 2px;
+  font-weight: 650;
+}
+.auth-sent strong {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.auth-sent-again {
+  margin: var(--s-2) 0 -4px -12px;
+  color: var(--pen);
+}
+.auth-guest {
+  margin-top: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--rule);
+}
+.auth-guest-hint {
+  margin-top: var(--s-1);
+  text-align: center;
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+.auth-error {
+  margin-top: var(--s-4);
+}
+.auth-legal {
+  max-width: 420px;
+  margin-top: var(--s-4);
+  text-align: center;
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+.auth-legal a {
+  color: var(--ink-2);
+}
+
+/* Onboarding: two short groups on the sheet. */
+.onb-group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.onb-group + .onb-group {
+  margin-top: var(--s-6);
+  padding-top: var(--s-6);
+  border-top: 1px solid var(--rule);
+}
+.onb-group legend {
+  float: left; /* lets the margin below apply (legend ignores it otherwise) */
+  width: 100%;
+  margin-bottom: var(--s-4);
+  padding: 0;
+  font-family: var(--font-display);
+  font-size: var(--t-18);
+  font-weight: 650;
+}
+.onb-group legend + * {
+  clear: both;
+}
+.onb-form {
+  margin-top: var(--s-6);
+}
+.onb-money {
+  display: block;
+  position: relative;
+}
+.onb-money::before {
+  content: "$" / "";
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink-3);
+  pointer-events: none;
+}
+/* Matches the base input selector's specificity in ui.css, plus the wrapper. */
+.onb-money input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) {
+  padding-left: 26px;
+}
+/* Workaround: ui.css's input[aria-invalid] border loses to its own base input selector (higher
+   specificity), so an invalid field shows no red border. Restated here with enough weight. */
+.auth .field-invalid input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]) {
+  border-color: var(--risk);
+}
+.onb-terms {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: var(--s-6);
+  font-size: var(--t-14);
+  color: var(--ink-2);
+}
+.onb-terms label {
+  margin: 0;
+  font-weight: 400;
+  font-size: inherit;
+}
+.onb-submit {
+  margin-top: var(--s-6);
+}
+
+/* Error and not-found pages. */
+.oops-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-6);
+}
+.oops-ref {
+  margin-top: var(--s-3);
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+.oops-ref code {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--ink-2);
+}
+
+@media (max-width: 480px) {
+  .auth {
+    padding-top: var(--s-6);
+  }
+  .auth-sheet {
+    padding: 24px 20px;
+  }
+}

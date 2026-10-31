@@ -1,5 +1,10 @@
+import type { Metadata } from "next";
+import Link from "next/link";
 import { Footer } from "@/components/Footer";
-import { LoginForm } from "./LoginForm";
+import { LoginForm, LoginLegal } from "./LoginForm";
+import "../auth.css";
+
+export const metadata: Metadata = { title: "Sign in · Haggle" };
 
 const NOTICES: Record<string, string> = {
   guest: "Guest access is only on the Haggle demo. Sign in with your email or Google to use Haggle with real businesses.",
@@ -13,8 +18,12 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const notice = q.guest === "off" ? NOTICES.guest! : q.deleted ? NOTICES.deleted! : q.error === "sign_in_failed" ? NOTICES.sign_in_failed! : null;
   return (
     <>
-      <main className="shell shell-narrow">
+      <main className="auth">
+        <Link className="brand auth-brand" href="/">
+          Haggle
+        </Link>
         <LoginForm notice={notice} />
+        <LoginLegal />
       </main>
       <Footer />
     </>
