@@ -1,0 +1,128 @@
+/* /settings and /account: one sheet of two-column definition lists, grouped by a short heading; on
+   /account a separate bordered area for deleting the account. Tokens: app/globals.css. */
+
+.set-page {
+  display: grid;
+  gap: var(--s-8);
+  align-content: start;
+}
+.set-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3) var(--s-6);
+  min-height: 44px;
+}
+.set-head h1 {
+  font-family: var(--font-display);
+  font-size: var(--t-30);
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+@media (min-width: 1200px) {
+  .set-head h1 {
+    font-size: var(--t-36);
+  }
+}
+
+.set-sheet {
+  max-width: 820px;
+  padding: 0;
+}
+.set-group {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: var(--s-2) var(--s-8);
+  padding: 22px 24px;
+}
+.set-group + .set-group {
+  border-top: 1px solid var(--rule);
+}
+.set-group h2 {
+  font-family: var(--font-display);
+  font-size: var(--t-16);
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  line-height: 1.45;
+  text-wrap: balance;
+}
+.set-dl {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+  gap: 10px 24px;
+  margin: 0;
+  font-size: var(--t-15);
+  line-height: 1.45;
+}
+.set-dl > div {
+  display: contents;
+}
+.set-dl dt {
+  color: var(--ink-2);
+}
+.set-dl dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.set-dd-stack {
+  display: grid;
+  gap: 2px;
+}
+.set-sub {
+  font-size: var(--t-14);
+  color: var(--ink-3);
+}
+.set-none {
+  color: var(--ink-3);
+}
+.set-note {
+  grid-column: 2;
+  max-width: 60ch;
+  margin-top: 6px;
+  font-size: var(--t-14);
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+.set-dd-stack .status {
+  font-size: var(--t-15);
+}
+.set-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  max-width: 820px;
+  border-color: color-mix(in srgb, var(--risk) 40%, var(--rule));
+  color: var(--ink-2);
+  font-size: var(--t-15);
+}
+.set-error strong {
+  color: var(--ink);
+}
+
+@media (max-width: 760px) {
+  .set-group {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 18px 16px;
+    gap: 12px;
+  }
+  .set-note {
+    grid-column: 1;
+    margin-top: 0;
+  }
+}
+@media (max-width: 440px) {
+  .set-dl {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .set-dl dd + dt,
+  .set-dl > div + div dt {
+    margin-top: 10px;
+  }
+}
