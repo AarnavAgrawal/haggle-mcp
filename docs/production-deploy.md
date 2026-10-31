@@ -29,7 +29,7 @@ Every step is marked **[YOU]** (a dashboard or account action; nothing in this r
                         │  x-haggle-service-token + x-haggle-workspace on every call
                         ▼
                      MCP server (apps/mcp)                  Manufact, HAGGLE_ENV=production, HAGGLE_MODE=live
-                        │  engine → Inkbox (email, Voice AI calls, iMessage/SMS) · Claude · Google Places
+                        │  engine → Inkbox (email, Voice AI calls, iMessage/SMS) · Claude · Amazon Location
                         ▼
                      Supabase production project            Postgres (engine 1xx, brain 2xx, web 3xx) + Auth
  Inkbox ──webhooks──▶ https://<mcp host>/webhooks/inkbox    replies, call transcripts, texts
@@ -53,7 +53,8 @@ Production gets its own account or project at every provider: nothing is shared 
 | **Vercel** (or a container host) | The web project | Vercel **Pro**: Hobby is for non-commercial use, and its crons run at most daily |
 | **Inkbox** | The production buyer identity (mailbox + phone number), API key, webhook signing secret | Voice AI calls and texts need the identity's phone number |
 | **Anthropic** | Two API keys with spend limits: one for the server, one for the web chat | Separate keys keep the two spends apart |
-| **Google Cloud** | A Places API key, restricted to the Places API | Optional: without it, discovery of real businesses is off |
+| **AWS** | An Amazon Location Service API key (Amazon Location console → API keys → Create): allow the actions `geo-places:SearchText`, `geo-places:GetPlace` and `geo-places:Geocode`, no referrers (server-side use), with an expiry you track; in the region you set as `AWS_LOCATION_REGION` | Optional: without it (and without a Google Places key), discovery of real businesses is off. Results carry the data provider's attribution (HERE), shown under every list |
+| **Google Cloud** | A Places API key, restricted to the Places API | Optional: public ratings on deals; discovery only when no Amazon Location key is set |
 | **Cloudflare** | A Turnstile widget (site key + secret key) for the web app's hostname | Bot protection on sign-in |
 | **AWS SES** (or another SMTP provider) | A verified sending domain for sign-in emails | Supabase's built-in mailer is rate-limited and not for production |
 | **Slack** | An incoming webhook for `#haggle-prod-alerts` | The URL is itself a secret |
@@ -92,7 +93,9 @@ Set in the Manufact dashboard (or `mcp-use servers env set <server-id> KEY=VALUE
 | `ANTHROPIC_API_KEY` | the server's key | yes |
 | `HAGGLE_AI_MAX_CALLS_PER_JOB` | e.g. `60` | |
 | `HAGGLE_AI_DAILY_TOKEN_BUDGET` | your daily cap, e.g. `5000000` (production warns when unset) | |
-| `GOOGLE_PLACES_API_KEY` | the Places key (discovery; off when absent) | yes |
+| `AWS_LOCATION_API_KEY` | the Amazon Location API key (discovery and opening hours; wins over Google) | yes |
+| `AWS_LOCATION_REGION` | its region (default `us-east-1`) | no |
+| `GOOGLE_PLACES_API_KEY` | the Places key (ratings; discovery when no Amazon key; off when absent) | yes |
 | `HAGGLE_SERVICE_TOKEN` | the shared web token (≥ 32 characters; **same value on the web app**) | yes |
 | `HAGGLE_WEB_APPROVALS` | leave unset (on when the service token is set) so the signed-in owner can approve and report payment in the web app; `false` forces approvals back to the approver's coded text | |
 | `HAGGLE_TICK_SECRET` | ≥ 16 characters; **same value on the web app** (the cron backup) | yes |
@@ -324,7 +327,7 @@ The criteria for rolling back are in [runbook-incidents.md](runbook-incidents.md
 | `HAGGLE_RATE_TOOL_CALLS_PER_MIN` | server | Tool calls per credential per minute (120 by default in live mode) |
 | Contact window | server | `HAGGLE_CONTACT_HOURS` / `_DAYS`: vendors are never contacted outside it |
 | Turnstile + SMTP rate limits | Supabase | Bots can't mass-create accounts or burn the email quota |
-| Inkbox, Google Cloud, Vercel, AWS | consoles | Billing alerts and quotas (Places API daily quota, Vercel spend management) |
+| Inkbox, Google Cloud, Vercel, AWS | consoles | Billing alerts and quotas (Amazon Location usage and API-key expiry, Places API daily quota, Vercel spend management) |
 
 ---
 

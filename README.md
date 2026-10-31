@@ -117,7 +117,8 @@ This is a real rehearsal from 2026-10-18, kept as a regression test in `packages
 
 ### 4.2 Business discovery and contact authorization
 - **Sources:**
-  - **Google Places (New)** finds real businesses for a category and area: name, rating, reviews, website and phone, cached and attributed.
+  - **Amazon Location Service** (Places v2, an API key) finds real businesses for a category and area: name, address, phone, emails, website, opening hours and timezone, attributed (data © HERE). **Google Places (New)** is the fallback provider and supplies ratings and reviews.
+  - **Opening hours** (the listing's, else schema.org data on the business's website) gate contact timing: a call or first text goes only while the business is open, not in its first or last 30 minutes, inside the operator's call hours.
   - **Website evidence** is gathered with an SSRF-safe, robots.txt-aware fetcher.
 - **Four contact states:**
   1. `discovered`
@@ -386,7 +387,7 @@ Live mode sends real messages, so it needs accounts and explicit choices about w
    - Set the per-payment ceiling with `HAGGLE_GLOBAL_PAYMENT_CAP_CENTS`.
 7. **Webhooks:** point the Inkbox buyer identity's webhook at `https://<your-public-url>/webhooks/inkbox`. Use a tunnel (`npx mcp-use dev --tunnel`) or a deployment.
 8. **Optional extras:**
-   - `GOOGLE_PLACES_API_KEY` enables public discovery and reputation.
+   - `AWS_LOCATION_API_KEY` (+ `AWS_LOCATION_REGION`) enables public discovery with opening hours; `GOOGLE_PLACES_API_KEY` adds public ratings (and is the discovery fallback).
    - The seller fleet (`npm run setup -w @haggle/sellers`, then `npm run dev:sellers`) gives you realistic businesses to deal with. Run it with the key of the Inkbox org that owns the seller identities.
 
 Check `/health`: it reports the mode, which channels are on, whether payments are enabled and the build. If anything required is missing, it returns 503 with the list.
@@ -413,7 +414,7 @@ Setup, architecture, auth, environment variables and limitations: [`docs/web-app
 | Money | `HAGGLE_ENABLE_PAYMENTS`, `HAGGLE_GLOBAL_PAYMENT_CAP_CENTS`, `HAGGLE_SPENDING_CAP_CEILING_CENTS`, `STRIPE_SECRET_KEY`, `STRIPE_CUSTOMER_ID`, `STRIPE_PAYMENT_METHOD_ID` |
 | Claude | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ANTHROPIC_WORKSPACE_ID` |
 | Storage | `SUPABASE_DB_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `HAGGLE_DB_SCHEMA`, `HAGGLE_BRAIN_FILE` |
-| Discovery | `GOOGLE_PLACES_API_KEY` |
+| Discovery | `AWS_LOCATION_API_KEY`, `AWS_LOCATION_REGION`, `GOOGLE_PLACES_API_KEY` |
 | Seller fleet | `SELLERS_TUNNEL`, `SELLERS_PORT`, `SELLERS_FAST`, `SELLER_MODEL`, `MISSION_EATS_PHONE` |
 | Build label | `HAGGLE_BUILD_SHA` (shown in `/health` as `0.5.0+<sha>`) |
 
