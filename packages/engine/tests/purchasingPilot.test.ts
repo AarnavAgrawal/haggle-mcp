@@ -118,7 +118,7 @@ describe("security review (workstream D): untrustworthy quotes and invalidated a
     const q = (await engine.getQuotes(jobId)).quotes[0]!;
     await engine.requestApproval(jobId, q.quote_id, "imessage");
     await engine.ingestText({ messageId: "yes", from: APPROVER, text: `YES ${approverCode(env)}`, inbound: true });
-    await engine.updateSettings({ spending_cap_cents: 30_000 }); // $300, below the approved $500 deposit
+    await engine.setDealLimit(jobId, 30_000, "agent"); // the deal's limit, $300, below the approved $500 deposit
     const asked = emails.length;
     expect((await emailReply(env, jobId, "events@harbor.example", "Confirmed, all set.")).outcome).toBe("booking_confirmed");
     const events = await repo.listEvents(jobId);

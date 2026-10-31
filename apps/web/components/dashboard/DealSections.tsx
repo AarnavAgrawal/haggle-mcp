@@ -4,6 +4,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { CallbackButton } from "@/components/approval/CallbackButton";
+import { DealLimit } from "@/components/approval/DealLimit";
 import { Badge } from "@/components/ui/Badge";
 import { cx } from "@/components/ui/cx";
 import { Icon, channelIcon } from "@/components/ui/Icon";
@@ -69,6 +70,7 @@ export function BoardHeader({ board, jobId, canNegotiate }: { board: DealBoardVi
     d?.when && d.when !== "not set" ? d.when : null,
     d?.place && d.place !== "not set" ? d.place : null,
     budget !== undefined && budget !== null ? `Budget ${money(budget)}` : null,
+    job.deal_limit_usd !== undefined ? `Limit ${money(job.deal_limit_usd)}` : null,
   ].filter((x): x is string => !!x);
   return (
     <header className="board-head">
@@ -497,7 +499,9 @@ export function RequestAside({ board }: { board: DealBoardView }) {
       {d?.budget_source === "settings_default" ? <span className="hint"> (your default)</span> : null}
     </>,
   ]);
-  if (board.payment_ceiling_usd !== undefined) facts.push(["Spending cap", money(board.payment_ceiling_usd)]);
+  // The deal's own spending limit; the human raises (up to the server ceiling) or lowers it here.
+  if (job.deal_limit_usd !== undefined) facts.push(["Limit", <DealLimit key="limit" jobId={board.job_id ?? job.id} limitUsd={job.deal_limit_usd} {...(job.deal_limit_source ? { source: job.deal_limit_source } : {})} editable={!isTerminal(job.state)} />]);
+  else if (board.payment_ceiling_usd !== undefined) facts.push(["Limit", money(board.payment_ceiling_usd)]);
   return (
     <aside className="board-aside" aria-label="The request">
       <section aria-labelledby="req-h">

@@ -80,15 +80,15 @@ describe("no dead ends after approval", () => {
     expect((await env.repo.getBookingByApproval(b.id))!.status).toBe("awaiting_vendor_confirmation");
   });
 
-  it("a handoff the payment checks refused (cap lowered after approval) can be approved again once fixed, without telling the vendor to drop it", async () => {
+  it("a handoff the payment checks refused (deal limit lowered after approval) can be approved again once fixed, without telling the vendor to drop it", async () => {
     const env = purchaseEnv();
     const d = await twoQuotes(env);
     const q = d.quote("Harbor Table");
     const { a } = await humanApproves(env, d.jobId, q.quote_id);
-    await env.engine.updateSettings({ spending_cap_cents: 10_000 });
+    await env.engine.setDealLimit(d.jobId, 10_000, "agent");
     expect((await env.mail(d.jobId, HARBOR, "Confirmed for November 14.")).outcome).toBe("booking_confirmed");
     expect((await env.engine.getQuotes(d.jobId)).purchase).toMatchObject({ stage: "handoff_refused" });
-    await env.engine.updateSettings({ spending_cap_cents: 250_000 });
+    await env.engine.setDealLimit(d.jobId, 250_000, "human", "owner@example.com"); // only a human raises it
     const sent = env.to(HARBOR).length;
     const again = await env.engine.requestApproval(d.jobId, q.quote_id, "imessage", "pay", { text: true });
     expect(again.id).not.toBe(a.id);

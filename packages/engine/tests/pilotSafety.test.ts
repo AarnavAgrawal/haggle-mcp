@@ -259,10 +259,10 @@ describe("manual payment handoff: honest, human-completed", () => {
     expect((await env.engine.ingestText({ messageId: "p9", from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).not.toBe("handoff_confirmed");
   });
 
-  it("a resumed handoff is revalidated: a cap lowered below the amount refuses the confirmation and tells nobody it was paid", async () => {
+  it("a resumed handoff is revalidated: a deal limit lowered below the amount refuses the confirmation and tells nobody it was paid", async () => {
     const env = setup(manual);
     const { jobId, a } = await booked(env);
-    await env.engine.updateSettings({ spending_cap_cents: 10_000 });
+    await env.engine.setDealLimit(jobId, 10_000, "agent"); // the deal's limit lowered after approval
     const sent = vendorMail(env).length;
     expect((await env.engine.ingestText({ messageId: "p4", from: APPROVER, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("handoff_refused");
     expect((await env.repo.getJob(jobId))!.state).toBe("paying");
@@ -271,7 +271,7 @@ describe("manual payment handoff: honest, human-completed", () => {
 });
 
 describe("a resumed Stripe charge is revalidated", () => {
-  it("a stale `charging` row isn't sent to Stripe again once the workspace cap no longer allows it", async () => {
+  it("a stale `charging` row isn't sent to Stripe again once the deal's limit no longer allows it", async () => {
     let charges = 0;
     const base = simulatedStripe();
     const stripe: StripePort = { ...base, async charge(i: never) { charges++; return (base as unknown as { charge: (i: never) => Promise<unknown> }).charge(i); } } as never;
@@ -285,7 +285,7 @@ describe("a resumed Stripe charge is revalidated", () => {
     // A crash right after the payment row was written: `charging`, never sent to Stripe.
     await env.repo.touchJob(jobId, { pay_intent: true });
     await env.repo.insertPayment({ id: "pay_crash", job_id: jobId, approval_id: a.id, business_id: q.business_id, status: "charging", rail: "stripe", amount_cents: a.payment_cents, amount_base_units: String(a.payment_cents), network: "stripe-test", idempotency_key: `haggle-pay-${a.id}`, stripe_payment_intent_id: null, challenge_json: null, challenge_step_id: null, challenge_message_id: null, challenge_trusted: false, challenge_thread_matched: false, pay_to: null, interaction_json: null, settle_tx: null, simulated: true, reason: null } as never);
-    await env.engine.updateSettings({ spending_cap_cents: 10_000 });
+    await env.engine.setDealLimit(jobId, 10_000, "agent");
     env.clock.advance(2 * 60_000);
     await env.engine.advanceJob(jobId);
     expect(charges).toBe(0);

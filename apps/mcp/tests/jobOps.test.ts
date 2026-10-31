@@ -150,7 +150,7 @@ describe("job-ops retry applied, the engine performing it", () => {
     expect((await env.repo.listReviews({ status: "open", jobId })).some((r) => r.subject === key)).toBe(false);
   });
 
-  it.each([true, false])("a held Stripe charge, once released, re-runs the payment guard (cap lowered meanwhile: %s)", async (lowered) => {
+  it.each([true, false])("a held Stripe charge, once released, re-runs the payment guard (deal limit lowered meanwhile: %s)", async (lowered) => {
     let charges = 0;
     const base = simulatedStripe();
     const env = setup({ stripe: { simulated: true, async charge(r) { charges++; return base.charge(r); } } });
@@ -162,7 +162,7 @@ describe("job-ops retry applied, the engine performing it", () => {
     env.clock.advance(2 * 60_000);
     await env.engine.advanceJob(jobId);
     expect(charges).toBe(0);
-    if (lowered) await env.engine.updateSettings({ spending_cap_cents: 10_000 });
+    if (lowered) await env.engine.setDealLimit(jobId, 10_000, "agent"); // the deal's limit lowered meanwhile
     const cmd = planOps(["retry", "--payment", "pay_heldone1", "--override-financial", "--by", "ops"]) as Extract<ReturnType<typeof planOps>, { kind: "retry-payment" }>;
     const plan = await planRetry(env.repo, cmd);
     expect(plan).toMatchObject({ ok: true });

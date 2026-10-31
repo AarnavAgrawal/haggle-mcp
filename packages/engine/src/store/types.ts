@@ -70,7 +70,14 @@ export interface JobRow {
   mode: Mode;
   request: Request;
   budget_cents: number | null;
-  payment_cap_cents: number;
+  /**
+   * The deal's spending limit (migration 128): from the budget or the stated limit, capped by the
+   * server ceiling. Null = not set yet (decided at approval from the workspace default).
+   */
+  payment_cap_cents: number | null;
+  /** Who set the current limit ("budget", "agent", "operator", "web:<user>") and when (migration 128). */
+  cap_set_by?: string | null;
+  cap_set_at?: string | null;
   approver_email: string | null;
   inbox: string;
   round: number;
@@ -268,7 +275,7 @@ export type NewMessage = Omit<MessageRow, "id" | "created_at" | "channel"> & { c
 
 /** Buyer settings (ChatGPT native settings / settings tools). Never changed by business messages. */
 export interface SettingsRow {
-  spending_cap_cents: number; // per-job order cap used when deal() has no budget_usd
+  spending_cap_cents: number; // default limit for new deals: used only when a deal has no budget (never checked at payment)
   approver_phone: string | null; // E.164; iMessage approver (9 PM gate)
   approver_email: string | null;
   default_area: string | null;

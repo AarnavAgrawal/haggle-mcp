@@ -135,6 +135,8 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
   };
 
   const confirmOnly = card.action === "confirm";
+  /** The deal's spending limit (null: none known yet). */
+  const limit = card.deal_limit_usd;
   // Manual handoff: Haggle moves no money. No Pay button and no Stripe wording; the stage summary
   // (reason) says where the booking and the human's direct payment stand.
   const manual = card.payment?.rail === "manual" || card.payment_rail === "manual";
@@ -271,18 +273,18 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
           </dd>
         </div>
       </dl>
-      {!confirmOnly && (
+      {!confirmOnly && limit !== null && (
         <div className="ap-cap">
           <Meter
             value={card.amount_usd}
-            max={Math.max(card.cap_usd, card.amount_usd)}
-            tone={card.amount_usd > card.cap_usd ? "risk" : "win"}
-            label={`${usd(card.amount_usd)} of a ${usd(card.cap_usd)} per-payment ceiling`}
+            max={Math.max(limit, card.amount_usd)}
+            tone={card.amount_usd > limit ? "risk" : "win"}
+            label={`${usd(card.amount_usd)} of this deal's ${usd(limit)} limit`}
           />
           <p className="ap-capnote hg-muted">
-            {card.amount_usd <= card.cap_usd
-              ? `${usd(card.amount_usd)} of the ${usd(card.cap_usd)} per-payment ceiling`
-              : `${usd(card.amount_usd - card.cap_usd)} over the ${usd(card.cap_usd)} per-payment ceiling; payment will be refused`}
+            {card.amount_usd <= limit
+              ? `${usd(card.amount_usd)} of this deal's ${usd(limit)} spending limit`
+              : `${usd(card.amount_usd - limit)} over the limit you set for this deal (${usd(limit)}). Only you can raise it, on the deal page in the Haggle web app; until then payment is refused.`}
           </p>
         </div>
       )}

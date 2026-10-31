@@ -253,10 +253,10 @@ describe("stale quotes are re-confirmed before approval", () => {
 });
 
 describe("recommendation never picks a quote that misses a must", () => {
-  it("a cheaper quote that only partly confirms is ranked below and not recommended; a deposit over the workspace cap isn't either", async () => {
+  it("a cheaper quote that only partly confirms is ranked below and not recommended; a deposit over the deal's limit isn't either", async () => {
     const env = setup();
-    await env.engine.updateSettings({ spending_cap_cents: 30_000 });
     const { jobId } = await quoted(env);
+    await env.engine.setDealLimit(jobId, 30_000, "agent");
     const board = await env.engine.getQuotes(jobId);
     // Both deposits ($345, $300) vs a $300 cap: only Sunset's fits.
     expect(board.quotes.find((x) => x.business === "Harbor")!.compliance).toMatchObject({ status: "noncompliant", issues: [{ code: "pay_now_over_cap" }] });

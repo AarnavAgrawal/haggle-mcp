@@ -57,12 +57,14 @@ describe("only safety stops a purchase; everything else is a caveat", { timeout:
     expect(await engine.pay(deal.job_id, grill.quote_id)).toMatchObject({ status: "settled", amount_usd: 860 });
   });
 
-  it("the settings spending cap is a caveat; the operator's per-payment ceiling is the only money limit", async () => {
+  it("a total over the deal's limit is a caveat when the deposit fits; the workspace default doesn't cap a budgeted deal; the ceiling still refuses", async () => {
     const { engine, clock } = setup({ globalPaymentCapCents: 1_000_000 });
-    await engine.updateSettings({ spending_cap_cents: 50_000 }); // $500
+    await engine.updateSettings({ spending_cap_cents: 50_000 }); // $500 default: not used, the deal has a budget
     const { deal, board } = await ready(engine, clock, { budget_usd: 1200 });
     const harbor = board.quotes.find((q) => q.business === "Harbor Table")!;
-    expect(await engine.approvalCaveats(deal.job_id, harbor.quote_id)).toEqual(expect.arrayContaining([expect.stringMatching(/over your \$500 spending cap/)]));
+    expect(await engine.approvalCaveats(deal.job_id, harbor.quote_id)).not.toEqual(expect.arrayContaining([expect.stringMatching(/\$500/)]));
+    await engine.setDealLimit(deal.job_id, 50_000, "agent"); // the deal's own limit, $500
+    expect(await engine.approvalCaveats(deal.job_id, harbor.quote_id)).toEqual(expect.arrayContaining([expect.stringMatching(/over this deal's \$500 limit/)]));
     expect((await engine.requestApproval(deal.job_id, harbor.quote_id, "simulated")).status).toBe("pending");
 
     const small = setup({ globalPaymentCapCents: 10_000 }); // operator ceiling $100

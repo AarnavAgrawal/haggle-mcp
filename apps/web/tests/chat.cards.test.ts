@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { runTool } from "../lib/chat/agent.ts";
 import { applyEvent } from "../lib/chat/events.ts";
 import { toDisplay } from "../lib/chat/history.ts";
-import { briefFromInput, formatDay, formatTime, startMessage, storedToolCard, toolCard } from "../lib/chat/cards.ts";
+import { briefFromInput, formatDay, formatTime, limitText, startMessage, storedToolCard, toolCard } from "../lib/chat/cards.ts";
 
 const input = {
   request: {
@@ -70,6 +70,19 @@ describe("chat cards", () => {
     expect(startMessage([])).toBe("Yes, start the deal.");
     // A real deal that waits for the user's yes (needs_confirmation) shows the same preview.
     expect(toolCard("deal", { request: { what: "fix a leaking pipe" } }, { ...data, dry_run: undefined, needs_confirmation: true })).toMatchObject({ kind: "preview", found: [{ ref: "aws:AcePlace01" }, { ref: "aws:BoltPlace02" }] });
+  });
+
+  it("the preview and the started card show the deal's spending limit (docs/state-and-next-fixes.md §5)", () => {
+    const fromServer = toolCard("deal", input, { mode: "mock", dry_run: true, would_contact: [], blocked: [], spending_limit: { usd: 1200, source: "budget", default_usd: 1500 } });
+    expect(fromServer).toMatchObject({ kind: "preview", limit: { usd: 1200, source: "budget", default_usd: 1500 } });
+    expect(limitText((fromServer as { limit: Parameters<typeof limitText>[0] }).limit)).toBe("Spending limit $1,200 (from your budget)");
+    // An older server without spending_limit: the model's proposal from the input.
+    expect(toolCard("deal", { ...input, spend_limit_usd: 1300 }, { mode: "mock", dry_run: true, would_contact: [], blocked: [] })).toMatchObject({ limit: { usd: 1300, source: "stated" } });
+    expect(limitText({ usd: null, source: "default", default_usd: 1500 })).toBe("Spending limit set at approval ($1,500 default)");
+    const started = toolCard("deal", { ...input, dry_run: undefined }, { mode: "mock", job_id: "job_8", job: { deal_limit_usd: 1200, deal_limit_source: "budget" }, contacted: [], not_contacted: [] }, "job_8");
+    expect(started).toMatchObject({ kind: "started", limit: { usd: 1200, source: "budget" } });
+    // Anything malformed is dropped, never shown.
+    expect(toolCard("deal", { ...input, dry_run: undefined }, { mode: "mock", job: { deal_limit_usd: "lots", deal_limit_source: "budget" }, contacted: [] }, "job_9")).not.toHaveProperty("limit");
   });
 
   it("needs_info becomes a checklist of what's missing", () => {

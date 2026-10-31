@@ -4,6 +4,8 @@
     "request": "Lunch for 40 · Thu Oct 22 · SF · delivery",
     "state": "negotiating",
     "budget_usd": 1200,
+    "deal_limit_usd": 1200,
+    "deal_limit_source": "budget",
     "requirements": ["40 people", "At least 12 vegetarian meals", "Delivered by 11:45 AM"]
   },
   "businesses": [

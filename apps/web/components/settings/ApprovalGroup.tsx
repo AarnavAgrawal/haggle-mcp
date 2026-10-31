@@ -30,7 +30,7 @@ export function ApprovalGroup({ s, canEdit }: { s: WorkspaceSettings; canEdit: b
           edit: { field: "approver_email", value: "", inputMode: "email", autoComplete: "email", placeholder: "you@company.com", hint: s.approver.email ? `Now ${s.approver.email}. Leave empty to keep it.` : "Gets approval emails and receipts. We email it a confirm link first." },
         },
         {
-          label: "Default deal limit", view: <><Price amount={s.default_deal_limit_usd} size="m" /> <span className="set-sub">per payment</span></>,
+          label: "Default limit for new deals", view: <><Price amount={s.default_deal_limit_usd} size="m" /> <span className="set-sub">for deals with no budget</span></>,
           edit: { field: "default_deal_limit_usd", value: String(s.default_deal_limit_usd), inputMode: "decimal", hint: `The most Haggle may pay on a deal. Up to $${s.ceiling_usd.toLocaleString("en-US")} on this server.` },
         },
       ]}

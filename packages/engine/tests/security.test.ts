@@ -271,7 +271,7 @@ describe("a Stripe `charging` row is money in flight: cancel and approval-void c
 
 // ───────────────────────────── caps and approvals rechecked on every resume ─────────────────────────────
 
-describe("spending caps and approvals are rechecked after resume and recovery", () => {
+describe("deal limits and approvals are rechecked after resume and recovery", () => {
   const HARBOR = "harbor-cap@inkboxmail.test";
   async function dealt(config: Partial<EngineConfig> = {}, stripe?: StripePort) {
     const env = setup({ notifyPhone: ALPHA_HUMAN, ...config }, stripe ? { stripe } : {});
@@ -284,15 +284,16 @@ describe("spending caps and approvals are rechecked after resume and recovery", 
     const q = (await env.engine.getQuotes(deal.job_id)).quotes.find((x) => x.business === "Harbor Table")!;
     return { env, jobId: deal.job_id, q, mail };
   }
-  const lowerCap = (env: Env, usd: number) => env.engine.updateSettings({ spending_cap_cents: usd * 100 }, "ws_default", "agent");
+  // The agent lowers this deal's limit (always allowed; docs/state-and-next-fixes.md §5).
+  const lowerCap = (env: Env, jobId: string, usd: number) => env.engine.forWorkspace("ws_default").setDealLimit(jobId, usd * 100);
 
-  it("Stripe: the cap lowered after the human approved stops the charge, at pay and on every recovery advance", async () => {
+  it("Stripe: the deal limit lowered after the human approved stops the charge, at pay and on every recovery advance", async () => {
     let charges = 0;
     const base = simulatedStripe();
     const { env, jobId, q } = await dealt({}, { simulated: true, async charge(r) { charges++; return base.charge(r); } });
     const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
     expect((await env.engine.ingestText({ messageId: "yc", from: ALPHA_HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
-    await lowerCap(env, 300);
+    await lowerCap(env, jobId, 300);
     await expect(env.engine.pay(jobId, q.quote_id)).rejects.toMatchObject({ code: "payment_refused_over_spend_cap" });
     env.clock.advance(5 * 60_000);
     await env.engine.recoverStuck();
@@ -300,11 +301,11 @@ describe("spending caps and approvals are rechecked after resume and recovery", 
     expect(charges).toBe(0);
   });
 
-  it("re-confirmation re-open: a stale quote the business re-confirms is not sent for approval once the cap no longer covers it", async () => {
+  it("re-confirmation re-open: a stale quote the business re-confirms is not sent for approval once the deal limit no longer covers it", async () => {
     const { env, jobId, q, mail } = await dealt();
     env.clock.advance(8 * 86_400_000);
     await expect(env.engine.requestApproval(jobId, q.quote_id, "imessage")).rejects.toMatchObject({ code: "quote_reconfirming" });
-    await lowerCap(env, 300);
+    await lowerCap(env, jobId, 300);
     await mail("Yes, that still stands: $1,150 total, delivered, $345 deposit.");
     await env.engine.advanceJob(jobId);
     const a = await env.repo.getLatestApproval(jobId);
@@ -312,23 +313,23 @@ describe("spending caps and approvals are rechecked after resume and recovery", 
     expect(env.texts.some((t) => /YES \d{4}/.test(t.text))).toBe(false);
   });
 
-  it("manual rail: PAID <code> after the cap was lowered is refused (nothing recorded as paid)", async () => {
+  it("manual rail: PAID <code> after the deal limit was lowered is refused (nothing recorded as paid)", async () => {
     const { env, jobId, q, mail } = await dealt({ manualPaymentHandoff: true });
     const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
     expect((await env.engine.ingestText({ messageId: "ym", from: ALPHA_HUMAN, text: `YES ${a.code}`, inbound: true })).outcome).toBe("approved");
     expect((await mail("Confirmed, we're all set for your event.")).outcome).toBe("booking_confirmed");
-    await lowerCap(env, 300);
+    await lowerCap(env, jobId, 300);
     expect((await env.engine.ingestText({ messageId: "pm", from: ALPHA_HUMAN, text: `PAID ${a.code}`, inbound: true })).outcome).toBe("handoff_refused");
     expect((await env.repo.getJob(jobId))!.state).toBe("paying");
   });
 
   // Workstream B's region (startHandoff / startBooking): the handoff (asking the vendor how to be paid)
   // should re-run paymentVerdict(job, a, { bookingHeld: true }) first. Patch in the sprint-4 D report.
-  it("manual rail: once the cap no longer covers the approved deposit, the vendor isn't asked how to be paid", async () => {
+  it("manual rail: once the deal limit no longer covers the approved deposit, the vendor isn't asked how to be paid", async () => {
     const { env, jobId, q, mail } = await dealt({ manualPaymentHandoff: true });
     const a = await env.engine.requestApproval(jobId, q.quote_id, "imessage");
     await env.engine.ingestText({ messageId: "yh", from: ALPHA_HUMAN, text: `YES ${a.code}`, inbound: true });
-    await lowerCap(env, 300);
+    await lowerCap(env, jobId, 300);
     await mail("Confirmed, we're all set for your event.");
     expect((await env.repo.listEvents(jobId)).some((e) => e.type === "payment" && e.data.status === "handoff_requested")).toBe(false);
   });
@@ -430,7 +431,7 @@ describe("simulated replies, keyword-fallback readings and quarantined messages 
 // ───────────────────────────── what the agent's view of the engine can do ─────────────────────────────
 
 describe("the agent's engine (WorkspaceEngine, the only one MCP tools get) has no operator capability", () => {
-  const OPERATOR_ONLY = ["addWorkspaceVendor", "removeWorkspaceVendor", "revokeWorkspace", "rotateWorkspaceCredentials", "createWorkspace", "workspaceByCredential", "operatorCallback", "releaseHeldText", "recoverStuck", "advanceAllOpen", "reportReconcileGaveUp", "ingest", "ingestText", "ingestCall", "ingestIMessage", "ingestA2aTask", "ingestDeliveryStatus", "forWorkspace", "fire"];
+  const OPERATOR_ONLY = ["addWorkspaceVendor", "removeWorkspaceVendor", "revokeWorkspace", "rotateWorkspaceCredentials", "createWorkspace", "workspaceByCredential", "operatorCallback", "releaseHeldText", "recoverStuck", "advanceAllOpen", "reportReconcileGaveUp", "ingest", "ingestText", "ingestCall", "ingestIMessage", "ingestA2aTask", "ingestDeliveryStatus", "forWorkspace", "fire", "raiseLimitAndApproveByWeb", "setDealLimitByWeb", "webOverLimit"];
 
   it("none of the operator / provider-webhook methods exist on it (and they do exist on the full engine)", () => {
     const env = setup();
@@ -443,6 +444,8 @@ describe("the agent's engine (WorkspaceEngine, the only one MCP tools get) has n
     }
     // updateSettings is the agent's: approver and cap raises are refused (by: "agent").
     expect(names.has("updateSettings")).toBe(true);
+    // setDealLimit is the agent's too: it may only lower a deal's limit (by: "agent").
+    expect(names.has("setDealLimit")).toBe(true);
   });
 
   it("settings through the agent's engine: no approver change, no cap raise; lowering stays self-service", async () => {

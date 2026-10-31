@@ -116,16 +116,17 @@ describe("model-only tool sequences can't authorize a purchase (live)", () => {
     expect((await env.repo.getApproval(a.id))!.status).toBe("pending");
   });
 
-  it("the workspace spending cap is enforced on the payment, at approval and at pay time", async () => {
+  it("the deal's spending limit is enforced on the payment, at approval and at pay time; the agent can't raise it", async () => {
     const env = await setup();
-    await env.engine.updateSettings({ spending_cap_cents: 30_000 }, "ws_alpha"); // $300 < $345 deposit
     const { agent, jobId, quoteId } = await quotedIn(env, "ws_alpha");
-    await expect(agent.requestApproval(jobId, quoteId, "imessage")).rejects.toMatchObject({ code: "over_cap" });
-    // Cap lowered after a legitimate human approval: the charge is refused anyway.
-    await env.engine.updateSettings({ spending_cap_cents: 150_000 }, "ws_alpha");
+    await agent.setDealLimit(jobId, 30_000); // $300 < $345 deposit
+    await expect(agent.requestApproval(jobId, quoteId, "imessage")).rejects.toMatchObject({ code: "over_deal_limit" });
+    await expect(agent.setDealLimit(jobId, 150_000)).rejects.toMatchObject({ code: "limit_increase_requires_human" });
+    // The human raises it (the web app); then the limit lowered after a legitimate approval refuses the charge anyway.
+    await env.engine.setDealLimit(jobId, 150_000, "human", "owner@example.com");
     const a = await agent.requestApproval(jobId, quoteId, "imessage");
     expect(await env.engine.ingestText({ messageId: "yes1", from: ALPHA_PHONE, text: `YES ${a.code}`, inbound: true })).toMatchObject({ outcome: "approved" });
-    await agent.updateSettings({ spending_cap_cents: 20_000 });
+    await agent.setDealLimit(jobId, 20_000);
     await expect(agent.pay(jobId, quoteId)).rejects.toMatchObject({ code: "payment_refused_over_spend_cap" });
   });
 

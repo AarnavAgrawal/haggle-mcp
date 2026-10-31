@@ -202,7 +202,7 @@ describe(`release acceptance${DB ? " (Postgres)" : " (memory)"}`, { timeout: 120
     const [q1, q2] = payable;
     const ap = (await call("approve", { job_id: job, quote_id: q1.quote_id })).structuredContent;
     expect(ap).toMatchObject({ status: "approved", quote_id: q1.quote_id, amount_usd: q1.deposit_usd, order_total_usd: q1.total_usd, mode: "mock" });
-    expect(ap.amount_usd).toBeLessThanOrEqual(ap.cap_usd);
+    expect(ap.amount_usd).toBeLessThanOrEqual(ap.deal_limit_usd!);
     // A second approval while the first is open is refused (one purchase per job).
     expect((await call("approve", { job_id: job, quote_id: q2.quote_id })).isError).toBe(true);
     const [p1, p2] = await Promise.all([call("pay", { job_id: job, quote_id: q1.quote_id }), call("pay", { job_id: job, quote_id: q1.quote_id })]);

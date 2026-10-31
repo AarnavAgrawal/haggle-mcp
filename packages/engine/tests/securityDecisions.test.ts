@@ -87,7 +87,7 @@ async function confirmedEmailBooking(env: Env, opts: { lowerCapAfterApproval?: b
   await env.engine.requestApproval(jobId, q.quote_id, "imessage");
   const code = approverCode(env);
   expect((await approverText(env, `YES ${code}`)).outcome).toBe("approved");
-  if (opts.lowerCapAfterApproval) await env.engine.updateSettings({ spending_cap_cents: 30_000 });
+  if (opts.lowerCapAfterApproval) await env.engine.setDealLimit(jobId, 30_000, "agent");
   expect((await emailReply(env, jobId, "events@harbor.example", "Confirmed, all set.")).outcome).toBe("booking_confirmed");
   return { jobId, quoteId: q.quote_id, otherQuoteId: other.quote_id, code };
 }

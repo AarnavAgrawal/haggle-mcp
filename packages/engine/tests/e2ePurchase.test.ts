@@ -130,6 +130,8 @@ describe("SIMULATED end-to-end purchase: three realistic vendors, re-confirmatio
       { id: "r1", kind: "dietary", text: "At least 12 vegetarian meals", hard: true, min_count: 12 },
       { id: "r2", kind: "delivery", text: "Delivered to the venue by 11:30", hard: true },
     ]);
+    // The deal's spending limit comes from the user's budget (docs/state-and-next-fixes.md §5).
+    expect(job).toMatchObject({ payment_cap_cents: 250_000, cap_set_by: "budget" });
     expect(emails.map((e) => e.to).sort()).toEqual(Object.values(VENDORS).sort());
     const biz = Object.fromEntries((await repo.getBusinesses(jobId)).map((b) => [b.name, b]));
     expect(emails[0]!.subject).toMatch(/^Quote for /);
@@ -203,6 +205,8 @@ describe("SIMULATED end-to-end purchase: three realistic vendors, re-confirmatio
     // 5. The human approves out of band (their own phone). Nothing is booked or paid yet: Harbor is
     // asked to confirm availability and the terms in writing.
     expect((await engine.ingestText({ messageId: "yes1", from: APPROVER, text: `YES ${yes}`, inbound: true })).outcome).toBe("approved");
+    // The approval records the deal's limit it was checked against: $500 deposit ≤ $2,500 limit ≤ $5,000 ceiling.
+    expect(await repo.getLatestApproval(jobId)).toMatchObject({ payment_cents: 50_000, cap_cents: 250_000 });
     expect(texts.filter((t) => t.to === APPROVER).at(-1)!.text).toMatch(/asked Harbor Table to confirm the booking; don't pay yet/);
     const bookingAsk = emails.at(-1)!;
     expect(bookingAsk).toMatchObject({ to: VENDORS.harbor });

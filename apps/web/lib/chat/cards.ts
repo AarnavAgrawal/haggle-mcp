@@ -40,10 +40,20 @@ export interface FoundBusiness {
   hours_today?: string;
 }
 
+/**
+ * The deal's spending limit (docs/state-and-next-fixes.md §5): from the budget, a limit the user stated,
+ * a human's change or the operator; "default" = none set yet, decided at approval (default_usd).
+ */
+export interface SpendLimit {
+  usd: number | null;
+  source: "budget" | "stated" | "human" | "operator" | "default";
+  default_usd?: number;
+}
+
 export type ToolCard =
-  | { kind: "preview"; demo: boolean; brief: Brief | null; contact: Contact[]; found: FoundBusiness[]; blocked: { name: string; reason: string }[] }
+  | { kind: "preview"; demo: boolean; brief: Brief | null; contact: Contact[]; found: FoundBusiness[]; blocked: { name: string; reason: string }[]; limit?: SpendLimit }
   | { kind: "needs_info"; demo: boolean; label: string; missing: string[]; optional: string[] }
-  | { kind: "started"; demo: boolean; job_id: string; title: string; when?: string; where?: string; budget_usd?: number; contacted: Contact[]; not_contacted: number };
+  | { kind: "started"; demo: boolean; job_id: string; title: string; when?: string; where?: string; budget_usd?: number; limit?: SpendLimit; contacted: Contact[]; not_contacted: number };
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : null);
@@ -159,6 +169,31 @@ export function startMessage(found: FoundBusiness[], removed: ReadonlySet<string
   return `Yes, start the deal. Include these businesses Haggle found (confirm_discovered): ${kept.map((f) => `${f.name} (${f.ref})`).join(", ")}.`;
 }
 
+const LIMIT_SOURCES = new Set(["budget", "stated", "human", "operator", "default"]);
+/** A limit from the server's fields ({usd, source, default_usd} or the board's deal_limit_*), else undefined. */
+function limitFrom(usd: unknown, source: unknown, defaultUsd?: unknown): SpendLimit | undefined {
+  if (typeof source !== "string" || !LIMIT_SOURCES.has(source)) return undefined;
+  const n = usd === null ? null : num(usd);
+  if (n === undefined) return undefined;
+  const d = num(defaultUsd);
+  return { usd: n, source: source as SpendLimit["source"], ...(d !== undefined ? { default_usd: d } : {}) };
+}
+/** The limit the model proposed in deal's input, when the server's answer has none (it never raises one). */
+function limitFromInput(i: Obj): SpendLimit | undefined {
+  const stated = num(i.spend_limit_usd);
+  if (stated !== undefined) return { usd: stated, source: "stated" };
+  const budget = num(i.budget_usd);
+  return budget !== undefined ? { usd: budget, source: "budget" } : undefined;
+}
+
+/** "Spending limit $1,200 (from your budget)"; "Spending limit set at approval ($1,500 default)". */
+export function limitText(l: SpendLimit): string {
+  const d = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  if (l.usd === null || l.source === "default") return l.usd !== null ? `Spending limit ${d(l.usd)} (default for new deals)` : `Spending limit set at approval${l.default_usd !== undefined ? ` (${d(l.default_usd)} default)` : ""}`;
+  const why = { budget: "from your budget", stated: "as you stated", human: "set by you", operator: "set by the operator" }[l.source];
+  return `Spending limit ${d(l.usd)} (${why})`;
+}
+
 const contacts = (v: unknown, nameKey: "name" | "business"): Contact[] =>
   arr(v).flatMap((c) => {
     const name = str(obj(c)?.[nameKey]);
@@ -190,7 +225,9 @@ export function toolCard(name: string, input: unknown, data: unknown, jobId?: st
       const n = str(obj(b)?.name);
       return n ? [{ name: n, reason: str(obj(b)?.reason) ?? "can't be contacted" }] : [];
     });
-    return { kind: "preview", demo, brief: briefFromInput(input), contact: contacts(arr(d.would_contact).filter((c) => !isFound(c)), "name"), found: foundOf(d.would_contact), blocked: blocked.slice(0, 12) };
+    const sl = obj(d.spending_limit);
+    const limit = (sl ? limitFrom(sl.usd, sl.source, sl.default_usd) : undefined) ?? limitFromInput(i);
+    return { kind: "preview", demo, brief: briefFromInput(input), contact: contacts(arr(d.would_contact).filter((c) => !isFound(c)), "name"), found: foundOf(d.would_contact), blocked: blocked.slice(0, 12), ...(limit ? { limit } : {}) };
   }
   if (jobId) {
     const rd = obj(d.request_details);
@@ -202,11 +239,14 @@ export function toolCard(name: string, input: unknown, data: unknown, jobId?: st
     const when = brief?.when ?? str(rd?.when);
     const where = brief?.where ?? str(rd?.place);
     const budget = num(rd?.budget_usd) ?? brief?.budget_usd;
+    const job = obj(d.job);
+    const limit = limitFrom(job?.deal_limit_usd, job?.deal_limit_source);
     return {
       kind: "started", demo, job_id: jobId, title,
       ...(when && when !== "no date given" ? { when } : {}),
       ...(where ? { where } : {}),
       ...(budget !== undefined ? { budget_usd: budget } : {}),
+      ...(limit ? { limit } : {}),
       contacted: contacts(d.contacted, "business"),
       not_contacted: arr(d.not_contacted).length,
     };
