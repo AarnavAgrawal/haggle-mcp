@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { Button } from "@/components/ui/Button";
+import { Field } from "@/components/ui/Field";
 
 const CONFIRM = "DELETE";
 
@@ -30,21 +32,25 @@ export function DeleteAccount() {
   };
 
   return (
-    <form className="stack" onSubmit={submit}>
-      <div>
-        <label htmlFor="confirm_delete">
-          Type <strong>{CONFIRM}</strong> to confirm
-        </label>
-        <input id="confirm_delete" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" spellCheck={false} />
-      </div>
-      {error && (
-        <p className="note note-risk" role="alert">
+    <form className="acct-delete" onSubmit={submit}>
+      <Field
+        label={
+          <span>
+            Type <strong className="acct-word">{CONFIRM}</strong> to confirm
+          </span>
+        }
+        className="acct-confirm"
+      >
+        <input id="confirm_delete" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" autoCapitalize="characters" spellCheck={false} disabled={pending} />
+      </Field>
+      <Button type="submit" variant="danger" className="acct-delete-btn" disabled={typed !== CONFIRM} pending={pending}>
+        {pending ? "Deleting…" : "Delete my account"}
+      </Button>
+      {error ? (
+        <p className="note note-risk acct-error" role="alert">
           {error}
         </p>
-      )}
-      <button className="btn acct-delete" type="submit" disabled={typed !== CONFIRM || pending}>
-        {pending ? "Deleting…" : "Delete my account"}
-      </button>
+      ) : null}
     </form>
   );
 }

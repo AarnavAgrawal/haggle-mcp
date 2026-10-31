@@ -15,8 +15,7 @@
   gap: var(--s-3) var(--s-6);
   min-height: 44px;
 }
-.vend-head h1,
-.set-head h1 {
+.vend-head h1 {
   font-family: var(--font-display);
   font-size: var(--t-30);
   font-weight: 750;
@@ -24,8 +23,7 @@
   line-height: 1.1;
 }
 @media (min-width: 1200px) {
-  .vend-head h1,
-  .set-head h1 {
+  .vend-head h1 {
     font-size: var(--t-36);
   }
 }
