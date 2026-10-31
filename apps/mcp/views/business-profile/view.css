@@ -108,7 +108,7 @@
   padding: 0;
   font: inherit;
   font-size: 12px;
-  color: var(--ch-email);
+  color: var(--pen);
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;

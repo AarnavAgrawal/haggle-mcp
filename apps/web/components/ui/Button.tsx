@@ -7,7 +7,7 @@ import { cx } from "./cx";
 export type ButtonVariant = "default" | "primary" | "quiet" | "danger";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  /** default: white with a rule; primary: pen blue; quiet: text only; danger: risk red. */
+  /** default: paper with an ink outline; primary: solid ledger-green pen; quiet: text only; danger: risk red. */
   variant?: ButtonVariant;
   /** m (40px, default) or s (32px, for rails, toolbars and table rows). */
   size?: "m" | "s";
