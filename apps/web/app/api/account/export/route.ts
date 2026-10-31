@@ -4,13 +4,13 @@ import { buildExport } from "@/lib/account/export";
 import { accountError, accountJson } from "@/lib/account/request";
 import { exportDeps } from "@/lib/account/server";
 import { limiters } from "@/lib/limiters";
-import { membership, sessionUser } from "@/lib/workspace";
+import { membership, verifiedSessionUser } from "@/lib/workspace";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function GET(): Promise<Response> {
-  const user = await sessionUser().catch(() => null);
+  const user = await verifiedSessionUser().catch(() => null);
   if (!user) return accountError(401, "signed_out", "You're signed out.", "Sign in again.");
   if (!(await limiters.accountExport.take(user.id)).ok) return accountError(429, "rate_limited", "Too many exports in a short time.", "Wait a few minutes, then try again.");
   try {

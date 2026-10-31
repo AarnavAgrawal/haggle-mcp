@@ -3,7 +3,6 @@ import { Archivo } from "next/font/google";
 import { connection } from "next/server";
 import type { ReactNode } from "react";
 import "./globals.css";
-import "./landing.css";
 
 export const metadata: Metadata = {
   title: "Haggle",

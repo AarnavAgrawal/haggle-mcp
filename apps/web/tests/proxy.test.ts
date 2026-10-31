@@ -11,9 +11,9 @@ const fake = vi.hoisted(() => ({ user: null as { id: string } | null, refresh: [
 vi.mock("@supabase/ssr", () => ({
   createServerClient: (_url: string, _key: string, opts: { cookies: { setAll: (l: CookieWrite[]) => void } }) => ({
     auth: {
-      getUser: async () => {
+      getClaims: async () => {
         if (fake.refresh.length) opts.cookies.setAll(fake.refresh);
-        return { data: { user: fake.user }, error: null };
+        return fake.user ? { data: { claims: { sub: fake.user.id } }, error: null } : { data: null, error: null };
       },
     },
   }),

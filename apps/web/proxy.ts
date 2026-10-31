@@ -39,8 +39,10 @@ export async function proxy(request: NextRequest) {
       },
     },
   });
-  const { data } = await supabase.auth.getUser();
-  if (!data.user && !PUBLIC.some((p) => p.test(request.nextUrl.pathname))) {
+  // getClaims() refreshes an expired session (the setAll above) and verifies the JWT locally against the
+  // project's signing keys: no Auth round trip on every navigation. Pages re-check (lib/workspace.ts).
+  const { data } = await supabase.auth.getClaims();
+  if (!data?.claims?.sub && !PUBLIC.some((p) => p.test(request.nextUrl.pathname))) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";

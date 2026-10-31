@@ -6,7 +6,7 @@ import { DELETE_CONFIRMATION, deleteAccount } from "@/lib/account/delete";
 import { accountError, accountJson, sameOrigin } from "@/lib/account/request";
 import { deleteDeps } from "@/lib/account/server";
 import { limiters } from "@/lib/limiters";
-import { membership, sessionUser } from "@/lib/workspace";
+import { membership, verifiedSessionUser } from "@/lib/workspace";
 
 export const runtime = "nodejs";
 
@@ -16,7 +16,7 @@ export async function POST(request: Request): Promise<Response> {
   if (!sameOrigin(request) || !request.headers.get("content-type")?.includes("application/json")) {
     return accountError(403, "cross_site", "This request must come from Haggle's own account page.", "Use the Delete button on /account.");
   }
-  const user = await sessionUser().catch(() => null);
+  const user = await verifiedSessionUser().catch(() => null);
   if (!user) return accountError(401, "signed_out", "You're signed out.", "Sign in again.");
   if (!Body.safeParse(await request.json().catch(() => null)).success) return accountError(400, "not_confirmed", `Type ${DELETE_CONFIRMATION} to confirm.`, `Send { "confirm": "${DELETE_CONFIRMATION}" }.`);
   if (!(await limiters.accountDelete.take(user.id)).ok) return accountError(429, "rate_limited", "Too many attempts.", "Wait a few minutes, then try again.");

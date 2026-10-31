@@ -5,6 +5,7 @@ import { Footer } from "@/components/Footer";
 import { GuestButton } from "@/components/GuestButton";
 import { DEMO } from "@/lib/demo";
 import { sessionUser } from "@/lib/workspace";
+import "./landing.css";
 
 /** The hero's example sheet: what a deal looks like once quotes come in. Illustrative, labelled as such. */
 const EXAMPLE = [
