@@ -76,8 +76,8 @@ real, tools return those fixtures.
 
 | Schema | Tools | View folder | Fields |
 |---|---|---|---|
-| `DealBoard` | `get_quotes`, `open_haggle` | `views/deal-board/` | `job` (id, request, state, budget), `businesses[]` (id, name, channel, status, last_event, transcript_snippet?), `quotes[]` (Quote), `open_questions[]`, `next` |
-| `Approval` | `approve`, `pay` | `views/approval/` | quote summary, amount, deposit, cap, status, channel, receipt_url?, reason? |
+| `DealBoard` | `get_quotes`, `open_haggle` | `views/deal-board/` | `job` (id, request, state, budget, deal_limit_usd?, deal_limit_source?), `businesses[]` (id, name, channel, status, last_event, transcript_snippet?), `quotes[]` (Quote), `open_questions[]`, `next` |
+| `Approval` | `approve`, `pay` | `views/approval/` | quote summary, amount, deposit, `deal_limit_usd` (nullable), status, channel, receipt_url?, reason? |
 | `Estimates` | `ask` | `views/estimates/` | request, `estimates[]` (business, total_usd, per_unit_usd, confidence, n_quotes, best_channel) |
 | `BusinessProfile` | `business_profile` | `views/business-profile/` | name, best_channel, menu[], price_model, minimum, deposit_rule, discount_behavior, reply_speed, history[] (date, channel, total), confidence |
 
@@ -165,10 +165,17 @@ A2A tasks carry the same JSON shapes in the task body.
 3. Store: who, when, `quote_id`, amount, channel.
 4. `pay(job_id, quote_id)` refuses unless **all** of these are true:
    - a stored approval exists for that exact quote, and the quote hasn't been revised since
-   - amount ≤ approved amount ≤ cap (the cap comes from settings and the job budget)
+   - amount ≤ approved amount ≤ the deal's limit ≤ the server ceiling
    - the payee is a business that actually quoted on this job
-5. **Stripe test mode** charges the deposit (or the total if no deposit). `receipt_url` goes on the approval view.
-6. A refusal returns `status: "refused"` with a `reason` that says how to fix it.
+5. **The deal's spending limit** (`jobs.payment_cap_cents`, migration 128):
+   - `deal` sets it from `spend_limit_usd`, else `budget_usd`, never above the server ceiling (`HAGGLE_GLOBAL_PAYMENT_CAP_CENTS`).
+   - With neither, it stays null. At approval the workspace's default limit for new deals (`settings.spending_cap_cents`) applies, and the approval records the limit used (`approvals.cap_cents`).
+   - The workspace default is never checked at payment, and never caps a deal that has its own limit.
+   - The model only proposes a limit (`deal`). The agent may lower it. Only a human (the web app's signed-in owner) or the operator raises it, up to the server ceiling.
+   - Every change is audited: `jobs.cap_set_by`, `jobs.cap_set_at` and a `limit_set` job event (from, to, by).
+   - Over the limit, `approve` refuses with `over_deal_limit`. The web app offers "This is $X over the limit you set for this deal. Raise it to $Y and approve?" as one human action: `POST /internal/approvals/raise-limit` `{ job_id, limit_usd, quote_id?, action? }` (service token and actor required; no MCP tool reaches it). Without `quote_id` it only sets the limit.
+6. **Stripe test mode** charges the deposit (or the total if no deposit). `receipt_url` goes on the approval view.
+7. A refusal returns `status: "refused"` with a `reason` that says how to fix it.
 
 ## 7. Database (Supabase Postgres + Realtime)
 

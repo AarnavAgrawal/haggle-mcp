@@ -134,7 +134,7 @@ export function purchaseView(f: PurchaseFacts): PurchaseView | null {
   if (f.handoffRefused && !h) {
     return { ...base, stage: "handoff_refused", operator_attention: `payment handoff refused: ${f.handoffRefused}`, ...(reply ? { vendor_reply: reply } : {}),
       summary: `${b.status === "confirmed" ? `${f.business} confirmed the booking, but` : "This"} approval no longer passes Haggle's payment checks (${f.handoffRefused}), so Haggle didn't ask how to pay. Nothing was paid.`,
-      next: "Tell the human not to pay. The operator was flagged; a fresh approval may be needed (e.g. the spending cap was lowered after approving)." };
+      next: "Tell the human not to pay. The operator was flagged; a fresh approval may be needed (e.g. the deal's limit was lowered after approving)." };
   }
   // Booked (by the business in writing, or confirmed by the human directly): the handoff.
   const booked = b.status === "confirmed" ? `${f.business} confirmed the booking.` : `Haggle can't get a written confirmation from ${f.business} on its channel: the human confirms the booking with them directly.`;

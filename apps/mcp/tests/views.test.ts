@@ -82,7 +82,7 @@ describe("toDealBoard (live-shaped engine data)", () => {
     const withApproval = { ...live, approval: { approval_id: "ap_1", job_id: live.job.id, quote_id: "q_live_1", quote_total_usd: 1080, payment_usd: 5, cap_usd: 5, approver: "mcp-client:claude-ai", channel: "view", status: "pending", approved_at: "", expires_at: "2026-10-17T21:15:00Z" } } as unknown as DealBoardData;
     const a = toApproval(withApproval, "q_live_1", "pending_human", "live", { next: "Waiting for the human to tap Approve." });
     expect(ApprovalOut.safeParse(a).success).toBe(true);
-    expect(a).toMatchObject({ business: "Haggle Test Seller", quote_channel: "email", amount_usd: 5, cap_usd: 5, channel: "view", status: "pending_human", approval_id: "ap_1" });
+    expect(a).toMatchObject({ business: "Haggle Test Seller", quote_channel: "email", amount_usd: 5, deal_limit_usd: 5, channel: "view", status: "pending_human", approval_id: "ap_1" });
     expect(a.summary).toBe("Haggle Test Seller: $1,080 order total; pay $5 deposit now");
     expect(a.terms).toBeUndefined(); // none stated
   });

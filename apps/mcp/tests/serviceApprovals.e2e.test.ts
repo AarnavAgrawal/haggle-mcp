@@ -137,6 +137,36 @@ describe("web approval routes (mock, service token)", () => {
     noCode(after.body);
   }, 120_000);
 
+  it("over the deal's limit: request offers raise-and-approve; one owner action raises it and approves; the model has no such tool", async () => {
+    const ws = await provision(`approvals-e2e-limit-${Date.now()}`);
+    const deal = await tool<{ job_id: string; job: { deal_limit_usd?: number; deal_limit_source?: string } }>(ws, "deal", { request: REQUEST, budget_usd: 100, client_request_id: `approvals-e2e-limit-${Date.now()}` });
+    expect(deal.job).toMatchObject({ deal_limit_usd: 100, deal_limit_source: "budget" });
+    const board = await readyBoard(ws, deal.job_id);
+    let over: { quoteId: string; body: Record<string, unknown> } | null = null;
+    for (const q of board.quotes) {
+      const r = await svc("/internal/approvals/request", ws, { job_id: deal.job_id, quote_id: q.quote_id });
+      if (r.body.status === "over_limit") { over = { quoteId: q.quote_id, body: r.body }; break; }
+    }
+    expect(over, "a quote over the $100 limit").not.toBeNull();
+    expect(over!.body).toMatchObject({ ok: true, limit_usd: 100, amount_usd: expect.any(Number), over_by_usd: expect.any(Number) });
+    noCode(over!.body);
+    const amount = over!.body.amount_usd as number;
+
+    // The owner only (actor required), this workspace only; the model has no tool for it.
+    expect((await svc("/internal/approvals/raise-limit", ws, { job_id: deal.job_id, quote_id: over!.quoteId, limit_usd: amount }, null)).status).toBe(400);
+    const tools = await fetch(`${BASE}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18", "x-haggle-service-token": SERVICE, "x-haggle-workspace": ws }, body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "tools/list", params: {} }) }).then((r) => r.text());
+    expect(tools).not.toMatch(/raise[-_]limit|setDealLimit|deal_limit_set/);
+
+    const yes = await svc("/internal/approvals/raise-limit", ws, { job_id: deal.job_id, quote_id: over!.quoteId, limit_usd: amount });
+    expect(yes.status, JSON.stringify(yes.body)).toBe(200);
+    expect(yes.body).toMatchObject({ ok: true, status: "approved", limit_usd: amount, amount_usd: amount, state: "paying" });
+    noCode(yes.body);
+    expect((await tool<{ job: { deal_limit_usd?: number; deal_limit_source?: string } }>(ws, "get_quotes", { job_id: deal.job_id })).job).toMatchObject({ deal_limit_usd: amount, deal_limit_source: "human" });
+    expect((await tool<{ status: string }>(ws, "pay", { job_id: deal.job_id, quote_id: over!.quoteId })).status).toBe("paid");
+    // A closed deal's limit can't change.
+    expect((await svc("/internal/approvals/raise-limit", ws, { job_id: deal.job_id, limit_usd: amount + 1 })).status).toBe(409);
+  }, 120_000);
+
   it("decline frees the deal; cancel works as the owner; a callback without a justified proposal is refused with the engine's fix", async () => {
     const ws = await provision(`approvals-e2e-2-${Date.now()}`);
     const deal = await tool<{ job_id: string }>(ws, "deal", { request: REQUEST, budget_usd: 1200, client_request_id: `approvals-e2e-2-${Date.now()}` });

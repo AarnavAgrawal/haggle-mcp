@@ -72,6 +72,10 @@ export const DealBoard = z.object({
     request: z.string(),
     state: JobState,
     budget_usd: usd.optional(),
+    /** The deal's spending limit ("Limit $1,200"); the workspace default when the deal has none yet. */
+    deal_limit_usd: usd.optional(),
+    /** Where the limit came from: budget, stated (by the user, through the agent), human, operator, or default (none set yet). */
+    deal_limit_source: z.enum(["budget", "stated", "human", "operator", "default"]).optional(),
     requirements: z.array(z.string()),
     /** v6: the custom answers asked (columns on the board), and which one ranks the quotes. */
     ask: z.array(AskFieldView).optional(),
@@ -140,7 +144,11 @@ export const Approval = z.object({
   items: z.array(z.string()),
   amount_usd: usd,
   deposit_usd: usd.optional(),
-  cap_usd: usd,
+  /**
+   * The deal's spending limit (its own, from the budget or a human; else the workspace default the
+   * approval used). Null when not known yet. Pay needs amount ≤ approved ≤ this ≤ the server ceiling.
+   */
+  deal_limit_usd: usd.nullable(),
   status: ApprovalStatus,
   /** How the human approves or approved: iMessage YES, the Approve button in this view, or the MCP client's approval form. */
   channel: z.enum(["imessage", "view", "elicitation"]),

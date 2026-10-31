@@ -45,7 +45,7 @@ The web app owns only three things: sign-in, which workspace a user belongs to, 
 | `/login` | Email magic link (`signInWithOtp`) or Google OAuth. Both return to `/auth/callback`. | none |
 | `GET /auth/callback` | Exchanges the auth code for a session, then redirects to `/` (or to `/login?error=sign_in_failed`). | none |
 | `POST /auth/sign-out` | Signs out and redirects to `/login`. It is POST only, so a link prefetch can't sign anyone out. | none |
-| `/onboarding` | Creates the workspace: name, approver phone (E.164), spending cap per payment (default $1,500) and usual area. The approver email is the user's sign-in email. | `POST /internal/workspaces` |
+| `/onboarding` | Creates the workspace: name, approver phone (E.164), default limit for new deals (default $1,500; a deal with a budget uses its budget) and usual area. The approver email is the user's sign-in email. | `POST /internal/workspaces` |
 | `/chat`, `/chat/<threadId>` | Starts a new conversation, or resumes one of your own. A sidebar lists your 30 most recent threads. | via `/api/chat` |
 | `/deals` | Lists the workspace's 20 newest deals, each linking to its live page. | `list_deals` |
 | `/deals/<jobId>` | The deal page: request, timeline, next step, setup notes, questions from businesses, ranked quotes with the approval panel, purchase status, suggested callbacks, negotiation history, businesses, and Cancel. | `get_quotes` |
@@ -121,6 +121,8 @@ API routes never redirect: they answer with JSON (`401` signed out, `403` no wor
 Only a signed-in human's click approves, pays or authorizes a callback (`lib/approval/flow.ts`, `components/approval/ApprovalPanel.tsx`). Approving charges nothing. Pay charges the approved amount: the deposit, or the full total when the business stated no deposit. The amount is never an input.
 
 **One path for demo and live servers** (`lib/approval/flow.ts` → the MCP server's service routes, `apps/mcp/src/service/approvals.ts`). Approve opens or reuses an approval on the "web" channel (`POST /internal/approvals/request`), shows the server's terms (business, amount paid now, total, caveats) in a confirm step, and the confirming click decides it (`POST /internal/approvals/decide`, recorded as `web:<the signed-in user>`). No code ever leaves the server. On the charging rail Pay then calls `pay`; on the manual rail (`HAGGLE_PAYMENTS=manual`, production) the panel shows the purchase stages: the vendor's written confirmation, its payment instructions as untrusted text (verify before paying), "I've paid the vendor" (`/internal/purchases/paid`), the vendor's receipt; plus "booking confirmed" (`/internal/purchases/booked`) and cancel (`/internal/purchases/cancel`). Callbacks go through `/internal/callbacks/authorize` and still need a justified callback and the business's recorded consent. `HAGGLE_WEB_APPROVALS=false` turns these routes off (text approval by `YES <code>` keeps working either way). MCP tools are unchanged: no agent can approve through them.
+
+**The deal's spending limit** (`POST /api/deals/<id>/limit` → `POST /internal/approvals/raise-limit`). Each deal has its own limit, set from its budget. When a quote's payment is over it, Approve shows "This is $X over the limit you set for this deal. Raise it to $Y and approve?" One click raises the limit and records the approval as the user's. The board's side column shows the limit and lets the user raise it (up to the server ceiling) or lower it. The model can't reach this route.
 
 **Route guards** (`lib/approval/route.ts`):
 - At most 30 actions per user per minute.

@@ -136,6 +136,11 @@ export interface DealInput {
   request: Request;
   businesses: DealBusiness[];
   budget_usd?: number;
+  /**
+   * The deal's spending limit the user stated, when it differs from the budget. Only a proposal: the
+   * deal's limit is min(server ceiling, spend_limit_usd ?? budget_usd), and only a human raises it later.
+   */
+  spend_limit_usd?: number;
   reply_by?: string; // ISO
   approver_email?: string;
   max_rounds?: number;
@@ -206,6 +211,18 @@ const SMS_LIMIT = 320;
 /** Payment details that arrived by text (SMS or iMessage): the From number can be spoofed, so the human checks them by phone. */
 const SMS_PAYMENT_WARNING = "sent by text from the business's number, which can't prove who wrote it: confirm these payment details with the business by phone before paying";
 const usdText = (cents: number) => `$${centsToUsd(cents).toLocaleString("en-US", { minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
+/** Where a deal's spending limit came from: the budget, a limit the user stated, a human's change, the operator, or the workspace default (none set yet). */
+export type DealLimitSource = "budget" | "stated" | "human" | "operator" | "default";
+/** requestWebApproval on a quote whose payment is over the deal's limit: nothing was opened. */
+export interface WebOverLimit {
+  over_limit: { payment_cents: number; limit_cents: number; over_by_cents: number; ceiling_cents: number };
+  business: string;
+  caveats: string[];
+}
+/** A payment over the deal's own limit (under the server ceiling): only a human raises the limit. */
+const overDealLimit = (paymentCents: number, limitCents: number) => new EngineError("over_deal_limit",
+  `The ${usdText(paymentCents)} payment is ${usdText(paymentCents - limitCents)} over this deal's ${usdText(limitCents)} spending limit.`,
+  `Only the human can raise a deal's limit: ask them to raise it to ${usdText(paymentCents)} and approve on the deal page in the Haggle web app (one click). Or ask the business for a smaller deposit, or choose another quote.`, "get_quotes");
 /** One line, at most n characters (an ellipsis when cut). */
 /** The exact-total ask folded into a missing-info follow-up (one message, not two). */
 const exactTotalAsk = (readCents: number | null) => `your exact all-in total, incl. delivery and tax, and any deposit${readCents !== null ? ` (we worked it out as ${usdText(readCents)})` : ""}`;
@@ -425,8 +442,12 @@ export type DealBoardData = Omit<QuotesResult, "quotes" | "rejected" | "pending_
   inbox: string;
   request: Request;
   budget_usd: number | null;
-  /** Ceiling for any single payment on this job (operator ceiling ∩ job cap); separate from the order budget. */
+  /** Ceiling for any single payment on this job: the deal's limit (never above the server ceiling). */
   payment_ceiling_usd?: number;
+  /** The deal's spending limit now (its own, or the workspace default when none is set yet). */
+  deal_limit_usd?: number;
+  /** Where the limit came from; "default" means none is set yet and approval uses the workspace default. */
+  deal_limit_source?: DealLimitSource;
   /** False when this server refuses every payment (live without Stripe test mode). */
   payments_enabled?: boolean;
   /** Best-value ranking of the eligible quotes: factors, weights, confidence and the why. */
@@ -678,9 +699,13 @@ export class HaggleEngine {
     const replyBy = input.reply_by ? new Date(input.reply_by) : new Date(this.now().getTime() + this.d.config.collectionWindowMs);
     if (Number.isNaN(replyBy.getTime()) || replyBy <= this.now()) throw new EngineError("bad_deadline", "reply_by must be a future ISO time.", "Pass a future reply_by or omit it.", "deal");
 
-    // The per-job payment cap: what Haggle may charge at most, the lower of the operator's per-payment
-    // ceiling and the workspace spending cap. The budget stays a preference (a caveat, never a refusal).
-    const paymentCapCents = Math.min(this.d.config.globalPaymentCapCents, (await this.getSettings(ws)).spending_cap_cents);
+    // The deal's spending limit (docs/state-and-next-fixes.md §5): the limit the user stated, else the
+    // budget, never above the server ceiling. No budget and no limit: null, decided at approval (the
+    // workspace's default limit for new deals). The workspace default never caps a budgeted deal.
+    const statedLimitCents = input.spend_limit_usd === undefined ? null : usdToCents(input.spend_limit_usd);
+    if (statedLimitCents !== null && !(statedLimitCents > 0)) throw new EngineError("bad_limit", "spend_limit_usd must be positive.", "Pass a positive spend_limit_usd (the most the user will pay) or omit it.", "deal");
+    const proposedLimit = statedLimitCents ?? budgetCents;
+    const paymentCapCents = proposedLimit === null ? null : Math.min(this.d.config.globalPaymentCapCents, proposedLimit);
     // A mailbox of the workspace's own (HAGGLE_MAILBOX_PER_WORKSPACE), else the shared one.
     let ownInbox: string | null = null;
     if (mode === "live" && this.d.mailboxes) {
@@ -697,7 +722,9 @@ export class HaggleEngine {
       try {
         job = await this.repo.insertJob({
           id: newId("job"), workspace_id: ws, short_code: code, state: "created", mode, request: input.request, budget_cents: budgetCents,
-          payment_cap_cents: paymentCapCents, approver_email: input.approver_email ? normalizeAddress(input.approver_email) : null,
+          payment_cap_cents: paymentCapCents,
+          ...(paymentCapCents === null ? {} : { cap_set_by: statedLimitCents !== null ? "agent" : "budget", cap_set_at: at }),
+          approver_email: input.approver_email ? normalizeAddress(input.approver_email) : null,
           inbox: ownInbox ?? this.d.config.sharedInbox ?? jobInboxAddress(code, this.d.config.inboxDomain), round: 1, max_rounds: Math.max(1, Math.min(input.max_rounds ?? this.d.config.maxRounds, MAX_ROUNDS)),
           collect_until: replyBy.toISOString(), ready: false, pay_intent: false, failure_reason: null,
           client_request_id: input.client_request_id ?? null, version: 0, created_at: at, updated_at: at,
@@ -899,7 +926,7 @@ export class HaggleEngine {
   /** `all`: the job's quotes when the caller already read them (one read per board). */
   private async rankRows(job: JobRow, all?: QuoteRow[]) {
     const quotes = (all ?? (await this.repo.listQuotes(job.id))).filter((q) => q.status === "current");
-    const capCents = await this.spendCapCents(job);
+    const capCents = await this.dealLimitCents(job);
     const { compare, moneyCompare, required } = askInfo(job.request);
     const hardIds = new Set(this.requirements(job).filter((r) => r.hard).map((r) => r.id));
     const rankable = quotes.map((q): RankableQuote => ({
@@ -924,7 +951,7 @@ export class HaggleEngine {
    * Can the human approve (and pay) this quote, and what are they knowingly accepting? Only safety
    * and impossibility refuse: a superseded quote, a business that declined, an unverified sender, a
    * pay-elsewhere link, instructions aimed at the agent, or no amount at all. Everything else (over
-   * budget, over the spending cap, a requirement failed or not confirmed, a computed total, no
+   * budget, over the deal's limit, a requirement failed or not confirmed, a computed total, no
    * deposit, fine-print deposit) is a caveat the approval shows. The operator's per-payment ceiling
    * is checked separately in requestApproval.
    */
@@ -954,7 +981,8 @@ export class HaggleEngine {
     if (unanswered.length) caveats.push(`Didn't answer: ${unanswered.join(", ")}`);
     if (q.total_cents !== null) {
       if (job.budget_cents !== null && q.total_cents > job.budget_cents) caveats.push(`${dollars(q.total_cents - job.budget_cents)} over the ${dollars(job.budget_cents)} ${job.request.budget_kind === "limit" ? "limit" : "budget"}`);
-      if (spendingCapCents !== null && q.total_cents > spendingCapCents) caveats.push(`${dollars(q.total_cents)} is over your ${dollars(spendingCapCents)} spending cap`);
+      // The deal's limit, when it isn't just the budget (that caveat is above).
+      if (spendingCapCents !== null && q.total_cents > spendingCapCents && spendingCapCents !== job.budget_cents) caveats.push(`${dollars(q.total_cents)} is over this deal's ${dollars(spendingCapCents)} limit`);
     }
     const reqs = new Map(this.requirements(job).map((r) => [r.id, r]));
     for (const r of q.requirement_results) {
@@ -982,12 +1010,50 @@ export class HaggleEngine {
   async approvalCaveats(jobId: string, quoteId: string): Promise<string[]> {
     const job = await this.loadJob(jobId);
     const q = await this.repo.getQuote(quoteId);
-    return q && q.job_id === jobId ? this.approvability(job, q, (await this.getSettings(job.workspace_id)).spending_cap_cents).caveats : [];
+    return q && q.job_id === jobId ? this.approvability(job, q, await this.dealLimitCents(job)).caveats : [];
   }
 
-  /** The lowest cap any payment on this job must fit: the job's, the server's and the workspace's current one. */
-  private async spendCapCents(job: JobRow): Promise<number> {
-    return Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, (await this.getSettings(job.workspace_id)).spending_cap_cents);
+  /**
+   * The deal's spending limit now: its own (from the budget, the stated limit or a human), else (none
+   * set yet) the workspace's default limit for new deals; never above the server ceiling. The
+   * workspace default is never checked for a deal that has its own limit.
+   */
+  private async dealLimitCents(job: JobRow): Promise<number> {
+    const ceiling = this.d.config.globalPaymentCapCents;
+    if (job.payment_cap_cents !== null && job.payment_cap_cents !== undefined) return Math.min(job.payment_cap_cents, ceiling);
+    return Math.min(ceiling, (await this.getSettings(job.workspace_id)).spending_cap_cents);
+  }
+
+  /** The deal's limit for the board: what it is now (its own, or the default it would use) and where it came from. */
+  async dealLimitView(job: JobRow): Promise<{ deal_limit_usd: number; deal_limit_source: DealLimitSource }> {
+    const by = job.cap_set_by ?? null;
+    const source: DealLimitSource = job.payment_cap_cents === null || job.payment_cap_cents === undefined ? "default"
+      : by === "agent" ? "stated" : by === "operator" ? "operator" : by?.startsWith("web:") ? "human" : "budget";
+    return { deal_limit_usd: centsToUsd(await this.dealLimitCents(job)), deal_limit_source: source };
+  }
+
+  /**
+   * Change a deal's spending limit (docs/state-and-next-fixes.md §5). The agent may only lower it; a
+   * human (the web app's signed-in owner) or the operator may raise it up to the server ceiling. Every
+   * change is audited: cap_set_by and cap_set_at on the job, and a "limit_set" event (from, to, by).
+   * Pay still needs amount <= approved <= this limit <= the server ceiling.
+   */
+  async setDealLimit(jobId: string, cents: number, by: "agent" | "human" | "operator", actor?: string | null): Promise<{ job: JobRow; from_cents: number; to_cents: number }> {
+    const job = await this.loadJob(jobId);
+    if (TERMINAL.has(job.state)) throw new EngineError("deal_closed", `This deal is ${job.state}; its limit can't change.`, "Start a new deal.", "deal");
+    if (!Number.isInteger(cents) || cents <= 0) throw new EngineError("bad_limit", "The limit must be a positive amount.", "Pass a positive limit.", "get_quotes");
+    const ceiling = this.d.config.globalPaymentCapCents;
+    if (cents > ceiling) throw new EngineError("limit_above_ceiling", `A deal's limit can't be more than this server's ${usdText(ceiling)} ceiling.`, "Pick a lower limit; the operator sets the ceiling.", "get_quotes");
+    const from = await this.dealLimitCents(job);
+    if (by === "agent" && cents > from) {
+      throw new EngineError("limit_increase_requires_human", `Only the human can raise this deal's ${usdText(from)} limit.`, "Ask the human to raise it on the deal page in the Haggle web app. Lowering it is allowed.", "get_quotes");
+    }
+    const who = by === "human" ? (actor?.startsWith("web:") ? actor : `web:${(actor ?? "").trim() || "unknown"}`).slice(0, 160) : by;
+    const at = this.now().toISOString();
+    const updated = await this.repo.touchJob(jobId, { payment_cap_cents: cents, cap_set_by: who, cap_set_at: at });
+    await this.repo.appendEvent(jobId, "limit_set", { from_cents: job.payment_cap_cents, to_cents: cents, by: who, at });
+    this.log("deal_limit_set", { job_id: jobId, from_cents: from, to_cents: cents, by: by });
+    return { job: updated ?? (await this.loadJob(jobId)), from_cents: from, to_cents: cents };
   }
 
   /** Does this quote meet every must (hard requirements, budget, pay-now within the cap)? Only "compliant" may win on its own. */
@@ -2572,7 +2638,9 @@ export class HaggleEngine {
       quote: quote ? { id: quote.id, business_id: quote.business_id, total_cents: quote.total_cents, deposit_cents: quote.deposit_cents, status: quote.status } : null,
       payee: b && quote ? { business_id: b.business_id, on_job: true, quoted_from_trusted_sender: quote.sender_trusted && quote.business_id === b.business_id && carriesMoney } : null,
       existingPayment: null,
-      spendCapCents: Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents, approval.cap_cents, (await this.getSettings(job.workspace_id)).spending_cap_cents),
+      // amount <= approved <= the deal's limit <= the server ceiling. A deal with no limit of its own is
+      // held to the limit its approval recorded; the workspace default is never read at payment.
+      spendCapCents: Math.min(job.payment_cap_cents ?? approval.cap_cents, this.d.config.globalPaymentCapCents, approval.cap_cents),
       now: this.now(),
     });
   }
@@ -6494,7 +6562,8 @@ export class HaggleEngine {
       payment: paymentOut ?? (job.state === "awaiting_approval" ? this.noPayment() : null),
       ...(purchase ? { purchase } : {}),
       ready: job.ready, inbox: job.inbox, request: job.request, budget_usd: job.budget_cents === null ? null : centsToUsd(job.budget_cents),
-      payment_ceiling_usd: centsToUsd(Math.min(job.payment_cap_cents, this.d.config.globalPaymentCapCents)),
+      payment_ceiling_usd: centsToUsd(await this.dealLimitCents(job)),
+      ...(await this.dealLimitView(job)),
       payments_enabled: this.d.stripe !== undefined,
       next: notCompared && job.ready && ["collecting", "negotiating", "awaiting_approval"].includes(job.state) ? `${next} ${notCompared}` : next,
     };
@@ -6852,7 +6921,9 @@ export class HaggleEngine {
     if (!auto && job.state === "awaiting_approval") {
       const latest = await this.repo.getLatestApproval(jobId);
       if (latest?.status === "pending" && (await this.isAutoApproval(jobId, latest.id))) {
-        if (latest.quote_id === quoteId && (!action || latest.action === normalizeAction(action))) {
+        // A suggestion opened before the deal's limit was lowered below its payment is replaced, never claimed.
+        const overLimit = latest.payment_cents > (await this.dealLimitCents(job));
+        if (!overLimit && latest.quote_id === quoteId && (!action || latest.action === normalizeAction(action))) {
           // Same quote: one approval, one code. It now holds the job like any requested approval, and
           // the channels asked for now (iMessage, email) get the same code; the text already went.
           await this.repo.appendEvent(jobId, "approval_claimed", { approval_id: latest.id, channel });
@@ -6942,16 +7013,15 @@ export class HaggleEngine {
           "Wait (wait_for_update). If the business confirms the same total and terms, Haggle sends the approval to the human automatically; a changed total arrives as a new quote that needs its own approval. Don't approve again meanwhile.", "wait_for_update");
       }
     }
-    // Hard money limits (CLAUDE.md §7: amount ≤ approved ≤ cap): the operator's per-payment ceiling and
-    // the workspace spending cap, whichever is lower.
+    // Hard money limits (CLAUDE.md §7: amount ≤ approved ≤ the deal's limit ≤ the server ceiling). A deal
+    // with no limit of its own uses the workspace default here, and the approval records the limit used.
     const settings = await this.getSettings(job.workspace_id);
     const ceiling = this.d.config.globalPaymentCapCents;
-    const cap = Math.min(ceiling, settings.spending_cap_cents);
-    if (payment > cap) {
-      throw cap < ceiling
-        ? new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this workspace's $${centsToUsd(cap).toFixed(2)} spending cap.`, "Ask the business for a smaller deposit, or ask the operator to raise the workspace spending cap.", "get_quotes")
-        : new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this server's $${centsToUsd(cap).toFixed(2)} per-payment safety ceiling.`, "Ask the business for a smaller deposit, or ask the operator to raise HAGGLE_GLOBAL_PAYMENT_CAP_CENTS.", "get_quotes");
+    if (payment > ceiling) {
+      throw new EngineError("over_cap", `The $${centsToUsd(payment).toFixed(2)} payment is over this server's $${centsToUsd(ceiling).toFixed(2)} per-payment safety ceiling.`, "Ask the business for a smaller deposit, or ask the operator to raise HAGGLE_GLOBAL_PAYMENT_CAP_CENTS.", "get_quotes");
     }
+    const cap = await this.dealLimitCents(job);
+    if (payment > cap) throw overDealLimit(payment, cap);
     // Every human channel can be offered at once (form/card + text + email); the first human decision wins.
     const approverEmail = job.approver_email ?? (settings.approver_email ? normalizeAddress(settings.approver_email) : null);
     const iMessageApprover = Boolean(this.d.imessage && settings.approver_phone);
@@ -7352,6 +7422,11 @@ export class HaggleEngine {
       : { status: "awaiting_approval", rail: "x402", network: "base-sepolia", simulated: this.d.payer.simulated ?? false };
   }
 
+  /** The operator's per-payment ceiling: no deal's limit and no payment can be above it. */
+  get paymentCeilingCents(): number {
+    return this.d.config.globalPaymentCapCents;
+  }
+
   /** True when payments can go ahead: Stripe configured, or the manual handoff (the human pays directly). */
   get paymentsEnabled(): boolean {
     return this.d.config.manualPaymentHandoff === true || this.d.stripe !== undefined;
@@ -7636,6 +7711,50 @@ export class HaggleEngine {
    */
   async requestWebApproval(workspaceId: string, jobId: string, quoteId: string, action: ApprovalAction | undefined, actor: string | null): Promise<{ approval: ApprovalRow; business: string; caveats: string[] }> {
     const { job } = await this.webJob(workspaceId, jobId, actor, false);
+    return this.openWebApproval(job, quoteId, action);
+  }
+
+  /**
+   * Why requestWebApproval refused with over_deal_limit, in numbers the approval panel shows: "This is
+   * $X over the limit you set for this deal. Raise it to $Y and approve?" Null when the quote's payment
+   * fits the deal's limit (or the quote isn't on this deal).
+   */
+  async webOverLimit(workspaceId: string, jobId: string, quoteId: string, action: ApprovalAction | undefined): Promise<WebOverLimit | null> {
+    const { job } = await this.webJob(workspaceId, jobId, null, false);
+    const q = await this.repo.getQuote(quoteId);
+    if (!q || q.job_id !== jobId || (action && normalizeAction(action) === "confirm")) return null;
+    const payment = q.deposit_cents && q.deposit_cents > 0 ? q.deposit_cents : q.total_cents;
+    const limit = await this.dealLimitCents(job);
+    if (payment === null || payment <= limit) return null;
+    return {
+      over_limit: { payment_cents: payment, limit_cents: limit, over_by_cents: payment - limit, ceiling_cents: this.d.config.globalPaymentCapCents },
+      business: await this.businessName(jobId, q.business_id), caveats: await this.approvalCaveats(jobId, quoteId),
+    };
+  }
+
+  /**
+   * The owner's one action on an approval over the deal's limit: "This is $X over the limit you set
+   * for this deal. Raise it to $Y and approve?" Raises the limit (as theirs, audited), opens the
+   * approval for this exact quote and records their approval. Never reached by an MCP tool.
+   */
+  async raiseLimitAndApproveByWeb(workspaceId: string, jobId: string, quoteId: string, limitCents: number, action: ApprovalAction | undefined, actor: string | null): Promise<{ approval: ApprovalRow; changed: boolean; job: JobRow; limit_cents: number }> {
+    const { by } = await this.webJob(workspaceId, jobId, actor);
+    const q = await this.repo.getQuote(quoteId);
+    if (!q || q.job_id !== jobId) throw new EngineError("quote_not_found", "No such quote on this job.", "Choose a quote from the deal page.", "get_quotes");
+    await this.setDealLimit(jobId, limitCents, "human", by);
+    const opened = await this.requestWebApproval(workspaceId, jobId, quoteId, action, actor);
+    const r = await this.decideWebApproval(workspaceId, opened.approval.id, "approve", actor);
+    return { ...r, limit_cents: limitCents };
+  }
+
+  /** The owner sets this deal's limit on the deal page (raise up to the server ceiling, or lower). */
+  async setDealLimitByWeb(workspaceId: string, jobId: string, limitCents: number, actor: string | null): Promise<{ job: JobRow; from_cents: number; to_cents: number }> {
+    const { by } = await this.webJob(workspaceId, jobId, actor);
+    return this.setDealLimit(jobId, limitCents, "human", by);
+  }
+
+  private async openWebApproval(job: JobRow, quoteId: string, action: ApprovalAction | undefined): Promise<{ approval: ApprovalRow; business: string; caveats: string[] }> {
+    const jobId = job.id;
     const latest = await this.repo.getLatestApproval(jobId);
     const done = latest && latest.quote_id === quoteId && (latest.status === "approved" || latest.status === "used") && (job.state === "paying" || job.state === "paid" || job.state === "confirmed");
     // The owner picked another option while an undecided approval waits (e.g. a confirm dialog they
@@ -7789,6 +7908,7 @@ export class WorkspaceEngine {
   get a2aEnabled() { return this.engine.a2aEnabled; }
   get phoneEnabled() { return this.engine.phoneEnabled; }
   get paymentsEnabled() { return this.engine.paymentsEnabled; }
+  get paymentCeilingCents() { return this.engine.paymentCeilingCents; }
   get outOfBandApprovalsOnly() { return this.engine.outOfBandApprovalsOnly; }
   get brainIsStub() { return this.engine.brainIsStub; }
 
@@ -7826,6 +7946,8 @@ export class WorkspaceEngine {
   async approvalIMessageSent(approvalId: string) { await this.ownApproval(approvalId); return this.engine.approvalIMessageSent(approvalId); }
   async pay(jobId: string, quoteId: string) { await this.own(jobId); return this.engine.pay(jobId, quoteId); }
   async cancel(jobId: string) { await this.own(jobId); return this.engine.cancel(jobId); }
+  /** A tool call is the agent: it may only lower a deal's limit (raising is the human's, in the web app). */
+  async setDealLimit(jobId: string, cents: number) { await this.own(jobId); return this.engine.setDealLimit(jobId, cents, "agent"); }
   async quoteForCheck(jobId: string, quoteId: string) { await this.own(jobId); return this.engine.quoteForCheck(jobId, quoteId); }
   async approvalCaveats(jobId: string, quoteId: string) { await this.own(jobId); return this.engine.approvalCaveats(jobId, quoteId); }
   canContact(b: Parameters<HaggleEngine["canContact"]>[0]) { return this.engine.canContact(b); }
@@ -7884,7 +8006,7 @@ const STRIPE_REFUSALS: Record<StripeGuardCode, [string, string, string]> = {
   APPROVAL_EXPIRED: ["The approval expired or was already used.", "Call approve again for a fresh approval.", "approve"],
   QUOTE_CHANGED: ["The quote changed after the human approved it.", "Call get_quotes, then approve the current quote.", "get_quotes"],
   AMOUNT_MISMATCH: ["The amount no longer matches what the human approved.", "Call get_quotes, then approve again.", "get_quotes"],
-  OVER_SPEND_CAP: ["The deposit is over the spending cap.", "Lower the deposit with the business, or raise the cap in settings.", "get_quotes"],
+  OVER_SPEND_CAP: ["The payment is over this deal's spending limit.", "Ask the human to raise this deal's limit in the Haggle web app, or lower the deposit with the business.", "get_quotes"],
   JOB_NOT_READY: ["The job is not ready to pay.", "Call get_quotes to see its state.", "get_quotes"],
   PAYEE_NOT_QUOTED: ["The payee isn't a business that quoted on this job from a verified sender.", "Pick a compliant quote from get_quotes.", "get_quotes"],
 };

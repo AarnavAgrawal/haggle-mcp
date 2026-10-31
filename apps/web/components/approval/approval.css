@@ -317,6 +317,18 @@
   background: var(--sheet);
 }
 
+/* The deal's spending limit on the board's side column, with an inline edit. */
+.deal-limit-edit {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+.deal-limit-edit input {
+  width: 8ch;
+  font: inherit;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ap-confirm {
     animation: none;

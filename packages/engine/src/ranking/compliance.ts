@@ -58,7 +58,7 @@ export function assessCompliance(i: ComplianceInput): Compliance {
       ? { code: "over_limit", text: `${usd(i.totalCents - i.budgetCents)} over the ${usd(i.budgetCents)} limit` }
       : { code: "over_budget", text: `${usd(i.totalCents - i.budgetCents)} over the ${usd(i.budgetCents)} budget` });
   }
-  if (i.payNowCents !== null && i.capCents !== null && i.payNowCents > i.capCents) issues.push({ code: "pay_now_over_cap", text: `${usd(i.payNowCents)} due now is over the ${usd(i.capCents)} spending cap` });
+  if (i.payNowCents !== null && i.capCents !== null && i.payNowCents > i.capCents) issues.push({ code: "pay_now_over_cap", text: `${usd(i.payNowCents)} due now is over this deal's ${usd(i.capCents)} limit` });
   const status: ComplianceStatus = issues.some((x) => x.code !== "requirement_unconfirmed" && x.code !== "no_total") ? "noncompliant" : issues.length ? "unconfirmed" : "compliant";
   return { status, issues, assumed };
 }

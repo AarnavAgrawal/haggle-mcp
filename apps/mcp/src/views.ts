@@ -68,6 +68,7 @@ export function toDealBoard(b: DealBoardData, mode: Mode): LiveDealBoard {
     job: {
       id: b.job.id, request: requestSummary(r), state: b.job.state,
       ...(b.job.budget_usd !== null ? { budget_usd: b.job.budget_usd } : {}),
+      ...(b.deal_limit_usd !== undefined ? { deal_limit_usd: b.deal_limit_usd } : {}), ...(b.deal_limit_source ? { deal_limit_source: b.deal_limit_source } : {}),
       requirements: r.requirements.map(requirementText),
       ...(r.ask?.length ? { ask: r.ask.map((f) => ({ key: f.key, label: f.label, type: f.type, required: f.required })) } : {}),
       ...(r.compare_by ? { compare_by: r.compare_by } : {}),
@@ -150,6 +151,12 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
   dry_run: z.boolean().optional(),
   would_contact: z.array(z.looseObject({ name: z.string(), channel: z.string().optional() })).optional(),
   blocked: z.array(z.looseObject({ name: z.string(), contact_state: z.string() })).optional(),
+  /**
+   * deal(dry_run): the spending limit the deal would get. From the stated limit or the budget (never
+   * above the server ceiling); null = none yet, decided at approval from the workspace default. Only a
+   * human raises it later.
+   */
+  spending_limit: z.object({ usd: z.number().nullable(), source: z.enum(["budget", "stated", "default"]), default_usd: z.number() }).optional(),
   /** deal: the essentials a business needs to quote are missing (intake); nothing was sent. Ask the user, then call deal again. */
   needs_info: z.object({
     category: z.string(), label: z.string(),
@@ -354,6 +361,25 @@ export function dealStartedBoard(r: DealOut, board: DealBoardData | null, reques
   });
 }
 
+/**
+ * The spending limit a deal would get (deal's dry run): the limit the user stated, else the budget,
+ * never above the server ceiling; none means it is decided at approval from the workspace default.
+ * The engine sets the same on create (docs/state-and-next-fixes.md §5).
+ */
+export function spendingLimitPreview(statedUsd: number | undefined, budgetUsd: number | undefined, ceilingCents: number, defaultCents: number): NonNullable<DealBoardPlus["spending_limit"]> {
+  const proposed = statedUsd ?? budgetUsd;
+  const ceiling = ceilingCents / 100;
+  return { usd: proposed === undefined ? null : Math.min(proposed, ceiling), source: statedUsd !== undefined ? "stated" : budgetUsd !== undefined ? "budget" : "default", default_usd: Math.min(defaultCents, ceilingCents) / 100 };
+}
+
+/** "Spending limit $1,200 (from your budget)", for the model's short text. */
+export function spendingLimitLine(l: NonNullable<DealBoardPlus["spending_limit"]>): string {
+  const d = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  return l.usd === null
+    ? `Spending limit: none yet; set at approval to the ${d(l.default_usd)} default for new deals.`
+    : `Spending limit ${d(l.usd)} (${l.source === "budget" ? "from your budget" : "as you stated"}). Only the human can raise it.`;
+}
+
 export function emptyBoard(mode: Mode): DealBoardOrEmpty {
   return DealBoardOrEmpty.parse({ job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode, next: "No deals yet. Call deal with what to buy, or ask for an instant estimate." });
 }
@@ -380,7 +406,7 @@ export function toApproval(
   return ApprovalOut.parse({
     job_id: b.job.id, quote_id, business, quote_channel: channel,
     summary,
-    items: q?.items ?? [], amount_usd: payNow, ...(q || a ? { order_total_usd: total } : {}), ...(deposit !== undefined ? { deposit_usd: deposit } : {}), ...(action === "pay" ? { pay_now_basis: basis } : {}), cap_usd: a?.cap_usd ?? payNow,
+    items: q?.items ?? [], amount_usd: payNow, ...(q || a ? { order_total_usd: total } : {}), ...(deposit !== undefined ? { deposit_usd: deposit } : {}), ...(action === "pay" ? { pay_now_basis: basis } : {}), deal_limit_usd: (b.deal_limit_source === "default" && a ? a.cap_usd : b.deal_limit_usd) ?? a?.cap_usd ?? null,
     status, channel: how, action,
     ...(a?.approved_at ? { approved_at: a.approved_at } : {}),
     ...(a ? { approval_id: a.approval_id, expires_at: a.expires_at } : {}),

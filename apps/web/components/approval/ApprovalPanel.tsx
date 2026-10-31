@@ -6,6 +6,9 @@
 // the human pays the business directly and PurchaseSteps walks the stages. No code ever reaches the
 // browser: there is none to send.
 //
+// Over the deal's spending limit, Approve offers one human action instead of the confirm step: "This is
+// $X over the limit you set for this deal. Raise it to $Y and approve?" (POST /limit with the quote).
+//
 // On the deal board it is the approval bar (components/dashboard/QuoteSheet): one line with Approve,
 // docked under the quote sheet; the confirm step opens in place. Once decided it undocks and sits in the
 // page's flow (paid, or the manual rail's purchase steps).
@@ -29,7 +32,8 @@ export interface ApprovalPanelProps {
 }
 
 type Rail = "manual" | "charge";
-type Phase = "checking" | "idle" | "previewing" | "confirming" | "deciding" | "approved" | "paying" | "paid" | "confirmed";
+type Phase = "checking" | "idle" | "previewing" | "confirming" | "deciding" | "over_limit" | "raising" | "approved" | "paying" | "paid" | "confirmed";
+type OverLimit = { status: "over_limit"; action: "pay" | "confirm"; amount_usd: number; limit_usd: number; over_by_usd: number; business: string; caveats: string[]; rail?: Rail; mode?: string };
 type Preview = { approval_id: string; status: string; action: "pay" | "confirm"; amount_usd: number; quote_total_usd: number; business: string; caveats: string[]; expires_at?: string; rail?: Rail; mode?: string };
 type Decided = { status: "approved" | "declined" | "used"; changed: boolean; action: "pay" | "confirm"; amount_usd: number; rail?: Rail; stage?: string; summary?: string; next: string };
 type PayAnswer = { status: "pending_human" | "approved" | "paid" | "refused" | "confirmed"; amount_usd: number; receipt_url?: string; simulated?: boolean; reason?: string; next: string };
@@ -50,6 +54,7 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
   const [rail, setRail] = useState<Rail | null>(null);
   const [purchase, setPurchase] = useState<Purchase | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [overLimit, setOverLimit] = useState<OverLimit | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [note, setNote] = useState<string | null>(status === "pending" || status === "pending_human" ? "An approval is waiting for this quote: you can approve it here." : null);
   const [paid, setPaid] = useState<{ amount: number; receipt?: string; simulated?: boolean } | null>(null);
@@ -107,7 +112,7 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
     busy.current = true;
     setError(null);
     setPhase("previewing");
-    const r = await postAction<Preview>(`${base}/approve`, { quote_id: quoteId });
+    const r = await postAction<Preview | OverLimit>(`${base}/approve`, { quote_id: quoteId });
     busy.current = false;
     if (!r.ok) {
       setError(r.error);
@@ -115,6 +120,12 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
       return;
     }
     setRail(r.rail ?? null);
+    if (r.status === "over_limit") {
+      setOverLimit(r as OverLimit);
+      setNote(null);
+      setPhase("over_limit");
+      return;
+    }
     if (r.status === "approved" || r.status === "used") {
       setNote("Already approved.");
       setPhase(r.action === "confirm" ? "confirmed" : "approved");
@@ -155,6 +166,26 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
     refresh();
   }
 
+  /** One action: raise this deal's limit to the payment and approve this quote (recorded as the human's). */
+  async function raiseAndApprove() {
+    if (busy.current || !overLimit) return;
+    busy.current = true;
+    setError(null);
+    setPhase("raising");
+    const r = await postAction<Decided & { limit_usd: number }>(`${base}/limit`, { quote_id: quoteId, limit_usd: overLimit.amount_usd });
+    busy.current = false;
+    if (!r.ok) {
+      setError(r.error);
+      setPhase("over_limit");
+      return;
+    }
+    setOverLimit(null);
+    setRail(r.rail ?? rail);
+    setNote(`Limit raised to ${usd(r.limit_usd)}.`);
+    setPhase(r.action === "confirm" ? "confirmed" : "approved");
+    refresh();
+  }
+
   async function pay() {
     if (busy.current) return;
     busy.current = true;
@@ -188,7 +219,7 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
   const manual = rail === "manual";
   const caveats = preview?.caveats ?? [];
   const expires = expiresIn(preview?.expires_at);
-  const asking = phase === "idle" || phase === "previewing" || phase === "confirming" || phase === "deciding";
+  const asking = phase === "idle" || phase === "previewing" || phase === "confirming" || phase === "deciding" || phase === "over_limit" || phase === "raising";
   // Docked (sticky under the sheet) while there's a decision or a payment to make; in the page's flow
   // once it's settled or the purchase steps take over.
   const docked = asking || (!manual && (phase === "approved" || phase === "paying"));
@@ -197,7 +228,7 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
 
   return (
     <section className={`ap-bar${docked ? " ap-docked" : ""}${done ? " ap-done" : ""}`} data-phase={phase} aria-labelledby={`ap-${quoteId}`}>
-      <div className="ap-line" hidden={(phase === "confirming" || phase === "deciding") && !!preview}>
+      <div className="ap-line" hidden={((phase === "confirming" || phase === "deciding") && !!preview) || ((phase === "over_limit" || phase === "raising") && !!overLimit)}>
         <div className="ap-what">
           <h3 id={`ap-${quoteId}`} className="ap-title">
             {done ? <Icon name="check" className="ap-check" /> : null}
@@ -275,6 +306,60 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
                 setPhase("idle");
               }}
               disabled={phase === "deciding"}
+            >
+              Not now
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {(phase === "over_limit" || phase === "raising") && overLimit && (
+        <div className="ap-confirm" role="group" aria-label={`Raise this deal's limit and approve ${overLimit.business}`}>
+          <p className="ap-ask">
+            This is {usd(overLimit.over_by_usd)} over the limit you set for this deal ({usd(overLimit.limit_usd)}). Raise it to {usd(overLimit.amount_usd)} and approve?
+          </p>
+          <dl className="ap-amounts">
+            <div>
+              <dt>{manual ? "You pay them" : "Paid now"}</dt>
+              <dd className="ap-big">{usd(overLimit.amount_usd)}</dd>
+            </div>
+            <div>
+              <dt>Deal limit</dt>
+              <dd className="ap-mid">
+                {usd(overLimit.limit_usd)} to {usd(overLimit.amount_usd)}
+              </dd>
+            </div>
+            <div>
+              <dt>Paid to</dt>
+              <dd className="ap-to">{overLimit.business}</dd>
+            </div>
+          </dl>
+          {overLimit.caveats.length > 0 && (
+            <div>
+              <p className="ap-sub ap-accepting">You&apos;re accepting:</p>
+              <ul className="ap-caveats">
+                {overLimit.caveats.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className="ap-sub">
+            {manual ? `Haggle asks ${overLimit.business} to confirm the booking first; you then pay them directly.` : "Approving charges nothing. You pay with a separate click."}
+            {mode === "mock" ? " Demo: simulated, no money moves." : ""}
+          </p>
+          <div className="ap-actions">
+            <Button variant="primary" onClick={raiseAndApprove} pending={phase === "raising"}>
+              {`Raise to ${usd(overLimit.amount_usd)} and approve`}
+            </Button>
+            <Button
+              variant="quiet"
+              onClick={() => {
+                backToApprove.current = true;
+                setOverLimit(null);
+                setPhase("idle");
+              }}
+              disabled={phase === "raising"}
             >
               Not now
             </Button>

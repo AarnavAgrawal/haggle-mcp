@@ -607,6 +607,12 @@ function Header({ board, fullscreen, canFullscreen, onToggle }: { board: DealBoa
             <dt>Budget</dt>
             <dd>{budget !== null && budget !== undefined ? `${usd(budget)}${d?.budget_source === "settings_default" ? " (settings default)" : ""}` : "None set"}</dd>
           </div>
+          {board.job.deal_limit_usd !== undefined && (
+            <div>
+              <dt>Limit</dt>
+              <dd>{`${usd(board.job.deal_limit_usd)}${board.job.deal_limit_source === "default" ? " (default for new deals)" : ""}`}</dd>
+            </div>
+          )}
           {reqs.length > 0 && (
             <div>
               <dt>Must have</dt>

@@ -492,6 +492,12 @@ body:has(.chat-layout) {
   font-size: var(--t-14);
   color: var(--ink-3);
 }
+/* "Spending limit $1,200 (from your budget)" under the brief. */
+.cc-limit {
+  margin-top: var(--s-2);
+  font-size: var(--t-14);
+  color: var(--ink-2);
+}
 .cc-needs .cc-todo {
   margin-top: var(--s-3);
 }

@@ -43,7 +43,26 @@ export interface PreviewOk {
   expires_at?: string;
   next: string;
 }
-export type PreviewResult = PreviewOk | FlowError;
+/**
+ * The quote's payment is over the spending limit set for this deal: nothing was opened. The panel offers
+ * "This is $X over the limit you set for this deal. Raise it to $Y and approve?" (raiseLimitAndApprove).
+ */
+export interface PreviewOverLimit {
+  ok: true;
+  mode?: Mode;
+  rail?: Rail;
+  status: "over_limit";
+  action: "pay" | "confirm";
+  /** What approval would pay now (the deposit, or the full total). */
+  amount_usd: number;
+  /** The deal's limit now, and how far over it the payment is. */
+  limit_usd: number;
+  over_by_usd: number;
+  business: string;
+  caveats: string[];
+  next: string;
+}
+export type PreviewResult = PreviewOk | PreviewOverLimit | FlowError;
 
 export interface DecideOk {
   ok: true;
@@ -61,6 +80,19 @@ export interface DecideOk {
   next: string;
 }
 export type DecideResult = DecideOk | FlowError;
+
+/** raise-and-approve: the approval, plus the limit the human set. */
+export type RaiseLimitResult = (DecideOk & { limit_usd: number }) | FlowError;
+
+/** The human changed this deal's spending limit (raise up to the server ceiling, or lower). */
+export interface LimitOk {
+  ok: true;
+  mode?: Mode;
+  limit_usd: number;
+  from_usd?: number;
+  next: string;
+}
+export type LimitResult = LimitOk | FlowError;
 
 export interface PayOk {
   ok: true;
@@ -161,6 +193,14 @@ const PREVIEW_STATUSES = ["pending", "approved", "used", "declined", "expired", 
 export async function previewApproval(c: ApprovalClient, jobId: string, quoteId: string, action?: "pay" | "confirm"): Promise<PreviewResult> {
   try {
     const d = await c.service<Record<string, unknown>>("/internal/approvals/request", { job_id: jobId, quote_id: quoteId, ...(action ? { action } : {}) });
+    if (d.status === "over_limit") {
+      const amount = num(d.amount_usd), limit = num(d.limit_usd);
+      if (amount === undefined || limit === undefined) return { ok: false, error: { code: "bad_answer", message: "The Haggle server sent an unexpected answer.", fix: "Reload the page and try again." }, next: null, status: 502 };
+      return {
+        ok: true, ...modeOf(d.mode), ...railOf(d.payment_rail), status: "over_limit", action: actionOf(d.action), amount_usd: amount, limit_usd: limit,
+        over_by_usd: num(d.over_by_usd) ?? Math.round((amount - limit) * 100) / 100, business: str(d.business)?.slice(0, 120) ?? "the business", caveats: strings(d.caveats), next: appHint(d.next) ?? "",
+      };
+    }
     const approvalId = str(d.approval_id);
     if (!approvalId) return { ok: false, error: { code: "bad_answer", message: "The Haggle server sent an unexpected answer.", fix: "Reload the page and try again." }, next: null, status: 502 };
     return {
@@ -185,6 +225,35 @@ export async function decideApproval(c: ApprovalClient, approvalId: string, deci
       ...opt("state", str(d.state)), ...opt("stage", str(d.stage)), ...opt("summary", str(d.summary)),
       next: appHint(d.next) ?? (status === "declined" ? "Declined. Nothing was approved or paid." : "Approved. Nothing is charged until you pay."),
     };
+  } catch (e) {
+    return toFlowError(e);
+  }
+}
+
+/**
+ * The human's one action on a quote over the deal's limit: raise the limit to `limitUsd` and approve this
+ * exact quote, recorded as theirs (web:<actor>). The model never reaches this (no MCP tool).
+ */
+export async function raiseLimitAndApprove(c: ApprovalClient, jobId: string, quoteId: string, limitUsd: number, action?: "pay" | "confirm"): Promise<RaiseLimitResult> {
+  try {
+    const d = await c.service<Record<string, unknown>>("/internal/approvals/raise-limit", { job_id: jobId, quote_id: quoteId, limit_usd: limitUsd, ...(action ? { action } : {}) });
+    const status = d.status === "declined" || d.status === "used" ? d.status : "approved";
+    return {
+      ok: true, ...modeOf(d.mode), ...railOf(d.payment_rail), status, changed: d.changed === true, action: actionOf(d.action),
+      amount_usd: num(d.amount_usd) ?? 0, quote_total_usd: num(d.quote_total_usd) ?? 0, limit_usd: num(d.limit_usd) ?? limitUsd,
+      ...opt("state", str(d.state)), ...opt("stage", str(d.stage)), ...opt("summary", str(d.summary)),
+      next: appHint(d.next) ?? "Approved. Nothing is charged until you pay.",
+    };
+  } catch (e) {
+    return toFlowError(e);
+  }
+}
+
+/** The human sets this deal's spending limit on the deal page (raise up to the server ceiling, or lower). */
+export async function setDealLimit(c: ApprovalClient, jobId: string, limitUsd: number): Promise<LimitResult> {
+  try {
+    const d = await c.service<Record<string, unknown>>("/internal/approvals/raise-limit", { job_id: jobId, limit_usd: limitUsd });
+    return { ok: true, ...modeOf(d.mode), limit_usd: num(d.limit_usd) ?? limitUsd, ...opt("from_usd", num(d.from_usd)), next: appHint(d.next) ?? "" };
   } catch (e) {
     return toFlowError(e);
   }

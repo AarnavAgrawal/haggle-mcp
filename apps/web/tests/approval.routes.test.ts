@@ -24,6 +24,7 @@ function deps(over: Partial<RouteDeps> = {}, client?: Partial<ApprovalClient>): 
     if (path === "/internal/approvals/request") return { ok: true, mode: "mock", payment_rail: "charge", approval_id: "ap_1", status: "pending", action: "pay", amount_usd: 5, quote_total_usd: 995, business: "Bay Catering", caveats: [], code: "4821" } as T;
     if (path === "/internal/approvals/decide") return { ok: true, mode: "mock", status: "approved", changed: true, action: "pay", amount_usd: 5, quote_total_usd: 995, state: "paying", next: "pay next" } as T;
     if (path === "/internal/purchases/paid") return { ok: true, outcome: "reported", next: "" } as T;
+    if (path === "/internal/approvals/raise-limit") return { ok: true, mode: "mock", status: "approved", changed: true, limit_usd: 1300, from_usd: 1200, action: "pay", amount_usd: 1300, quote_total_usd: 1300, state: "paying", next: "pay next" } as T;
     throw new HaggleError("HTTP_404", path, "", null, 404);
   };
   return {
@@ -83,6 +84,21 @@ describe("approval routes", () => {
     expect(a.status).toBe(200);
     expect(b.status).toBe(200);
     expect(d.calls).toEqual(["/internal/approvals/decide"]);
+  });
+
+  it("limit: the signed-in human raises the deal's limit and approves in one action, or just sets the limit", async () => {
+    const d = deps();
+    expect((await handleAction("limit", post({ quote_id: "q_1" }), "job_1", d)).status).toBe(400); // a limit is required
+    expect((await handleAction("limit", post({ limit_usd: -1 }), "job_1", d)).status).toBe(400);
+    expect((await handleAction("limit", post({ limit_usd: 1300, approval_id: "ap_1" }), "job_1", d)).status).toBe(400); // only the known fields
+    expect(d.calls).toEqual([]);
+    const r = await handleAction("limit", post({ quote_id: "q_1", limit_usd: 1300 }), "job_1", d);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toMatchObject({ ok: true, status: "approved", limit_usd: 1300, amount_usd: 1300 });
+    const s = await handleAction("limit", post({ limit_usd: 1300 }), "job_1", d);
+    expect(await s.json()).toMatchObject({ ok: true, limit_usd: 1300, from_usd: 1200 });
+    expect(d.calls).toEqual(["/internal/approvals/raise-limit", "/internal/approvals/raise-limit"]);
+    expect(d.actors).toEqual(["ada@example.com", "ada@example.com"]);
   });
 
   it("purchase: POST the human's step; GET where it stands", async () => {

@@ -34,7 +34,7 @@ export interface RankableQuote {
   missingRequired?: boolean;
   /** A hard requirement the business said it does NOT meet (vs. merely not confirmed). Default: !compliant. */
   unmet?: boolean;
-  /** What approval would pay now (deposit, else the full total) is over the spending cap: it can't be approved as is. */
+  /** What approval would pay now (deposit, else the full total) is over the deal's limit: it can't be approved as is. */
   overCap?: boolean;
 }
 

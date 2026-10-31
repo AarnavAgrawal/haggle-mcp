@@ -13,6 +13,9 @@ type Sql = postgres.Sql<Record<string, never>>;
 
 /** Postgres "undefined_column" for a migration-125 column: the database hasn't applied it yet. */
 const missingHoursColumn = (e: unknown) => (e as { code?: string })?.code === "42703" && /opening_hours|timezone|business_ref/.test(String((e as Error)?.message ?? ""));
+/** A database without migration 128 (jobs.cap_set_by / cap_set_at): the deal is still stored, without who set its limit. */
+const missingCapColumn = (e: unknown) => (e as { code?: string })?.code === "42703" && /cap_set_(by|at)/.test(String((e as Error)?.message ?? ""));
+const withoutCapAudit = <T extends Partial<JobRow>>({ cap_set_by: _b, cap_set_at: _a, ...rest }: T) => rest;
 const JSON_COLS = new Set(["request", "references", "attachments", "record", "requirement_results", "data", "opening_hours"]);
 const norm = (id: string) => id.trim().replace(/^<|>$/g, "").toLowerCase();
 
@@ -251,8 +254,13 @@ export class PostgresRepository implements Repository {
   }
 
   async insertJob(job: JobRow) {
-    const r = await this.sql`insert into jobs ${this.sql(this.vals(job as never))} returning *`;
-    return row<JobRow>(r[0])!;
+    const insert = async (j: Partial<JobRow>) => row<JobRow>((await this.sql`insert into jobs ${this.sql(this.vals(j as never))} returning *`)[0])!;
+    try {
+      return await insert(job);
+    } catch (e) {
+      if (!missingCapColumn(e)) throw e;
+      return insert(withoutCapAudit(job));
+    }
   }
   async getJob(id: string) {
     return row<JobRow>((await this.sql`select * from jobs where id = ${id}`)[0]);
@@ -271,9 +279,13 @@ export class PostgresRepository implements Repository {
   }
   async touchJob(id: string, patch: Partial<JobRow> = {}) {
     const { id: _i, version: _v, ...rest } = patch;
-    const set = this.vals({ ...rest, updated_at: new Date() });
-    const r = await this.sql`update jobs set ${this.sql(set)}, version = version + 1 where id = ${id} returning *`;
-    return row<JobRow>(r[0]);
+    const update = async (p: Partial<JobRow>) => row<JobRow>((await this.sql`update jobs set ${this.sql(this.vals({ ...p, updated_at: new Date() }))}, version = version + 1 where id = ${id} returning *`)[0]);
+    try {
+      return await update(rest);
+    } catch (e) {
+      if (!missingCapColumn(e)) throw e;
+      return update(withoutCapAudit(rest));
+    }
   }
   async listOpenJobs() {
     return rows<JobRow>(await this.sql`select * from jobs where state not in ('paid','confirmed','cancelled','failed') order by created_at`);

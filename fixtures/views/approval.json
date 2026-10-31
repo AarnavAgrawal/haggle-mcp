@@ -7,7 +7,7 @@
   "items": ["Mediterranean buffet for 40", "14 vegetarian bowls", "Delivery and setup 11:30 AM", "Plates and cutlery"],
   "amount_usd": 995,
   "deposit_usd": 200,
-  "cap_usd": 1500,
+  "deal_limit_usd": 1200,
   "status": "pending_human",
   "channel": "imessage",
   "approver": "+1 ••• ••• 0142",

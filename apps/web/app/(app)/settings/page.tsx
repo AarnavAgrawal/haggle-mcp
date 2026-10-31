@@ -95,7 +95,7 @@ export default async function SettingsPage() {
                 <dd>{id.approver.email ?? <span className="set-none">Not set</span>}</dd>
               </div>
               <div>
-                <dt>Spending cap</dt>
+                <dt>Default limit for new deals</dt>
                 <dd>
                   <Price amount={id.spend_cap_usd} size="m" /> <span className="set-sub">per payment</span>
                 </dd>

@@ -65,7 +65,7 @@ export default function OnboardingPage() {
             </fieldset>
             <fieldset className="onb-group">
               <legend>Approvals</legend>
-              <Field label="Spending cap per payment" hint="Haggle never approves a payment above it. Leave blank for $1,500." error={errors.cap_usd}>
+              <Field label="Default limit for new deals" hint="The spending limit for a deal with no budget. A deal with a budget uses its budget. Leave blank for $1,500." error={errors.cap_usd}>
                 <CapInput id="cap_usd" value={values.cap_usd} onChange={set("cap_usd")} onBlur={() => setErrors((x) => ({ ...x, cap_usd: capError(values.cap_usd) }))} />
               </Field>
               <Field label="Approver phone" optional hint="Approve by replying to a text. You can always approve in the app." error={errors.approver_phone}>

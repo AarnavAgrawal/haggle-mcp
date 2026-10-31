@@ -4,7 +4,7 @@
 // Every result is built field by field: a code the server might (wrongly) send is never passed on,
 // and hints telling the human to text a code are left out. No network.
 import { describe, expect, it } from "vitest";
-import { authorizeCallback, decideApproval, payQuote, previewApproval, purchaseAction, purchaseStatus, type ApprovalClient } from "../lib/approval/flow.ts";
+import { authorizeCallback, decideApproval, payQuote, previewApproval, purchaseAction, purchaseStatus, raiseLimitAndApprove, setDealLimit, type ApprovalClient } from "../lib/approval/flow.ts";
 import { HaggleError, type ToolResult } from "../lib/haggle.ts";
 
 const CODE = "4821";
@@ -54,6 +54,37 @@ describe("previewApproval", () => {
     expect(ok.calls[0]!.args).toEqual({ job_id: "job_1", quote_id: "q_1", action: "confirm" });
     const refused = fake({}, { "/internal/approvals/request": new HaggleError("over_cap", "Over the cap.", "Ask for a smaller deposit.", null, 400) });
     expect(await previewApproval(refused.client, "job_1", "q_1")).toEqual({ ok: false, error: { code: "over_cap", message: "Over the cap.", fix: "Ask for a smaller deposit." }, next: null, status: 400 });
+  });
+});
+
+// The spending limit belongs to the deal (docs/state-and-next-fixes.md §5): over it, nothing is opened and the
+// panel offers "Raise it to $Y and approve?" as one human action through the service route.
+describe("over the deal's limit: raise it and approve", () => {
+  const OVER = { ok: true, mode: "live", payment_rail: "manual", status: "over_limit", action: "pay", business: "Harbor Table", caveats: [], amount_usd: 1300, limit_usd: 1200, over_by_usd: 100, ceiling_usd: 5000, next: "Offer the human…", code: CODE };
+
+  it("previewApproval returns the numbers the panel shows, and no approval", async () => {
+    const { client } = fake({}, { "/internal/approvals/request": OVER });
+    const r = await previewApproval(client, "job_1", "q_1");
+    expect(r).toEqual({ ok: true, mode: "live", rail: "manual", status: "over_limit", action: "pay", amount_usd: 1300, limit_usd: 1200, over_by_usd: 100, business: "Harbor Table", caveats: [], next: "Offer the human…" });
+    noCode(r);
+  });
+
+  it("raiseLimitAndApprove is one service call that raises the limit and records the human's approval", async () => {
+    const { client, calls } = fake({}, {
+      "/internal/approvals/raise-limit": { ok: true, mode: "live", payment_rail: "manual", approval_id: "ap_2", decision: "approve", status: "approved", changed: true, limit_usd: 1300, action: "pay", amount_usd: 1300, quote_total_usd: 1300, state: "paying", next: `Reply PAID ${CODE}.`, code: CODE },
+    });
+    const r = await raiseLimitAndApprove(client, "job_1", "q_1", 1300);
+    expect(calls).toEqual([{ via: "service", name: "/internal/approvals/raise-limit", args: { job_id: "job_1", quote_id: "q_1", limit_usd: 1300 } }]);
+    expect(r).toMatchObject({ ok: true, rail: "manual", status: "approved", changed: true, limit_usd: 1300, amount_usd: 1300, state: "paying", next: "Approved. Nothing is charged until you pay." });
+    noCode(r);
+  });
+
+  it("setDealLimit changes only the limit; the server's refusal (above the ceiling, a closed deal) keeps its fix", async () => {
+    const ok = fake({}, { "/internal/approvals/raise-limit": { ok: true, mode: "live", limit_usd: 900, from_usd: 1200, next: "The deal's spending limit is updated." } });
+    expect(await setDealLimit(ok.client, "job_1", 900)).toEqual({ ok: true, mode: "live", limit_usd: 900, from_usd: 1200, next: "The deal's spending limit is updated." });
+    expect(ok.calls[0]!.args).toEqual({ job_id: "job_1", limit_usd: 900 });
+    const above = fake({}, { "/internal/approvals/raise-limit": new HaggleError("limit_above_ceiling", "A deal's limit can't be more than this server's $5,000 ceiling.", "Pick a lower limit.", null, 400) });
+    expect(await setDealLimit(above.client, "job_1", 9000)).toEqual({ ok: false, error: { code: "limit_above_ceiling", message: "A deal's limit can't be more than this server's $5,000 ceiling.", fix: "Pick a lower limit." }, next: null, status: 400 });
   });
 });
 

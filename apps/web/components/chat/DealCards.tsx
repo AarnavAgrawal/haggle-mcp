@@ -9,7 +9,7 @@ import { Button, buttonClass } from "@/components/ui/Button";
 import { Icon, channelIcon } from "@/components/ui/Icon";
 import { Price } from "@/components/ui/Price";
 import { Status } from "@/components/ui/Status";
-import type { Brief, Contact, ToolCard } from "@/lib/chat/cards";
+import { limitText, type Brief, type Contact, type ToolCard } from "@/lib/chat/cards";
 
 const CHANNEL_WORDS: Record<string, string> = { email: "Email", phone: "Phone call", imessage: "Text", a2a: "Agent" };
 
@@ -62,7 +62,7 @@ function BriefList({ brief }: { brief: Brief }) {
   );
 }
 
-function PreviewCard({ card, active, onStart, onChange }: { card: Extract<ToolCard, { kind: "preview" }>; active: boolean; onStart: () => void; onChange: () => void }) {
+function PreviewCard({ card, active, onStart, onChange, onChangeLimit }: { card: Extract<ToolCard, { kind: "preview" }>; active: boolean; onStart: () => void; onChange: () => void; onChangeLimit: () => void }) {
   const id = useId();
   const b = card.brief;
   const n = card.contact.length;
@@ -77,6 +77,19 @@ function PreviewCard({ card, active, onStart, onChange }: { card: Extract<ToolCa
       <div className="cc-cols">
         <div className="cc-col">
           {b ? <BriefList brief={b} /> : null}
+          {card.limit ? (
+            <p className="cc-limit">
+              {limitText(card.limit)}
+              {active ? (
+                <>
+                  {" "}
+                  <Button size="s" variant="quiet" onClick={onChangeLimit}>
+                    Change
+                  </Button>
+                </>
+              ) : null}
+            </p>
+          ) : null}
           {b && b.must_haves.length ? (
             <section className="cc-section" aria-labelledby={`${id}-m`}>
               <h3 id={`${id}-m`} className="cc-label">
@@ -184,7 +197,7 @@ export function StartedCard({ jobId, card }: { jobId: string; card?: Extract<Too
         <h2 id={`${id}-t`} className="cc-title">
           {card?.title ?? "Your deal"}
         </h2>
-        {card && (card.when || card.where || card.budget_usd !== undefined) ? (
+        {card && (card.when || card.where || card.budget_usd !== undefined || card.limit) ? (
           <p className="cc-meta">
             {card.when ? (
               <span>
@@ -198,6 +211,7 @@ export function StartedCard({ jobId, card }: { jobId: string; card?: Extract<Too
                 Budget <Price amount={card.budget_usd} size="s" />
               </span>
             ) : null}
+            {card.limit ? <span>{limitText(card.limit)}</span> : null}
           </p>
         ) : null}
         {n ? <Contacts list={card!.contacted} /> : null}
@@ -213,7 +227,7 @@ export function StartedCard({ jobId, card }: { jobId: string; card?: Extract<Too
 export const DealCard = memo(function DealCard({ card, active, onStart, onFocusComposer }: { card: ToolCard; active: boolean; onStart: () => void; onFocusComposer: (placeholder?: string) => void }) {
   switch (card.kind) {
     case "preview":
-      return <PreviewCard card={card} active={active} onStart={onStart} onChange={() => onFocusComposer("What should change?")} />;
+      return <PreviewCard card={card} active={active} onStart={onStart} onChange={() => onFocusComposer("What should change?")} onChangeLimit={() => onFocusComposer("The most you'll pay for this deal")} />;
     case "needs_info":
       return <NeedsInfoCard card={card} active={active} onAnswer={() => onFocusComposer("Your answers")} />;
     case "started":

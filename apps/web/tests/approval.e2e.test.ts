@@ -99,7 +99,7 @@ describe("web approval flow against the built MCP server (mock)", () => {
 
     const preview = await previewApproval(client, jobId, bay!.quote_id);
     expect(preview).toMatchObject({ ok: true, mode: "mock", rail: "charge", status: "pending", action: "pay", amount_usd: 5, business: "Bay Catering" });
-    if (!preview.ok) throw new Error("no preview");
+    if (!preview.ok || preview.status === "over_limit") throw new Error("no preview");
     const decided = await decideApproval(client, preview.approval_id, "approve");
     expect(decided).toMatchObject({ ok: true, status: "approved", changed: true, amount_usd: 5 });
     expect(await decideApproval(client, preview.approval_id, "approve")).toMatchObject({ ok: true, status: "approved", changed: false });

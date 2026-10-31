@@ -7,11 +7,13 @@
 //   POST approve  { quote_id, approval_id, decision }            → the human's confirm (or decline)
 //   POST pay      { quote_id }                                   → charge rail: pay the approved amount
 //   POST callback { business_id }                                → one callback, authorized
+//   POST limit    { limit_usd, quote_id?, action? }              → set this deal's spending limit; with quote_id,
+//                                                                  raise it and approve that quote in one action
 //   POST purchase { action: "paid" | "booked" | "cancel" }       → manual rail steps
 //   GET  purchase                                                → where the purchase stands
 import { z } from "zod";
 import {
-  authorizeCallback, decideApproval, payQuote, previewApproval, purchaseAction, purchaseStatus,
+  authorizeCallback, decideApproval, payQuote, previewApproval, purchaseAction, purchaseStatus, raiseLimitAndApprove, setDealLimit,
   type ApprovalClient, type FlowError,
 } from "./flow.ts";
 import { memoryLimiter, type Limiter } from "../rateLimit.ts";
@@ -50,6 +52,7 @@ const Bodies = {
   pay: z.object({ quote_id: id }),
   callback: z.object({ business_id: id }),
   purchase: z.object({ action: z.enum(["paid", "booked", "cancel"]) }),
+  limit: z.object({ limit_usd: z.number().positive().max(1_000_000), quote_id: id.optional(), action: z.enum(["pay", "confirm"]).optional() }).strict(),
 } as const;
 export type ActionKind = keyof typeof Bodies;
 const FIELDS: Record<ActionKind, string> = {
@@ -57,6 +60,7 @@ const FIELDS: Record<ActionKind, string> = {
   pay: "quote_id",
   callback: "business_id",
   purchase: "action (paid, booked or cancel)",
+  limit: "limit_usd, and optional quote_id and action (pay or confirm)",
 };
 
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
@@ -104,12 +108,13 @@ export async function handleAction(kind: ActionKind, req: Request, jobIdParam: s
 
   const haggle = deps.client(who.workspaceId, who.actor);
   const job = jobId.data;
-  const b = parsed.data as { quote_id?: string; business_id?: string; approval_id?: string; decision?: "approve" | "decline"; action?: string };
+  const b = parsed.data as { quote_id?: string; business_id?: string; approval_id?: string; decision?: "approve" | "decline"; action?: string; limit_usd?: number };
   const target = b.approval_id ?? b.quote_id ?? b.business_id ?? b.action ?? "";
-  const r = await once(`${who.userId}\u0000${kind}\u0000${job}\u0000${target}\u0000${b.decision ?? ""}`, async () => {
+  const r = await once(`${who.userId}\u0000${kind}\u0000${job}\u0000${target}\u0000${b.decision ?? ""}\u0000${b.limit_usd ?? ""}`, async () => {
     if (kind === "approve") return out(b.approval_id && b.decision ? await decideApproval(haggle, b.approval_id, b.decision) : await previewApproval(haggle, job, b.quote_id!, b.action as "pay" | "confirm" | undefined));
     if (kind === "pay") return out(await payQuote(haggle, job, b.quote_id!));
     if (kind === "callback") return out(await authorizeCallback(haggle, job, b.business_id!));
+    if (kind === "limit") return out(b.quote_id ? await raiseLimitAndApprove(haggle, job, b.quote_id, b.limit_usd!, b.action as "pay" | "confirm" | undefined) : await setDealLimit(haggle, job, b.limit_usd!));
     return out(await purchaseAction(haggle, job, b.action as "paid" | "booked" | "cancel"));
   });
   return json(r.body, r.status);

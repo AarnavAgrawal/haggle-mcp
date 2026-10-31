@@ -4,6 +4,9 @@
 // "web", recorded as web:<actor>). No MCP tool reaches them: agent-facing rules are unchanged.
 //   POST /internal/approvals/request   { job_id, quote_id, action?: "pay" | "confirm" }  open or reuse (no code)
 //   POST /internal/approvals/decide    { approval_id, decision: "approve" | "decline" }  actor required
+//   POST /internal/approvals/raise-limit { job_id, limit_usd, quote_id?, action? }  actor required: set this deal's
+//        spending limit (raise up to the server ceiling, or lower); with quote_id, raise it and approve that quote
+//        in one action ("This is $X over the limit you set for this deal. Raise it to $Y and approve?")
 //   POST /internal/purchases/paid      { job_id }  the human paid the vendor directly (as PAID <code>)
 //   POST /internal/purchases/booked    { job_id }  the human accepts the booking (as BOOKED <code>)
 //   POST /internal/purchases/cancel    { job_id }  cancel, a vendor-confirmed booking too (as CANCEL <code>)
@@ -29,12 +32,13 @@ const id = z.string().trim().min(3).max(64).regex(/^[A-Za-z0-9_.:-]+$/, "unexpec
 const Bodies = {
   request: z.object({ job_id: id, quote_id: id, action: z.enum(["pay", "confirm"]).optional() }),
   decide: z.object({ approval_id: id, decision: z.enum(["approve", "decline"]) }),
+  raiseLimit: z.object({ job_id: id, limit_usd: z.number().positive().max(1_000_000), quote_id: id.optional(), action: z.enum(["pay", "confirm"]).optional() }),
   job: z.object({ job_id: id }),
   callback: z.object({ job_id: id, business_id: id }),
 };
 
 const NOT_FOUND = new Set(["job_not_found", "approval_not_found", "quote_not_found"]);
-const CONFLICT = /^(approval_|not_approvable|not_payable|paid_before_booking|no_handoff|no_booking|nothing_to_pay|handoff_refused|cannot_cancel|quote_reconfirming|quote_stale|callback_|no_rounds_left)/;
+const CONFLICT = /^(approval_|over_deal_limit|deal_closed|not_approvable|not_payable|paid_before_booking|no_handoff|no_booking|nothing_to_pay|handoff_refused|cannot_cancel|quote_reconfirming|quote_stale|callback_|no_rounds_left)/;
 /** An engine refusal with a status the web app can act on: 404 not found, 403 off, 409 wrong stage, 400 otherwise. */
 function refusal(c: ServiceContext, err: unknown) {
   const code = (err as { code?: string }).code ?? "";
@@ -58,6 +62,7 @@ async function body<T extends z.ZodTypeAny>(c: ServiceContext, schema: T, fields
 }
 
 const usd = (cents: number) => Math.round(cents) / 100;
+const cents = (usdAmount: number) => Math.round(usdAmount * 100);
 const rail = (e: HaggleEngine) => (e.manualHandoff ? "manual" : "charge") as "manual" | "charge";
 /** The deal's state and next step after an action (the purchase stage on the manual rail). */
 async function after(e: HaggleEngine, jobId: string) {
@@ -72,7 +77,20 @@ export function registerApprovalRoutes(app: ServiceApp) {
     const b = await body(c, Bodies.request, "job_id, quote_id and optional action (pay or confirm)");
     if (b instanceof Response) return b;
     try {
-      const r = await g.engine.requestWebApproval(g.workspaceId, b.job_id, b.quote_id, b.action, g.actor);
+      const r = await g.engine.requestWebApproval(g.workspaceId, b.job_id, b.quote_id, b.action, g.actor).catch(async (err: { code?: string }) => {
+        // Over the deal's own limit: nothing was opened; the owner may raise it and approve in one click.
+        const over = err.code === "over_deal_limit" ? await g.engine.webOverLimit(g.workspaceId, b.job_id, b.quote_id, b.action) : null;
+        if (!over) throw err;
+        return over;
+      });
+      if ("over_limit" in r) {
+        const o = r.over_limit;
+        return c.json({
+          ok: true, mode: g.mode, payment_rail: rail(g.engine), status: "over_limit", action: b.action === "confirm" ? "confirm" : "pay", business: r.business, caveats: r.caveats,
+          amount_usd: usd(o.payment_cents), limit_usd: usd(o.limit_cents), over_by_usd: usd(o.over_by_cents), ceiling_usd: usd(o.ceiling_cents),
+          next: `This is $${usd(o.over_by_cents)} over the limit set for this deal. Offer the human to raise it to $${usd(o.payment_cents)} and approve in one click (POST /internal/approvals/raise-limit with quote_id).`,
+        });
+      }
       const a = r.approval;
       return c.json({
         ok: true, mode: g.mode, payment_rail: rail(g.engine), approval_id: a.id, status: a.status, action: a.action === "confirm" ? "confirm" : "pay",
@@ -94,6 +112,29 @@ export function registerApprovalRoutes(app: ServiceApp) {
       const a = r.approval;
       return c.json({
         ok: true, mode: g.mode, payment_rail: rail(g.engine), approval_id: a.id, decision: b.decision, status: a.status, changed: r.changed,
+        action: a.action === "confirm" ? "confirm" : "pay", amount_usd: usd(a.payment_cents), quote_total_usd: usd(a.quote_total_cents), decided_at: a.decided_at,
+        ...(await after(g.engine, a.job_id)),
+      });
+    } catch (err) {
+      return refusal(c, err);
+    }
+  });
+
+  // The owner's own change to a deal's spending limit (never an MCP tool: the model can't raise a limit).
+  app.post("/internal/approvals/raise-limit", async (c) => {
+    const g = await guard(c, true);
+    if (g instanceof Response) return g;
+    const b = await body(c, Bodies.raiseLimit, "job_id, limit_usd, and optional quote_id and action (pay or confirm)");
+    if (b instanceof Response) return b;
+    try {
+      if (!b.quote_id) {
+        const r = await g.engine.setDealLimitByWeb(g.workspaceId, b.job_id, cents(b.limit_usd), g.actor);
+        return c.json({ ok: true, mode: g.mode, limit_usd: usd(r.to_cents), from_usd: usd(r.from_cents), next: "The deal's spending limit is updated; approvals and payments are checked against it." });
+      }
+      const r = await g.engine.raiseLimitAndApproveByWeb(g.workspaceId, b.job_id, b.quote_id, cents(b.limit_usd), b.action, g.actor);
+      const a = r.approval;
+      return c.json({
+        ok: true, mode: g.mode, payment_rail: rail(g.engine), approval_id: a.id, decision: "approve", status: a.status, changed: r.changed, limit_usd: usd(r.limit_cents),
         action: a.action === "confirm" ? "confirm" : "pay", amount_usd: usd(a.payment_cents), quote_total_usd: usd(a.quote_total_cents), decided_at: a.decided_at,
         ...(await after(g.engine, a.job_id)),
       });
