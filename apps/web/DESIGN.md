@@ -31,7 +31,7 @@ Colors (light, default). Names describe the role; use the variables, never raw h
 | `--sheet` | `#FFFFFF` | panels, the quote sheet, inputs |
 | `--ink` | `#15203A` | primary text, prices |
 | `--ink-2` | `#4B556B` | secondary text |
-| `--ink-3` | `#7A8296` | hints, meta, placeholders |
+| `--ink-3` | `#646D82` | hints, meta, placeholders (darkened from #7A8296 to pass AA on the desk) |
 | `--rule` / `--rule-strong` | `#DCE0E7` / `#BFC5D1` | hairlines, input borders |
 | `--pen` | `#2346D8` | primary action, links, pen marks, focus ring |
 | `--pen-wash` | `#E8EDFF` | selected rows, new-item flash |
@@ -142,3 +142,56 @@ or paid until you approve; calls say they are an AI assistant), stated once wher
 
 Responsive to 360px; visible focus (2px `--pen` ring, offset 2px); contrast AA; keyboard reachable
 drawer, menus and row expansion; light and dark both checked by screenshot; no external assets.
+
+## Components
+
+The shared foundation. Tokens live in `app/globals.css`, primitives in `components/ui/` (styles in
+`components/ui/ui.css`, loaded once by the root layout), the app shell in `components/shell/`. Import
+primitives from `@/components/ui` (or the file directly). Use the tokens (`var(--pen)`, `var(--r-sheet)`,
+`var(--s-4)`…), never raw hex. Legacy names (`--panel`, `--carbon`, `--win`, `--warn`, `--info`…) are
+aliases kept only so old page CSS renders; new CSS uses the new names.
+
+**Tokens beyond the table above:** `--pen-strong` (hover/pressed pen), `--on-pen`, `--on-highlight`,
+`--skeleton`, `--shadow-float`, `--scrim`, `--font-text`, `--font-display`, `--t-15`, `--r-control` (4px),
+`--r-sheet` (8px), `--s-1..--s-16` (4px grid), `--rail` (256px), `--content` (1080px), `--ease-out`.
+Utilities: `.num` (Bricolage tabular lining figures), `.display`, `.sr-only`. Never put
+`font-variant-numeric: tabular-nums` on Schibsted text: its tabular commas and colons are wide ("$1 , 200").
+
+| Component | Props | Example |
+| --- | --- | --- |
+| `Button` | `variant` default/primary/quiet/danger, `size` m/s, `block`, `icon` (square, needs aria-label), `pending`, plus button attrs (`type` defaults to "button") | `<Button variant="primary" pending={isPending} onClick={approve}>Approve $5 deposit</Button>` |
+| `buttonClass(variant, { size, block, icon, className })` | for links styled as buttons; the `.btn .btn-primary .btn-quiet .btn-danger .btn-s .btn-icon .btn-block` classes still work directly | `<Link className={buttonClass("primary")} href="/chat">New request</Link>` |
+| `SubmitButton` | Button props; pending from `useFormStatus` (React actions) or the form's native submit | `<form action={save}><SubmitButton variant="primary">Save</SubmitButton></form>` |
+| `Field` | `label`, `hint?`, `error?`, `optional?`, `id?`; one control as the child (gets id, aria-describedby, aria-invalid) | `<Field label="Budget" hint="Haggle never commits above it." optional><input name="budget" inputMode="decimal" /></Field>` |
+| `Status` / `StatusDot` | `tone` live/ok/hold/risk/idle; words as children. live breathes (still under reduced motion) | `<Status tone="live">Calling now</Status>` |
+| `Price` | `amount` (null -> "not stated"), `cents?`, `size` s/m/l/xl (14/16/24/36), `sign?` "-"/"+" | `<Price amount={1150} size="l" />` |
+| `Struck` | children (the old price), `animate?`, `delay?` ms, `srPrefix?` (default "was") | `<Struck><Price amount={1380} /></Struck> <Price amount={1240} />` |
+| `Circled` | children, `animate?`, `delay?`. Only on the recommended total; say "Recommended" in words too | `<Circled animate><Price amount={1150} size="l" /></Circled>` |
+| `Highlighted` | children, `animate?`, `delay?`. Only on money saved | `<Highlighted><Price amount={140} sign="-" size="s" /></Highlighted>` |
+| `PenUnderline` / `Underlined` | `animate?`, `delay?`. PenUnderline sits at the bottom of its nearest `position: relative` ancestor; render it only on the current item | `<Underlined>Quotes</Underlined>` |
+| `Skeleton` / `SkeletonText` | `w`, `h`, `radius` / `lines`, `lineHeight`, `gap`; aria-hidden, mark the region `aria-busy` | `<Skeleton w={120} h={24} />` |
+| `Icon` | `name`: mail, phone, message, agent, check, x, close, chevron-right, chevron-down, plus, search, menu, external, clock, more; `size` 16/20/24; `label?` makes it meaningful. `channelIcon(channel)` maps email/phone/imessage/a2a | `<Icon name={channelIcon(q.channel)} />` |
+| `Badge` | children (default "Demo"). The Demo marker only | `{mode === "mock" && <Badge />}` |
+| `Sheet` | `as` div/section/article/aside/li/form, `pad` m/s/none | `<Sheet as="section" pad="none" aria-label="Quotes">…</Sheet>` |
+| `EmptyState` | `title`, `action?`, children (one sentence), `headingLevel` 2/3 | `<EmptyState title="No deals yet" action={<Link className={buttonClass("primary")} href="/chat">New request</Link>} />` |
+| `Drawer` | `open`, `onClose`, `label`, `title?`, `side` left/right, `width?`; modal `<dialog>`, Esc/backdrop close, focus returns | `<Drawer open={adding} onClose={() => setAdding(false)} label="Add a vendor" title="Add a vendor" side="right">…</Drawer>` |
+
+Motion for pen marks: `animate` draws once (straight marks wipe left to right ~420ms, the circle draws
+~640ms); `delay` orchestrates a sequence (the landing hero: strike 0, highlight ~500, circle ~900).
+Reduced motion shows marks already drawn.
+
+**The app shell** (`app/(app)/layout.tsx` -> `components/shell/AppShell.tsx` + `Rail.tsx`):
+- Every signed-in route lives in `app/(app)/` and renders inside `.app-main`. Each page renders its own
+  single `<main>`; the `.shell` wrapper is left-aligned at `--content` width inside the app.
+- The layout calls `requireHaggle()` (cached per request; the page's own call reuses it).
+- The rail's deals list comes from `loadDeals()` in `components/shell/data.ts` (list_deals, newest 20,
+  one call per request, never throws: `{ deals } | { error: { message, fix } }`). `/deals` uses the same
+  call. Grouping and status words: `groupDeals()` / `dealStatus()` / `dealHref()` in
+  `components/shell/deals.ts`; reuse them so the rail and pages agree.
+- The layout persists across client navigations, so the rail only re-renders on a full load or
+  `router.refresh()`. After a mutation that changes a deal (deal started in chat, approve, pay,
+  cancel), call `startTransition(() => router.refresh())` and the rail updates with the page.
+- Full-height pages (the chat) are supported: `body:has(.chat-layout)` makes the shell fill the window.
+- `app/(app)/loading.tsx` is the generic skeleton; add a route-specific `loading.tsx` shaped like the page.
+- `RetryButton` (`components/shell/RetryButton.tsx`) re-renders the route with a pending state; use it
+  for any section that failed to load.
