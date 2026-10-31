@@ -75,7 +75,7 @@ describe("live inbound path (Inkbox)", () => {
       budget_usd: 1200,
     });
     expect(env.api.sent.map((s) => [s.mailbox, s.o.to[0]])).toEqual([[BUYER, BAY], [BUYER, HARBOR]]);
-    expect(env.api.sent[0]!.o.attachments![0]!.filename).toBe("rfq.json");
+    expect(env.api.sent[0]!.o.attachments ?? []).toEqual([]); // no rfq.json on email
 
     const bayRfq = await rfqId(env, deal.job_id, BAY);
     expect((await deliver(env, BAY, bayRfq, "Bay: $995 total, $5 deposit")).outcome).toBe("stored");

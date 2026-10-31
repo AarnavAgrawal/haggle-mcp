@@ -17,7 +17,7 @@
     "ccAddresses": null,
     "subject": "Re: {{RFQ_SUBJECT}}",
     "snippet": null,
-    "bodyText": "Please see below.\n\nOn Thu, Oct 22, 2026 at 9:00 AM AI assistant <{{BUYER}}> wrote:\n> Hi Valley Catering,\n> \n> Thanks for your quote. We've received another quote of $900 total for the same order. Could you match or beat it?\n> \n> Reference: {{TOKEN}} (please keep it when you reply)\n",
+    "bodyText": "Please see below.\n\nOn Thu, Oct 22, 2026 at 9:00 AM haggle-buyer <{{BUYER}}> wrote:\n> Hi Valley Catering,\n> \n> Thanks for your quote. We've received another quote of $900 total for the same order. Could you match or beat it?\n> \n> Reference: {{TOKEN}} (please keep it when you reply)\n",
     "bodyHtml": null,
     "inReplyTo": "{{RFQ_MESSAGE_ID}}",
     "references": [

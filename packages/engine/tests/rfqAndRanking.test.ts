@@ -11,15 +11,16 @@ describe("buildRfqEmail", () => {
   });
 
   it("a plain subject with no reference code (replies are matched by Haggle's Message-IDs)", () => {
-    expect(out.subject).toBe("Quote request: lunch catering, 40 people, Thursday October 22");
+    expect(out.subject).toBe("Quote for lunch catering for 40 – Thu Oct 22");
   });
 
-  it("discloses that the sender is an AI agent and lists hard requirements and the deadline", () => {
-    expect(out.bodyText).toContain("I'm an AI assistant reaching out on behalf of a customer.");
-    expect(out.bodyText.trim().split("\n").at(-1)).toBe("AI assistant for a customer");
-    expect(out.bodyText).not.toMatch(/Haggle/);
-    expect(out.bodyText).toContain("  - At least 12 vegetarian meals");
-    expect(out.bodyText).toContain("Saturday October 17 21:30 UTC");
+  it("no AI self-label and no brand; the must-haves and a local reply-by day (never UTC)", () => {
+    expect(out.bodyText).not.toMatch(/AI assistant|\bAI\b|Haggle|UTC/);
+    // Unnamed customer: a plain "Thanks!", never an invented person.
+    expect(out.bodyText.trim().split("\n").at(-1)).toBe("Thanks!");
+    expect(out.bodyText).toContain("Must-haves: at least 12 vegetarian meals; delivery included.");
+    // 21:30 UTC on Oct 17 is 2:30 PM Saturday in San Francisco (the default zone).
+    expect(out.bodyText).toContain("please reply by Saturday, Oct 17 with");
   });
 
   it("does not reveal the budget unless asked to", () => {
@@ -30,32 +31,62 @@ describe("buildRfqEmail", () => {
     expect(humanDate("2026-01-01")).toBe("Thursday January 1");
   });
 
-  it("asks for everything the customer needs to decide, as a readable list", () => {
-    const tail = out.bodyText.slice(out.bodyText.indexOf("Could you reply by"));
-    expect(tail).toMatch(/^Could you reply by Saturday October 17 21:30 UTC with your quote\? To help the customer decide, please include:\n- An itemized all-in total: the subtotal plus any delivery, travel, setup or service fees, tax and gratuity\n/);
-    for (const line of ["- The menu or items you'd serve", "- Whether delivery, setup, serving staff, plates and utensils are included", "- What's included, and anything that isn't", "- The price per person",
-      "- Any deposit, when it's due, and your payment terms", "- That you're available for that date and time (or the closest you can do)", "- Your cancellation and change policy", "- How long the quote is good for", "- How you meet each must-have above"]) {
-      expect(tail).toContain(line);
-    }
-    expect(tail).toContain("A PDF or photo of your quote is fine.");
+  it("asks only for the all-in price and any deposit; the rest waits for a follow-up", () => {
+    expect(out.bodyText).toContain("If you can do it, please reply by Saturday, Oct 17 with your all-in price (including delivery, tax and fees) and any deposit you need. A photo or PDF of your quote is fine.");
+    for (const gone of ["menu", "per person", "cancellation", "how long the quote", "must-have above", "itemized", "available"]) expect(out.bodyText.toLowerCase()).not.toContain(gone);
   });
 
-  it("names the customer it helps decide, and asks a plumber for plumber things", () => {
+  it("the first email for a 40-person lunch is short: one paragraph, two asks, local time, signed by the customer", () => {
+    const e = buildRfqEmail({
+      shortCode: "7F3K", businessName: "Mission Eats", what: "drop-off lunch", quantity: 40, date: "2026-11-12", time: "12:00", location: "San Francisco, CA", venue: "123 Market St, San Francisco",
+      requirements: ["12 vegetarian meals"], replyBy: new Date("2026-11-11T01:00:00Z"), timezone: "America/Los_Angeles", now: new Date("2026-11-06T18:00:00Z"), customer: "Priya at Acme Labs",
+    });
+    expect(e.subject).toBe("Quote for drop-off lunch for 40 – Thu Nov 12");
+    expect(e.bodyText).toBe([
+      "Hi Mission Eats,",
+      "",
+      "Could you quote drop-off lunch for 40 people on Thursday, Nov 12 at 12:00 PM, delivered to 123 Market St, San Francisco? We need 12 vegetarian meals.",
+      "",
+      // 01:00 UTC on Nov 11 is still Tuesday Nov 10 in San Francisco.
+      "If you can do it, please reply by Tuesday, Nov 10 with your all-in price (including delivery, tax and fees) and any deposit you need. A photo or PDF of your quote is fine.",
+      "",
+      "Thanks,",
+      "Priya at Acme Labs",
+    ].join("\n"));
+    expect(e.bodyText.split(/\s+/).length).toBeLessThanOrEqual(90);
+    // Exactly the two asks.
+    const ask = e.bodyText.split("\n").find((l) => l.startsWith("If you can do it"))!;
+    expect(ask.match(/your all-in price|any deposit/g)).toEqual(["your all-in price", "any deposit"]);
+    expect(e.bodyText).not.toMatch(/AI assistant|UTC/);
+  });
+
+  it("a reply-by later today reads as a local time today", () => {
+    const e = buildRfqEmail({ shortCode: "7F3K", businessName: "Bay", what: "lunch", quantity: 40, date: "2026-11-12", location: "SF", requirements: [], replyBy: new Date("2026-11-06T23:00:00Z"), timezone: "America/New_York", now: new Date("2026-11-06T15:00:00Z") });
+    expect(e.bodyText).toContain("please reply by 6:00 PM today with");
+  });
+
+  it("asks a plumber for one plumber thing, signs with the customer's name, and lists the details", () => {
     const fix = buildRfqEmail({ shortCode: "7F3K", businessName: "Pipe Pros", what: "fix a leaking kitchen pipe", location: "Oakland, CA", details: [{ label: "Urgency", value: "this week" }], requirements: [], replyBy: new Date("2026-10-17T21:30:00Z"), customer: "Priya" });
-    expect(fix.bodyText).toContain("- Urgency: this week");
-    expect(fix.bodyText).toContain("To help Priya decide, please include:");
-    for (const line of ["- Any call-out, trip or diagnostic fee", "- Whether it's a flat price or hourly (the rate and estimated hours)", "- Parts and materials, and whether they're in the total", "- Your earliest arrival time", "- Any warranty on labor and parts", "- When you could do it"]) {
-      expect(fix.bodyText).toContain(line);
-    }
+    expect(fix.subject).toBe("Quote request: fix a leaking kitchen pipe");
+    expect(fix.bodyText).toContain("Could you give us a quote to fix a leaking kitchen pipe in Oakland, CA? Details: Urgency: this week.");
+    expect(fix.bodyText).toContain("with your all-in price (including labor, parts, any trip fee and tax), any deposit you need and your earliest arrival time.");
+    expect(fix.bodyText.trim().endsWith("Thanks,\nPriya")).toBe(true);
     expect(fix.bodyText).not.toContain("price per");
     expect(fix.bodyText).not.toContain("must-have");
   });
 
-  it("custom asks come first; what they already cover isn't asked twice", () => {
+  it("custom asks replace the all-in price ask; what they already cover isn't asked twice", () => {
     const e = buildRfqEmail({ shortCode: "7F3K", businessName: "Pipe Pros", what: "fix a sink", location: "SF", requirements: [], replyBy: new Date("2026-10-17T21:30:00Z"), askLabels: [{ label: "Total price", required: true }, { label: "Earliest date", required: true }, { label: "Deposit", required: false }] });
-    expect(e.bodyText).toMatch(/Could you reply by .* with:\n- Total price\n- Earliest date\n- Deposit \(if you can\)\n\nIt also helps the customer decide to know:\n- Any call-out, trip or diagnostic fee\n/);
-    expect(e.bodyText).not.toContain("itemized all-in total");
-    expect(e.bodyText).not.toContain("Any deposit, when it's due");
+    expect(e.bodyText).toContain("please reply by Saturday, Oct 17 with total price, earliest date and deposit (if you can).");
+    expect(e.bodyText).not.toContain("all-in price");
+    expect(e.bodyText).not.toContain("any deposit");
+  });
+
+  it("asks which days work only for a flexible date range", () => {
+    const e = buildRfqEmail({ shortCode: "7F3K", businessName: "Harbor", what: "lunch catering", quantity: 40, date: "2026-10-19", date_until: "2026-10-23", location: "SF", requirements: [], replyBy: new Date("2026-10-17T21:30:00Z") });
+    expect(e.bodyText).toContain("on any day from Monday, Oct 19 to Friday, Oct 23");
+    expect(e.bodyText).toContain("any deposit you need and which of those days you can do.");
+    expect(out.bodyText).not.toContain("which of those days");
   });
 });
 

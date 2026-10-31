@@ -17,7 +17,7 @@
     "ccAddresses": null,
     "subject": "RE: {{RFQ_SUBJECT}}",
     "snippet": null,
-    "bodyText": "Hello,\nWe can cater this for $1,150 total including delivery. $345 deposit to book.\nMaria\n\nFrom: AI assistant <{{BUYER}}>\nSent: Wednesday, October 21, 2026 5:02 PM\nTo: {{VENDOR}} <{{VENDOR}}>\nSubject: {{RFQ_SUBJECT}}\n\nHi Valley Catering,\n\nI'm an AI assistant reaching out on behalf of a customer. Could you quote the following?\n\n- What: {{WHAT}}\n- People: 40\n- Location: {{AREA}}\n- Must have:\n  - 12 vegetarian meals\n\nPlease reply with your total price, what it includes (delivery or travel, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.\n\nThank you!\nAI assistant for a customer\n\nReference: {{TOKEN}} (please keep it when you reply)\n",
+    "bodyText": "Hello,\nWe can cater this for $1,150 total including delivery. $345 deposit to book.\nMaria\n\nFrom: haggle-buyer <{{BUYER}}>\nSent: Wednesday, October 21, 2026 5:02 PM\nTo: {{VENDOR}} <{{VENDOR}}>\nSubject: {{RFQ_SUBJECT}}\n\nHi Valley Catering,\n\nCould you quote {{WHAT}} for 40 people on Thursday, Oct 22, for delivery in {{AREA}}? We need 12 vegetarian meals.\n\nIf you can do it, please reply by Wednesday, Oct 21 with your all-in price (including delivery, tax and fees) and any deposit you need. A photo or PDF of your quote is fine.\n\nThanks!\n\nReference: {{TOKEN}} (please keep it when you reply)\n",
     "bodyHtml": null,
     "inReplyTo": "{{RFQ_MESSAGE_ID}}",
     "references": [

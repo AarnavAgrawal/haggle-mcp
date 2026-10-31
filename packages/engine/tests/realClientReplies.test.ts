@@ -189,14 +189,15 @@ describe("only the business's own words are read: quoted RFQ text never becomes 
   // The RFQ can reveal a budget (policy-dependent). Quoted back without '>' markers, as Outlook does,
   // that figure must not be read as the business's price.
   const own = "Yes, we can do this. Let me check the menu and get back to you.";
-  const rfqWithBudget = "Hi Real Caterer,\n\n- What: lunch\n- Budget: up to $2000.00 total\n\nThank you!\nAI assistant for a customer\n\nReference: HGR-AAAAAAAAAA (please keep it when you reply)\n\n--\nSent via Inkbox";
-  const fake = { subject: "[HG-ABCD] Quote request: lunch (ref HGR-AAAAAAAAAA)", bodyText: rfqWithBudget, messageId: "<x@email.amazonses.com>", to: VENDOR, idempotencyKey: "k" };
+  // Today's RFQ format (one paragraph, two asks, signed by the customer), plus Inkbox's Free-plan footer.
+  const rfqWithBudget = "Hi Real Caterer,\n\nCould you quote lunch for 40 people on Thursday, Oct 22, for delivery in San Francisco, CA? Our budget is up to $2000.00 total.\n\nIf you can do it, please reply by Wednesday, Oct 21 with your all-in price (including delivery, tax and fees) and any deposit you need. A photo or PDF of your quote is fine.\n\nThanks,\nAcme Labs\n\n--\nSent via Inkbox";
+  const fake = { subject: "Quote for lunch for 40 – Thu Oct 22", bodyText: rfqWithBudget, messageId: "<x@email.amazonses.com>", to: VENDOR, idempotencyKey: "k" };
   for (const [name, layout] of Object.entries(clients)) {
     it(`${name}`, () => {
       const cleaned = cleanEmailBody(layout(own, fake).bodyText);
       expect(cleaned).toContain("Let me check the menu");
       expect(cleaned).not.toMatch(/\$2000/);
-      expect(cleaned).not.toMatch(/HGR-|AI assistant for/);
+      expect(cleaned).not.toMatch(/all-in price|Acme Labs/);
     });
   }
 });

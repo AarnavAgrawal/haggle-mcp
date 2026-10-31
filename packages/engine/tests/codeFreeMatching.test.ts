@@ -18,7 +18,7 @@ const noEvidence = { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf:
 
 describe("subjects", () => {
   it("are plain: what, how many, when; no code", () => {
-    expect(quoteRequestSubject({ what: "lunch", quantity: 40, date: "2026-11-03" })).toBe("Quote request: lunch, 40 people, Tuesday November 3");
+    expect(quoteRequestSubject({ what: "lunch", quantity: 40, date: "2026-11-03" })).toBe("Quote for lunch for 40 – Tue Nov 3");
     expect(quoteRequestSubject({ what: "fix a leak" })).toBe("Quote request: fix a leak");
   });
 });

@@ -71,9 +71,14 @@ for (const backend of PG_URL ? ["memory", "postgres"] : ["memory"]) describe(`go
     expect(counters.length).toBeGreaterThan(0);
     const quoteTotals = new Set((await repo.listQuotes(deal.job_id)).map((q) => q.total_cents));
     for (const c of counters) {
-      const part = JSON.parse(new TextDecoder().decode(c.attachments![0]!.content));
-      expect(quoteTotals.has(Math.round(part.target_total_usd * 100))).toBe(true);
-      expect(part.target_total_usd).not.toBe(700);
+      // No counter.json on email (A2A only): the cited figure is read from the text.
+      expect(c.attachments ?? []).toEqual([]);
+      const cited = /another (?:quote of|estimate of about) \$([\d,]+\.\d\d) total/.exec(c.bodyText);
+      expect(cited).not.toBeNull();
+      const usd = Number(cited![1]!.replace(/,/g, ""));
+      expect(quoteTotals.has(Math.round(usd * 100))).toBe(true);
+      expect(usd).not.toBe(700);
+      expect(c.bodyText).not.toMatch(/AI assistant/);
       expect(c.bodyText).not.toMatch(/QuickQuote|Golden Grill/);
     }
     // Every outbound email has a unique idempotency key and goes to a pinned business address.

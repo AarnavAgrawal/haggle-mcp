@@ -153,7 +153,9 @@ describe("approximate totals in a deal", () => {
     // One firm-total ask to Harbor, in its email thread; nothing new to the phone vendor (no call, no text).
     const ask = sent.filter((m) => m.to === HARBOR.email).at(-1)!;
     // The one batched follow-up (decision 12), carrying main's firm-total ask.
-    expect(ask.bodyText).toMatch(/Could you also tell us:\n- your firm all-in total \(you said about \$1,300\) and the deposit/);
+    expect(ask.bodyText).toMatch(/Could you also tell us: your firm all-in total \(you said about \$1,300\) and the deposit; /);
+    expect(ask.bodyText).toMatch(/\nReply STOP and we won't email again\.\n/);
+    expect(ask.bodyText).not.toMatch(/AI assistant/);
     expect(calls).toHaveLength(1);
     expect(texts.filter((t) => t.to === MISSION.phone)).toHaveLength(0);
     expect(texts.filter((t) => t.to === SUNSET.phone)).toHaveLength(1); // the RFQ only: Sunset's quote is firm

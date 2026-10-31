@@ -138,7 +138,7 @@ describe("deals and replies on a workspace mailbox", () => {
     const d = await engine.forWorkspace("ws_alpha").deal({ request, budget_usd, businesses: [{ name: "Valley Catering", email: "orders@valley.example" }] });
     const job = (await repo.getJob(d.job_id))!;
     expect(job.inbox).toBe(`${workspaceHandle("ws_alpha")}@inkboxmail.test`);
-    expect(api.sent[0]).toMatchObject({ mailbox: job.inbox, o: { to: ["orders@valley.example"], subject: expect.stringMatching(/^Quote request: /) } });
+    expect(api.sent[0]).toMatchObject({ mailbox: job.inbox, o: { to: ["orders@valley.example"], subject: expect.stringMatching(/^Quote for /) } });
     // The vendor answers in the workspace mailbox; the approval request to the human goes from the shared one.
     const rfq = (await repo.getBusinesses(d.job_id))[0]!.rfq_message_id!;
     expect((await engine.ingest({ providerEventId: "e1", eventType: "message.received", providerEmailId: "in_q", threadId: null, messageId: "<q@valley.example>", inReplyTo: [rfq], references: [rfq], from: "orders@valley.example", to: [job.inbox], subject: "Re: Quote request", bodyText: "$1,150 total", attachments: [], attachmentsDownloadUrl: null }, external, { mailbox: job.inbox })).outcome).toBe("stored");

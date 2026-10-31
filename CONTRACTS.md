@@ -10,7 +10,7 @@ and Aarnav's half (views, brain, sellers, bench). Code that crosses the line mus
 | 2 | View schemas (zod) | `packages/core/views.ts` + `fixtures/views/*.json` | Shared | Agree in the first hour, then frozen |
 | 3 | State machines (job, business) | `packages/core/contracts.ts` | Shared | Frozen with section 1 |
 | 4 | Channels on Inkbox (email, phone, iMessage, A2A) | Inkbox identities + webhooks | Yash (buyer), Aarnav (sellers) | Authoritative |
-| 5 | Quote protocol over email (`rfq.json`, `quote.json`, `counter.json`) | `packages/core/` | Shared | Authoritative |
+| 5 | Quote protocol (`rfq.json` and `counter.json` over A2A only; `quote.json` from sellers) | `packages/core/` | Shared | Authoritative |
 | 6 | Approval and payment (Stripe test mode) | `packages/engine/` | Yash | Authoritative |
 | 7 | Database (Supabase) | `supabase/migrations/` | Split by number range | Authoritative |
 | 8 | Environment variables | `.env.example` | Each side for its own vars | Authoritative |
@@ -126,26 +126,31 @@ exists, call.
 
 | Channel | Outbound (buyer) | Inbound event | Becomes |
 |---|---|---|---|
-| Email | Send from `haggle` mailbox; replies in-thread with `inReplyToMessageId`; RFQ attached as `rfq.json` | `message.received` (fetch the full message by id; attachments are base64) | `ParsedReply` from text, PDF, HTML or `quote.json` |
+| Email | Send from `haggle` mailbox; replies in-thread with `inReplyToMessageId`; plain text, no attachment (no `rfq.json` or `counter.json`) | `message.received` (fetch the full message by id; attachments are base64) | `ParsedReply` from text, PDF, HTML or `quote.json` |
 | Phone | `identity.placeCall({ toNumber, mode: CallMode.HOSTED_AGENT, reason })` | `call.ended` with transcript, `outcome` (`completed` / `no_answer` / `declined` / `failed`), `post_call_action_items` | `ParsedReply` from the transcript; `no_answer` / `declined` update status |
 | A2A | Send a task to the business's Agent Card | A2A task result | `ParsedReply` from the structured result |
 | iMessage | `identity.sendIMessage({ to, text })`, approval requests only | `imessage.received` | Approval YES/NO (section 6) |
 
 Channel rules:
 - **Call `reason`** (≤ 2,000 chars) must say it is an AI assistant requesting a quote, and include the request and requirements. Retry on `503 hosted_agent_at_capacity`. Only call simulated businesses or people who agreed to it.
+- **Who the business hears from (2026-10-31).** Email: no AI self-label, signed with the customer's name (`Thanks,\nAcme Labs`, from the request's `Customer` detail or `HAGGLE_CUSTOMER_NAME`; `Thanks!` alone when unknown), never an invented person and never "Haggle". If a business asks whether it is talking to a person, the answer is truthful: an AI assistant for the customer (`answerQuestion.identityAnswer`). The message guard refuses agent text that claims to be human (`CLAIMS_HUMAN`). Calls and texts keep the disclosure ("I'm an AI assistant for <customer>").
+- **The first email (RFQ).** Subject `Quote for <what> for <n> – <Thu Nov 12>` (people are the default unit; a request that starts with a verb reads `Quote request: <what>`). Body: one paragraph with what, when (the request's local date and time), where, headcount, must-haves and details; then one line asking only for the all-in price and any deposit, plus at most two short asks (which days work, for a flexible range; when they could do it, for an undated job; one category ask such as a repair's earliest arrival: `intake.firstEmailAsks`), and "A photo or PDF of your quote is fine." The reply-by is a day in the workspace's time zone ("by Tuesday, Nov 10", or "by 3:00 PM today"), never UTC.
+- **Follow-up emails** are two or three lines. The menu, what's included, the per-person price and the cancellation policy are asked only in the one follow-up, only when the reply leaves them out (`intake.criticalGaps`), and only with a follow-up that goes out anyway. "How long the quote is good for" and "how you meet each must-have" are not asked (must-haves are confirmed at booking). The no-reply reminder, the firm-total chase and the missing-terms follow-up end with "Reply STOP and we won't email again."; a STOP reply suppresses the address (`vendor_suppressions`, when the sender is verified) or stops that deal.
+- **Booking and payment emails** name the customer ("Acme Labs will pay you directly"), never Haggle.
 - **iMessage:** the approver must first text `connect @haggle` to the router number (`inkbox.imessages.getTriageNumber()`). Until they reply: ≤ 159 chars, no links or phone numbers, at most 3 messages.
 - **SMS:** not used (10DLC). Use iMessage.
 - **Seller phone persona:** `setIncomingCallAction({ incomingCallAction: IncomingCallAction.HOSTED_AGENT })` + `setHostedAgentConfig({ voice, instructions })` (the config is replaced in full on each call).
 - **Dev webhooks:** `connect(inkbox, { name, forwardTo })` from `@inkbox/sdk/tunnels/connect`, or `npx mcp-use dev --tunnel`.
-- **No codes to businesses (2026-10-30).** Nothing Haggle sends a business carries a reference code: email subjects are `Quote request: <what>, <quantity>, <date>` (every later email on the deal reuses it; threaded sends get `Re:`), no reply token (`HGR-…`) in subject or body, no `Ref HG-…` in texts, no reference in call reasons or the inbound voice instructions (open requests are listed in words: "lunch catering, 40 people, on 2026-11-03"), no `job_id` in the emailed `rfq.json`. Codes to the **approver** stay (`YES/NO/APPROVE/PAY/CALL/CANCEL <code>`, `(HG-…)`): they are a security feature.
+- **No codes to businesses (2026-10-30).** Nothing Haggle sends a business carries a reference code: email subjects are `Quote for <what> for <n> – <date>` (every later email on the deal reuses it; threaded sends get `Re:`), no reply token (`HGR-…`) in subject or body, no `Ref HG-…` in texts, no reference in call reasons or the inbound voice instructions (open requests are listed in words: "lunch catering, 40 people, on 2026-11-03"), and no JSON part on email at all (`rfq.json` and `counter.json` go only to A2A businesses). Codes to the **approver** stay (`YES/NO/APPROVE/PAY/CALL/CANCEL <code>`, `(HG-…)`): they are a security feature.
 - **Matching a business's email (in order):** (1) the Inkbox thread id; (2) In-Reply-To/References naming one of Haggle's own outbound Message-IDs to that business (any of them: RFQ, reminder, counter); (3) a legacy `[HG-<code>]` subject tag (older threads) plus From = the pinned address; (4) job-inbox recipient (mock); (5) a **new email** (no thread signal) from a pinned address: the deal only when that sender has exactly one open deal on the receiving mailbox (`matched_via: sender_only`), several → held as `ambiguous_sender` for operator review. Rules 1–2 from any other address are quarantined `sender_mismatch`.
 - **Trust for mail from outside Inkbox** (`HAGGLE_EXTERNAL_SENDERS=reply_token`; the name is kept, no token is sent): from the pinned address and no DMARC/SPF failure, then aligned DMARC pass → `external-dmarc-aligned` (identity); a reply naming Haggle's Message-ID → `external-thread-reply` (continuity: may quote, never confirm a booking, name a payee or settle on its own); a rule-3/5 match → `external-sender-only` (weakest: a quote at most; a STOP stops that deal only; never read for bookings or payment details). Otherwise quarantined `identity_unverified:*`. Legacy `external-reply-token` rows read as continuity-only.
 - **Texts and inbound calls without codes:** a business number on several open deals is matched by an old code it quotes, else (same workspace) the deal with an unanswered ask, else the latest. Across workspaces, a text that describes exactly one of the requests (what, how many, when) routes there; otherwise it is held and the business is asked once, in plain words, which request it means (only when the requests differ). The voice agent asks a caller with several requests which one and repeats it; a transcript describing exactly one is read into that deal, else it is held.
 
 ## 5. Quote protocol over email
 
-Every message is a readable email. Agent-ready sellers also attach JSON (`application/json`).
-A2A tasks carry the same JSON shapes in the task body.
+Every message is a readable email. Haggle's own emails carry no JSON part (since 2026-10-31):
+`rfq.json` and `counter.json` go only in A2A task data. Agent-ready sellers may still attach
+`quote.json` (`application/json`) to an email, and A2A tasks carry the same JSON shapes in the task body.
 
 | Part | Direction | Required keys |
 |---|---|---|

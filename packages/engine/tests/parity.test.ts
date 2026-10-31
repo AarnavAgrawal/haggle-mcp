@@ -191,7 +191,7 @@ describe("any kind of request (custom ask, compare_by, payable_field)", { timeou
     const deal = await engine.deal({ request: PLUMBING, max_rounds: 1, businesses: [{ name: rapid.name, email: rapid.email }, { name: bayPipe.name, email: bayPipe.email }] });
     const rfq = fleet.sent.find((s) => s.to === rapid.email)!;
     expect(rfq.subject).toMatch(/^Quote request: fix a leaking kitchen sink$/);
-    expect(rfq.bodyText).toMatch(/Could you reply by .* with:\n- Total price\n- Earliest date\n- Deposit \(if you can\)/);
+    expect(rfq.bodyText).toMatch(/please reply by .* with total price, earliest date and deposit \(if you can\)\./);
     expect(rfq.bodyText).toMatch(/Fixture: kitchen sink/);
     expect(rfq.bodyText).not.toMatch(/People:|delivery/);
 
@@ -200,7 +200,7 @@ describe("any kind of request (custom ask, compare_by, payable_field)", { timeou
     const followups = fleet.sent.filter((s) => s.idempotencyKey.startsWith("followup:"));
     expect(followups).toHaveLength(1);
     expect(followups[0]!).toMatchObject({ to: bayPipe.email });
-    expect(followups[0]!.bodyText).toMatch(/Could you also tell us:\n- Earliest date/);
+    expect(followups[0]!.bodyText).toMatch(/Could you also tell us earliest date[^?]*\?\nReply STOP and we won't email again\./);
     const bay = board.quotes.find((q) => q.business === "Bay Pipe Co")!;
     expect(bay).toMatchObject({ total_usd: 380, deposit_usd: 100, eligible: true, fields: { price: 380, earliest_date: "2026-10-27", deposit: 100 }, missing_fields: [] });
     expect(board.recommended_quote_id).toBe(bay.quote_id);

@@ -159,7 +159,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       // HAGGLE_CALL_DELAY_S and HAGGLE_ESCALATE_EMAIL_TO_CALL_S are read by liveTimings (timings.engine).
       callHours,
       ...(notifyPhone && /^\+\d{8,15}$/.test(notifyPhone) ? { notifyPhone } : {}),
-      // Who the AI assistant acts for in messages to businesses (a request's "Customer" detail wins; default "a customer").
+      // Who messages to businesses are for: emails are signed with it, calls and texts name it (a request's "Customer" detail wins; default "a customer").
       ...(env.HAGGLE_CUSTOMER_NAME?.trim() ? { customerName: env.HAGGLE_CUSTOMER_NAME.trim().slice(0, 40) } : {}),
       // Approval by email from an outside address (Inkbox only authenticates Inkbox senders) rests on a
       // spoofable From: off unless the operator sets HAGGLE_EMAIL_APPROVAL_BY_CODE=true.

@@ -132,7 +132,7 @@ describe("SIMULATED end-to-end purchase: three realistic vendors, re-confirmatio
     ]);
     expect(emails.map((e) => e.to).sort()).toEqual(Object.values(VENDORS).sort());
     const biz = Object.fromEntries((await repo.getBusinesses(jobId)).map((b) => [b.name, b]));
-    expect(emails[0]!.subject).toMatch(/^Quote request: /);
+    expect(emails[0]!.subject).toMatch(/^Quote for /);
     expect(`${emails[0]!.subject}${emails[0]!.bodyText}`).not.toMatch(/HGR-|HG-/);
     void biz;
 
@@ -237,7 +237,7 @@ describe("SIMULATED end-to-end purchase: three realistic vendors, re-confirmatio
     expect(board.payment).toMatchObject({ status: "human_reported_paid", rail: "manual" });
     expect(board.next).toMatch(/reports paying/);
     const told = emails.filter((e) => e.to === VENDORS.harbor).at(-1)!;
-    expect(told.bodyText).toMatch(/The customer has told us they have paid the \$500\.00 directly to you/);
+    expect(told.bodyText).toMatch(/The customer reports they have paid the \$500\.00 directly to you/);
     expect(told.bodyText).toMatch(/reply to confirm once it arrives/);
 
     // 8. Harbor says the deposit arrived, but from a sender proven only by the reply token: never

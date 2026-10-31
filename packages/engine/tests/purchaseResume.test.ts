@@ -95,7 +95,7 @@ async function resumeAtEveryStage(repo: Repository | ((now: () => Date) => Repos
   expect(board.purchase).toMatchObject({ stage: "human_reported_paid", money_verified: false });
   expect((await env.human(`PAID ${a.code}`, env.restart("paid-2"))).outcome).toBe("handoff_already_confirmed");
   await engine.advanceJob(jobId);
-  expect(env.to(id.harbor).filter((e) => /told us they have paid/.test(e.bodyText))).toHaveLength(1);
+  expect(env.to(id.harbor).filter((e) => /reports they have paid/.test(e.bodyText))).toHaveLength(1);
   assertNoDuplicateSends(env);
   // Golden Grill was never accepted.
   expect(env.to(id.grill).some((e) => /accepted your quote/.test(e.bodyText))).toBe(false);

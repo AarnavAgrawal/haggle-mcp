@@ -62,7 +62,7 @@ describe("external email regressions", () => {
   it("no code goes out; a reply naming Haggle's Message-ID from the pinned address is a quote (continuity), a DMARC failure never", async () => {
     const env = setup();
     const { jobId, rfq } = await twoVendorDeal(env);
-    expect(rfq(A).subject).toMatch(/^Quote request: /);
+    expect(rfq(A).subject).toMatch(/^Quote (for|request:) /);
     expect(`${rfq(A).subject}${rfq(A).bodyText}`).not.toMatch(/HGR-|\[HG-/);
     expect((await mail(env, { from: A, inReplyTo: [rfq(A).messageId], subject: "Re: Quote request", bodyText: "Updated: $1 total." }, dmarcFail)).outcome).toBe("quarantined:identity_unverified");
     expect(await quarantined(env, jobId)).toEqual(["identity_unverified:auth_failed"]);

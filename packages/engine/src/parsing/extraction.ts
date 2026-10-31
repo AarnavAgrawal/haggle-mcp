@@ -9,6 +9,7 @@
 // structured-output schema; validate.ts enforces the bounds.
 import { z } from "zod";
 import type { PriceJudgment } from "./plausibility.ts";
+import { isIdentityQuestion } from "./answerQuestion.ts";
 
 export const MONEY_FIELDS = ["price_per_head", "subtotal", "delivery_fee", "tax", "total", "deposit"] as const;
 export type MoneyField = (typeof MONEY_FIELDS)[number];
@@ -96,7 +97,8 @@ export function splitQuestions(questions: readonly (string | ExtractedQuestion)[
   for (const q of questions) {
     const text = (typeof q === "string" ? q : q.text).trim();
     if (!text) continue;
-    if (typeof q !== "string" && q.needs_answer_to_quote === false) courtesy.push(text);
+    // "Is this a real person?" always gets the truthful answer (answerQuestion.identityAnswer), never dropped.
+    if (typeof q !== "string" && q.needs_answer_to_quote === false && !isIdentityQuestion(text)) courtesy.push(text);
     else blocking.push(text);
   }
   return { blocking, courtesy };

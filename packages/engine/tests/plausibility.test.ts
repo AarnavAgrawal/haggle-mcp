@@ -147,7 +147,7 @@ describe("a suspiciously low quote in a deal ($50 for dinner for 100, fixture 09
     // One plain question, in Harbor's thread.
     const toHarbor = sent.filter((m) => m.to === HARBOR.email);
     expect(toHarbor).toHaveLength(2); // the RFQ and the one question
-    expect(toHarbor[1]!.bodyText).toMatch(/Just to confirm: is \$50 the full total for dinner for 100 guests, and what does it include\?\n\nNothing has been booked or paid yet\./);
+    expect(toHarbor[1]!.bodyText).toMatch(/Just to confirm: is \$50 the full total for dinner for 100 guests, and what does it include\?\nNothing has been booked or paid yet\./);
   });
 
   it("the vendor confirms: approvable with a caveat, still never recommended or cited; nobody else is asked to match $50", async () => {

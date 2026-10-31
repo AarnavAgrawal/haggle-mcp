@@ -18,6 +18,22 @@ export const QuestionAnswer = z.object({
 });
 export type QuestionAnswer = z.infer<typeof QuestionAnswer>;
 
+/**
+ * A business asking whether it is dealing with a person or a bot ("Is this a real person?", "Am I
+ * talking to an AI?", "Are you a robot?"). Emails carry no AI label, so this question always gets the
+ * truthful answer (identityAnswer), never silence and never a claim to be human.
+ */
+export function isIdentityQuestion(text: string): boolean {
+  const t = text.toLowerCase();
+  return /\b(are you|is this|am i (?:talking|speaking|chatting|emailing|writing) (?:to|with)|is (?:this|that|it) (?:a|an)|was this (?:sent|written) by|did (?:a|an) (?:bot|ai|computer|machine))\b[^?.!]{0,40}\b(real|actual|live)?\s*(person|human|bot|robot|ai|a\.i\.|chat ?bot|automated|automation|machine|computer|assistant)\b/.test(t)
+    || /\b(is this|are you|this is)\s+(?:an?\s+)?(?:automated|auto-?generated)\b/.test(t);
+}
+
+/** The truthful answer to an identity question, from the customer's AI assistant. */
+export function identityAnswer(customer: string | null): string {
+  return `You're writing with an AI assistant that collects quotes on behalf of ${customer ?? "the customer"}. A person at ${customer ?? "the customer"} makes the decisions and approves any order.`;
+}
+
 export interface QuestionAnswerInput {
   business: string;
   question: string;
@@ -34,6 +50,7 @@ Rules:
 - Logistics are facts only when listed: a delivery or arrival time, an entrance, loading area or parking, a contact person, set-up or serving. A listed date or address is not a time or an entrance. Never infer, assume or pick a "reasonable" value.
 - When in doubt, answerable false. Leaving it for the customer is always safe; a made-up answer is not.
 - Never mention a budget, a price target, other businesses, payment, or contact details; never agree to buy, book or pay.
+- Never claim or imply to be a human, and never use a person's name as your own. If the business asks whether it is talking to a person, a bot or an AI, say truthfully that it is an AI assistant writing on behalf of the customer.
 - basis quotes the fact(s) you used.`;
 
 const MAX_ANSWER = 400;

@@ -18,7 +18,7 @@
     "subject": "RE: {{RFQ_SUBJECT}}",
     "snippet": null,
     "bodyText": null,
-    "bodyHtml": "<html><body><div dir=\"ltr\"><p>Hi,</p><p>Our price is <b>$1,150 total</b>, delivered. Deposit $345.</p><p>Maria</p></div><hr style=\"display:inline-block;width:98%\"><div id=\"divRplyFwdMsg\" dir=\"ltr\"><font face=\"Calibri, sans-serif\"><b>From:</b> AI assistant &lt;{{BUYER}}&gt;<br><b>Sent:</b> Wednesday, October 21, 2026 10:02 AM<br><b>To:</b> {{VENDOR}}<br><b>Subject:</b> {{RFQ_SUBJECT}}</font><div>&nbsp;</div></div><div>Hi Valley Catering,<br>Reference: {{TOKEN}} (please keep it when you reply)</div></body></html>",
+    "bodyHtml": "<html><body><div dir=\"ltr\"><p>Hi,</p><p>Our price is <b>$1,150 total</b>, delivered. Deposit $345.</p><p>Maria</p></div><hr style=\"display:inline-block;width:98%\"><div id=\"divRplyFwdMsg\" dir=\"ltr\"><font face=\"Calibri, sans-serif\"><b>From:</b> haggle-buyer &lt;{{BUYER}}&gt;<br><b>Sent:</b> Wednesday, October 21, 2026 10:02 AM<br><b>To:</b> {{VENDOR}}<br><b>Subject:</b> {{RFQ_SUBJECT}}</font><div>&nbsp;</div></div><div>Hi Valley Catering,<br>Reference: {{TOKEN}} (please keep it when you reply)</div></body></html>",
     "inReplyTo": "{{RFQ_MESSAGE_ID}}",
     "references": [
       "{{RFQ_MESSAGE_ID}}"

@@ -35,7 +35,7 @@ describe("SIMULATED purchase scenarios (manual rail)", () => {
     expect((await env.human(`PAID ${a.code}`)).outcome).toBe("handoff_confirmed");
     expect((await env.repo.getJob(d.jobId))!.state).toBe("paid");
     expect(await stage(env, d.jobId)).toMatchObject({ stage: "human_reported_paid", money_verified: false });
-    expect(env.to(HARBOR).at(-1)!.bodyText).toMatch(/The customer has told us they have paid the \$500\.00 directly to you/);
+    expect(env.to(HARBOR).at(-1)!.bodyText).toMatch(/The customer reports they have paid the \$500\.00 directly to you/);
     expect((await env.mail(d.jobId, HARBOR, "Got the deposit, thanks! See you on the 14th.")).outcome).toBe("receipt_confirmed");
     expect(await stage(env, d.jobId)).toMatchObject({ stage: "settled_verified", money_verified: true });
     expect(env.to(GRILL).some((e) => /accepted your quote/.test(e.bodyText))).toBe(false);
