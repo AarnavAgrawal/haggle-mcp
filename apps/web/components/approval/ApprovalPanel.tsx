@@ -5,8 +5,14 @@
 // Then, on a server that charges (demo), Pay charges the approved amount; on the manual rail (live)
 // the human pays the business directly and PurchaseSteps walks the stages. No code ever reaches the
 // browser: there is none to send.
-import { useEffect, useRef, useState } from "react";
+//
+// On the deal board it is the approval bar (components/dashboard/QuoteSheet): one line with Approve,
+// docked under the quote sheet; the confirm step opens in place. Once decided it undocks and sits in the
+// page's flow (paid, or the manual rail's purchase steps).
+import { startTransition, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/Button";
+import { Icon } from "@/components/ui/Icon";
 import { postAction, usd, type ApiError } from "./post";
 import { PurchaseSteps } from "./PurchaseSteps";
 import type { PurchaseOk } from "@/lib/approval/flow";
@@ -48,6 +54,20 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
   const [note, setNote] = useState<string | null>(status === "pending" || status === "pending_human" ? "An approval is waiting for this quote: you can approve it here." : null);
   const [paid, setPaid] = useState<{ amount: number; receipt?: string; simulated?: boolean } | null>(null);
   const busy = useRef(false); // a second click before React re-renders can't send a second request
+  // Re-read the board (and the shell rail) in a transition: the panel's own answer shows at once, the
+  // page's sections catch up without a flash.
+  const refresh = () => startTransition(() => router.refresh());
+  // Keyboard focus follows the step: into the confirm when it opens, back to Approve on "Not now".
+  const approveBtn = useRef<HTMLButtonElement>(null);
+  const confirmBtn = useRef<HTMLButtonElement>(null);
+  const backToApprove = useRef(false);
+  useEffect(() => {
+    if (phase === "confirming") confirmBtn.current?.focus();
+    if (phase === "idle" && backToApprove.current) {
+      backToApprove.current = false;
+      approveBtn.current?.focus();
+    }
+  }, [phase]);
 
   const hasDeposit = depositUsd !== null && depositUsd > 0 && depositUsd < amountUsd;
   const payNow = hasDeposit ? depositUsd : amountUsd;
@@ -98,7 +118,7 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
     if (r.status === "approved" || r.status === "used") {
       setNote("Already approved.");
       setPhase(r.action === "confirm" ? "confirmed" : "approved");
-      router.refresh();
+      refresh();
       return;
     }
     if (r.status !== "pending") {
@@ -132,7 +152,7 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
     setRail(r.rail ?? rail);
     setNote(r.changed ? null : "Already approved.");
     setPhase(r.action === "confirm" ? "confirmed" : "approved");
-    router.refresh();
+    refresh();
   }
 
   async function pay() {
@@ -161,62 +181,75 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
       setNote(r.next || "The payment is in progress.");
       setPhase(r.status === "confirmed" ? "confirmed" : "approved");
     }
-    router.refresh();
+    refresh();
   }
 
   const shownNow = preview?.amount_usd ?? payNow;
   const manual = rail === "manual";
   const caveats = preview?.caveats ?? [];
   const expires = expiresIn(preview?.expires_at);
+  const asking = phase === "idle" || phase === "previewing" || phase === "confirming" || phase === "deciding";
+  // Docked (sticky under the sheet) while there's a decision or a payment to make; in the page's flow
+  // once it's settled or the purchase steps take over.
+  const docked = asking || (!manual && (phase === "approved" || phase === "paying"));
+  const done = phase === "paid" || phase === "confirmed";
+  const heading = asking ? `Approve ${business}` : done ? business : phase === "checking" ? business : `${business}, approved`;
 
   return (
-    <section className="card ap-panel" aria-labelledby={`ap-${quoteId}`}>
-      <div className="ap-head">
-        <h3 id={`ap-${quoteId}`}>Approve {business}</h3>
-        {mode === "mock" && <span className="chip demo">DEMO</span>}
+    <section className={`ap-bar${docked ? " ap-docked" : ""}${done ? " ap-done" : ""}`} data-phase={phase} aria-labelledby={`ap-${quoteId}`}>
+      <div className="ap-line" hidden={(phase === "confirming" || phase === "deciding") && !!preview}>
+        <div className="ap-what">
+          <h3 id={`ap-${quoteId}`} className="ap-title">
+            {done ? <Icon name="check" className="ap-check" /> : null}
+            {heading}
+          </h3>
+          <p className="ap-terms">
+            {hasDeposit ? (
+              <>
+                <span className="num">{usd(payNow)}</span> deposit {phase === "paid" ? "paid" : manual ? "to them" : "now"}, <span className="num">{usd(amountUsd)}</span> total
+              </>
+            ) : (
+              <>
+                <span className="num">{usd(amountUsd)}</span> {phase === "paid" ? "paid" : manual ? "paid to them" : "now"}, the full total (no deposit stated)
+              </>
+            )}
+          </p>
+        </div>
+        <div className="ap-actions ap-line-actions">
+          {(phase === "idle" || phase === "previewing") && (
+            <Button ref={approveBtn} variant="primary" onClick={startApprove} pending={phase === "previewing"}>
+              {`Approve ${usd(payNow)}`}
+            </Button>
+          )}
+          {!manual && (phase === "approved" || phase === "paying") && (
+            <Button variant="primary" onClick={pay} pending={phase === "paying"}>
+              {`Pay ${usd(payNow)}`}
+            </Button>
+          )}
+        </div>
       </div>
-
-      <dl className="ap-amounts">
-        <div>
-          <dt>{manual ? "You pay them" : "Pay now"}</dt>
-          <dd className="ap-big">{usd(payNow)}</dd>
-          <dd className="muted">{hasDeposit ? "deposit" : "full total (no deposit stated)"}</dd>
-        </div>
-        {hasDeposit && (
-          <div>
-            <dt>Order total</dt>
-            <dd>{usd(amountUsd)}</dd>
-          </div>
-        )}
-        <div>
-          <dt>Paid to</dt>
-          <dd>{business}</dd>
-        </div>
-      </dl>
-
-      {mode === "mock" && <p className="note ap-demo">DEMO: simulated, no money moves.</p>}
 
       {(phase === "confirming" || phase === "deciding") && preview && (
         <div className="ap-confirm" role="group" aria-label={`Confirm approval for ${preview.business}`}>
-          <p>
-            <strong>Approve {preview.business}?</strong>
-          </p>
+          <p className="ap-ask">Approve {preview.business}?</p>
           <dl className="ap-amounts">
             <div>
               <dt>{preview.action === "confirm" ? "Paid now" : manual ? "You pay them" : "Paid now"}</dt>
               <dd className="ap-big">{preview.action === "confirm" ? usd(0) : usd(shownNow)}</dd>
-              {preview.action !== "confirm" && <dd className="muted">{shownNow < preview.quote_total_usd ? "deposit" : "full total"}</dd>}
+              {preview.action !== "confirm" && <dd className="ap-small">{shownNow < preview.quote_total_usd ? "deposit" : "full total"}</dd>}
             </div>
             <div>
               <dt>Order total</dt>
-              <dd>{usd(preview.quote_total_usd)}</dd>
+              <dd className="ap-mid">{usd(preview.quote_total_usd)}</dd>
+            </div>
+            <div>
+              <dt>Paid to</dt>
+              <dd className="ap-to">{preview.business}</dd>
             </div>
           </dl>
           {caveats.length > 0 && (
             <div>
-              <p className="ap-sub">
-                <strong>You&apos;re accepting:</strong>
-              </p>
+              <p className="ap-sub ap-accepting">You&apos;re accepting:</p>
               <ul className="ap-caveats">
                 {caveats.map((c, i) => (
                   <li key={i}>{c}</li>
@@ -224,30 +257,38 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
               </ul>
             </div>
           )}
-          <p className="muted ap-sub">
+          <p className="ap-sub">
             {manual
               ? `Haggle asks ${preview.business} to confirm the booking first. You then pay them directly; Haggle never moves money.`
               : "Approving charges nothing. You pay with a separate click."}
             {expires ? ` This approval expires in ${expires}.` : ""}
+            {mode === "mock" ? " Demo: simulated, no money moves." : ""}
           </p>
           <div className="ap-actions">
-            <button type="button" className="btn btn-primary" onClick={confirm} disabled={phase === "deciding"} aria-busy={phase === "deciding"}>
-              {phase === "deciding" ? "Approving…" : preview.action === "confirm" ? "Yes, confirm the order" : `Yes, approve ${usd(shownNow)}`}
-            </button>
-            <button type="button" className="btn" onClick={() => setPhase("idle")} disabled={phase === "deciding"}>
+            <Button ref={confirmBtn} variant="primary" onClick={confirm} pending={phase === "deciding"}>
+              {preview.action === "confirm" ? "Yes, confirm the order" : `Yes, approve ${usd(shownNow)}`}
+            </Button>
+            <Button
+              variant="quiet"
+              onClick={() => {
+                backToApprove.current = true;
+                setPhase("idle");
+              }}
+              disabled={phase === "deciding"}
+            >
               Not now
-            </button>
+            </Button>
           </div>
         </div>
       )}
 
       <div aria-live="polite" className="ap-status">
-        {phase === "checking" && <p className="muted ap-sub">Checking where this purchase stands…</p>}
-        {phase === "approved" && !manual && <p className="note ap-ok">Approved. Nothing is charged until you pay.</p>}
-        {phase === "approved" && manual && !purchase && <p className="note ap-ok">Approved. Haggle asked {business} to confirm the booking; don&apos;t pay yet.</p>}
-        {phase === "confirmed" && !manual && <p className="note ap-ok">Order confirmed with {business}. Nothing is paid through Haggle.</p>}
+        {phase === "checking" && <p className="ap-sub">Checking where this purchase stands…</p>}
+        {phase === "approved" && !manual && <p className="ap-ok">Approved. Nothing is charged until you pay.</p>}
+        {phase === "approved" && manual && !purchase && <p className="ap-ok">Approved. Haggle asked {business} to confirm the booking; don&apos;t pay yet.</p>}
+        {phase === "confirmed" && !manual && <p className="ap-ok">Order confirmed with {business}. Nothing is paid through Haggle.</p>}
         {phase === "paid" && (
-          <p className="note ap-ok">
+          <p className="ap-ok">
             Paid {usd(paid?.amount ?? payNow)} to {business}
             {paid?.simulated ? " (simulated)" : ""}.
             {paid?.receipt && (
@@ -260,29 +301,16 @@ export function ApprovalPanel({ jobId, quoteId, business, amountUsd, depositUsd,
             )}
           </p>
         )}
-        {note && <p className="muted ap-sub">{note}</p>}
+        {note && <p className="ap-sub">{note}</p>}
         {error && (
           <p className="note note-risk" role="alert">
             {error.message}
-            {error.fix && <span className="ap-sub">{error.fix}</span>}
+            {error.fix && <span className="ap-sub"> {error.fix}</span>}
           </p>
         )}
       </div>
 
       {manual && (phase === "approved" || phase === "confirmed") && <PurchaseSteps jobId={jobId} business={business} initial={purchase} />}
-
-      <div className="ap-actions">
-        {(phase === "idle" || phase === "previewing") && (
-          <button type="button" className="btn btn-primary" onClick={startApprove} disabled={phase === "previewing"} aria-busy={phase === "previewing"}>
-            {phase === "previewing" ? "Checking…" : `Approve ${usd(payNow)}`}
-          </button>
-        )}
-        {!manual && (phase === "approved" || phase === "paying") && (
-          <button type="button" className="btn btn-primary" onClick={pay} disabled={phase === "paying"} aria-busy={phase === "paying"}>
-            {phase === "paying" ? "Paying…" : `Pay ${usd(payNow)}`}
-          </button>
-        )}
-      </div>
     </section>
   );
 }

@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
 import { HaggleError } from "../lib/haggle.ts";
 import { errorJson, runDealAction } from "../lib/dashboard/actions.ts";
 import {
-  activity, ago, boardStatus, dealCounts, dealLine, flagTone, flagWords, humanNext, isApprovable, isTerminal, money, mustHaves, payNowLine, priceCheckWords, progress,
-  plainNote, possessive, recommendationReason, recommendationSentence, savedBy, sentence, sheetQuotes, sortQuotes, stamp, stateWords, timeline,
+  activity, ago, boardStatus, dayWords, dealCounts, dealLine, flagTone, flagWords, humanNext, isApprovable, isTerminal, money, mustHaves, payNowLine, priceCheckWords, progress,
+  plainNote, possessive, recommendationReason, recommendationSentence, savedBy, sentence, sheetQuotes, sortQuotes, stamp, stateWords, timeline, valueNote,
 } from "../lib/dashboard/format.ts";
 import { backoffMs, cursorOf, streamUrl } from "../lib/dashboard/live.ts";
 import { parseCursor, sseComment, sseFrame, streamUpdates } from "../lib/dashboard/stream.ts";
@@ -153,7 +153,9 @@ describe("quotes comparison (fixture board)", () => {
     const sel = (reason: string) => ({ recommended_quote_id: "q1", selection: { q1: { status: "recommended" as const, reason } } });
     expect(recommendationSentence(sel("recommended: meets every requirement and the budget, fresh, best value of the q…"))).toBe("Meets every requirement and the budget, fresh.");
     expect(recommendationSentence(sel("recommended: cheapest compliant"))).toBe("Cheapest compliant.");
-    expect(recommendationSentence({ ...sel("recommended: meets every requirement, best val…"), value: { explanation: { winner: "Best value for 40 people.", others: [] } } })).toBe("Best value for 40 people.");
+    const winner = "Bay Catering: best value 0.77 — $995 (negotiated down from $1,150), delivery included.";
+    expect(recommendationSentence({ ...sel("recommended: best val…"), value: { explanation: { winner, others: [] } } })).toBe("$995 (negotiated down from $1,150), delivery included.");
+    expect(valueNote(winner)).toBe("$995 (negotiated down from $1,150), delivery included.");
     expect(recommendationSentence({})).toBeNull();
   });
 });
@@ -389,13 +391,17 @@ describe("the deal board (fixture board)", () => {
     ]);
     const paid = board({ state: "paid", payment: { status: "paid", simulated: true }, approval: { approval_id: "a", quote_id: "q_bay_1", status: "used", channel: "web" } });
     expect(p(paid).slice(-2)).toEqual([["You approved a quote", "done"], ["Paid (simulated)", "done"]]);
-    expect(p(board({ state: "cancelled" })).at(-1)).toEqual(["Cancelled", "current"]);
+    expect(p(board({ state: "cancelled" }))).toEqual([
+      ["Contacted 6 businesses", "done"], ["5 of 6 quoted", "done"], ["Your approval", "todo"], ["Payment", "todo"], ["Cancelled", "current"],
+    ]);
     expect(p(board({ state: "contacting", quotes: [] }))[0]).toEqual(["Contacted 6 businesses", "current"]);
   });
 
   it("formats a deals-list row's counts and the server's one-line notes", () => {
     expect(dealCounts({ businesses: 6, quotes: 3 })).toBe("6 contacted, 3 quoted");
     expect(dealCounts({})).toBe("");
+    expect(dayWords("2026-11-05")).toBe("Thu, Nov 5");
+    expect(dayWords("next Thursday")).toBe("next Thursday");
     expect(sentence("call ended · completed")).toBe("Call ended, completed");
     expect(plainNote("Counteroffer to Bay Catering over A2A: match 1070 (real quote q_7b52862922fe4ce49f6e), a real cheaper quote")).toBe(
       "Counteroffer to Bay Catering over A2A: match 1070, a real cheaper quote",

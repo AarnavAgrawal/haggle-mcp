@@ -199,24 +199,26 @@ export function recommendationReason(board: Pick<DealBoardView, "recommended_quo
 
 const CLIPPED = /(?:…|\.{3})\.?$/;
 
+/** The value ranking's explanation for a person: "Bay Catering: best value 0.77 — $995 …" -> "$995 …". */
+export function valueNote(s: string): string {
+  return sentence(s.replace(/^[^:]{1,80}:\s*best value\s+[\d.]+\s*[—–-]\s*/i, "").trim());
+}
+
 /**
  * The recommendation's reason as a whole sentence, never cut mid-word: the server's compact board
- * clips long reasons ("…best value of the q…"); then the value winner's explanation is used, or the
- * reason up to its last complete clause.
+ * clips long reasons ("…best value of the q…"); then it is cut back to its last complete clause, or,
+ * when too little is left, the value winner's explanation is used.
  */
 export function recommendationSentence(board: Pick<DealBoardView, "recommended_quote_id" | "selection" | "value" | "recommendation_note">): string | null {
   const raw = recommendationReason(board);
   if (!raw) return null;
-  const clean = (s: string) => sentence(s.replace(/^(why )?recommended:\s*/i, "").trim());
-  let text = clean(raw);
+  let text = sentence(raw.replace(/^(why )?recommended:\s*/i, "").trim());
   if (CLIPPED.test(text)) {
+    const cut = text.replace(CLIPPED, "");
+    const at = Math.max(cut.lastIndexOf(", "), cut.lastIndexOf("; "));
+    text = at > 0 ? cut.slice(0, at) : cut.replace(/\s+\S*$/, "");
     const winner = board.value?.explanation?.winner;
-    if (winner && !CLIPPED.test(winner.trim())) text = clean(winner);
-    else {
-      const cut = text.replace(CLIPPED, "");
-      const at = Math.max(cut.lastIndexOf(", "), cut.lastIndexOf("; "));
-      text = at > 0 ? cut.slice(0, at) : cut.replace(/\s+\S*$/, "");
-    }
+    if (text.length < 20 && winner && !CLIPPED.test(winner.trim())) text = valueNote(winner);
   }
   return /[.!?]$/.test(text) ? text : `${text}.`;
 }
@@ -450,7 +452,8 @@ export function progress(board: Pick<DealBoardView, "job" | "businesses" | "quot
   const stopped = state === "cancelled" || state === "failed";
   const order = ["created", "contacting", "collecting", "negotiating", "awaiting_approval", "paying", "paid"];
   const at = state === "confirmed" ? order.length - 1 : order.indexOf(state);
-  const past = (s: string) => at > order.indexOf(s);
+  // A stopped deal keeps what really happened (contacted, quoted, countered) as done.
+  const past = (s: string) => stopped || at > order.indexOf(s);
   const status = (done: boolean, current: boolean): StepStatus => (done ? "done" : current && !stopped ? "current" : "todo");
   const steps: ProgressStep[] = [
     { key: "contact", label: n ? `Contacted ${plural(n, "business", "businesses")}` : "Contact businesses", status: status(n > 0 && past("contacting"), state === "created" || state === "contacting") },
@@ -461,11 +464,19 @@ export function progress(board: Pick<DealBoardView, "job" | "businesses" | "quot
     steps.push({ key: "negotiate", label: countered ? `Asked ${plural(countered, "business", "businesses")} for a better price` : "Negotiate", status: status(countered > 0 && past("negotiating"), state === "negotiating") });
   }
   const approved = !!board.approval && ["approved", "used"].includes(board.approval.status);
-  steps.push({ key: "approve", label: approved ? "You approved a quote" : "Your approval", status: status(approved || past("awaiting_approval"), state === "awaiting_approval") });
+  steps.push({ key: "approve", label: approved ? "You approved a quote" : "Your approval", status: status(approved || (!stopped && past("awaiting_approval")), state === "awaiting_approval") });
   const finish = state === "confirmed" ? "Order confirmed" : state === "paid" ? (board.payment?.simulated ? "Paid (simulated)" : "Paid") : board.purchase ? "Purchase" : "Payment";
   steps.push({ key: "finish", label: finish, status: status(state === "paid" || state === "confirmed", state === "paying") });
   if (stopped) steps.push({ key: "stopped", label: state === "cancelled" ? "Cancelled" : "Stopped", status: "current" });
   return steps;
+}
+
+/** "2026-11-05" -> "Thu, Nov 5" (a calendar date, read in UTC so it never shifts a day); other text unchanged. */
+export function dayWords(date: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+  const t = Date.parse(`${date}T12:00:00Z`);
+  if (Number.isNaN(t)) return date;
+  return new Date(t).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 /** A /deals row's counts: "6 contacted, 3 quoted" (parts the server left out are skipped). */

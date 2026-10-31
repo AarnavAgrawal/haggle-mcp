@@ -1,12 +1,17 @@
 "use client";
-// Keeps a deal page live: an EventSource on /api/deals/<jobId>/stream, router.refresh() (debounced) on
-// each update, reconnecting with the last cursor. Shows a small Live / Reconnecting indicator.
-import { useEffect, useState } from "react";
+// Keeps a deal page live: an EventSource on /api/deals/<jobId>/stream; each update re-renders the page
+// on the server (router.refresh() in a transition: the current board stays on screen, no flash, until
+// the new one is ready), reconnecting with the last cursor. Updates that arrive close together are
+// coalesced into one refresh. Visible only when something is wrong (reconnecting); otherwise a polite
+// screen-reader status.
+import { startTransition, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { backoffMs, cursorOf, streamUrl } from "@/lib/dashboard/live";
 
 type Status = "connecting" | "live" | "reconnecting" | "done";
-const LABEL: Record<Status, string> = { connecting: "Connecting", live: "Live", reconnecting: "Reconnecting", done: "Up to date" };
+const LABEL: Record<Status, string> = { connecting: "Connecting to live updates", live: "Live updates on", reconnecting: "Reconnecting…", done: "Up to date" };
+/** Coalesce a burst of updates (a quote and its state change) into one server render. */
+const COALESCE_MS = 150;
 
 export function LiveRefresh({ jobId }: { jobId: string }) {
   const router = useRouter();
@@ -22,7 +27,7 @@ export function LiveRefresh({ jobId }: { jobId: string }) {
 
     const refresh = () => {
       clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => router.refresh(), 400);
+      refreshTimer = setTimeout(() => startTransition(() => router.refresh()), COALESCE_MS);
     };
     const reconnect = (delay: number) => {
       es?.close();
@@ -36,9 +41,11 @@ export function LiveRefresh({ jobId }: { jobId: string }) {
       const src = new EventSource(streamUrl(jobId, cursor));
       es = src;
       src.addEventListener("ready", (e) => {
+        const wasDown = failures > 0;
         cursor = cursorOf((e as MessageEvent<string>).data) ?? cursor;
         failures = 0;
         setStatus("live");
+        if (wasDown) refresh(); // catch up on anything missed while disconnected
       });
       src.addEventListener("update", (e) => {
         cursor = cursorOf((e as MessageEvent<string>).data) ?? cursor;
@@ -84,8 +91,7 @@ export function LiveRefresh({ jobId }: { jobId: string }) {
 
   return (
     <span className={`live live-${status}`} role="status" aria-live="polite">
-      <span className="live-dot" aria-hidden="true" />
-      {LABEL[status]}
+      <span className={status === "reconnecting" ? "live-words" : "sr-only"}>{LABEL[status]}</span>
     </span>
   );
 }
