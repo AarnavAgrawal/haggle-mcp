@@ -7,9 +7,9 @@ import { LEGAL_DRAFT_NOTE, supportEmail, TERMS_VERSION } from "@/lib/account/leg
 import "./legal.css";
 
 const DOCS = [
-  { key: "terms", href: "/terms", label: "Terms of Service" },
-  { key: "privacy", href: "/privacy", label: "Privacy Policy" },
-  { key: "acceptable-use", href: "/acceptable-use", label: "Acceptable Use" },
+  { key: "terms", href: "/terms", label: "Terms" },
+  { key: "privacy", href: "/privacy", label: "Privacy" },
+  { key: "acceptable-use", href: "/acceptable-use", label: "Acceptable use" },
 ] as const;
 
 export type LegalDoc = (typeof DOCS)[number]["key"];
