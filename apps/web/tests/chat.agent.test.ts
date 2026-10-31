@@ -3,6 +3,7 @@
 // the deal event (and none for a dry run), the step cap, refusal, pause_turn and the request shape.
 import { describe, expect, it } from "vitest";
 import { MAX_MODEL_CALLS, runChatTurn, type ChatEvent, type ChatModelClient } from "../lib/chat/agent.ts";
+import { CHAT_SYSTEM_PROMPT } from "../lib/chat/prompt.ts";
 import { HaggleError } from "../lib/haggle.ts";
 import { LLM_TOOLS } from "../lib/tools.ts";
 
@@ -138,6 +139,25 @@ describe("runChatTurn", () => {
     expect(t.events.some((e) => e.type === "deal")).toBe(false);
     expect(t.result.jobId).toBeUndefined();
     expect(t.events).toContainEqual({ type: "tool", name: "deal", status: "done", summary: "Preview ready (nothing sent)" });
+  });
+
+  it("a deal that needs info starts nothing and says so", async () => {
+    const t = await turn([reply("tool_use", toolUse("deal", { request: { what: "plumber" }, dry_run: true })), reply("end_turn", text("A few quick questions: what's wrong, where, and how urgent?"))], {
+      deal: () => ({ data: { ok: false, mode: "mock", job: null, needs_info: { category: "home_repair", label: "Home repair", missing: [{ key: "problem", question: "What's wrong?", field: "details: Problem" }], helpful: [], brief: "plumber" } }, text: "NEEDS INFO (nothing sent)" }),
+    });
+    expect(t.events.some((e) => e.type === "deal")).toBe(false);
+    expect(t.result.jobId).toBeUndefined();
+    expect(t.events).toContainEqual({ type: "tool", name: "deal", status: "done", summary: "Needs a few details (nothing sent)" });
+  });
+
+  it("the system prompt does intake per kind of purchase: one message, restate the brief, handle needs_info", () => {
+    expect(CHAT_SYSTEM_PROMPT).toMatch(/In ONE short, friendly message/);
+    expect(CHAT_SYSTEM_PROMPT).toMatch(/restate the brief in one line/);
+    expect(CHAT_SYSTEM_PROMPT).toMatch(/Home repair and trades.*what's wrong and where in the home/);
+    expect(CHAT_SYSTEM_PROMPT).toMatch(/Moving: from where to where/);
+    expect(CHAT_SYSTEM_PROMPT).toMatch(/If deal returns needs_info, nothing was sent/);
+    expect(CHAT_SYSTEM_PROMPT).toMatch(/proceed_anyway: true only if the user explicitly says/);
+    expect(CHAT_SYSTEM_PROMPT).not.toMatch(/\d{4}-\d{2}-\d{2}/); // still a byte-stable cache prefix
   });
 
   it("caps wait_for_update at 20 seconds", async () => {
