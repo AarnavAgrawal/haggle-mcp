@@ -21,6 +21,8 @@ export const limiters = {
   /** Vendor adds and removals: 20 per user per minute; vendor searches: 10. */
   vendorWrites: shared("web_vendor_writes", 20, 60),
   vendorDiscover: shared("web_vendor_discover", 10, 60),
+  /** Settings changes and approver-code attempts: 10 per user per minute. */
+  settingsWrites: shared("web_settings_writes", 10, 60),
   /** Account deletion: 3 attempts per user per 10 minutes; data export: 5. */
   accountDelete: shared("web_account_delete", 3, 600),
   accountExport: shared("web_account_export", 5, 600),

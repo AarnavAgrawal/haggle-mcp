@@ -87,12 +87,27 @@ export async function resolveWorkspace(rt: Runtime, headers: { authorization?: s
  * account id, so a retried signup finds the same workspace; its bearer token and connector secret
  * are random and never shown (the web app reaches it with the service credential).
  */
+/** The workspace id a web app account owns (planServiceWorkspace derives it from the owner's account id). */
+export const webWorkspaceIdFor = (ownerRef: string) => `ws_u_${hashSecret(`haggle-web:${ownerRef}`).slice(0, 24)}`;
+
+/**
+ * Is this x-haggle-actor the workspace's owner? The web app sends `<email> (<account id>)` or the bare
+ * account id; the owner is the account whose id the workspace id was derived from. Timing-safe.
+ */
+export function actorOwnsWorkspace(actor: string | null | undefined, workspaceId: string): boolean {
+  const ref = actor?.trim().match(/\(([^()\s]+)\)$/)?.[1] ?? actor?.trim();
+  if (!ref) return false;
+  const a = Buffer.from(webWorkspaceIdFor(ref));
+  const b = Buffer.from(workspaceId);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export function planServiceWorkspace(a: { ownerRef: string; name: string; approverPhone?: string; approverEmail?: string; capUsd?: number; timezone?: string; area?: string }) {
   if (!a.ownerRef?.trim()) throw new Error("ownerRef is required");
   if (a.approverPhone && !/^\+[1-9]\d{6,14}$/.test(a.approverPhone)) throw new Error("approver phone must be E.164, e.g. +14155550123");
   if (a.capUsd !== undefined && !(a.capUsd > 0)) throw new Error("the spending cap must be positive");
   return {
-    id: `ws_u_${hashSecret(`haggle-web:${a.ownerRef}`).slice(0, 24)}`,
+    id: webWorkspaceIdFor(a.ownerRef),
     name: (a.name?.trim() || "My workspace").slice(0, 120),
     tokenHash: hashSecret(newSecret("hgw")), connectorSecretHash: hashSecret(newSecret("hgc")),
     timezone: a.timezone ?? "America/Los_Angeles",

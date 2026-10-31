@@ -6,7 +6,7 @@ import { newId } from "../ids.ts";
 import { isTransient } from "../live/transient.ts";
 import { gatedSql, PoolGate, type PoolStats } from "./poolGate.ts";
 import {
-  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction, type AiUsageRow, type RateSlot, type WorkspaceIdentityRow,
+  DEFAULT_WORKSPACE_ID, type ApprovalRow, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow, type WorkspaceRow, type OutboxRow, type SuppressionRow, type WorkspaceVendorRow, type PaymentHandoffRow, type OperatorReviewRow, type TextRouteRow, type HeldTextRow, type SuppressionRemovalRow, type BookingRow, type HandoffReceiptRow, type QuarantineResolutionRow, type ReconcileChannel, type OperatorActionRow, type OperatorAction, type AiUsageRow, type RateSlot, type WorkspaceIdentityRow, type SettingsAuditRow, type ApproverChangeRow, type WorkspaceProfilePatch,
 } from "./types.ts";
 
 type Sql = postgres.Sql<Record<string, never>>;
@@ -704,6 +704,53 @@ export class PostgresRepository implements Repository {
         ${q.jobId !== undefined ? s`and job_id = ${q.jobId}` : s``}
         ${q.actions ? s`and action = any(${q.actions})` : s``}
       order by seq desc limit ${q.limit ?? 200}`);
+  }
+  // owner settings (migration 129)
+  async updateWorkspaceProfile(id: string, patch: WorkspaceProfilePatch) {
+    const s = this.sql;
+    // Only the given columns are written: sender_name (129) is touched only when it is set.
+    const r = await s`
+      update workspaces set
+        name = ${patch.name !== undefined ? patch.name : s`name`},
+        timezone = ${patch.timezone !== undefined ? patch.timezone : s`timezone`}
+        ${patch.sender_name !== undefined ? s`, sender_name = ${patch.sender_name}` : s``}
+      where id = ${id} returning id, name, token_hash, connector_secret_hash, timezone, revoked_at, created_at`;
+    return row<WorkspaceRow>(r[0]);
+  }
+  async getSenderName(workspaceId: string) {
+    const r = await this.sql`select sender_name from workspaces where id = ${workspaceId}`;
+    return (r[0]?.sender_name as string | null | undefined) ?? null;
+  }
+  async appendSettingsAudit(rs: Omit<SettingsAuditRow, "at">[]) {
+    if (!rs.length) return;
+    await this.sql`insert into settings_audit ${this.sql(rs.map((r) => ({ workspace_id: r.workspace_id, by: r.by, actor: r.actor, field: r.field, old_value: r.old_value, new_value: r.new_value })) as never)}`;
+  }
+  async listSettingsAudit(workspaceId: string, limit = 50) {
+    return rows<SettingsAuditRow>(await this.sql`
+      select workspace_id, by, actor, field, old_value, new_value, at from settings_audit
+      where workspace_id = ${workspaceId} order by id desc limit ${limit}`);
+  }
+  async insertApproverChange(r: Omit<ApproverChangeRow, "created_at" | "decided_at" | "attempts" | "status">) {
+    const x = await this.sql`insert into approver_changes ${this.sql(this.vals(r as never))} returning *`;
+    return row<ApproverChangeRow>(x[0])!;
+  }
+  async pendingApproverChanges(workspaceId: string) {
+    return rows<ApproverChangeRow>(await this.sql`
+      select * from approver_changes where workspace_id = ${workspaceId} and status = 'pending' order by created_at desc`);
+  }
+  async getApproverChange(id: string) {
+    return row<ApproverChangeRow>((await this.sql`select * from approver_changes where id = ${id}`)[0]);
+  }
+  async findApproverChangeByToken(tokenHash: string) {
+    return row<ApproverChangeRow>((await this.sql`select * from approver_changes where token_hash = ${tokenHash}`)[0]);
+  }
+  async bumpApproverChangeAttempts(id: string) {
+    return row<ApproverChangeRow>((await this.sql`
+      update approver_changes set attempts = attempts + 1 where id = ${id} and status = 'pending' returning *`)[0]);
+  }
+  async closeApproverChange(id: string, status: Exclude<ApproverChangeRow["status"], "pending">) {
+    return row<ApproverChangeRow>((await this.sql`
+      update approver_changes set status = ${status}, decided_at = now() where id = ${id} and status = 'pending' returning *`)[0]);
   }
   // per-call AI usage (migration 122)
   async recordAiUsage(u: Omit<AiUsageRow, "id" | "at"> & { at?: string }) {

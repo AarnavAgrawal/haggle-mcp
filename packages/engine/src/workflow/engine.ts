@@ -60,7 +60,8 @@ import { mustHaveLine, normalizeRequirements } from "./requestNormalize.ts";
 import { purchasePaymentLine, purchaseView, type PurchaseStage, type PurchaseView } from "../payments/purchase.ts";
 import { scoreQuotes, type ValueInput, type ValueRanking } from "../ranking/value.ts";
 import { chooseChannel, learnContact, type ContactLearning } from "../routing/channelStats.ts";
-import { DEFAULT_WORKSPACE_ID, RESERVED_WORKSPACE_IDS, type ApprovalRow, type BookingRow, type Channel, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentHandoffRow, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsRow } from "../store/types.ts";
+import { DEFAULT_WORKSPACE_ID, RESERVED_WORKSPACE_IDS, type ApprovalRow, type BookingRow, type Channel, type JobBusinessRow, type JobEventRow, type JobRow, type MessageRow, type NewMessage, type PaymentHandoffRow, type PaymentRow, type QuestionRow, type QuoteRow, type Repository, type SettingsActor, type SettingsRow } from "../store/types.ts";
+import { APPROVER_EMAIL_TTL_MS, APPROVER_PHONE_TTL_MS, MAX_APPROVER_CODE_ATTEMPTS, approverChangeNotice, approverCodeMatches, approverCodeText, approverConfirmEmail, auditRows, isExpired, newVerification, profilePatch, settingsPatch, tokenHash, type OwnerSettingsPatch, type WorkspaceSettingsView } from "./ownerSettings.ts";
 import { quotePartToExtraction } from "./quotePart.ts";
 import { toContractQuote, toEngineRequirement, toParsedReply } from "./mapping.ts";
 import { MAX_ROUND, start, TERMINAL, transition, type ApprovalAction, type Effect, type JobEvent, type MachineState } from "./stateMachine.ts";
@@ -7507,17 +7508,31 @@ export class HaggleEngine {
     };
   }
 
-  /** Settings change only through this call (settings tools / native settings UI), never from business mail. */
-  async updateSettings(patch: Partial<Omit<SettingsRow, "updated_at">>, workspaceId: string = DEFAULT_WORKSPACE_ID, by: "operator" | "agent" = "operator"): Promise<SettingsRow> {
+  /**
+   * Settings change only through this call (settings tools / native settings UI, the operator's scripts,
+   * the owner in the web app), never from business mail. `by` decides what is allowed (ownerSettings.ts);
+   * every change writes one audit row per field (migration 129).
+   */
+  async updateSettings(patch: Partial<Omit<SettingsRow, "updated_at">>, workspaceId: string = DEFAULT_WORKSPACE_ID, by: SettingsActor = "operator", actor: string | null = null): Promise<SettingsRow> {
+    return this.applySettings(patch, workspaceId, by, actor, false);
+  }
+
+  /** `verified`: the new approver proved it controls the contact (confirmApproverChange); only then may an owner set one. */
+  private async applySettings(patch: Partial<Omit<SettingsRow, "updated_at">>, workspaceId: string, by: SettingsActor, actor: string | null, verified: boolean): Promise<SettingsRow> {
     const cur = await this.getSettings(workspaceId);
     const next = { ...cur, ...patch };
+    const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? null) === (b ?? null);
+    const phoneChange = patch.approver_phone !== undefined && !same(patch.approver_phone, cur.approver_phone);
+    const emailChange = patch.approver_email !== undefined && !same(patch.approver_email ? normalizeAddress(patch.approver_email) : null, cur.approver_email);
     if (by === "agent") {
-      // Who approves and how much may be spent are the operator's (workspace-create / workspace-admin),
+      // Who approves and how much may be spent are the human's (owner in the web app, operator scripts),
       // never a tool call's: a model that could set them could approve its own purchases.
-      const same = (a: string | null | undefined, b: string | null | undefined) => (a ?? null) === (b ?? null);
-      if (patch.approver_phone !== undefined && !same(patch.approver_phone, cur.approver_phone)) throw approverChangeRefused();
-      if (patch.approver_email !== undefined && !same(patch.approver_email ? normalizeAddress(patch.approver_email) : null, cur.approver_email)) throw approverChangeRefused();
-      if (next.spending_cap_cents > cur.spending_cap_cents) throw new EngineError("cap_increase_requires_operator", "The spending cap can only be raised by the operator.", "Ask the operator to raise it (scripts/workspace-admin.ts); lowering it is allowed here.", "settings");
+      if (phoneChange || emailChange) throw approverChangeRefused();
+      if (next.spending_cap_cents > cur.spending_cap_cents) throw new EngineError("cap_increase_requires_operator", "The spending cap can only be raised by a human: the workspace owner in Settings, or the operator.", "Ask the workspace owner to raise it in Haggle's Settings; lowering it is allowed here.", "settings");
+    }
+    // An owner may clear the approver, but a new one waits for verification (requestApproverChange).
+    if (by === "owner" && !verified && ((phoneChange && patch.approver_phone) || (emailChange && patch.approver_email))) {
+      throw new EngineError("approver_verification_required", "A new approver must be verified before it takes effect.", "Send it as approver_phone / approver_email to the settings route: Haggle sends a code (or a confirm link) and keeps the current approver until it is confirmed.", "settings");
     }
     const ceiling = this.d.config.spendingCapCeilingCents ?? 500_000;
     if (!Number.isInteger(next.spending_cap_cents) || next.spending_cap_cents <= 0) throw new EngineError("bad_cap", "The spending cap must be a positive amount.", "Pass a positive spending cap.", "settings");
@@ -7525,7 +7540,169 @@ export class HaggleEngine {
     if (next.approver_phone && !E164_RE.test(next.approver_phone)) throw new EngineError("bad_phone", "Approver phone must be E.164, e.g. +14155550123.", "Fix the approver phone.", "settings");
     if (next.approver_email && !EMAIL_RE.test(next.approver_email)) throw new EngineError("bad_email", "Approver email is not an email address.", "Fix the approver email.", "settings");
     const { updated_at: _u, ...row } = next;
-    return this.repo.saveSettings({ ...row, approver_email: row.approver_email ? normalizeAddress(row.approver_email) : null }, workspaceId);
+    const toSave = { ...row, approver_email: row.approver_email ? normalizeAddress(row.approver_email) : null };
+    const audit = auditRows(workspaceId, by, actor, cur as unknown as Record<string, unknown>, toSave as unknown as Record<string, unknown>, maskHandle);
+    // An owner's change is audited first (no audit, no change); the operator's and an agent's after, best effort.
+    if (by === "owner") await this.requireOwnerStore().appendSettingsAudit!(audit);
+    const saved = await this.repo.saveSettings(toSave, workspaceId);
+    if (by !== "owner") await this.auditBestEffort(audit);
+    return saved;
+  }
+
+  private async auditBestEffort(rows: Parameters<NonNullable<Repository["appendSettingsAudit"]>>[0]) {
+    if (!rows.length || !this.repo.appendSettingsAudit) return;
+    await this.repo.appendSettingsAudit(rows).catch((e: Error) => this.log("settings_audit_failed", { error: String(e?.message ?? e).slice(0, 200), hint: "apply supabase/migrations/129_engine_settings_audit.sql" }));
+  }
+
+  /** The store's owner-settings methods (migration 129), or a refusal naming the migration. */
+  private requireOwnerStore(): Repository {
+    const r = this.repo;
+    if (!r.appendSettingsAudit || !r.updateWorkspaceProfile || !r.insertApproverChange || !r.pendingApproverChanges || !r.closeApproverChange || !r.bumpApproverChangeAttempts || !r.findApproverChangeByToken) {
+      throw new EngineError("settings_store_outdated", "This server's database can't store owner settings changes yet.", "The operator must apply supabase/migrations/129_engine_settings_audit.sql.", "settings");
+    }
+    return r;
+  }
+
+  /** The owner's settings page: editable values (approver masked), pending approver changes, the ceiling. */
+  async workspaceSettings(workspaceId: string): Promise<WorkspaceSettingsView> {
+    const [ws, s] = await Promise.all([this.repo.getWorkspace(workspaceId), this.getSettings(workspaceId)]);
+    if (!ws) throw new EngineError("workspace_not_found", "Unknown workspace.", "Send the signed-in user's workspace id.", "settings");
+    const sender = this.repo.getSenderName ? await this.repo.getSenderName(workspaceId).catch(() => null) : null;
+    const pending = this.repo.pendingApproverChanges ? await this.repo.pendingApproverChanges(workspaceId).catch(() => []) : [];
+    const now = this.now();
+    return {
+      name: ws.name, timezone: ws.timezone, sender_name: sender, default_area: s.default_area,
+      default_deal_limit_usd: centsToUsd(s.spending_cap_cents), ceiling_usd: centsToUsd(this.d.config.spendingCapCeilingCents ?? 500_000),
+      approver: { phone: s.approver_phone ? maskHandle(s.approver_phone) : null, email: s.approver_email ? maskHandle(s.approver_email) : null },
+      pending: pending.filter((p) => !isExpired(p, now)).map((p) => ({ kind: p.kind, to: maskHandle(p.value), expires_at: p.expires_at, attempts_left: Math.max(0, MAX_APPROVER_CODE_ATTEMPTS - p.attempts) })),
+    };
+  }
+
+  /**
+   * The signed-in workspace owner changes settings (web app). Everything is checked before anything is
+   * saved. A new approver phone or email is not applied: it gets a code (iMessage) or a confirm link
+   * (email) and stays pending until confirmApproverChange; the old approver stays meanwhile.
+   * `confirmUrl`: the web app's settings URL for the email link. Mock mode sends nothing and returns
+   * the code as `demo_codes` (labelled simulated).
+   */
+  async ownerUpdateSettings(workspaceId: string, actor: string, p: OwnerSettingsPatch, opts: { confirmUrl?: string | null } = {}): Promise<{ settings: WorkspaceSettingsView; changed: string[]; demo_codes?: { kind: "phone" | "email"; code: string }[] }> {
+    const repo = this.requireOwnerStore();
+    const ws = await repo.getWorkspace(workspaceId);
+    if (!ws) throw new EngineError("workspace_not_found", "Unknown workspace.", "Send the signed-in user's workspace id.", "settings");
+    const prof = profilePatch(p);
+    if ("problem" in prof) throw new EngineError(prof.problem.code, prof.problem.message, prof.problem.fix, "settings");
+    const cur = await this.getSettings(workspaceId);
+    const newPhone = p.approver_phone ? p.approver_phone.replace(/[\s().-]/g, "") : null;
+    const newEmail = p.approver_email ? normalizeAddress(p.approver_email) : null;
+    if (newPhone && !E164_RE.test(newPhone)) throw new EngineError("bad_phone", "Approver phone must be E.164, e.g. +14155550123.", "Fix the approver phone.", "settings");
+    if (newEmail && !EMAIL_RE.test(newEmail)) throw new EngineError("bad_email", "Approver email is not an email address.", "Fix the approver email.", "settings");
+    const asks = [
+      ...(newPhone && newPhone !== cur.approver_phone ? [{ kind: "phone" as const, value: newPhone }] : []),
+      ...(newEmail && newEmail !== cur.approver_email ? [{ kind: "email" as const, value: newEmail }] : []),
+    ];
+    if (asks.some((a) => a.kind === "phone") && this.d.config.mode !== "mock" && !this.d.imessage) {
+      throw new EngineError("imessage_off", "Haggle can't text a code on this server, so a new approver phone can't be verified.", "Ask the operator to enable iMessage, or to set the approver (scripts/workspace-admin.ts set-approver).", "settings");
+    }
+    const changed: string[] = [];
+    const sp = settingsPatch(p);
+    if (Object.keys(sp).length) {
+      const before = cur as unknown as Record<string, unknown>;
+      const saved = await this.applySettings(sp, workspaceId, "owner", actor, false);
+      changed.push(...Object.keys(sp).filter((k) => before[k] !== (saved as unknown as Record<string, unknown>)[k]));
+    }
+    const prev = { name: ws.name, timezone: ws.timezone, sender_name: repo.getSenderName ? await repo.getSenderName(workspaceId) : null };
+    const profChanges = auditRows(workspaceId, "owner", actor, prev, prof.patch as Record<string, unknown>, maskHandle);
+    if (profChanges.length) {
+      await repo.appendSettingsAudit!(profChanges);
+      await repo.updateWorkspaceProfile!(workspaceId, Object.fromEntries(profChanges.map((r) => [r.field, prof.patch[r.field as keyof typeof prof.patch]])));
+      changed.push(...profChanges.map((r) => r.field));
+    }
+    const demo: { kind: "phone" | "email"; code: string }[] = [];
+    for (const a of asks) {
+      const code = await this.requestApproverChange(workspaceId, actor, a.kind, a.value, ws.name, cur, opts.confirmUrl ?? null);
+      if (this.d.config.mode === "mock") demo.push({ kind: a.kind, code });
+      changed.push(`approver_${a.kind}_pending`);
+    }
+    return { settings: await this.workspaceSettings(workspaceId), changed, ...(demo.length ? { demo_codes: demo } : {}) };
+  }
+
+  /** Store a pending approver change (superseding an older one of the same kind) and send its code; returns the code. */
+  private async requestApproverChange(workspaceId: string, actor: string, kind: "phone" | "email", value: string, workspaceName: string, cur: SettingsRow, confirmUrl: string | null): Promise<string> {
+    const repo = this.requireOwnerStore();
+    for (const old of await repo.pendingApproverChanges!(workspaceId)) if (old.kind === kind) await repo.closeApproverChange!(old.id, "superseded");
+    const id = newId("apc");
+    const v = newVerification(id, kind);
+    const ttl = kind === "phone" ? APPROVER_PHONE_TTL_MS : APPROVER_EMAIL_TTL_MS;
+    await repo.insertApproverChange!({ id, workspace_id: workspaceId, kind, value, code_hash: v.codeHash, token_hash: v.tokenHash, requested_by: actor.slice(0, 200), expires_at: new Date(this.now().getTime() + ttl).toISOString() });
+    await repo.appendSettingsAudit!([{ workspace_id: workspaceId, by: "owner", actor: actor.slice(0, 200), field: `approver_${kind}_requested`, old_value: null, new_value: maskHandle(value) }]);
+    this.log("approver_change_requested", { workspace_id: workspaceId, kind, to: maskHandle(value) });
+    if (this.d.config.mode === "mock") return v.code; // DEMO: nothing is sent; the caller shows the code, labelled simulated
+    try {
+      if (kind === "phone") {
+        await this.d.imessage!.send({ to: value, text: approverCodeText(v.code), idempotencyKey: `approver-verify:${id}` });
+      } else {
+        const mail = approverConfirmEmail({ code: v.code, token: v.token!, confirmUrl, workspaceName, minutes: ttl / 60_000 });
+        await this.d.email.send({ from: this.settingsMailbox(), to: value, subject: mail.subject, bodyText: mail.bodyText, idempotencyKey: `approver-verify:${id}` });
+      }
+    } catch (err) {
+      await repo.closeApproverChange!(id, "failed");
+      const msg = String((err as Error)?.message ?? err);
+      const why = kind === "phone" ? imessageFailureReason(msg, this.settingsMailbox().split("@")[0]!) : msg.slice(0, 200);
+      throw new EngineError("verification_not_sent", `Haggle couldn't send the code to ${maskHandle(value)} (${why}).`, kind === "phone" ? "For iMessage, the new number must first text the connect command to Haggle's number; then try again." : "Check the address and try again.", "settings");
+    }
+    // The current approver hears about it, so a change is never quiet (best effort, email only).
+    if (cur.approver_email && cur.approver_email !== value) {
+      const note = approverChangeNotice({ kind, to: maskHandle(value), workspaceName });
+      await this.d.email.send({ from: this.settingsMailbox(), to: cur.approver_email, subject: note.subject, bodyText: note.bodyText, idempotencyKey: `approver-notice:${id}` })
+        .catch((e: Error) => this.log("approver_notice_failed", { workspace_id: workspaceId, error: String(e?.message ?? e).slice(0, 200) }));
+    }
+    return v.code;
+  }
+
+  private settingsMailbox(): string {
+    return this.d.config.sharedInbox ?? `haggle@${this.d.config.inboxDomain}`;
+  }
+
+  /**
+   * The owner confirms a pending approver change: the code that was texted or emailed, or the email's
+   * link token. Expired, failed or superseded changes are refused; 5 wrong codes end the change. On
+   * success the new approver takes effect (audited as the owner's).
+   */
+  async confirmApproverChange(workspaceId: string, actor: string, by: { kind: "phone" | "email"; code: string } | { token: string }): Promise<{ settings: WorkspaceSettingsView; confirmed: "phone" | "email" }> {
+    const repo = this.requireOwnerStore();
+    const row = "token" in by
+      ? await repo.findApproverChangeByToken!(tokenHash(by.token)).then((r) => (r && r.workspace_id === workspaceId ? r : null))
+      : (await repo.pendingApproverChanges!(workspaceId)).find((r) => r.kind === by.kind) ?? null;
+    if (!row || row.status !== "pending") throw new EngineError("no_pending_change", "There's no approver change waiting to be confirmed.", "Request the change again in Settings.", "settings");
+    if (isExpired(row, this.now())) {
+      await repo.closeApproverChange!(row.id, "expired");
+      throw new EngineError("verification_expired", "That code has expired.", "Request the change again in Settings; a new code is sent.", "settings");
+    }
+    if ("code" in by && !approverCodeMatches(row, by.code)) {
+      const bumped = await repo.bumpApproverChangeAttempts!(row.id);
+      const left = MAX_APPROVER_CODE_ATTEMPTS - (bumped?.attempts ?? MAX_APPROVER_CODE_ATTEMPTS);
+      if (left <= 0) {
+        await repo.closeApproverChange!(row.id, "failed");
+        throw new EngineError("too_many_attempts", "Too many wrong codes; the change was cancelled.", "Request the change again in Settings.", "settings");
+      }
+      throw new EngineError("wrong_code", `That code isn't right (${left} ${left === 1 ? "try" : "tries"} left).`, "Enter the 6-digit code Haggle sent to the new contact.", "settings");
+    }
+    if (!(await repo.closeApproverChange!(row.id, "confirmed"))) throw new EngineError("no_pending_change", "This change was already decided.", "Reload Settings.", "settings");
+    await this.applySettings(row.kind === "phone" ? { approver_phone: row.value } : { approver_email: row.value }, workspaceId, "owner", actor, true);
+    this.log("approver_change_confirmed", { workspace_id: workspaceId, kind: row.kind, to: maskHandle(row.value) });
+    return { settings: await this.workspaceSettings(workspaceId), confirmed: row.kind };
+  }
+
+  /** The owner withdraws a pending approver change. */
+  async cancelApproverChange(workspaceId: string, actor: string, kind: "phone" | "email"): Promise<{ settings: WorkspaceSettingsView; cancelled: boolean }> {
+    const repo = this.requireOwnerStore();
+    let cancelled = false;
+    for (const r of await repo.pendingApproverChanges!(workspaceId)) {
+      if (r.kind !== kind) continue;
+      cancelled = Boolean(await repo.closeApproverChange!(r.id, "superseded")) || cancelled;
+      await repo.appendSettingsAudit!([{ workspace_id: workspaceId, by: "owner", actor: actor.slice(0, 200), field: `approver_${kind}_cancelled`, old_value: maskHandle(r.value), new_value: null }]);
+    }
+    return { settings: await this.workspaceSettings(workspaceId), cancelled };
   }
 
   /**

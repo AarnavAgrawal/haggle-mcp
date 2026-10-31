@@ -176,6 +176,7 @@ A2A tasks carry the same JSON shapes in the task body.
 - Aarnav: `supabase/migrations/2xx_brain_*.sql` (profiles, price observations, seller personas).
 - Money is `bigint` cents. Inbound events dedupe on `(provider, provider_event_id)`.
 - `workspace_identities` (126): a workspace's own Inkbox identity (handle, identity id, mailbox, webhook signing key, status). The signing key is never returned to a client.
+- `settings_audit`, `approver_changes` and `workspaces.sender_name` (129): one append-only row per settings change, and new approvers waiting for verification (hashes only). See §11.
 - RLS on every table; only `service_role` (server-side) reads or writes. Neither side writes the other's tables. To read the other side's data, add a narrow read-only view and agree on it.
 
 ## 8. Environment variables
@@ -224,3 +225,30 @@ Additive: every v5 surface still validates; `CONTRACT_VERSION` is `haggle.contra
 - **`WeeklyHours`** (`packages/engine/src/reputation/hours.ts`): `{ timezone: IANA | null, intervals: [{ day 0–6 (Sunday = 0), startMinute, endMinute (> 1440 past midnight) }], display[], source }`. From Amazon `OpeningHours` components (the entry for the place's primary category, else untagged) or, as the fallback, schema.org `openingHoursSpecification` / `openingHours` on the business's own website.
 - **Stored.** `job_businesses.opening_hours` (jsonb) + `timezone`, and `workspace_vendors.opening_hours` + `timezone` + `business_ref` (migration `125_engine_business_hours.sql`, nullable). `DealBusiness` and `addWorkspaceVendor` accept `opening_hours` / `timezone`; `POST /internal/vendors` accepts `business_ref`.
 - **Contact timing.** A Voice AI call, and a first text, to a business with known hours goes only while it is open and not in the first or last 30 minutes of an opening interval, in its timezone, intersected with `HAGGLE_CALL_HOURS` (calls) or the contact window (texts); otherwise it is scheduled (`next_attempt_at` / `call_scheduled`) for the next allowed time. Unknown hours: unchanged. Emails keep the contact window. A published phone or email is never consent: calls and texts still need a vendor marked `existing_relationship` or `business_agreed`.
+
+## 11. Owner settings (migration 129)
+
+The signed-in workspace owner changes settings in the web app. Three actors change settings, each with its own rules (`packages/engine/src/workflow/ownerSettings.ts`):
+
+| Actor | Where | May change |
+|---|---|---|
+| `operator` | `scripts/workspace-admin.ts` | Everything, up to the server ceiling. |
+| `owner` | Web app `/settings` → `POST /internal/workspaces/settings` | Everything, up to the server ceiling (`HAGGLE_SPENDING_CAP_CEILING_CENTS`). A new approver phone or email waits for verification. Clearing one is direct. |
+| `agent` | MCP `settings.update`, the native settings panel | Lower the cap and set the area. Never the approver, never a higher cap. |
+
+**Audit.** Every change writes one `settings_audit` row per field: workspace, `by`, actor, field, old and new value, time. Phones and emails are masked. An owner's change is audited before it is saved, so no audit means no change. Operator and agent changes are audited after, best effort.
+
+**Approver verification.** A new phone gets a 6-digit code by iMessage (at most 159 characters, no link). A new email gets a confirm link (`<web>/settings?confirm=<token>`) and the same kind of code. The change is stored in `approver_changes` with hashes only and expires after 15 minutes (phone) or 24 hours (email). Five wrong codes end it. A newer request for the same kind supersedes the older one. Until it is confirmed the old approver stays, and the current approver email is told that a change was asked for. Mock mode sends nothing and returns the code as `demo_codes` with `simulated: true`.
+
+**Service routes** (`apps/mcp/src/service/workspaces.ts`). All need `x-haggle-service-token` and `x-haggle-workspace`. The POST routes also need `x-haggle-actor`, and the actor must own the workspace: its account id (`<email> (<account id>)` or the bare id) must be the one the `ws_u_<hash>` id was derived from. Anyone else gets `403 NOT_OWNER`.
+
+| Route | Body | Returns |
+|---|---|---|
+| `GET /internal/workspaces/settings` | none | `{ ok, mode, settings, next }` |
+| `POST /internal/workspaces/settings` | `{ name?, default_area?, timezone?, sender_name?, approver_email?, approver_phone?, default_deal_limit_usd?, confirm_url? }`; `""` or `null` clears an optional field; unknown keys are refused | `{ ok, mode, settings, changed[], pending_verification: ("phone"\|"email")[], demo_codes?, simulated?, next }` |
+| `POST /internal/workspaces/settings/confirm` | `{ kind: "phone"\|"email", code }` or `{ token }` | `{ ok, mode, confirmed, settings, next }` |
+| `POST /internal/workspaces/settings/cancel` | `{ kind }` | `{ ok, mode, cancelled, settings, next }` |
+
+`settings` is `{ name, timezone, sender_name, default_area, default_deal_limit_usd, ceiling_usd, approver: { phone, email } (masked), pending: [{ kind, to (masked), expires_at, attempts_left }] }`. `default_deal_limit_usd` is stored as `settings.spending_cap_cents` (the workspace cap) until deals carry their own limit. Errors are `{ ok: false, error: { code, message, fix } }`: `400 INVALID_INPUT`, `bad_timezone`, `bad_phone`, `cap_above_ceiling`; `409 no_pending_change`, `imessage_off`; `410 verification_expired`; `422 wrong_code`; `429 too_many_attempts`; `502 verification_not_sent`; `503 settings_store_outdated` (apply migration 129).
+
+**Web routes** (`apps/web/app/api/settings/`): `GET /api/settings`, `POST /api/settings`, `POST /api/settings/confirm`, `POST /api/settings/cancel`. Writes need a same-origin request, a session confirmed by the Auth server (`verifiedSessionUser()`), the `owner` role, and a non-guest account. They allow 10 per user per minute.
