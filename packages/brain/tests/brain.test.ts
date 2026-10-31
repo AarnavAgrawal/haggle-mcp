@@ -61,6 +61,33 @@ describe("brain (seeded from fixtures/brain/seed-replies.json)", () => {
     expect(noQty.verdict).toBe("unknown"); // can't judge, so no price_check label on the quote
   });
 
+  it("a price far below the usual range is too_low (suspicious), not a good deal: $50 for dinner for 100", async () => {
+    const cold = createBrain({ store: new MemoryStore() });
+    const v = await cold.checkPrice({ total_usd: 50, quantity: 100, area: "SF", category: "dinner catering" });
+    PriceVerdict.parse(v);
+    expect(v).toMatchObject({ verdict: "too_low", range_per_unit_usd: { low: 18, high: 38 } });
+    expect(v.summary).toMatch(/^Far below the usual \$18–38 per person/);
+    // 40% of the low end is the line: $7.20 a person in SF.
+    expect((await cold.checkPrice({ total_usd: 700, quantity: 100, area: "SF" })).verdict).toBe("too_low");
+    expect((await cold.checkPrice({ total_usd: 740, quantity: 100, area: "SF" })).verdict).toBe("good");
+    // Against learned quotes too, not only the cold-start baselines.
+    const warm = await seeded();
+    expect((await warm.checkPrice({ total_usd: 50, quantity: 100, area: "SF", category: "catering" })).verdict).toBe("too_low");
+    expect((await createStubBrain().checkPrice({ total_usd: 50, quantity: 100 })).verdict).toBe("too_low");
+  });
+
+  it("never learns from a quote flagged implausible (or confirmed but unusual): estimates and price checks stay honest", async () => {
+    const brain = createBrain({ store: new MemoryStore() });
+    const meta = (job: string) => ({ job_id: job, business_name: "Lowball Co", channel: "email" as const, received_at: "2026-10-17T12:00:00Z", request: { what: "dinner catering", quantity: 100, area: "SF" } });
+    for (const [i, flag] of ["price_implausible", "price_confirmed_unusual"].entries()) {
+      await brain.learnFromReply("biz_lowball", { kind: "quote", total_usd: 50, quantity: 100, flags: [flag] }, meta(`j${i}`));
+    }
+    expect(await brain.estimate({ what: "dinner catering", quantity: 100, area: "SF" })).toEqual([]);
+    const v = await brain.checkPrice({ total_usd: 2600, quantity: 100, area: "SF" });
+    expect(v.sample_size).toBe(0); // still the baseline: nothing was learned from the $0.50 a person
+    expect(v.verdict).toBe("typical");
+  });
+
   it("skips a profile learned with no usable price instead of failing the estimate", async () => {
     const brain = createBrain({ store: new MemoryStore() });
     await brain.learnFromReply("biz_x", { kind: "quote", total_usd: 0 }, { job_id: "j", business_name: "X", channel: "phone", received_at: "2026-10-17T12:00:00Z", request: { what: "lunch", quantity: 40, area: "SF" } });

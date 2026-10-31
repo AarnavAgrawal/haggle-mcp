@@ -75,6 +75,15 @@ type Baseline = { category: string; area?: string; low: number; typical: number;
 /** Below this many real per-unit prices, price checks lean on the baseline table. */
 const MIN_SAMPLES = 3;
 
+/**
+ * A per-unit price under this share of the usual range's low end is "too_low": far outside what
+ * businesses charge (e.g. $0.50 a person for catering), so it is suspicious, never a bargain.
+ */
+export const TOO_LOW_SHARE = 0.4;
+
+/** Quote flags that mark a price as implausible or unusual: such a reply never teaches the brain. */
+export const PRICE_DOUBT_FLAGS = new Set(["price_implausible", "price_confirmed_unusual"]);
+
 export function createBrain(options: BrainOptions = {}): Brain & { ready: Promise<void> } {
   const store = options.store ?? new MemoryStore();
   const directory = options.directory ?? loadDirectory();
@@ -93,7 +102,10 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
       const prev = await store.get(businessId);
       // Dropped: nothing is written; the caller gets what is stored (or, with nothing stored, the
       // reading as it would have been learned, unsaved: the contract always returns a Profile).
-      if (options.dropSimulated && meta.simulated === true) return prev ?? applyReply(null, businessId, parsed, meta, now());
+      // A price flagged implausible (even one the business confirmed) is never learned either: one
+      // "$50 for dinner for 100" would drag every later estimate and price check down.
+      const doubtful = (parsed.flags ?? []).some((f) => PRICE_DOUBT_FLAGS.has(f));
+      if ((options.dropSimulated && meta.simulated === true) || doubtful) return prev ?? applyReply(null, businessId, parsed, meta, now());
       const next = applyReply(prev, businessId, parsed, meta, now());
       await store.put(next);
       return next;
@@ -221,10 +233,12 @@ export function createBrain(options: BrainOptions = {}): Brain & { ready: Promis
     }
 
     const delta = perUnit / typical - 1;
-    const verdict = delta <= -0.07 ? "good" : delta >= 0.12 ? "high" : "typical";
+    const tooLow = perUnit < low! * TOO_LOW_SHARE;
+    const verdict = tooLow ? "too_low" : delta <= -0.07 ? "good" : delta >= 0.12 ? "high" : "typical";
     const pct = Math.round(Math.abs(delta) * 100);
-    const summary =
-      pct < 3
+    const summary = tooLow
+      ? `Far below the usual ${moneyRange(low!, high!)} per ${unit} for ${where} ($${round2(perUnit)}/${unit}): confirm it with the business`
+      : pct < 3
         ? `About typical for ${where} (~$${Math.round(typical)}/${unit})`
         : `${pct}% ${delta > 0 ? "above" : "below"} typical for ${where}`;
 

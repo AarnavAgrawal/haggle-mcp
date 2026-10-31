@@ -128,7 +128,7 @@ export interface Quote {
   requirement_results: RequirementResult[];
   missing: QuoteField[];
   flags: QuoteFlag[];
-  price_check?: "good" | "typical" | "high";
+  price_check?: "good" | "typical" | "high" | "too_low"; // too_low: far below the usual range (suspicious, not a bargain)
   negotiated_from?: Usd;       // previous total from the same business, if revised
   round: number;               // 1 = first quote; +1 per revision
   confidence: number;          // 0..1 extraction confidence (not correctness)
@@ -149,7 +149,13 @@ export type QuoteFlag =
   /** Not the order asked for or not clearly from the business contacted (parsing/termsCheck.ts): never approvable as is. */
   | "date_mismatch" | "delivery_window_mismatch" | "identity_mismatch"
   /** A fee (gratuity, service charge) whose relation to the total is unclear: the all-in total is not confirmed. */
-  | "fees_unclear";
+  | "fees_unclear"
+  /**
+   * Price judgment (parsing/plausibility.ts): far below the usual range for what was asked is not
+   * approvable until the business confirms it (then price_confirmed_unusual, a caveat); far above it
+   * is a caveat only.
+   */
+  | "price_implausible" | "price_confirmed_unusual" | "price_unusually_high";
 
 /* ───────────────────────── replies (engine → brain) ───────────────────────── */
 
@@ -231,7 +237,7 @@ export interface QuoteLike {
 }
 
 export interface PriceVerdict {
-  verdict: "good" | "typical" | "high" | "unknown";   // unknown when sample_size too small
+  verdict: "good" | "typical" | "high" | "too_low" | "unknown";   // unknown when sample_size too small; too_low = far below the usual range
   typical_low_usd?: Usd;
   typical_high_usd?: Usd;
   delta_pct?: number;              // +18 = 18% above typical median

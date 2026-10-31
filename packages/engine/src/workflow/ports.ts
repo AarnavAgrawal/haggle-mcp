@@ -9,6 +9,7 @@ import type { OutboundEmail, SendOutcome } from "../outbound/email.ts";
 import type { QuoteExtraction } from "../parsing/extraction.ts";
 import type { ExtractionRequest } from "../parsing/parseReply.ts";
 import type { QuestionAnswerInput } from "../parsing/answerQuestion.ts";
+import type { PriceJudgmentAnswer, PriceJudgmentInput } from "../parsing/priceJudgment.ts";
 import type { StripePort } from "../payments/stripe.ts";
 import type { MessageRow, Mode, Repository } from "../store/types.ts";
 
@@ -114,6 +115,11 @@ export interface ExtractorPort {
    * it for the human. Without it every question goes to the human.
    */
   answerQuestion?(input: QuestionAnswerInput): Promise<{ answer: string; basis: string } | null>;
+  /**
+   * Optional (Claude): is this quoted total plausible for what was asked? Asked only for categories
+   * with no price data (parsing/plausibility.ts covers the rest). Null or an error: no judgment.
+   */
+  judgePrice?(input: PriceJudgmentInput): Promise<PriceJudgmentAnswer | null>;
 }
 
 export interface AttachmentPort {

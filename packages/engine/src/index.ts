@@ -15,6 +15,8 @@ export * from "./parsing/requirements.ts";
 export * from "./parsing/parseReply.ts";
 export * from "./parsing/heuristic.ts";
 export * from "./parsing/answerQuestion.ts";
+export * from "./parsing/priceJudgment.ts";
+export * from "./parsing/plausibility.ts";
 export * from "./inbound/emailBody.ts";
 export * from "./inbound/htmlText.ts";
 export * from "./inbound/senderAuth.ts";

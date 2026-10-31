@@ -19,6 +19,7 @@ const CONTRACT_FLAGS: ReadonlySet<QuoteFlag> = new Set<QuoteFlag>([
   "requirement_unmet", "requirement_unknown", "hidden_deposit", "hidden_fee", "tax_excluded", "delivery_unclear", "vague_price",
   "conflicting_numbers", "expired", "external_payment_link", "prompt_injection", "unverified_sender", "over_budget", "low_confidence",
   "question_pending", "unsourced_figure", "approximate_total", "date_mismatch", "delivery_window_mismatch", "identity_mismatch", "fees_unclear",
+  "price_implausible", "price_confirmed_unusual", "price_unusually_high",
 ]);
 
 export function quoteFlags(q: QuoteRow, budgetCents: number | null): QuoteFlag[] {
