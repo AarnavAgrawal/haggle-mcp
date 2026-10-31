@@ -1,24 +1,45 @@
-/* Haggle view tokens. Cool slate ink, one money green for the winner, red/amber only for risk. */
+/* Haggle view tokens: the web app's "Ledger" palette (apps/web/DESIGN.md, apps/web/app/globals.css).
+   Pale green paper, green-black ink, ledger-green pen for actions, red ink for a struck price, amber for
+   waiting on you, red for problems. No blue. The older names below (--paper, --win, --info, --ch-*) are
+   aliases onto the Ledger tokens so the per-view CSS keeps working. */
 .hg {
-  --ink: #16202a;
-  --ink-2: #4a5764;
-  --ink-3: #65717d; /* ≥ 4.5:1 on paper for small text */
-  --paper: #fbfcfd;
-  --panel: #ffffff;
-  --rule: #dfe5ea;
-  --rule-strong: #c7d0d8;
-  --win: #0f7b5f;
-  --win-soft: #e3f3ee;
-  --risk: #b42318;
-  --risk-soft: #fdecea;
-  --warn: #9a5b00;
-  --warn-soft: #fdf3dc;
-  --info: #39566f;
-  --info-soft: #e9f0f6;
-  --ch-email: #3b5bdb;
-  --ch-phone: #c2410c;
-  --ch-a2a: #0e7490;
-  --ch-imessage: #7c3aed;
+  --desk: #ecf1e8;
+  --sheet: #fbfcf9;
+  --ink: #1a2920;
+  --ink-2: #46564b;
+  --ink-3: #5a695f;
+  --rule: #cfdcc9;
+  --rule-strong: #a8bca2;
+  --pen: #17603d;
+  --pen-strong: #0f4a2e;
+  --pen-wash: #dcebdd;
+  --on-pen: #fbfcf9;
+  --red-ink: #c0271e;
+  --highlight: #eef03a;
+  --on-highlight: #1a2920;
+  --signed: #2c7a3f;
+  --signed-wash: #e2f0e4;
+  --hold: #8a5a00;
+  --hold-wash: #f8eed8;
+  --risk: #b3261e;
+  --risk-wash: #fbe9e6;
+
+  /* aliases (older view CSS) */
+  --paper: var(--desk);
+  --panel: var(--sheet);
+  --win: var(--signed);
+  --win-soft: var(--signed-wash);
+  --risk-soft: var(--risk-wash);
+  --warn: var(--hold);
+  --warn-soft: var(--hold-wash);
+  --info: var(--ink-2);
+  --info-soft: color-mix(in srgb, var(--ink) 6%, var(--sheet));
+  /* Every channel badge names its channel in words, so channels stay in ink. The live accent (current
+     step, active dot, links, focus) is --pen. */
+  --ch-email: var(--ink-2);
+  --ch-phone: var(--ink-2);
+  --ch-a2a: var(--ink-2);
+  --ch-imessage: var(--ink-2);
   --radius-s: 4px;
   --radius-m: 8px;
 
@@ -32,25 +53,25 @@
   -webkit-font-smoothing: antialiased;
 }
 .hg[data-theme="dark"] {
-  --ink: #e6ecf1;
-  --ink-2: #aab6c1;
-  --ink-3: #7d8a96;
-  --paper: #121a21;
-  --panel: #18222b;
-  --rule: #26323d;
-  --rule-strong: #34424f;
-  --win: #3ccf9f;
-  --win-soft: #12352c;
+  --desk: #14211a;
+  --sheet: #1b2b22;
+  --ink: #e4ece3;
+  --ink-2: #aebdb1;
+  --ink-3: #8a9a8e;
+  --rule: #2a3d31;
+  --rule-strong: #3a5243;
+  --pen: #8fd6a8;
+  --pen-strong: #b4e6c5;
+  --pen-wash: #213a2b;
+  --on-pen: #14211a;
+  --red-ink: #ff8a7a;
+  --highlight: #d9e23a;
+  --signed: #7fcb8f;
+  --signed-wash: #24402e;
+  --hold: #f0b54a;
+  --hold-wash: #35321f;
   --risk: #ff8a7a;
-  --risk-soft: #3a1d1b;
-  --warn: #f2b84b;
-  --warn-soft: #36290f;
-  --info: #9cc1e0;
-  --info-soft: #1d2c3a;
-  --ch-email: #8fa7ff;
-  --ch-phone: #ff9a62;
-  --ch-a2a: #4fc9e3;
-  --ch-imessage: #b99bff;
+  --risk-wash: #3b2a27;
 }
 .hg *,
 .hg *::before,
@@ -146,20 +167,19 @@
   font-size: 12.5px;
   padding: 5px 12px;
   border-radius: var(--radius-s);
-  border: 1px solid var(--rule-strong);
+  border: 1px solid var(--ink-2); /* secondary: an ink outline */
   background: var(--panel);
   color: var(--ink);
   cursor: pointer;
 }
-.hg-btn:hover { border-color: var(--ink-3); }
+.hg-btn:hover { border-color: var(--ink); }
 .hg-btn:disabled { opacity: 0.55; cursor: default; }
 .hg-btn-primary {
-  background: var(--win);
-  border-color: var(--win);
-  color: #fff;
+  background: var(--pen);
+  border-color: var(--pen);
+  color: var(--on-pen);
 }
-.hg[data-theme="dark"] .hg-btn-primary { color: #06261d; }
-.hg-btn-primary:hover { filter: brightness(1.06); border-color: var(--win); }
+.hg-btn-primary:hover { background: var(--pen-strong); border-color: var(--pen-strong); }
 .hg-btn-quiet {
   border-color: transparent;
   background: transparent;
@@ -167,7 +187,7 @@
   padding: 5px 6px;
 }
 .hg :focus-visible {
-  outline: 2px solid var(--ch-email);
+  outline: 2px solid var(--pen);
   outline-offset: 2px;
 }
 
@@ -237,7 +257,7 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   padding: 2px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-s);
   white-space: nowrap;
 }
 .hg-mode-live { color: var(--win); background: var(--win-soft); }
@@ -253,7 +273,7 @@
   .hg *, .hg *::before, .hg *::after { animation: none !important; transition: none !important; }
 }
 .hg :focus-visible {
-  outline: 2px solid var(--ch-email);
+  outline: 2px solid var(--pen);
   outline-offset: 2px;
 }
 
@@ -281,7 +301,7 @@
   font-weight: 600;
   line-height: 16px;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-s);
   white-space: nowrap;
 }
 .hg-contact-dot {
@@ -317,9 +337,8 @@
   inset: 0 auto 0 0;
   overflow: hidden;
   white-space: nowrap;
-  color: #d99a06;
+  color: var(--ink-2);
 }
-.hg[data-theme="dark"] .hg-stars-fill { color: #f2b84b; }
 
 .hg-links {
   display: inline-flex;
@@ -333,7 +352,7 @@
   font: inherit;
   font-size: 12px;
   font-weight: 600;
-  color: var(--ch-email);
+  color: var(--pen);
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
@@ -371,7 +390,7 @@
 }
 .hg-ev-group li + li { margin-top: 2px; }
 .hg-ev-verified li { border-left-color: var(--win); }
-.hg-ev-listing li { border-left-color: var(--ch-email); }
+.hg-ev-listing li { border-left-color: var(--ink-2); }
 .hg-ev-claims li { border-left-color: var(--warn); }
 .hg-ev-estimates li { border-left-color: var(--info); }
 .hg-ev-statement {

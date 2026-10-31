@@ -1,7 +1,7 @@
 // Pen marks (DESIGN.md "a marked-up quote"): hand-drawn SVG strokes around real text. Each mark means
 // something; never use one as decoration.
-//   <Struck>      a price superseded by negotiation (pen-blue strike; the text is a <del>)
-//   <Circled>     Haggle's recommendation (a loose pen ellipse around the total)
+//   <Struck>      a price superseded by negotiation (a red-ink strike; the text is a <del>)
+//   <Circled>     Haggle's recommendation (a loose ledger-green pen ellipse around the total)
 //   <Highlighted> money saved (a highlighter swipe behind the text; the only use of --highlight)
 //   <PenUnderline/> / <Underlined>  where you are (current nav item, active tab)
 // The SVGs are aria-hidden and stretch to their content (preserveAspectRatio="none"; straight marks use

@@ -1,35 +1,37 @@
-/* Haggle web: tokens and base styles. The design direction is apps/web/DESIGN.md ("a marked-up quote"):
-   a clean printed sheet on a cool desk, ink-blue text, pen blue for actions and marks, and the
-   highlighter spent only on money saved. Primitives (buttons, fields, marks…) live in
-   components/ui/ui.css; the app shell in components/shell/shell.css.
+/* Haggle web: tokens and base styles. The design direction is apps/web/DESIGN.md ("a marked-up quote"),
+   in the "Ledger" palette: pale green ledger paper, green-black ink, ledger-green pen for actions and the
+   recommendation circle, red ink for the strike through an old price, and the highlighter spent only on
+   money saved. Primitives (buttons, fields, marks…) live in components/ui/ui.css; the app shell in
+   components/shell/shell.css. tests/tokens.contrast.test.ts checks the text pairs for WCAG AA.
 
    Legacy token names (--paper, --panel, --carbon, --win, --warn, --info…) are aliases onto the new
    tokens so older page CSS keeps reading the same palette. New code uses the new names. */
 :root {
   /* ---------- color (light) ---------- */
-  --desk: #eef0f3;
-  --sheet: #ffffff;
-  --ink: #15203a;
-  --ink-2: #4b556b;
-  --ink-3: #646d82; /* DESIGN.md had #7A8296 (3.4:1 on the desk); darkened so hints pass AA (4.5:1) */
-  --rule: #dce0e7;
-  --rule-strong: #bfc5d1;
-  --pen: #2346d8;
-  --pen-strong: #1a37b4; /* pressed / hovered pen */
-  --pen-wash: #e8edff;
-  --on-pen: #ffffff;
-  --highlight: #e4f53b;
-  --on-highlight: #15203a;
-  --signed: #0d7a4c;
-  --signed-wash: #e3f3ea;
+  --desk: #ecf1e8; /* pale ledger green */
+  --sheet: #fbfcf9; /* near-white paper */
+  --ink: #1a2920; /* green-black ink */
+  --ink-2: #46564b;
+  --ink-3: #5a695f; /* hints: 5.1:1 on the desk */
+  --rule: #cfdcc9;
+  --rule-strong: #a8bca2;
+  --pen: #17603d; /* ledger green: actions, links, focus, the recommendation circle */
+  --pen-strong: #0f4a2e; /* pressed / hovered pen */
+  --pen-wash: #dcebdd;
+  --on-pen: #fbfcf9; /* paper-white text on the pen */
+  --red-ink: #c0271e; /* the strike through a superseded price */
+  --highlight: #eef03a;
+  --on-highlight: #1a2920;
+  --signed: #2c7a3f;
+  --signed-wash: #e2f0e4;
   --hold: #8a5a00;
-  --hold-wash: #fbf0d9;
-  --risk: #b42318;
-  --risk-wash: #fcebea;
-  --skeleton: #e3e6ec;
-  --skeleton-shine: #f1f3f6;
-  --shadow-float: 0 8px 24px -12px rgb(21 32 58 / 0.28), 0 1px 2px rgb(21 32 58 / 0.06);
-  --scrim: rgb(12 18 32 / 0.36);
+  --hold-wash: #f8eed8;
+  --risk: #b3261e;
+  --risk-wash: #fbe9e6;
+  --skeleton: #e0e8dc;
+  --skeleton-shine: #f1f5ee;
+  --shadow-float: 0 8px 24px -12px rgb(26 41 32 / 0.28), 0 1px 2px rgb(26 41 32 / 0.06);
+  --scrim: rgb(12 22 16 / 0.36);
 
   /* ---------- type ---------- */
   --font-text: var(--font-schibsted), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -85,32 +87,34 @@
   color-scheme: light;
 }
 
-/* Dark: designed, not inverted. Washes are ~15% of their color over the sheet. */
+/* Dark: "Ledger at night". Bottle green, not navy and not black; designed, not inverted. Washes are
+   ~15% of their color over the sheet. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --desk: #0c1220;
-    --sheet: #131b2d;
-    --ink: #e6e9f2;
-    --ink-2: #aeb5c7;
-    --ink-3: #7f879c;
-    --rule: #222b40;
-    --rule-strong: #313c56;
-    --pen: #8fa3ff;
-    --pen-strong: #b0bdff;
-    --pen-wash: #1c2550;
-    --on-pen: #0c1220;
-    --highlight: #d6ec2e;
-    --on-highlight: #15203a;
-    --signed: #4ccb92;
-    --signed-wash: #1c353c;
+    --desk: #14211a;
+    --sheet: #1b2b22;
+    --ink: #e4ece3;
+    --ink-2: #aebdb1;
+    --ink-3: #8a9a8e;
+    --rule: #2a3d31;
+    --rule-strong: #3a5243;
+    --pen: #8fd6a8;
+    --pen-strong: #b4e6c5;
+    --pen-wash: #213a2b;
+    --on-pen: #14211a;
+    --red-ink: #ff8a7a;
+    --highlight: #d9e23a;
+    --on-highlight: #1a2920;
+    --signed: #7fcb8f;
+    --signed-wash: #24402e;
     --hold: #f0b54a;
-    --hold-wash: #33301f;
-    --risk: #ff8a80;
-    --risk-wash: #382a33;
-    --skeleton: #1b2438;
-    --skeleton-shine: #232d44;
+    --hold-wash: #35321f;
+    --risk: #ff8a7a;
+    --risk-wash: #3b2a27;
+    --skeleton: #22352a;
+    --skeleton-shine: #2a4033;
     --shadow-float: 0 12px 32px -12px rgb(0 0 0 / 0.7), 0 0 0 1px var(--rule);
-    --scrim: rgb(4 7 14 / 0.6);
+    --scrim: rgb(5 10 7 / 0.6);
     color-scheme: dark;
   }
 }

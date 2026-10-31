@@ -12,10 +12,10 @@ saving run over with a highlighter. The interface is the clean printed sheet; Ha
 
 | Mark | Means | Where |
 | --- | --- | --- |
-| Hand-drawn strike (pen blue) | a price that was superseded by negotiation | `$1,380` → `$1,240` |
-| Hand-drawn circle (pen blue) | Haggle's recommendation | the recommended quote's total |
-| Highlighter swipe (yellow-green) | money saved | `−$140` |
-| Hand-drawn underline (pen blue) | where you are | current nav item, active tab |
+| Hand-drawn strike (`--red-ink`) | a price that was superseded by negotiation | `$1,380` → `$1,240` |
+| Hand-drawn circle (`--pen`, ledger green) | Haggle's recommendation | the recommended quote's total |
+| Highlighter swipe (`--highlight`, yellow) | money saved | `−$140` |
+| Hand-drawn underline (`--pen`) | where you are | current nav item, active tab |
 
 Marks are SVG paths with slight irregularity (never a font, never emoji). They are the one place the UI
 is playful; everything around them is quiet, precise and dense. No mark is decoration: if a marked thing
@@ -23,28 +23,71 @@ isn't true (no negotiation, no recommendation), there's no mark.
 
 ## Tokens
 
+### Palette: "Ledger"
+
+Haggle's world is quotes, line items and totals, with prices crossed out and written lower. That is the
+material of a ledger book: pale green paper ruled into columns, totals in dark ink, corrections in red
+ink, and the best number marked with a highlighter. So every color has a reason:
+- **green ink** circles the recommendation and marks every action;
+- **red ink** strikes the superseded price;
+- **yellow highlighter** marks the savings;
+- **amber** means waiting on you.
+
+The old palette (navy ink and royal blue on cool grey, near-black navy in dark) was the default look of
+generated SaaS pages and said nothing about Haggle. It is gone. There is no blue anywhere.
+
+Principles:
+- Spend the boldness in one place: the pen marks on the quote sheet (landing hero, deal board).
+  Everything else stays quiet: paper, ink, rules.
+- Color carries meaning, never decoration. No gradients, tinted shadows or colored status borders.
+- Ledger rules only where they are information: quote rows are line items, so they get faint rules and
+  right-aligned totals in tabular figures. No ruled backgrounds elsewhere.
+- Red ink on a struck price means "old price", not "error". Problems use `--risk` with words.
+
 Colors (light, default). Names describe the role; use the variables, never raw hex in components.
 
 | Token | Hex | Use |
 | --- | --- | --- |
-| `--desk` | `#EEF0F3` | app background (the desk under the sheets) |
-| `--sheet` | `#FFFFFF` | panels, the quote sheet, inputs |
-| `--ink` | `#15203A` | primary text, prices |
-| `--ink-2` | `#4B556B` | secondary text |
-| `--ink-3` | `#646D82` | hints, meta, placeholders (darkened from #7A8296 to pass AA on the desk) |
-| `--rule` / `--rule-strong` | `#DCE0E7` / `#BFC5D1` | hairlines, input borders |
-| `--pen` | `#2346D8` | primary action, links, pen marks, focus ring |
-| `--pen-wash` | `#E8EDFF` | selected rows, new-item flash |
-| `--highlight` | `#E4F53B` | savings only (text on it stays `--ink`) |
-| `--signed` / `--signed-wash` | `#0D7A4C` / `#E3F3EA` | approved, meets requirement, paid |
-| `--hold` / `--hold-wash` | `#8A5A00` / `#FBF0D9` | needs you, waiting, demo marker |
-| `--risk` / `--risk-wash` | `#B42318` / `#FCEBEA` | failed, declined, destructive |
+| `--desk` | `#ECF1E8` | app background: pale ledger green |
+| `--sheet` | `#FBFCF9` | panels, the quote sheet, inputs: near-white paper |
+| `--ink` | `#1A2920` | primary text, prices: green-black ink |
+| `--ink-2` | `#46564B` | secondary text, secondary button outline |
+| `--ink-3` | `#5A695F` | hints, meta, placeholders (5.1:1 on the desk) |
+| `--rule` / `--rule-strong` | `#CFDCC9` / `#A8BCA2` | ledger rules, hairlines, input borders |
+| `--pen` / `--pen-strong` | `#17603D` / `#0F4A2E` | primary action, links, focus ring, the circle and underline |
+| `--on-pen` | `#FBFCF9` | text on the pen (paper white) |
+| `--pen-wash` | `#DCEBDD` | selected rows, hover, new-item flash |
+| `--red-ink` | `#C0271E` | the strike through a superseded price (the struck text stays `--ink-3`) |
+| `--highlight` | `#EEF03A` | savings only (text on it is `--on-highlight`, `#1A2920`) |
+| `--signed` / `--signed-wash` | `#2C7A3F` / `#E2F0E4` | done: approved, meets requirement, paid (always with a check and words) |
+| `--hold` / `--hold-wash` | `#8A5A00` / `#F8EED8` | waiting on you, demo marker |
+| `--risk` / `--risk-wash` | `#B3261E` / `#FBE9E6` | problems: failed, declined, destructive |
 
-Dark (prefers-color-scheme: dark), equally designed, not inverted: desk `#0C1220`, sheet `#131B2D`,
-ink `#E6E9F2`, ink-2 `#AEB5C7`, ink-3 `#7F879C`, rule `#222B40`, rule-strong `#313C56`, pen `#8FA3FF`,
-pen-wash `#1C2550`, highlight `#D6EC2E` (text on it `#15203A`), signed `#4CCB92`, hold `#F0B54A`,
-risk `#FF8A80`, washes at ~15% of their color over the sheet. In dark mode the highlighter appears only
-on savings; the pen blue carries everything else.
+Dark (prefers-color-scheme: dark): "Ledger at night". Bottle green, not navy and not black. Designed, not
+inverted.
+
+| Token | Hex |
+| --- | --- |
+| `--desk` / `--sheet` | `#14211A` / `#1B2B22` |
+| `--ink` / `--ink-2` / `--ink-3` | `#E4ECE3` / `#AEBDB1` / `#8A9A8E` |
+| `--rule` / `--rule-strong` | `#2A3D31` / `#3A5243` |
+| `--pen` / `--pen-strong` / `--pen-wash` | `#8FD6A8` / `#B4E6C5` / `#213A2B` |
+| `--on-pen` | `#14211A` |
+| `--red-ink` / `--risk` | `#FF8A7A` |
+| `--highlight` | `#D9E23A` (text on it `#1A2920`) |
+| `--signed` | `#7FCB8F` |
+| `--hold` | `#F0B54A` |
+
+Washes are about 15% of their color over the sheet. In dark mode the pen is light green, so text on it
+is dark (`--on-pen`).
+
+Contrast: `tests/tokens.contrast.test.ts` reads `app/globals.css` and asserts WCAG AA (4.5:1) for
+`--ink`, `--ink-2` and `--ink-3` on `--desk` and `--sheet`, and for `--on-pen` on `--pen`, in light and
+dark. Every value above passes as written; none needed adjusting. The lowest pair is light `--ink-3` on
+the desk at 5.1:1.
+
+The MCP views (`apps/mcp/views/_shared/theme.css`) use the same values. Their older token names
+(`--paper`, `--panel`, `--win`, `--warn`, `--info`, `--ch-*`) are aliases onto these.
 
 Type (self-hosted with next/font; the CSP allows only same-origin fonts):
 - **Bricolage Grotesque** (variable, `opsz` + `wdth`): the wordmark, page titles, section heads, every
@@ -58,7 +101,9 @@ Type (self-hosted with next/font; the CSP allows only same-origin fonts):
 
 Shape and depth:
 - Radius: 4px controls, 8px sheets, 999px only for the status dot. Not one radius for everything.
-- One shadow, only on floating things (drawer, menu, sticky approval bar): `0 8px 24px -12px rgb(21 32 58 / .28)`.
+- Buttons: primary is solid `--pen` with paper-white `--on-pen` text; secondary is an ink outline
+  (`--ink-2`, `--ink` on hover) on the sheet; both 4px radius. No pills.
+- One shadow, only on floating things (drawer, menu, sticky approval bar): `0 8px 24px -12px rgb(26 41 32 / .28)`.
   Sheets on the desk are separated by color and a 1px `--rule`, not shadows.
 - Spacing on a 4px grid: 4, 8, 12, 16, 24, 32, 48, 64.
 
@@ -75,7 +120,7 @@ Shape and depth:
   (`<dialog>`, focus-trapped, Esc closes).
 
 **Status** is a 8px dot + words ("Calling now", "Quoted $1,150", "Waiting for reply"), never a pill.
-Badges (pills) are allowed in exactly one case: the **Demo** marker. Must-haves are a checklist, not chips.
+Badges are allowed in exactly one case: the **Demo** marker, a 4px-radius tag (not a pill). Must-haves are a checklist, not chips.
 
 ## Pages
 

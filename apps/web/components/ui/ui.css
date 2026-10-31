@@ -10,8 +10,8 @@
   gap: 8px;
   min-height: 40px;
   padding: 0 16px;
-  border-radius: var(--r-control);
-  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-control); /* 4px; never a pill */
+  border: 1px solid var(--ink-2); /* secondary: an ink outline */
   background: var(--sheet);
   color: var(--ink);
   font: inherit;
@@ -28,7 +28,7 @@
   transition-timing-function: ease-out;
 }
 .btn:hover {
-  border-color: var(--ink-3);
+  border-color: var(--ink);
   text-decoration: none;
 }
 .btn:active:not(:disabled) {
@@ -336,6 +336,10 @@ input[type="radio"] {
 .pen-fill {
   fill: var(--highlight);
 }
+/* The strike is red ink: a superseded price, not an error. The circle and underline stay on --pen. */
+.pen-struck .pen-stroke {
+  stroke: var(--red-ink);
+}
 .pen-struck del {
   color: var(--ink-3);
   text-decoration: none;
@@ -487,7 +491,7 @@ input[type="radio"] {
   display: inline-flex;
   align-items: center;
   padding: 1px 8px;
-  border-radius: 999px;
+  border-radius: var(--r-control);
   border: 1px solid color-mix(in srgb, var(--hold) 35%, transparent);
   background: var(--hold-wash);
   color: var(--hold);
