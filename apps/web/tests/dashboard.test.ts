@@ -5,7 +5,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { HaggleError } from "../lib/haggle.ts";
 import { errorJson, runDealAction } from "../lib/dashboard/actions.ts";
-import { ago, dealLine, flagTone, flagWords, humanNext, isApprovable, priceCheckWords, isTerminal, money, recommendationReason, sortQuotes, stamp, stateWords, timeline } from "../lib/dashboard/format.ts";
+import {
+  activity, ago, boardStatus, dealCounts, dealLine, flagTone, flagWords, humanNext, isApprovable, isTerminal, money, mustHaves, payNowLine, priceCheckWords, progress,
+  plainNote, possessive, recommendationReason, recommendationSentence, savedBy, sentence, sheetQuotes, sortQuotes, stamp, stateWords, timeline,
+} from "../lib/dashboard/format.ts";
 import { backoffMs, cursorOf, streamUrl } from "../lib/dashboard/live.ts";
 import { parseCursor, sseComment, sseFrame, streamUpdates } from "../lib/dashboard/stream.ts";
 import type { DealBoardView, WaitResult } from "../lib/dashboard/types.ts";
@@ -145,6 +148,14 @@ describe("quotes comparison (fixture board)", () => {
     expect(recommendationReason({ recommended_quote_id: "q1", recommendation_note: "note" })).toBe("note");
     expect(recommendationReason({})).toBeNull();
   });
+
+  it("states the recommendation's reason whole, never cut mid-word", () => {
+    const sel = (reason: string) => ({ recommended_quote_id: "q1", selection: { q1: { status: "recommended" as const, reason } } });
+    expect(recommendationSentence(sel("recommended: meets every requirement and the budget, fresh, best value of the q…"))).toBe("Meets every requirement and the budget, fresh.");
+    expect(recommendationSentence(sel("recommended: cheapest compliant"))).toBe("Cheapest compliant.");
+    expect(recommendationSentence({ ...sel("recommended: meets every requirement, best val…"), value: { explanation: { winner: "Best value for 40 people.", others: [] } } })).toBe("Best value for 40 people.");
+    expect(recommendationSentence({})).toBeNull();
+  });
 });
 
 describe("SSE frames and the client helpers", () => {
@@ -275,5 +286,131 @@ describe("deal actions", () => {
   it("maps an HTTP refusal or an unknown failure to 502", () => {
     expect(errorJson(new HaggleError("UNAUTHORIZED", "Unknown token.", "Check HAGGLE_SERVICE_TOKEN.", null, 401)).status).toBe(502);
     expect(errorJson(new Error("boom"))).toMatchObject({ status: 502, body: { error: { code: "unreachable" } } });
+  });
+});
+
+describe("the deal board (fixture board)", () => {
+  const board = (patch: Partial<DealBoardView> & { state?: string } = {}): DealBoardView => {
+    const { state, ...rest } = patch;
+    return { ...fixture, ...rest, job: { ...fixture.job!, state: (state ?? fixture.job!.state) as never } } as DealBoardView;
+  };
+
+  it("says what is happening now, with a tone for the dot", () => {
+    expect(boardStatus(board())).toEqual({ tone: "hold", words: "A business needs your answer" });
+    const quiet = { open_questions: [] };
+    expect(boardStatus(board({ ...quiet, state: "awaiting_approval", ready: true }))).toEqual({ tone: "hold", words: "Quotes are final, ready for your approval" });
+    expect(boardStatus(board({ ...quiet, state: "collecting" }))).toEqual({ tone: "live", words: "5 of 6 quoted" });
+    expect(boardStatus(board({ ...quiet, state: "contacting", quotes: [] }))).toEqual({ tone: "live", words: "Contacting 6 businesses" });
+    const calling = board({ ...quiet, state: "collecting", businesses: [{ ...fixture.businesses[2]!, status: "on_call" }] });
+    expect(boardStatus(calling)).toEqual({ tone: "live", words: "On a call with Mission Eats" });
+    expect(boardStatus(board({ state: "paid" }))).toEqual({ tone: "ok", words: "Paid" });
+    expect(boardStatus(board({ state: "cancelled" })).tone).toBe("idle");
+  });
+
+  it("sorts the sheet by total, keeps can't-win quotes and earlier versions apart", () => {
+    const b = board({
+      quotes: [
+        ...fixture.quotes,
+        { ...fixture.quotes[1]!, quote_id: "q_harbor_1", total_usd: 1150, negotiated_from: undefined, status: "superseded" },
+        { ...fixture.quotes[2]!, quote_id: "q_none", business_id: "b_none", total_usd: null },
+      ],
+      rejected: [{ business_id: "biz_quickquote_deli", quote_id: "q_quickquote_1", reason: "unsafe", detail: "asked to pay at a link" }],
+      quote_status: { q_bay_1: { approvable: true }, q_harbor_2: { approvable: true }, q_mission_1: { approvable: true }, q_golden_1: { approvable: false } },
+    });
+    const s = sheetQuotes(b);
+    expect(s.rows.map((r) => r.quote.quote_id)).toEqual(["q_golden_1", "q_bay_1", "q_harbor_2", "q_mission_1", "q_none"]);
+    expect(s.rows.find((r) => r.quote.quote_id === "q_bay_1")).toMatchObject({ rank: "recommended", selectable: true });
+    expect(s.rows.find((r) => r.quote.quote_id === "q_golden_1")!.selectable).toBe(false);
+    expect(s.rows.at(-1)!.selectable).toBe(false); // no stated total
+    expect(s.excluded.map((r) => r.quote.quote_id)).toEqual(["q_quickquote_1"]);
+    expect(s.older.map((q) => q.quote_id)).toEqual(["q_harbor_1"]);
+    // An approved quote stays choosable (its panel shows Pay) even when no longer approvable.
+    const approved = sheetQuotes({ ...b, quote_status: {}, approval: { approval_id: "a", quote_id: "q_mission_1", status: "approved", channel: "web" } });
+    expect(approved.rows.find((r) => r.quote.quote_id === "q_mission_1")!.selectable).toBe(true);
+  });
+
+  it("marks a saving only when there is a real earlier price above the total", () => {
+    expect(savedBy({ negotiated_from: 1150, total_usd: 1035 })).toBe(115);
+    expect(savedBy({ negotiated_from: 1000, total_usd: 1035 })).toBeNull();
+    expect(savedBy({ total_usd: 1035 })).toBeNull();
+    expect(savedBy({ negotiated_from: 1150, total_usd: null })).toBeNull();
+  });
+
+  it("counts must-haves met and names the missing one", () => {
+    const golden = fixture.quotes[3]!;
+    const b = board({
+      compliance: {
+        q_golden_1: {
+          status: "noncompliant",
+          issues: [{ code: "requirement_unmet", text: "doesn't meet: At least 12 vegetarian meals (only 6 of 12)" }, { code: "over_budget", text: "$80 over the $1,200 budget" }],
+        },
+        q_bay_1: { status: "compliant", issues: [] },
+      },
+    });
+    expect(mustHaves(golden, b)).toEqual({ total: 3, met: 2, unmet: ["At least 12 vegetarian meals (only 6 of 12)"], unconfirmed: [], other: ["$80 over the $1,200 budget"] });
+    expect(mustHaves(fixture.quotes[0]!, b)).toMatchObject({ total: 3, met: 3, unmet: [] });
+    // No compliance on the board: meets_requirements decides, and a miss can't be counted.
+    expect(mustHaves(fixture.quotes[0]!, board())).toMatchObject({ met: 3 });
+    expect(mustHaves(golden, board())).toMatchObject({ met: null });
+    expect(mustHaves(golden, { ...board(), job: { ...fixture.job!, requirements: [] } })).toBeNull();
+  });
+
+  it("says what the approval bar charges now", () => {
+    expect(payNowLine(1150, 5)).toBe("$5 deposit now, $1,150 total");
+    expect(payNowLine(1150, undefined)).toBe("$1,150 now, the full total (no deposit stated)");
+    expect(payNowLine(1150, 1150)).toBe("$1,150 now, the full total (no deposit stated)");
+  });
+
+  it("lists activity per business, newest first, in plain words", () => {
+    const b = board({
+      businesses: [
+        ...fixture.businesses.slice(0, 5),
+        { ...fixture.businesses[5]!, status: "declined" },
+        { id: "b_call", name: "Taco Town", channel: "phone", status: "on_call", last_event: "Call connected" },
+      ],
+      negotiation: [{ business_id: "biz_harbor_table", business: "Harbor Table", round: 2, target_total_usd: 995, basis_quote_id: "q_bay_1", outcome_total_usd: null }],
+    });
+    const a = activity(b);
+    expect(a.map((x) => x.business)).toEqual(["Harbor Table", "Sunset Kitchen", "Golden Grill", "Mission Eats", "QuickQuote Deli", "Bay Catering", "Taco Town"]);
+    expect(a[0]).toMatchObject({ text: "Countered Harbor Table with Bay Catering's $995", tone: "live" });
+    expect(a[1]).toMatchObject({ text: "Sunset Kitchen asked a question", tone: "hold" });
+    expect(a.find((x) => x.business === "Mission Eats")).toMatchObject({ text: "Mission Eats quoted $1,080", detail: "Call ended, completed, 2m 14s" });
+    expect(a.find((x) => x.business === "Taco Town")).toMatchObject({ text: "On the call with Taco Town now", live: true });
+    expect(a.find((x) => x.business === "QuickQuote Deli")!.tone).toBe("risk");
+    const harbor = activity(board({ businesses: [{ ...fixture.businesses[1]!, status: "quoted" }] }))[0]!;
+    expect(harbor.text).toBe("Harbor Table came down from $1,150 to $1,035");
+    expect(activity(board({ businesses: [{ ...fixture.businesses[4]!, id: "x" }], open_questions: [] }))[0]!.text).toBe("Emailed Sunset Kitchen");
+  });
+
+  it("shows honest progress: counts from the board, only steps that happened or are next", () => {
+    const p = (b: DealBoardView) => progress(b).map((s) => [s.label, s.status]);
+    expect(p(board())).toEqual([
+      ["Contacted 6 businesses", "done"], ["5 of 6 quoted", "done"], ["Negotiate", "current"], ["Your approval", "todo"], ["Payment", "todo"],
+    ]);
+    const paid = board({ state: "paid", payment: { status: "paid", simulated: true }, approval: { approval_id: "a", quote_id: "q_bay_1", status: "used", channel: "web" } });
+    expect(p(paid).slice(-2)).toEqual([["You approved a quote", "done"], ["Paid (simulated)", "done"]]);
+    expect(p(board({ state: "cancelled" })).at(-1)).toEqual(["Cancelled", "current"]);
+    expect(p(board({ state: "contacting", quotes: [] }))[0]).toEqual(["Contacted 6 businesses", "current"]);
+  });
+
+  it("formats a deals-list row's counts and the server's one-line notes", () => {
+    expect(dealCounts({ businesses: 6, quotes: 3 })).toBe("6 contacted, 3 quoted");
+    expect(dealCounts({})).toBe("");
+    expect(sentence("call ended · completed")).toBe("Call ended, completed");
+    expect(plainNote("Counteroffer to Bay Catering over A2A: match 1070 (real quote q_7b52862922fe4ce49f6e), a real cheaper quote")).toBe(
+      "Counteroffer to Bay Catering over A2A: match 1070, a real cheaper quote",
+    );
+    expect(plainNote("flagged: requirement_unmet for job_ff32d2f2815c")).toBe("Flagged: requirement unmet for");
+    expect(possessive("Mission Eats")).toBe("Mission Eats'");
+    expect(possessive("Bay Catering")).toBe("Bay Catering's");
+  });
+
+  it("never repeats a counteroffer's internal note, and says when a callback is scheduled", () => {
+    const b = board({
+      businesses: [{ ...fixture.businesses[1]!, last_event: "Counteroffer: match 995 (real quote q_bay_1abcdef)" }],
+      negotiation: [{ business_id: "biz_harbor_table", business: "Harbor Table", round: 2, target_total_usd: 995, basis_quote_id: "q_bay_1", outcome_total_usd: null, scheduled_for: "2026-10-22T16:00:00Z" }],
+    });
+    expect(activity(b)[0]).toMatchObject({ text: "Countered Harbor Table with Bay Catering's $995", detail: "Callback scheduled for Oct 22, 16:00 UTC" });
+    expect(activity({ ...b, negotiation: [{ ...b.negotiation![0]!, scheduled_for: undefined }] })[0]!.detail).toBeUndefined();
   });
 });
