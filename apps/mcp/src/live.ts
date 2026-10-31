@@ -6,7 +6,7 @@
 // when HAGGLE_ENABLE_PAYMENTS=true and the key is sk_test_ (refuses to start otherwise); without the
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
-  businessIdForContact, MAX_ROUNDS, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
+  businessIdForContact, listingProviderFromEnv, MAX_ROUNDS, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
   withHeuristicFallback, AiUsageMeter, aiUsageSink, aiLimitsFromEnv, hydrateAiMeter, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
 } from "@haggle/engine";
 import { haggleEnv } from "./config.ts";
@@ -216,7 +216,9 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   }
   // Anything that arrived while this server was down or restarting.
   setTimeout(() => void sweep(), 5_000).unref();
-  logger.info("live_ready", { buyer: buyerMailbox, ai_limits: ai.snapshot().limits, alerts: alerts.enabled, stall_check_s: stallEveryS > 0 ? stallEveryS : false, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: env.HAGGLE_PAYMENTS === "manual" ? "manual-handoff" : stripe ? "stripe-test" : "disabled", external_senders: env.HAGGLE_EXTERNAL_SENDERS === "reply_token" ? "reply_token" : "off", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false });
+  // Public-listing discovery: Amazon Location Service (AWS_LOCATION_API_KEY), else Google Places, else off.
+  const listing = listingProviderFromEnv(env);
+  logger.info("live_ready", { buyer: buyerMailbox, ai_limits: ai.snapshot().limits, alerts: alerts.enabled, stall_check_s: stallEveryS > 0 ? stallEveryS : false, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: env.HAGGLE_PAYMENTS === "manual" ? "manual-handoff" : stripe ? "stripe-test" : "disabled", external_senders: env.HAGGLE_EXTERNAL_SENDERS === "reply_token" ? "reply_token" : "off", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", discovery: listing?.kind ?? "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false });
   // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
   let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };
   const channels = async (): Promise<ChannelStatus> => {
@@ -232,5 +234,5 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     ...(brainStore.checkSchema ? { brain: { checkSchema: () => brainStore.checkSchema!() } } : {}),
     providers: { inkbox: true, anthropic: true, payments: env.HAGGLE_PAYMENTS === "manual" ? "manual" as const : stripe ? "stripe_test" as const : "disabled" as const, alerts: alerts.enabled },
   };
-  return { mode: "live", engine, brain, missing: [], roster, channels, configErrors: vendorConfig.errors, ops, ...(env.GOOGLE_PLACES_API_KEY ? { placesKey: env.GOOGLE_PLACES_API_KEY } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript }, ...(reconciler ? { reconciler } : {}) };
+  return { mode: "live", engine, brain, missing: [], roster, channels, configErrors: vendorConfig.errors, ops, ...(listing ? { listing } : {}), inkbox: { api, buyerMailbox, webhookSecret: env.INKBOX_WEBHOOK_SECRET!, senderTrust, transcript }, ...(reconciler ? { reconciler } : {}) };
 });

@@ -12,6 +12,8 @@ export interface VendorView {
   added_at: string;
   contactable: boolean;
   suppressed?: "opt_out" | "bounce";
+  /** Its published opening hours, when it was added from a listing that has them. */
+  hours?: string[];
 }
 
 export interface VendorList {
@@ -32,8 +34,10 @@ export interface FoundBusiness {
   website?: string;
   maps_url?: string;
   phone_published: boolean;
-  /** Addresses the business publishes on its own website (public; adding one still needs the user's attestation). */
+  /** Addresses the business publishes (its listing's, then its own website's; public: adding one still needs the user's attestation). */
   emails?: string[];
+  /** "Open today 9am–5pm" in the business's timezone, when its hours are known. */
+  hours_today?: string;
   contact_state: string;
   contact_summary: string;
 }
@@ -44,4 +48,6 @@ export interface DiscoverResult {
   status: string;
   message: string;
   found: FoundBusiness[];
+  /** The listing provider's attribution, shown under the results ("Amazon Location Service (data © HERE)"). */
+  attribution?: string;
 }

@@ -77,6 +77,11 @@
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
+.bl-hours {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
 .bl-chips {
   list-style: none;
   margin: 2px 0 0;

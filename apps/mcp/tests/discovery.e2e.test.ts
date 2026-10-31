@@ -59,9 +59,9 @@ describe("discover real businesses, understand them, reach only the authorized o
     expect(d.found.find((f: { name: string }) => f.name === "Quiet Drains").contact_state).toBe("discovered");
     expect(JSON.stringify(d.found)).not.toMatch(/510-555|5105550/); // published numbers stay server-side
     // Addresses each business publishes on its own website, so the user can add it without copying one.
-    expect(ace.website_emails).toEqual(["jobs@aceplumbing.example"]);
-    expect(bolt.website_emails).toEqual(["office@boltplumbing.example"]);
-    expect(d.found.find((f: { name: string }) => f.name === "Quiet Drains").website_emails).toBeUndefined();
+    expect(ace.published_emails).toEqual(["jobs@aceplumbing.example"]);
+    expect(bolt.published_emails).toEqual(["office@boltplumbing.example"]);
+    expect(d.found.find((f: { name: string }) => f.name === "Quiet Drains").published_emails).toBeUndefined();
     expect(r.content[0].text).toMatch(/none offer plumbing/);
     expect(r.content[0].text).toMatch(/Listings: Google Maps\./);
   });

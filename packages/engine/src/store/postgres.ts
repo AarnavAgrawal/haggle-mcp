@@ -11,7 +11,7 @@ import {
 
 type Sql = postgres.Sql<Record<string, never>>;
 
-const JSON_COLS = new Set(["request", "references", "attachments", "record", "requirement_results", "data"]);
+const JSON_COLS = new Set(["request", "references", "attachments", "record", "requirement_results", "data", "opening_hours"]);
 const norm = (id: string) => id.trim().replace(/^<|>$/g, "").toLowerCase();
 
 /** Timestamps -> ISO strings; everything else as-is. */
@@ -94,7 +94,8 @@ export class PostgresRepository implements Repository {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(o)) {
       if (v === undefined) continue;
-      out[k] = JSON_COLS.has(k) ? this.sql.json(v as never) : v;
+      // opening_hours null is SQL NULL (unknown), never JSON null.
+      out[k] = JSON_COLS.has(k) && !(k === "opening_hours" && v === null) ? this.sql.json(v as never) : v;
     }
     return out;
   }
@@ -149,8 +150,18 @@ export class PostgresRepository implements Repository {
     return rows<SuppressionRow>(await this.sql`select * from vendor_suppressions where contact = any(${contacts.map((c) => c.toLowerCase())})`);
   }
   async addWorkspaceVendor(v: Omit<WorkspaceVendorRow, "created_at">) {
-    const r = await this.sql`
-      insert into workspace_vendors ${this.sql(this.vals({ ...v, channel: v.channel ?? null } as never))}
+    // Hours (migration 125) are written only when known, so a database without 125 still adds vendors.
+    const listed = v.opening_hours != null || v.timezone != null || v.business_ref != null;
+    const { opening_hours, timezone, business_ref, ...base } = v;
+    const values = { ...base, channel: v.channel ?? null, ...(listed ? { opening_hours: opening_hours ?? null, timezone: timezone ?? null, business_ref: business_ref ?? null } : {}) };
+    const r = listed
+      ? await this.sql`
+      insert into workspace_vendors ${this.sql(this.vals(values as never))}
+      on conflict (workspace_id, contact) do update set name = excluded.name, consent = excluded.consent, added_by = excluded.added_by, channel = excluded.channel,
+        opening_hours = excluded.opening_hours, timezone = excluded.timezone, business_ref = excluded.business_ref
+      returning *`
+      : await this.sql`
+      insert into workspace_vendors ${this.sql(this.vals(values as never))}
       on conflict (workspace_id, contact) do update set name = excluded.name, consent = excluded.consent, added_by = excluded.added_by, channel = excluded.channel
       returning *`;
     return row<WorkspaceVendorRow>(r[0])!;
@@ -211,7 +222,10 @@ export class PostgresRepository implements Repository {
 
   async insertBusinesses(list: JobBusinessRow[]) {
     if (list.length === 0) return;
-    await this.sql`insert into job_businesses ${this.sql(list.map((b) => this.vals(b as never)) as never)}`;
+    // Hours (migration 125) only when some business has them; then every row names the columns (null when unknown).
+    const hours = list.some((b) => b.opening_hours != null || b.timezone != null);
+    const norm = list.map(({ opening_hours, timezone, ...b }) => (hours ? { ...b, opening_hours: opening_hours ?? null, timezone: timezone ?? null } : b));
+    await this.sql`insert into job_businesses ${this.sql(norm.map((b) => this.vals(b as never)) as never)}`;
   }
   async getBusinesses(jobId: string) {
     return rows<JobBusinessRow>(await this.sql`select * from job_businesses where job_id = ${jobId} order by name`);

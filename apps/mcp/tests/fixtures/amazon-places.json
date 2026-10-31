@@ -1,0 +1,73 @@
+{
+  "provider": "amazon",
+  "geocode": [
+    { "match": "oakland", "position": [-122.2711, 37.8044] }
+  ],
+  "searches": [
+    {
+      "match": "plumb",
+      "items": [
+        {
+          "PlaceId": "AQAAAEFjZVBsdW1iaW5nT2FrbGFuZDAx", "PlaceType": "PointOfInterest", "Title": "Ace Plumbing & Drain",
+          "Address": { "Label": "410 Grand Ave, Oakland, CA 94610, United States", "Locality": "Oakland", "Region": { "Code": "CA", "Name": "California" } },
+          "Position": [-122.2589, 37.8112], "Distance": 800,
+          "Categories": [{ "Id": "plumbing_service", "Name": "Plumbing", "Primary": true }, { "Id": "coffee_shop", "Name": "Coffee Shop" }],
+          "Contacts": {
+            "Phones": [{ "Value": "+15105550141", "Categories": [{ "Id": "plumbing_service" }] }, { "Value": "+15105550100", "Categories": [{ "Id": "coffee_shop" }] }],
+            "Websites": [{ "Value": "https://aceplumbing.example/" }]
+          },
+          "OpeningHours": [
+            { "Display": ["Mon-Sun: 06:00 - 14:00"], "OpenNow": false, "Components": [{ "OpenTime": "T060000", "OpenDuration": "PT08H00M", "Recurrence": "FREQ:DAILY;BYDAY:MO,TU,WE,TH,FR,SA,SU" }], "Categories": [{ "Id": "coffee_shop" }] },
+            { "Display": ["Mon-Fri: 08:00 - 17:00", "Sat: 09:00 - 13:00"], "OpenNow": true, "Components": [{ "OpenTime": "T080000", "OpenDuration": "PT09H00M", "Recurrence": "FREQ:DAILY;BYDAY:MO,TU,WE,TH,FR" }, { "OpenTime": "T090000", "OpenDuration": "PT04H00M", "Recurrence": "FREQ:DAILY;BYDAY:SA" }], "Categories": [{ "Id": "plumbing_service" }] }
+          ],
+          "TimeZone": { "Name": "America/Los_Angeles", "Offset": "-07:00", "OffsetSeconds": -25200 }
+        },
+        {
+          "PlaceId": "AQAAAE5pZ2h0T3dsUm9vdGVyT2FrMDM", "PlaceType": "PointOfInterest", "Title": "Night Owl Rooter",
+          "Address": { "Label": "77 Telegraph Ave, Oakland, CA 94612, United States", "Locality": "Oakland" },
+          "Position": [-122.2690, 37.8090], "Distance": 2500,
+          "Categories": [{ "Id": "plumbing_service", "Name": "Plumbing", "Primary": true }],
+          "Contacts": { "Phones": [{ "Value": "+15105550188" }] },
+          "OpeningHours": [{ "Display": ["Mon-Sun: 18:00 - 04:00"], "OpenNow": false, "Components": [{ "OpenTime": "T180000", "OpenDuration": "PT10H00M", "Recurrence": "FREQ:DAILY;BYDAY:MO,TU,WE,TH,FR,SA,SU" }] }],
+          "TimeZone": { "Name": "America/Los_Angeles" }
+        },
+        {
+          "PlaceId": "AQAAAEJvbHRQbHVtYmluZ09ha2xhbmQy", "PlaceType": "PointOfInterest", "Title": "Bolt Plumbing",
+          "Address": { "Label": "88 Broadway, Oakland, CA 94607, United States", "Locality": "Oakland" },
+          "Position": [-122.2760, 37.7990], "Distance": 1200,
+          "Categories": [{ "Id": "plumbing_service", "Name": "Plumbing", "Primary": true }],
+          "Contacts": { "Phones": [{ "Value": "+15105550177" }], "Emails": [{ "Value": "Dispatch@BoltPlumbing.example" }], "Websites": [{ "Value": "boltplumbing.example" }] },
+          "TimeZone": { "Name": "America/Los_Angeles" }
+        },
+        {
+          "PlaceId": "AQAAAEFjZVBsdW1iaW5nRHVwZTAwMDQ", "PlaceType": "PointOfInterest", "Title": "Ace Plumbing and Drain",
+          "Address": { "Label": "410 Grand Ave, Oakland, CA 94610, United States", "Locality": "Oakland" },
+          "Distance": 810,
+          "Categories": [{ "Id": "plumbing_service", "Name": "Plumbing", "Primary": true }],
+          "Contacts": { "Phones": [{ "Value": "+1 (510) 555-0141" }] }
+        },
+        {
+          "PlaceId": "AQAAAFF1aWV0RHJhaW5zT2FrbGFuZDA1", "PlaceType": "PointOfInterest", "Title": "Quiet Drains",
+          "Address": { "Label": "12 Lake St, Oakland, CA 94606, United States", "Locality": "Oakland" },
+          "Distance": 3000,
+          "Categories": [{ "Id": "plumbing_service", "Name": "Plumbing", "Primary": true }]
+        },
+        {
+          "PlaceId": "AQAAAEJheVBpenphT2FrbGFuZDAwMDY", "PlaceType": "PointOfInterest", "Title": "Bay Pizza",
+          "Address": { "Label": "1 Pizza Way, Oakland, CA 94607, United States", "Locality": "Oakland" },
+          "Distance": 1500,
+          "Categories": [{ "Id": "pizza_restaurant", "Name": "Pizza Restaurant", "Primary": true }],
+          "Contacts": { "Phones": [{ "Value": "+15105550122" }] }
+        },
+        {
+          "PlaceId": "AQAAAFBsdW1iU3RyZWV0T2FrbGFuZDA3", "PlaceType": "Street", "Title": "Plumb Street",
+          "Address": { "Label": "Plumb St, Oakland, CA, United States", "Locality": "Oakland" }
+        }
+      ]
+    }
+  ],
+  "websites": {
+    "https://aceplumbing.example/": "<html><head><title>Ace Plumbing &amp; Drain | Oakland</title><meta name=\"description\" content=\"Licensed Oakland plumbers. Leaks, drains, water heaters.\"></head><body><p>Leak repairs starting at $149 per visit. Email <a href=\"mailto:jobs@aceplumbing.example\">jobs@aceplumbing.example</a>.</p></body></html>",
+    "https://boltplumbing.example/": "<html><head><title>Bolt Plumbing</title><script type=\"application/ld+json\">{\"@context\":\"https://schema.org\",\"@type\":\"Plumber\",\"name\":\"Bolt Plumbing\",\"openingHoursSpecification\":[{\"@type\":\"OpeningHoursSpecification\",\"dayOfWeek\":[\"Monday\",\"Tuesday\",\"Wednesday\",\"Thursday\",\"Friday\",\"Saturday\"],\"opens\":\"07:00\",\"closes\":\"19:00\"}]}</script></head><body>Emergency plumbing from $95/hour. Contact: office@boltplumbing.example or dispatch@boltplumbing.example</body></html>"
+  }
+}

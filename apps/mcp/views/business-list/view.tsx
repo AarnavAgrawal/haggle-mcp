@@ -1,6 +1,6 @@
 /**
- * Business list (discover): one card with every business found in public listings (rating, reviews,
- * address, website and Google Maps links, why it ranked, and whether Haggle may contact it), then the
+ * Business list (discover): one card with every business found in public listings (address, today's
+ * hours, website, rating and Maps link where the listing has them, why it ranked, and whether Haggle may contact it), then the
  * server's configured demo vendors. Found is not authorized: the contact badge says which is which.
  *
  * Listing data is third-party: shown as text, links open only on the human's click.
@@ -26,6 +26,8 @@ type Found = {
   contact_state: string;
   contact_summary?: string;
   attribution?: string;
+  /** "Open today 9am–5pm" (the business's timezone), when its hours are known. */
+  hours_today?: string;
 };
 
 type Vendor = { name: string; best_channel: string; channel_label?: string; ready: boolean; played_by?: string; blocker?: string; fix?: string };
@@ -97,7 +99,7 @@ function BusinessList({ data, category, area }: { data: DiscoverOut; category?: 
         </ol>
       )}
 
-      {found.length > 0 && <p className="bl-attr">Listings: {attribution ?? "Google Maps"}</p>}
+      {found.length > 0 && <p className="bl-attr">Listings: {attribution ?? "public listings"}</p>}
 
       {vendors.length > 0 && (
         <section className="bl-vendors" aria-label="Your demo vendors">
@@ -159,6 +161,7 @@ function FoundRow({ f, rank }: { f: Found; rank: number }) {
           </div>
           {f.rating !== undefined && <Stars rating={f.rating} count={f.review_count} />}
           {f.address && <p className="bl-addr">{f.address}</p>}
+          {f.hours_today && <p className="bl-hours">{f.hours_today}</p>}
           {(f.rank_reasons?.length ?? 0) > 0 && (
             <ul className="bl-chips" aria-label="Why it ranked here">
               {f.rank_reasons!.map((r) => (

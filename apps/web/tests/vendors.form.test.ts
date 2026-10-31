@@ -27,6 +27,12 @@ describe("validateVendorForm", () => {
     expect(validateVendorForm({ ...good, contact: "+14155550199", channel: "imessage", consent_basis: "existing_relationship" })).toMatchObject({ ok: true, value: { channel: "imessage" } });
   });
 
+  it("passes on a listing ref from Find businesses (for its opening hours); anything else is dropped", () => {
+    expect(validateVendorForm({ ...good, business_ref: "aws:AQAAAEFjZVBsdW1i" })).toMatchObject({ ok: true, value: { business_ref: "aws:AQAAAEFjZVBsdW1i" } });
+    expect(validateVendorForm({ ...good, business_ref: "place:ChIJace0001" })).toMatchObject({ ok: true, value: { business_ref: "place:ChIJace0001" } });
+    for (const bad of ["javascript:alert(1)", "aws:<script>", 42]) expect(validateVendorForm({ ...good, business_ref: bad })).toEqual({ ok: true, value: expect.not.objectContaining({ business_ref: expect.anything() }) });
+  });
+
   it("never allows a call or text on a public listing", () => {
     expect(basisAllows("public_listing_email", "phone")).toBe(false);
     expect(basisAllows("business_agreed", "imessage")).toBe(true);
@@ -76,10 +82,18 @@ describe("discover results", () => {
   });
 
   it("keeps up to three well-formed website emails, lowercased", () => {
-    const r = toDiscoverResult({ mode: "live", public_discovery: { status: "ok", message: "1 found" }, found: [{ name: "Casa Lunch", business_ref: "place:1", website_emails: ["Orders@CasaLunch.com", "not an email", 7, "a@b.co", "c@d.co", "e@f.co"] }] });
+    const r = toDiscoverResult({ mode: "live", public_discovery: { status: "ok", message: "1 found" }, found: [{ name: "Casa Lunch", business_ref: "place:1", published_emails: ["Orders@CasaLunch.com", "not an email", 7, "a@b.co", "c@d.co", "e@f.co"] }] });
     expect(r.found[0]!.emails).toEqual(["orders@casalunch.com", "a@b.co", "c@d.co"]);
-    const none = toDiscoverResult({ mode: "live", found: [{ name: "Quiet", business_ref: "place:2", website_emails: [] }] });
+    const none = toDiscoverResult({ mode: "live", found: [{ name: "Quiet", business_ref: "place:2", published_emails: [] }] });
     expect(none.found[0]).not.toHaveProperty("emails");
+  });
+
+  it("Amazon Location results: hours today and the provider's attribution; no rating or Maps link invented", () => {
+    const r = toDiscoverResult({ mode: "live", public_discovery: { status: "ok", message: "1 found" }, found: [{ name: "Ace Plumbing", business_ref: "aws:AQAAAEFjZQ", hours_today: "Open today 8am–5pm", attribution: "Amazon Location Service (data © HERE)", published_emails: ["dispatch@ace.example"], contact_state: "contact_found" }] });
+    expect(r.attribution).toBe("Amazon Location Service (data © HERE)");
+    expect(r.found[0]).toMatchObject({ hours_today: "Open today 8am–5pm", emails: ["dispatch@ace.example"] });
+    expect(r.found[0]).not.toHaveProperty("rating");
+    expect(r.found[0]).not.toHaveProperty("maps_url");
   });
 
   it("says when discovery is off", () => {

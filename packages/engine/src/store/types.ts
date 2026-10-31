@@ -8,6 +8,7 @@
 import type { JobState, Request } from "../contract.ts";
 import type { QuoteRecord } from "../parsing/extraction.ts";
 import type { RequirementResult } from "../parsing/requirements.ts";
+import type { WeeklyHours } from "../reputation/hours.ts";
 
 export type Mode = "mock" | "live";
 
@@ -100,6 +101,10 @@ export interface JobBusinessRow {
   next_attempt_at: string | null;
   /** When Haggle escalated this business from email to a Voice AI call (null = never). */
   escalated_at: string | null;
+  /** Its published weekly opening hours (listing, else website; migration 125); absent/null = unknown. */
+  opening_hours?: WeeklyHours | null;
+  /** Its IANA timezone, when known (migration 125). */
+  timezone?: string | null;
 }
 
 export type MessageKind =
@@ -282,6 +287,11 @@ export interface WorkspaceVendorRow {
   added_by: string;
   /** How the vendor is reached (migration 108); null = by its contact (email, else a call). */
   channel?: Channel | null;
+  /** Its published opening hours and timezone, from the listing it was added from (migration 125). */
+  opening_hours?: WeeklyHours | null;
+  timezone?: string | null;
+  /** The public listing it was added from ("aws:<PlaceId>", "place:<id>"), if any (migration 125). */
+  business_ref?: string | null;
   created_at: string;
 }
 

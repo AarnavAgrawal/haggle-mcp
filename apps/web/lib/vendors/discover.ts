@@ -27,19 +27,23 @@ export function toDiscoverResult(data: Record<string, unknown>): DiscoverResult 
     const website = safeHttpUrl(f.website);
     const maps = safeHttpUrl(f.maps_url);
     const address = text(f.address);
-    const emails = (Array.isArray(f.website_emails) ? f.website_emails : [])
+    const emails = (Array.isArray(f.published_emails) ? f.published_emails : [])
       .flatMap((e) => (typeof e === "string" && e.length <= 254 && /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(e.trim()) ? [e.trim().toLowerCase()] : []))
       .slice(0, 3);
+    const hours = text(f.hours_today, 80);
     return [{
       name, business_ref: text(f.business_ref, 200) ?? name,
       ...(address ? { address } : {}), ...(rating !== undefined ? { rating, review_count: num(f.review_count) ?? 0 } : {}),
       ...(website ? { website } : {}), ...(maps ? { maps_url: maps } : {}),
       phone_published: f.phone_published === true,
       ...(emails.length ? { emails } : {}),
+      ...(hours ? { hours_today: hours } : {}),
       contact_state: text(f.contact_state, 40) ?? "discovered", contact_summary: text(f.contact_summary, 300) ?? "",
     }];
   });
-  return { ok: true, mode: data.mode === "live" ? "live" : "mock", status: text(pub.status, 40) ?? "unknown", message: text(pub.message, 400) ?? "", found };
+  const first = (Array.isArray(data.found) ? data.found : [])[0] as Record<string, unknown> | undefined;
+  const attribution = text(first?.attribution, 120);
+  return { ok: true, mode: data.mode === "live" ? "live" : "mock", status: text(pub.status, 40) ?? "unknown", message: text(pub.message, 400) ?? "", found, ...(attribution ? { attribution } : {}) };
 }
 
 /** May Haggle contact this found business yet: only once it is one of this workspace's vendors. */

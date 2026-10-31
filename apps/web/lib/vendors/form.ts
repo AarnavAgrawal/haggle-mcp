@@ -27,6 +27,8 @@ export interface VendorFormInput {
   consent_basis?: unknown;
   note?: unknown;
   attested?: unknown;
+  /** The public listing it was found in ("aws:…" / "place:…"): the server stores its opening hours. */
+  business_ref?: unknown;
 }
 /** What /api/vendors sends on to the MCP server (POST /internal/vendors). */
 export interface AddVendorBody {
@@ -35,6 +37,7 @@ export interface AddVendorBody {
   channel: VendorChannel;
   consent_basis: ConsentBasis;
   note?: string;
+  business_ref?: string;
 }
 export type FormField = "name" | "contact" | "channel" | "consent_basis" | "note" | "attested";
 export type FormResult = { ok: true; value: AddVendorBody } | { ok: false; errors: Partial<Record<FormField, string>> };
@@ -89,5 +92,8 @@ export function validateVendorForm(i: VendorFormInput): FormResult {
   if (i.attested !== true) errors.attested = "Confirm that this business agreed to be contacted, or that you already work with it.";
 
   if (Object.keys(errors).length || !contact || !channel || !basis) return { ok: false, errors };
-  return { ok: true, value: { name, contact: contact.value, channel, consent_basis: basis, ...(note ? { note } : {}) } };
+  // Only a listing ref Find businesses returned; anything else is dropped (it only ever adds opening hours).
+  const ref = str(i.business_ref).trim();
+  const businessRef = /^(aws|place):[A-Za-z0-9_=+/-]{3,515}$/.test(ref) ? ref : undefined;
+  return { ok: true, value: { name, contact: contact.value, channel, consent_basis: basis, ...(note ? { note } : {}), ...(businessRef ? { business_ref: businessRef } : {}) } };
 }

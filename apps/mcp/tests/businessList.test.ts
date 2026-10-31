@@ -93,7 +93,7 @@ describe("links (untrusted listing data)", () => {
 describe("evidence grouped by kind", () => {
   it("orders verified, listing & reviews, website claims, estimates, then anything else", () => {
     const g = evidenceGroups(evidence);
-    expect(g.map((x) => x.title)).toEqual(["Verified by Haggle", "Google listing & reviews", "The business's own website (claims)", "Haggle's estimates", "Other"]);
+    expect(g.map((x) => x.title)).toEqual(["Verified by Haggle", "Public listing & reviews", "The business's own website (claims)", "Haggle's estimates", "Other"]);
     expect(g[1]!.items).toHaveLength(3); // listing + reputation together
     expect(evidenceGroups([])).toEqual([]);
     expect(evidenceGroups(undefined)).toEqual([]);

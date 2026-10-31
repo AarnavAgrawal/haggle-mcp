@@ -7,6 +7,7 @@
 //   match confidence (phone match = sure; else name similarity). Below MIN_MATCH it is "ambiguous"
 //   and the ranking treats it as no data (neutral). Nothing is ever invented.
 import type { ReputationEvidence, ValueInput } from "../ranking/value.ts";
+import type { WeeklyHours } from "./hours.ts";
 
 export interface ReputationSubject {
   business_id: string;
@@ -119,7 +120,7 @@ export function placesReputation(opts: { apiKey?: string; fetch?: Fetch; now?: (
 
 /** A real business found in a public listing. Found is NOT contactable: authorization is separate. */
 export interface FoundBusiness {
-  /** Stable reference agents can pass to deal / business_profile: "place:<Google place id>". */
+  /** Stable reference agents can pass to deal / business_profile: "place:<Google place id>" or "aws:<Amazon Location PlaceId>". */
   business_ref: string;
   place_id: string;
   name: string;
@@ -141,8 +142,15 @@ export interface FoundBusiness {
   /** 0..1 discovery rank: relevance first, then credible (volume-weighted) reputation and reachability. */
   score: number;
   rank_reasons: string[];
-  source: "Google Places";
-  attribution: "Google Maps";
+  source: "Google Places" | "Amazon Location Service";
+  /** Shown wherever listing data is shown ("Google Maps", "Amazon Location Service (data © HERE)"). */
+  attribution: string;
+  /** Email addresses the listing itself publishes (Amazon Location `Contacts.Emails`). */
+  listing_emails?: string[];
+  /** Weekly opening hours from the listing, in its timezone (absent = unknown). */
+  hours?: WeeklyHours;
+  /** The place's IANA timezone, when the listing gives one. */
+  timezone?: string;
   fetched_at: string;
   /** Same business listed more than once (merged by phone / website / name). */
   merged_listings: number;
@@ -201,7 +209,7 @@ export function resolveListings(places: PlaceResult[], category: string, area: s
 const slugifyName = (n: string) => n.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 /** Why public discovery returned nothing, in terms an agent can act on. */
-export type PlacesFailure = "not_configured" | "key_rejected" | "rate_limited" | "unavailable";
+export type PlacesFailure = "not_configured" | "key_rejected" | "rate_limited" | "unavailable" | "area_not_found";
 export class PlacesError extends Error {
   readonly code: PlacesFailure;
   constructor(code: PlacesFailure, message: string) { super(message); this.code = code; }
