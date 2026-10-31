@@ -199,6 +199,7 @@ export function QuoteList({ board, jobId, mode, live }: { board: DealBoardView; 
               </ul>
             ) : null}
             {compliance?.assumed?.length ? <p className="hint">Assumed: {compliance.assumed.join("; ")}</p> : null}
+            {status?.price_note && status.block?.code !== "price_implausible" ? <p className="hint warn">{status.price_note}</p> : null}
             {status?.block ? <p className="hint">Can't be approved yet: {status.block.reason}</p> : null}
             {rejected ? <p className="hint">Can't win: {rejected.detail}</p> : q.excluded_reason ? <p className="hint">Excluded: {q.excluded_reason.replace(/_/g, " ")}</p> : null}
             {fresh?.stale ? <p className="hint">This quote is stale{fresh.reconfirmation ? "; Haggle is re-confirming it with the business" : ""}.</p> : null}

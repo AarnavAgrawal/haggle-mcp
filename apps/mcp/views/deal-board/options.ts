@@ -17,7 +17,7 @@ import type { DealBoard, Quote } from "@haggle/core";
 /** A board quote: a total the business never stated is null (or 0 with total_known: false), never a price. */
 export type OptQuote = Omit<Quote, "total_usd"> & { total_usd: number | null };
 /** Per-quote approvability as the server reports it (apps/mcp/src/views.ts DealBoardPlus.quote_status). */
-export type QuoteStatus = { approvable: boolean; approximate?: boolean; block?: { code: string; reason: string } };
+export type QuoteStatus = { approvable: boolean; approximate?: boolean; block?: { code: string; reason: string }; price_note?: string };
 type Base = Omit<DealBoard, "quotes"> & { quotes: OptQuote[]; quote_status?: Record<string, QuoteStatus> };
 type ChoiceBoard = Pick<Base, "job" | "quotes" | "rejected" | "approval" | "payment" | "quote_status">;
 
@@ -100,6 +100,7 @@ export function approvalBlock(board: Pick<Base, "quote_status">, q: OptQuote): {
   if (st && !st.approvable) return st.block ?? { code: "not_approvable", reason: "Haggle can't approve this quote yet." };
   if (!knownTotal(q)) return { code: "no_total", reason: `${q.business} hasn't stated a total yet; it can be chosen once they do.` };
   if (q.flags.includes("approximate_total")) return { code: "total_not_firm", reason: `${q.business} gave an approximate total; it can be chosen once they confirm a firm one.` };
+  if (q.flags.includes("price_implausible")) return { code: "price_implausible", reason: `${q.business}'s price is far below the usual range for this; it can be chosen once they confirm the total and what it includes.` };
   return null;
 }
 

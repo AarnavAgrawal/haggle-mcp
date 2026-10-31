@@ -20,6 +20,8 @@ type Approval = Omit<SharedApproval, "channel"> & {
   payment?: { status: string; simulated: boolean; rail?: string; reason?: string };
   /** "manual" on a server where approval ends in the manual handoff, known before any payment row exists. */
   payment_rail?: "manual";
+  /** The price is far outside the usual range for what was asked (e.g. confirmed by the vendor but far below it). */
+  price_warning?: string;
 };
 
 const STEPS = [
@@ -34,6 +36,7 @@ const PROCESSING = new Set(["charging", "sent", "signed", "awaiting_invoice", "i
 function refusalText(reason: string | undefined): string {
   if (!reason) return "Refused.";
   if (/total_not_firm/.test(reason)) return "The business gave an approximate total. Haggle can approve it once they confirm a firm total.";
+  if (/price_implausible/.test(reason)) return "The price is far below the usual range for this. Haggle can approve it once the business confirms the total and what it includes.";
   return reason;
 }
 
@@ -246,6 +249,7 @@ function ApprovalCard({ initial, ticket }: { initial: Approval; ticket: ViewTick
         </div>
       )}
 
+      {card.price_warning && status !== "paid" && <p className="ap-waiting" role="note">{card.price_warning}.</p>}
       {status === "refused" && <p className="ap-refused">{confirmOnly ? "Not approved: " : ""}{refusalText(stageSummary ?? card.reason)}{stageSummary ? "" : " Nothing was paid."}</p>}
       {status === "pending_human" && card.reason && <p className="ap-waiting">{card.reason}</p>}
       {manual && (status === "approved" || status === "paid") && (

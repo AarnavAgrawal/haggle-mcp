@@ -294,6 +294,9 @@ code {
   color: var(--ink-3);
   font-size: var(--t-14);
 }
+.hint.warn {
+  color: var(--warn);
+}
 
 /* ---------- money: the one loud thing ---------- */
 .price {

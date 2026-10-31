@@ -342,6 +342,8 @@ export type BoardQuote = Omit<Quote, "total_usd"> & {
   excluded_reason?: string;
   /** The business hedged this total in its own words ("around $1,300"): show it as ≈, rank it, but it is not approvable until confirmed. */
   total_approximate?: true;
+  /** The price is far outside the usual range for what was asked (parsing/plausibility.ts), in words for the human. */
+  price_note?: string;
   /** Can the human approve (and pay) this quote right now? Caveats (over budget, unconfirmed requirement) don't block; see approval_block when false. */
   approvable: boolean;
   /** Why it can't be approved yet, in words for the board (code is an EngineError code, e.g. total_not_firm). */
@@ -6177,9 +6179,10 @@ export class HaggleEngine {
         // Soft preferences (decision 1): a ranked quote that misses one is "incomplete", never "rejected";
         // "rejected" is only for an unsafe quote or one that declined. approvable/approval_block say whether it can be approved now.
         verdict: order.has(q.id) ? (ranking.caveats.some((c) => c.quoteId === q.id) ? "incomplete" : "compliant")
-          : hard && !["no_total", "zero_total", "total_not_firm", "missing_info", "all_in_unknown"].includes(hard) ? "rejected" : "incomplete",
+          : hard && !["no_total", "zero_total", "total_not_firm", "price_implausible", "missing_info", "all_in_unknown"].includes(hard) ? "rejected" : "incomplete",
         ...(reason ? { excluded_reason: excludedText(reason, cq.requirement_results) } : {}),
         ...(isApproximate(q.record) ? { total_approximate: true as const } : {}),
+        ...(priceCaveat(q.record) ? { price_note: priceCaveat(q.record)! } : {}),
         approvable: block === null, ...(block ? { approval_block: block } : {}),
         ...(fields ? { fields, missing_fields: missingFields } : {}),
         compliance: this.complianceOf(job, q, capCents), freshness: this.freshnessOf(q, events),
