@@ -108,7 +108,7 @@ describe("vendorAsksFor", () => {
 describe("criticalGaps", () => {
   it("chases the deposit and, for events, the cancellation policy, only when the reply left them out", () => {
     const r = { what: "lunch catering", quantity: 40 };
-    expect(criticalGaps(r, { deposit_cents: null })).toEqual(["whether you need a deposit, how much, and when it's due", "your cancellation and change policy"]);
+    expect(criticalGaps(r, { deposit_cents: null })).toEqual(["any deposit and when it's due", "your cancellation policy"]);
     expect(criticalGaps(r, { deposit_cents: 34500, terms: { deposit_terms: null, cancellation: "Full refund until 7 days before", exclusions: [] } })).toEqual([]);
     expect(criticalGaps({ what: "fix a leak" }, { deposit_cents: 5000 })).toEqual([]);
   });

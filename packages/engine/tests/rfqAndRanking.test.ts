@@ -29,6 +29,34 @@ describe("buildRfqEmail", () => {
   it("parses dates as calendar dates regardless of timezone", () => {
     expect(humanDate("2026-01-01")).toBe("Thursday January 1");
   });
+
+  it("asks for everything the customer needs to decide, as a readable list", () => {
+    const tail = out.bodyText.slice(out.bodyText.indexOf("Could you reply by"));
+    expect(tail).toMatch(/^Could you reply by Saturday October 17 21:30 UTC with your quote\? To help the customer decide, please include:\n- An itemized all-in total: the subtotal plus any delivery, travel, setup or service fees, tax and gratuity\n/);
+    for (const line of ["- The menu or items you'd serve", "- Whether delivery, setup, serving staff, plates and utensils are included", "- What's included, and anything that isn't", "- The price per person",
+      "- Any deposit, when it's due, and your payment terms", "- That you're available for that date and time (or the closest you can do)", "- Your cancellation and change policy", "- How long the quote is good for", "- How you meet each must-have above"]) {
+      expect(tail).toContain(line);
+    }
+    expect(tail).toContain("A PDF or photo of your quote is fine.");
+  });
+
+  it("names the customer it helps decide, and asks a plumber for plumber things", () => {
+    const fix = buildRfqEmail({ shortCode: "7F3K", businessName: "Pipe Pros", what: "fix a leaking kitchen pipe", location: "Oakland, CA", details: [{ label: "Urgency", value: "this week" }], requirements: [], replyBy: new Date("2026-10-17T21:30:00Z"), customer: "Priya" });
+    expect(fix.bodyText).toContain("- Urgency: this week");
+    expect(fix.bodyText).toContain("To help Priya decide, please include:");
+    for (const line of ["- Any call-out, trip or diagnostic fee", "- Whether it's a flat price or hourly (the rate and estimated hours)", "- Parts and materials, and whether they're in the total", "- Your earliest arrival time", "- Any warranty on labor and parts", "- When you could do it"]) {
+      expect(fix.bodyText).toContain(line);
+    }
+    expect(fix.bodyText).not.toContain("price per");
+    expect(fix.bodyText).not.toContain("must-have");
+  });
+
+  it("custom asks come first; what they already cover isn't asked twice", () => {
+    const e = buildRfqEmail({ shortCode: "7F3K", businessName: "Pipe Pros", what: "fix a sink", location: "SF", requirements: [], replyBy: new Date("2026-10-17T21:30:00Z"), askLabels: [{ label: "Total price", required: true }, { label: "Earliest date", required: true }, { label: "Deposit", required: false }] });
+    expect(e.bodyText).toMatch(/Could you reply by .* with:\n- Total price\n- Earliest date\n- Deposit \(if you can\)\n\nIt also helps the customer decide to know:\n- Any call-out, trip or diagnostic fee\n/);
+    expect(e.bodyText).not.toContain("itemized all-in total");
+    expect(e.bodyText).not.toContain("Any deposit, when it's due");
+  });
 });
 
 const quote = (over: Partial<RankableQuote> & Pick<RankableQuote, "quoteId" | "businessId">): RankableQuote => ({

@@ -33,6 +33,47 @@ describe("HaggleEngine.callBrief", () => {
   });
 });
 
+// The first call tells the business everything from intake and asks what the customer needs to decide.
+describe("HaggleEngine.callBrief: intake content", () => {
+  it("passes on details and the request's own asks, then the itemized total and the category's asks", () => {
+    const fix = { short_code: "AB12", request: { what: "fix a leaking kitchen pipe", area: "Oakland, CA", venue: "12 Elm St", requirements: [], details: [{ label: "Problem", value: "drip under the sink, getting worse" }, { label: "Urgency", value: "this week" }, { label: "Budget", value: "secret" }], ask: [{ key: "earliest", label: "Earliest arrival", type: "date", required: true }] } } as never;
+    const b = HaggleEngine.callBrief("Pipe Pros", fix, []);
+    expect(b).toContain("Details: Problem: drip under the sink, getting worse; Urgency: this week.");
+    expect(b).not.toContain("secret"); // never the budget
+    expect(b).toMatch(/3\. Ask for: earliest arrival; the all-in total, itemized: subtotal, any delivery, travel, setup or service fees, tax and gratuity; any call-out, trip or diagnostic fee; whether it is a flat price or hourly/);
+    expect(b).toContain("any warranty on labor and parts");
+    expect(b).not.toContain("their earliest arrival time"); // the request's own ask covers it
+    expect(b.length).toBeLessThanOrEqual(2000);
+  });
+
+  it("a catering call asks for the menu, the deposit and the cancellation policy, and how each must-have is met", () => {
+    const b = HaggleEngine.callBrief("Mission Eats", job, ["At least 12 vegetarian meals"]);
+    expect(b).toMatch(/3\. Ask for: the all-in total, itemized/);
+    for (const s of ["the menu or items they would serve", "any deposit, when it is due, and payment terms", "their cancellation and change policy", "the price per person", "how each must-have is met"]) expect(b).toContain(s);
+  });
+
+  it("a long request still fits 2,000 chars with the safety lines whole: low-priority asks and details go first", () => {
+    const long = { short_code: "AB12", request: { what: "movers from Oakland to Berkeley", quantity: 2, unit: "bedrooms", date: "2026-11-01", area: "Oakland, CA", requirements: Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, kind: "other", text: `Requirement number ${i} with quite a lot of words in it to fill space`, hard: true })), details: Array.from({ length: 10 }, (_, i) => ({ label: `Detail ${i}`, value: "x".repeat(80) })) } } as never;
+    const reqs = Array.from({ length: 6 }, (_, i) => `Requirement number ${i} with quite a lot of words in it to fill space`);
+    const b = HaggleEngine.callBrief("Bay Movers", long, reqs);
+    expect(b.length).toBeLessThanOrEqual(2000);
+    expect(b).toMatch(/Never agree to buy, book or pay, and never share payment details\. Reference HG-AB12\.$/);
+    expect(b).toContain("the all-in total, itemized");
+  });
+});
+
+describe("HaggleEngine.rfqIMessageText: the ask", () => {
+  it("adds the most decision-critical asks that fit, down to total + deposit", () => {
+    const fix = { short_code: "AB12", request: { what: "fix a leak", area: "Oakland, CA", requirements: [] } } as never;
+    const t = HaggleEngine.rfqIMessageText("Pipe Pros", fix);
+    expect(t).toContain("All-in total, call-out fee, deposit?");
+    expect(t.length).toBeLessThanOrEqual(159);
+    const crowded = HaggleEngine.rfqIMessageText("Sunset Kitchen", { short_code: "AB12", request: { what: "lunch catering", quantity: 40, date: "2026-10-22", time: "12:00", area: "San Francisco, CA", requirements: [{ id: "v", kind: "dietary", text: "12 vegetarian", min_count: 12, hard: true }, { id: "d", kind: "delivery", text: "Delivered", hard: true }] } } as never);
+    expect(crowded.length).toBeLessThanOrEqual(159);
+    expect(crowded).toMatch(/(All-in total|Total) \+ deposit\? Ref HG-AB12$|All-in total, [^?]+\? (Ref )?HG-AB12$/);
+  });
+});
+
 // "next week" is sent as the buyer said it: a range businesses answer, never a day Haggle picked.
 describe("a flexible date window", async () => {
   const { buildRfqEmail, eventWhen } = await import("../src/outbound/rfq.ts");

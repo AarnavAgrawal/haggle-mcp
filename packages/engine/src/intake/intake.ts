@@ -349,8 +349,9 @@ export interface ReplyTerms {
 export function criticalGaps(r: IntakeInput, reply: ReplyTerms): string[] {
   const out: string[] = [];
   for (const a of vendorAsksFor(r).filter((x) => x.critical)) {
-    if (a.covers === "deposit" && reply.deposit_cents === null && !reply.terms?.deposit_terms) out.push("whether you need a deposit, how much, and when it's due");
-    if (a.covers === "cancellation" && !reply.terms?.cancellation) out.push("your cancellation and change policy");
+    // Short enough for a 159-char text, plain enough for an email list.
+    if (a.covers === "deposit" && reply.deposit_cents === null && !reply.terms?.deposit_terms) out.push("any deposit and when it's due");
+    if (a.covers === "cancellation" && !reply.terms?.cancellation) out.push("your cancellation policy");
   }
   return out;
 }

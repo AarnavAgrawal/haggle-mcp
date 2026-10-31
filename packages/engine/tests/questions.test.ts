@@ -86,6 +86,15 @@ describe("questions Haggle can answer from the request", () => {
     expect(facts).not.toMatch(/1,?200|budget/i);
   });
 
+  it("the start time and the venue are facts too (what the user said at intake answers the business)", async () => {
+    const e = env({ answers: { "where": "Please deliver to the YC office.", "what time": "We need it at 6:30 PM." }, basis: "Venue or delivery address: YC office; Time: 6:30 PM (18:30)" });
+    const deal = await e.engine.deal({ request: { ...request, time: "18:30", venue: "YC office" }, budget_usd, businesses: FLEET.slice(0, 1) });
+    await reply(e, deal.job_id, "Harbor Table", "Where exactly should we deliver?");
+    const facts = e.asked[0]!.facts;
+    expect(facts).toEqual(expect.arrayContaining([{ label: "Time", value: "6:30 PM (18:30)" }, { label: "Venue or delivery address", value: "YC office" }]));
+    expect((await e.repo.listQuestions(deal.job_id))[0]).toMatchObject({ status: "answered", answer: "Please deliver to the YC office." });
+  });
+
   it("an earlier answer from the customer is a fact for the next business's same question", async () => {
     const e = env();
     const deal = await e.engine.deal({ request, budget_usd, businesses: FLEET.slice(0, 2) });

@@ -5,6 +5,7 @@
 // Adapted from quote-broker@8a68559 src/channels/outreach.ts (Partner). Changes for Haggle v3:
 // [HG-<code>] subject tag, replies go to the per-job inbox, a reply-by time, hard requirements
 // listed explicitly, and the budget is only revealed when policy says so (default: not shown).
+import { vendorAsksFor } from "../intake/intake.ts";
 
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -69,6 +70,8 @@ export interface RfqInput {
   askLabels?: { label: string; required: boolean }[];
   /** Who the AI assistant acts for: the customer's name, or "a customer" (default). */
   customer?: string;
+  /** What we need back so the customer can decide (list lines); default: intake's vendorAsksFor this request. */
+  vendorAsks?: string[];
 }
 
 /** "40 people" (people is the default unit), "3 rooms", or null when nothing is counted. */
@@ -95,10 +98,17 @@ export function buildRfqEmail(i: RfqInput): { subject: string; bodyText: string 
     ...(i.requirements.length ? ["- Must have:", ...i.requirements.map((r) => `  - ${r}`)] : []),
   ];
   if (i.budgetHintCents !== undefined) lines.push(`- Budget: up to $${(i.budgetHintCents / 100).toFixed(2)} total`);
+  // What we need back so the customer can decide (intake/intake.ts): the custom answers first, then the
+  // itemized all-in total, the category's own asks and the terms, and how each must-have is met.
+  const decide = customer === "a customer" ? "the customer" : customer;
+  const asks = (i.vendorAsks ?? vendorAsksFor({ what: i.what, quantity: i.quantity, unit: i.unit, date: i.date, time: i.time, details: i.details, ask: i.askLabels?.map((a) => ({ key: a.label, label: a.label })) }).map((a) => a.text))
+    .concat(i.requirements.length ? ["How you meet each must-have above"] : []);
   if (i.askLabels?.length) {
-    lines.push("", `Could you reply by ${replyBy} with:`, ...i.askLabels.map((a) => `- ${a.label}${a.required ? "" : " (if you can)"}`), "", "A PDF or photo is fine.");
+    lines.push("", `Could you reply by ${replyBy} with:`, ...i.askLabels.map((a) => `- ${a.label}${a.required ? "" : " (if you can)"}`));
+    if (asks.length) lines.push("", `It also helps ${decide} decide to know:`, ...asks.map((a) => `- ${a}`));
+    lines.push("", "A PDF or photo is fine.");
   } else {
-    lines.push("", `Please reply by ${replyBy} with your total price, what it includes (delivery or travel, tax), any deposit you need, and how you meet each requirement. A PDF quote is fine.`);
+    lines.push("", `Could you reply by ${replyBy} with your quote? To help ${decide} decide, please include:`, ...asks.map((a) => `- ${a}`), "", "A PDF or photo of your quote is fine.");
   }
   lines.push("", "Thank you!", `AI assistant for ${customer}`);
   return { subject, bodyText: lines.join("\n") };

@@ -33,6 +33,7 @@ import { applyStrategy, type StrategyContext } from "../negotiation/strategist.t
 import { imessageFailureReason } from "../outbound/imessageErrors.ts";
 import { amountsIn, checkMessage, citesCompetingOffer, findDollarAmounts } from "../negotiation/messageGuard.ts";
 import { buildRfqEmail, eventPlace, eventWhen, humanTime, quantityText } from "../outbound/rfq.ts";
+import { criticalGaps, imessageAskVariants, vendorAsksFor } from "../intake/intake.ts";
 import { messageSnippet, transcriptSnippet } from "./transcriptSnippet.ts";
 import { sendKeys, type OutboundAttachment } from "../outbound/email.ts";
 import type { FieldValue, QuoteRecord } from "../parsing/extraction.ts";
@@ -1333,6 +1334,8 @@ export class HaggleEngine {
       ...(r.date ? { date: r.date } : {}), ...(r.date_until ? { date_until: r.date_until } : {}), ...(r.time ? { time: r.time } : {}),
       location: r.area, ...(r.venue ? { venue: r.venue } : {}), requirements: r.requirements.filter((x) => x.hard).map((x) => x.text), replyBy: new Date(job.collect_until),
       ...(r.details?.length ? { details: r.details } : {}), ...(r.ask?.length ? { askLabels: r.ask.map((f) => ({ label: f.label, required: f.required })) } : {}),
+      // What the customer needs back to decide (intake): the itemized total, category asks, terms.
+      vendorAsks: vendorAsksFor(r).map((a) => a.text),
     });
   }
 
@@ -1497,7 +1500,8 @@ export class HaggleEngine {
   /**
    * The RFQ as one iMessage within Inkbox's pre-reply rules: ≤ 159 chars, no links, no phone numbers.
    * It says it's an AI assistant and for whom (the customer, never "Haggle"), what, when, where, the
-   * hard requirements, and asks for the total and deposit. Long names are clipped (the area first),
+   * hard requirements, and asks for the all-in total plus the most decision-critical asks that fit
+   * (intake: e.g. the call-out fee, the cancellation policy), at least the total and deposit. Long names are clipped (the area first),
    * never the disclosure or the reference code.
    */
   static rfqIMessageText(business: string, job: Pick<JobRow, "short_code" | "request">, customer?: string): string {
@@ -1522,12 +1526,16 @@ export class HaggleEngine {
     // Main's content (units, a count of 1, the venue) in live-demo's persona and shorten-to-fit loop.
     const qty = r.quantity === undefined || (r.quantity === 1 && r.unit && r.unit !== "people") ? "" : ` for ${r.quantity}${r.unit && r.unit !== "people" ? ` ${clean(r.unit, 10)}` : ""}`;
     const place = (n: number) => (!n ? "" : r.venue ? ` at ${clean(r.venue.split(",")[0]!, n + 4)}` : r.area ? ` in ${clean(r.area.split(",")[0]!, n)}` : "");
-    const build = (whatN: number, placeN: number, refWord: boolean) =>
-      `Hi ${clean(business, 24)}, I'm an AI assistant for ${who}. Quote for ${clean(r.what, whatN)}${qty}${date ? ` on ${date}` : ""}${place(placeN)}${needs ? `: ${needs}` : ""}. Total + deposit? ${refWord ? "Ref " : ""}HG-${job.short_code}`;
+    // The ask (intake): the most decision-critical asks that fit, down to "Total + deposit?".
+    const asks = imessageAskVariants(r);
+    const build = (whatN: number, placeN: number, refWord: boolean, ask = "Total + deposit?") =>
+      `Hi ${clean(business, 24)}, I'm an AI assistant for ${who}. Quote for ${clean(r.what, whatN)}${qty}${date ? ` on ${date}` : ""}${place(placeN)}${needs ? `: ${needs}` : ""}. ${ask} ${refWord ? "Ref " : ""}HG-${job.short_code}`;
     const tries: [number, number, boolean][] = [[24, 18, true], [24, 12, true], [24, 18, false], [24, 12, false], [20, 0, true], [14, 0, true]];
     for (const [w, a, ref] of tries) {
-      const t = build(w, a, ref);
-      if (t.length <= 159) return t;
+      for (const ask of asks) {
+        const t = build(w, a, ref, ask);
+        if (t.length <= 159) return t;
+      }
     }
     return fitText(build(14, 0, true), 159);
   }
@@ -3737,15 +3745,22 @@ export class HaggleEngine {
     const qty = quantityText(r.quantity, r.unit);
     const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
     const customer = opts.customer ?? customerOf(r);
-    return [
+    // Intake: the facts the business is told (details) and what we need back (the request's own ask[]
+    // first, then the itemized total, the category's asks and the terms), trimmed from the least
+    // important end so the safety lines always fit Inkbox's 2,000 chars.
+    const facts = (r.details ?? []).filter((d) => !/budget|cap\b|card|payment/i.test(d.label)).map((d) => `${clip(d.label, 30)}: ${clip(d.value, 80)}`);
+    const own = (r.ask ?? []).map((f) => f.label.toLowerCase());
+    const vendor = vendorAsksFor(r).map((a) => a.voice);
+    const need = (rq: boolean) => (rq ? [`how each must-have is met${r.requirements.some((q) => q.kind === "dietary") ? " (for example how many vegetarian meals)" : ""}`] : []);
+    const brief = (nFacts: number, nVendor: number, must = reqs.join("; ")) => [
       // Live-demo's persona (the customer's AI assistant, never "Haggle") with main's content: the
       // follow-up opener, units, venue, flexible dates, approximate competing figures; and the read-back step.
       `You are an AI assistant phoning ${name} on behalf of ${customer} to get a price quote. You have no name or company of your own: introduce yourself only as their AI assistant. Be brief, warm and natural; keep the call under three minutes.`,
       opts.followUpOnQuoteUsd !== undefined
         ? `1. Open with: "Hi, I'm the AI assistant who called earlier for ${customer} about ${r.what}. Thanks again for your ${opts.followUpApproximate ? `estimate of about ${money(opts.followUpOnQuoteUsd)}` : `quote of ${money(opts.followUpOnQuoteUsd)}`}. Do you have a minute?"`
         : `1. Open with: "Hi, I'm an AI assistant calling on behalf of ${customer} about a quote for ${r.what}. Do you have a minute?"${opts.escalation ? " Mention we emailed earlier and wanted to follow up by phone." : ""}`,
-      `2. The order: ${r.what}${qty ? ` for ${qty}` : ""}${when ? ` on ${when}` : ""}${r.area ? `, at ${eventPlace(r.area, r.venue)}` : ""}.${r.date_until ? " The customer is flexible on the day: ask which of those days they can do." : ""}${reqs.length ? ` Must have: ${reqs.join("; ")}.` : ""}`,
-      `3. Ask for: the all-in total including delivery and tax, how each requirement is met${r.requirements.some((q) => q.kind === "dietary") ? " (for example how many vegetarian meals)" : ""}, any deposit and when it is due, and what is included.`,
+      `2. The order: ${r.what}${qty ? ` for ${qty}` : ""}${when ? ` on ${when}` : ""}${r.area ? `, at ${eventPlace(r.area, r.venue)}` : ""}.${r.date_until ? " The customer is flexible on the day: ask which of those days they can do." : ""}${reqs.length ? ` Must have: ${must}.` : ""}${nFacts ? ` Details: ${facts.slice(0, nFacts).join("; ")}.` : ""}`,
+      `3. Ask for: ${[...own, ...vendor.slice(0, nVendor), ...need(reqs.length > 0)].join("; ")}.`,
       opts.competingTotalUsd !== undefined
         ? opts.competingApproximate
           ? `4. Another business estimated about ${money(opts.competingTotalUsd)} total for the same order (not yet a firm quote). You may say exactly that, as an estimate, and ask if they can do better. Never call it a firm quote, invent, round down or exaggerate it.`
@@ -3754,7 +3769,22 @@ export class HaggleEngine {
       `5. If they give parts (a price per person, a delivery fee, tax as a percent), work out the all-in total yourself.${reqs.length ? " If they haven't said how each must-have is met, ask once before the read-back." : ""} Before ending, read back every figure they gave plus that total${reqs.length ? ", and each must-have they confirmed" : ""}, in the form "Just to confirm: [price] per person for [count], [fee] delivery, [rate] tax, so [total] all in, with a [deposit] deposit${reqs.length ? ", and [each must-have]" : ""}. Is that right?" (their words only, never these placeholders). Wait for their yes or correction, then thank them and end the call. This one call should get everything: we don't want to call back.`,
       `If they ask something you don't know, say you'll pass it on to the customer; never guess. If they can't do it or decline, thank them and end politely. If you reach voicemail, leave one sentence asking for a quote by email and hang up.`,
       `Never agree to buy, book or pay, and never share payment details. Reference HG-${job.short_code}.`,
-    ].join("\n").slice(0, 2000);
+    ].join("\n");
+    // Fewest cuts first: the lowest-priority vendor asks (down to four), then details (down to two),
+    // then the rest; the first vendor ask (the itemized all-in total) always stays.
+    const F = Math.min(facts.length, 6), V = vendor.length, v4 = Math.min(V, 4), f2 = Math.min(F, 2);
+    const tries: [number, number][] = [];
+    for (let v = V; v >= v4; v--) tries.push([F, v]);
+    for (let f = F - 1; f >= f2; f--) tries.push([f, v4]);
+    for (let v = v4 - 1; v >= 1; v--) tries.push([f2, v]);
+    for (let f = f2 - 1; f >= 0; f--) tries.push([f, 1]);
+    for (const [f, v] of tries) {
+      const t = brief(f, v);
+      if (t.length <= 2000) return t;
+    }
+    // Still too long (very long must-haves): shorten the must-have list, never the safety lines.
+    const over = brief(0, 1).length - 2000;
+    return brief(0, 1, clip(reqs.join("; "), Math.max(40, reqs.join("; ").length - over - 1))).slice(0, 2000);
   }
 
   /**
@@ -3767,7 +3797,8 @@ export class HaggleEngine {
     const customer = this.customer(job);
     const reqs = r.requirements.filter((x) => x.hard).map((x) => x.text);
     const what = [r.what, quantityText(r.quantity, r.unit), r.date ? `on ${r.date}` : null, `in ${r.area}`].filter(Boolean).join(", ");
-    const find = r.ask?.length ? r.ask.map((f) => f.label).join("; ") : "the all-in total, any deposit, and what is included";
+    // The request's own answers, then what the customer needs to decide (intake), most important first.
+    const find = [...(r.ask ?? []).map((f) => f.label), ...vendorAsksFor(r).slice(0, r.ask?.length ? 3 : 5).map((a) => a.voice)].join("; ");
     const money = (c: number) => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const rules = `Do not agree to buy or pay anything, and do not share payment details. Never name other businesses${counter ? "; the only other price you may mention is the one above" : " or their prices"}. Reference code HG-${job.short_code}.`;
     const opener = `Open with: "Hi, I'm an AI assistant calling on behalf of ${customer}", then say why you're calling. You have no name or company of your own. If a call screener or voicemail answers, say who you are and why you're calling in one sentence.`;
@@ -5468,6 +5499,10 @@ export class HaggleEngine {
     const deliveryAsked = missing.some((m) => reqs.some((r) => r.kind === "delivery" && r.text === m));
     const allInAsk = !firmAsk && !needExact && quoteRow && record.available && b.channel !== "phone" && !(isApproximate(record)) && !allInKnown(record, this.needsDelivery(job) && !deliveryAsked) ? "the all-in total including delivery, tax and any fees" : null;
     const totalAsk = needExact ? exactTotalAsk(record.total_cents) : firmAsk ?? allInAsk;
+    // Decision-critical terms the reply left out (intake: the deposit and payment terms; for events and
+    // moves the cancellation policy), asked once by folding them into the follow-up that goes out anyway
+    // (the RFQ already asked for them; a terms-only chase would hold every deal's collection window).
+    const critical = quoteRow && chase && followupsBefore < 1 ? this.criticalLabels(job, quoteRow).filter((c) => !(/deposit/.test(c) && totalAsk && /deposit/.test(totalAsk))) : [];
     if (quoteRow) {
       // No text to the human per quote: the deal board and wait_for_update show it; the human is
       // texted once quotes are final (offerReady) or when they must answer something.
@@ -5486,8 +5521,8 @@ export class HaggleEngine {
     if (asked.length && record.available && !record.flags.some((f) => f === "external_payment_link" || f === "prompt_injection")) await this.answerFromRequest(job, b, asked);
     // The window waits briefly for the answer (collectionWaiting), never past the deadline. One
     // batched follow-up: the missing answers plus the total ask (exact, firm or all-in), once.
-    if (missing.length) await this.sendMissingFollowUp(job, { ...b, status }, missing, totalAsk && followupsBefore < 1 ? { totalAsk, firmTotal: firmAsk !== null } : {});
-    else if (!needExact && totalAsk && chase && followupsBefore < 1) await this.sendMissingFollowUp(job, { ...b, status }, [], { totalAsk, firmTotal: firmAsk !== null });
+    if (missing.length) await this.sendMissingFollowUp(job, { ...b, status }, missing, { ...(totalAsk && followupsBefore < 1 ? { totalAsk, firmTotal: firmAsk !== null } : {}), extras: critical });
+    else if (!needExact && totalAsk && chase && followupsBefore < 1) await this.sendMissingFollowUp(job, { ...b, status }, [], { totalAsk, firmTotal: firmAsk !== null, extras: critical });
     // Partner's brain learns from every parsed reply; a brain failure never blocks the deal. It learns
     // into this job's workspace's brain only (brainFor; 202_brain_tenancy), and only from trustworthy
     // readings: never an unverified sender, a keyword-fallback reading, or a simulated reply on a live
@@ -5518,7 +5553,9 @@ export class HaggleEngine {
     const facts: { label: string; value: string }[] = [
       { label: "What", value: r.what },
       ...(r.quantity !== undefined ? [{ label: "Quantity", value: `${r.quantity}${r.unit ? ` ${r.unit}` : ""}` }] : []),
-      ...(r.date ? [{ label: "Date", value: r.date }] : []),
+      ...(r.date ? [{ label: "Date", value: r.date_until && r.date_until > r.date ? `any day ${r.date} to ${r.date_until} (flexible)` : r.date }] : []),
+      ...(r.time ? [{ label: "Time", value: humanTime(r.time) === r.time ? r.time : `${humanTime(r.time)} (${r.time})` }] : []),
+      ...(r.venue ? [{ label: "Venue or delivery address", value: r.venue }] : []),
       { label: "Location", value: r.area },
       ...(r.details ?? []).filter((d) => !/budget|price|cap|pay|card|phone|email/i.test(d.label)),
       ...r.requirements.map((x) => ({ label: x.hard ? "Must have" : "Preferred", value: x.text })),
@@ -5614,6 +5651,12 @@ export class HaggleEngine {
     return best;
   }
 
+  /** Decision-critical terms a stored quote leaves out (intake.criticalGaps); never chased from a suspicious reply. */
+  private criticalLabels(job: JobRow, q: QuoteRow): string[] {
+    if (q.record.flags.some((f) => f === "external_payment_link" || f === "prompt_injection")) return [];
+    return criticalGaps(job.request, q.record);
+  }
+
   /** What a stored quote still lacks: required custom answers, or hard requirements the business didn't address. */
   private missingLabels(job: JobRow, q: QuoteRow): string[] {
     if (q.record.flags.some((f) => f === "external_payment_link" || f === "prompt_injection")) return []; // never chase a suspicious reply
@@ -5629,11 +5672,13 @@ export class HaggleEngine {
    * cooldown say wait), or in its A2A context. Never switches channel. `totalAsk` (the exact, firm or
    * all-in total) is folded into the same message: one follow-up, never two.
    */
-  private async sendMissingFollowUp(job: JobRow, b: JobBusinessRow, missingAnswers: string[], opts: { totalAsk?: string | null; firmTotal?: boolean } = {}) {
+  private async sendMissingFollowUp(job: JobRow, b: JobBusinessRow, missingAnswers: string[], opts: { totalAsk?: string | null; firmTotal?: boolean; extras?: string[] } = {}) {
     const key = `followup:${job.id}:${b.business_id}:missing`;
     if (await this.repo.findMessageByIdempotencyKey(key)) return;
     if (!this.canReach(b)) return;
-    const missing = opts.totalAsk ? [opts.totalAsk, ...missingAnswers] : missingAnswers;
+    // extras (intake's decision-critical terms) ride along only with a follow-up that goes out anyway.
+    const extras = missingAnswers.length || opts.totalAsk ? opts.extras ?? [] : [];
+    const missing = [...(opts.totalAsk ? [opts.totalAsk] : []), ...missingAnswers, ...extras];
     if (missing.length === 0) return;
     const list = missing.map((m) => `- ${m}`).join("\n");
     let how: string;
@@ -5646,7 +5691,11 @@ export class HaggleEngine {
         how = "email";
       } else if (b.channel === "imessage") {
         // Within the text limit: the asks are shortened, never the reference code; the total ask (last) stays whole.
-        const text = HaggleEngine.confirmIMessageText(opts.totalAsk ? [...missingAnswers, opts.totalAsk] : missingAnswers, job.short_code);
+        // Extras go in only as far as they fit unclipped: never at the expense of the real asks.
+        const textFor = (n: number) => HaggleEngine.confirmIMessageText([...missingAnswers, ...extras.slice(0, n), ...(opts.totalAsk ? [opts.totalAsk] : [])], job.short_code);
+        let n = extras.length;
+        while (n > 0 && textFor(n).includes("…")) n--;
+        const text = textFor(n);
         if (!(await this.sendIMessageToBusiness(job, b, "followup", key, text, null))) return;
         how = "text";
       } else if (b.channel === "phone") {
@@ -6441,7 +6490,7 @@ export class HaggleEngine {
     let text: string;
     if (opts.askMissing) {
       const q = (await this.repo.listQuotes(jobId)).find((x) => x.business_id === businessId && x.status === "current");
-      const missing = q ? this.missingLabels(job, q) : (job.request.ask?.length ? job.request.ask.filter((f) => f.required).map((f) => f.label) : ["the all-in total", "any deposit"]);
+      const missing = q ? [...this.missingLabels(job, q), ...this.criticalLabels(job, q)] : (job.request.ask?.length ? job.request.ask.filter((f) => f.required).map((f) => f.label) : ["the all-in total", "any deposit"]);
       if (missing.length === 0) throw new EngineError("nothing_missing", `${b.name}'s quote isn't missing anything required.`, "Compare quotes with get_quotes.", "get_quotes");
       text = channel === "phone" ? missing.join("; ") : channel === "imessage" ? `Thanks! Could you also confirm: ${missing.join("; ")}?` : `Thanks for your reply! Could you also tell us:\n${missing.map((m) => `- ${m}`).join("\n")}`;
     } else {
