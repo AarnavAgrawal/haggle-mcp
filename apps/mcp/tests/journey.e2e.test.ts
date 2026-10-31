@@ -109,7 +109,7 @@ describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
     expect(t.deal.inputSchema.required).toEqual(["request"]); // businesses optional
     expect(JSON.stringify(t.deal._meta)).toContain("deal-live"); // one live board per deal (decision 6)
     expect(t.ask.description).toMatch(/If the user wants to buy, cater, book or plan a purchase, call deal instead/);
-    expect(t.discover.description).toMatch(/Not needed before a deal with the configured vendors/);
+    expect(t.discover.description).toMatch(/Not needed before a deal: deal finds businesses that publish an email itself/);
   });
 
   it("the exact prompt: one deal call starts the job on all six demo vendors and returns the live board", async () => {
@@ -211,10 +211,10 @@ describe("named vendors: 'Use Mission Eats ONLY'", () => {
   it("tool metadata: names are enough, and the model must never ask for a known vendor's contact", async () => {
     const init = await rpc(ready, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "journey", version: "1" } });
     expect(init.instructions).toMatch(/deal\(businesses=\['Mission Eats'\]\)/);
-    expect(init.instructions).toMatch(/never ask the user for a phone number or email of a vendor Haggle knows/);
+    expect(init.instructions).toMatch(/never ask the user for a business's phone number or email/);
     const { tools } = await rpc(ready, "tools/list");
     const deal = tools.find((t: { name: string }) => t.name === "deal");
-    expect(deal.description).toMatch(/never ask the user for a vendor's phone or email/);
+    expect(deal.description).toMatch(/never ask the user for a business's phone or email/);
     expect(JSON.stringify(deal.inputSchema.properties.businesses)).toMatch(/"type":"string"/); // a bare name is valid input
   });
 

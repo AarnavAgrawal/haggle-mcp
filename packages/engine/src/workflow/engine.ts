@@ -74,7 +74,7 @@ import { planRecovery, type StuckFinding } from "./recovery.ts";
 import type { OperatorReviewRow, OutboxRow, RateSlot } from "../store/types.ts";
 import { DEFAULT_CONTACT_TIMEZONE, decideFirstContact, decideFollowUp, localLabel } from "./contactWindow.ts";
 import { callSlot, textSlot } from "./businessHours.ts";
-import { asWeeklyHours, validTimezone, type WeeklyHours } from "../reputation/hours.ts";
+import { asWeeklyHours, contactableAt, validTimezone, type WeeklyHours } from "../reputation/hours.ts";
 import { contactStatusOf, type BusinessContactStatus } from "../inbound/contactStatus.ts";
 /** Contact states the board lists per business (the rest are implied by its status). */
 const NOTABLE_CONTACT = new Set<BusinessContactStatus["contact_status"]>(["bounced", "failed", "opted_out", "quarantined_reply", "scheduled"]);
@@ -1325,6 +1325,10 @@ export class HaggleEngine {
       const [sup] = await this.repo.findSuppressions([normalizeAddress(b.email)]);
       const d = decideFollowUp({ now: this.now(), lastSentAt: new Date(last), followUpsSent: sent, suppressed: sup?.reason === "bounce", optedOut: sup?.reason === "opt_out", jobOpen: !TERMINAL.has(job.state), replied: false, deadline: new Date(job.collect_until) }, cfg, tz);
       if (!d.send) continue;
+      // A business with published opening hours (a found business's listing, migration 125) gets its
+      // reminder only while it is open; the next poll inside its hours sends it.
+      const open = this.hoursOf(b);
+      if (open && !contactableAt(open, this.now(), tz)) continue;
       const qty = quantityText(job.request.quantity, job.request.unit);
       const what = `${job.request.what}${qty ? ` for ${qty}` : ""}${job.request.date ? ` on ${eventWhen(job.request.date, job.request.time, job.request.date_until)}` : ""}`;
       try {

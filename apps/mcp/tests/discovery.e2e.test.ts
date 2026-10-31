@@ -100,8 +100,11 @@ describe("discover real businesses, understand them, reach only the authorized o
     expect(err(await call(fx, "deal", plumbing({ businesses: ["Plumbing"] }))).code).toBe("ambiguous_business");
     expect(err(await call(fx, "deal", plumbing({ businesses: ["Pipe Wizards"] }))).code).toBe("unknown_business");
     expect(err(await call(fx, "deal", plumbing({ businesses: ["Quiet Drains"] }))).code).toBe("no_contact_route");
-    const generic = err(await call(fx, "deal", plumbing()));
-    expect(generic).toMatchObject({ code: "no_vendors_for_category", fix: expect.stringMatching(/discover\(category='plumbing'/) });
+    // No businesses named: Haggle finds plumbers with a published email itself and waits for the user's yes
+    // (dealDiscovery.e2e.test.ts); the demo caterers are never offered for plumbing.
+    const generic = (await call(fx, "deal", plumbing())).structuredContent;
+    expect(generic).toMatchObject({ job: null, needs_confirmation: true });
+    expect(generic.would_contact.map((w: { name: string; contact_state: string }) => [w.name, w.contact_state])).toEqual([["Ace Plumbing & Drain", "will_authorize_on_start"], ["Bolt Plumbing", "will_authorize_on_start"]]);
   });
 
   it("provider failures are explicit, and nothing is substituted", async () => {

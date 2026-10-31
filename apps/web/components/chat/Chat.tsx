@@ -194,7 +194,7 @@ export function Chat({ threadId, initial, title, recent }: { threadId: string | 
     if (p) setPlaceholder(p);
     inputRef.current?.focus();
   }, []);
-  const startDeal = useCallback(() => sendText("Yes, start the deal."), [sendText]);
+  const startDeal = useCallback((message: string) => sendText(message), [sendText]);
 
   // Focus the box on arrival where there's a real keyboard (a phone would pop its keyboard up).
   useEffect(() => {

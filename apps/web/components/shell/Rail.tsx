@@ -28,7 +28,7 @@ export function Rail({ email, guest }: { email?: string; guest?: boolean }) {
         </Suspense>
       </nav>
       <nav className="rail-nav" aria-label="Workspace">
-        <RailLink href="/vendors" match="prefix" label="Vendors" />
+        <RailLink href="/vendors" match="prefix" label="Saved businesses" />
         <RailLink href="/settings" label="Settings" />
         <RailLink href="/account" label="Account" />
       </nav>

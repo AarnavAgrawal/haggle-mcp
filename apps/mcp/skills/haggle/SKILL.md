@@ -9,7 +9,8 @@ Haggle contacts each business on its channel (email; A2A for agent-ready busines
 also when email gets no reply; iMessage for businesses that asked to be texted), reads replies and call
 transcripts (text, PDF, images, quote.json), follows up once for missing answers, negotiates honestly, and
 confirms or pays (Stripe test mode) only after a human approves. You never email, call or text businesses
-yourself. Haggle only contacts businesses on the operator's allowlist.
+yourself. Haggle contacts the workspace's saved businesses and, with the user's yes, businesses it finds
+itself (by email only).
 
 ## Cold deal (real quotes)
 
@@ -31,11 +32,20 @@ yourself. Haggle only contacts businesses on the operator's allowlist.
    cancellation policy and quote validity, plus the category's own asks (e.g. a plumber's call-out fee,
    flat vs hourly, parts, earliest arrival, warranty), so you needn't add those to `ask`.
 1. `deal` with `request`, `budget_usd` (omit it if the user gave none: Haggle never assumes one) and a
-   `client_request_id` so retries never contact anyone twice. Omit `businesses` to use every configured vendor
-   for the request, or pass just names (`businesses: ["Mission Eats"]`): Haggle already has their contact
-   details and channel, so never ask the user for them. A business Haggle doesn't know needs its email, phone
-   or `a2a_card_url`. `dry_run: true` previews who would be contacted. Returns at once with a `job_id` and
-   opens one live deal board in the chat.
+   `client_request_id` so retries never contact anyone twice. Omit `businesses` to use the saved businesses
+   for the request's kind of work, or pass just names (`businesses: ["Mission Eats"]`): Haggle already has
+   their contact details and channel, so never ask the user for them. A business Haggle doesn't know needs its
+   email, phone or `a2a_card_url`. `dry_run: true` previews who would be contacted. Returns at once with a
+   `job_id` and opens one live deal board in the chat.
+   - Haggle finds businesses itself. With fewer than 3 saved businesses for the work and none named, it
+     searches public listings near the area for businesses that publish an email (at most 6). It never
+     contacts them without the user's yes: `deal` lists them in `would_contact` with `contact_state:
+     "will_authorize_on_start"` and `found_via` (listing and ref), and sends nothing. Show the user the list.
+     Once they agree, call `deal` again with `confirm_discovered`: their `business_ref`s minus any the user
+     removed (`[]` for none). Each is saved to the workspace as an email-only business in the request's
+     category, then emailed. Never pass a ref the preview didn't list: it is refused.
+   - Where: the request's `area`, else the workspace's default area; with neither, `deal` returns
+     `needs_info` asking for it.
    - Catering: `request.what`, `quantity`, `date` (and `date_until` for a range, `time`, `venue`), `area` and
      `requirements` (must-haves: a quote that misses one is flagged and ranks lower; the default ask is the
      total, deposit and delivery).

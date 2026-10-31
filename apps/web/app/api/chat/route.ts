@@ -7,6 +7,7 @@ import { haggleConfig } from "@/lib/env";
 import { haggleClient } from "@/lib/haggle";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { membership, sessionUser } from "@/lib/workspace";
+import { actorOf } from "@/lib/vendors/deps";
 import { runChatTurn, type ChatEvent } from "@/lib/chat/agent";
 import { historyWindow } from "@/lib/chat/history";
 import { chatConfig, takeChatTurn } from "@/lib/chat/limits";
@@ -56,7 +57,7 @@ export async function POST(request: Request): Promise<Response> {
   let haggle: ReturnType<typeof haggleClient>;
   try {
     db = supabaseAdmin();
-    haggle = haggleClient(haggleConfig(), workspaceId);
+    haggle = haggleClient(haggleConfig(), workspaceId, { actor: actorOf(user) });
   } catch (e) {
     return json(500, "server_not_configured", e instanceof Error ? e.message : "The web app isn't configured.");
   }

@@ -25,6 +25,10 @@ describe("Haggle MCP client", () => {
     expect(calls[0]!.url).toBe("http://haggle.test/mcp");
     expect(calls[0]!.headers).toMatchObject({ "x-haggle-service-token": "svc_token", "x-haggle-workspace": "ws_u_abc" });
     expect(calls[0]!.body).toMatchObject({ method: "tools/call", params: { name: "list_deals", arguments: { limit: 5 } } });
+    expect(calls[0]!.headers["x-haggle-actor"]).toBeUndefined();
+    // The chat names the signed-in user, recorded when they start a deal with businesses Haggle found.
+    await haggleClient(cfg(f), "ws_u_abc", { actor: "ana@example.com (u1)" }).callTool("deal", {});
+    expect(calls[1]!.headers).toMatchObject({ "x-haggle-workspace": "ws_u_abc", "x-haggle-actor": "ana@example.com (u1)" });
   });
 
   it("a tool's error envelope and an HTTP refusal become HaggleErrors carrying the server's fix", async () => {

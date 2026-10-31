@@ -49,7 +49,7 @@ export class DailyAdds {
 }
 
 /** The engine calls these routes make (HaggleEngine in production; tests may pass the same). */
-type VendorEngine = Pick<HaggleEngine, "workspaceVendors" | "addWorkspaceVendor" | "removeWorkspaceVendor" | "setWorkspaceVendorCategory" | "contactSuppressions" | "getSettings"> & Partial<Pick<HaggleEngine, "takeRateSlot" | "rateSlotUsed">>;
+export type VendorEngine = Pick<HaggleEngine, "workspaceVendors" | "addWorkspaceVendor" | "removeWorkspaceVendor" | "setWorkspaceVendorCategory" | "contactSuppressions" | "getSettings"> & Partial<Pick<HaggleEngine, "takeRateSlot" | "rateSlotUsed">>;
 
 /** The day's additions: the store's shared slots when it has them, else (or while they fail) this process's count. */
 function dailyAdds(daily: DailyAdds) {
@@ -122,17 +122,91 @@ export function consentProblem(basis: ConsentBasis, channel: VendorChannel): str
   return null;
 }
 
-/** The consent recorded on the row: `<basis>: <note> (attested by web:<actor> at <ISO time>)`. */
-export function consentText(basis: ConsentBasis, note: string | undefined, actor: string, at: Date): string {
-  return `${basis}${note ? `: ${note}` : ""} (attested by web:${actor} at ${at.toISOString()})`;
+/**
+ * The consent recorded on the row: `<basis>: <note> (attested by web:<actor> at <ISO time>)`. With
+ * `asIs`, `actor` is already the full attestor ("web:<user>" or "agent:<client> on the user's yes").
+ */
+export function consentText(basis: ConsentBasis, note: string | undefined, actor: string, at: Date, asIs = false): string {
+  return `${basis}${note ? `: ${note}` : ""} (attested by ${asIs ? actor : `web:${actor}`} at ${at.toISOString()})`;
 }
 
 /** The basis a recorded consent names; an operator-recorded consent (workspace-admin) has none of ours. */
 export const consentBasisOf = (consent: string): ConsentBasis | "operator_recorded" => CONSENT_BASES.find((b) => consent.startsWith(b)) ?? "operator_recorded";
 
+/** One vendor to add, as the web form or a confirmed deal preview gives it. */
+export interface VendorAdd {
+  name: string;
+  contact: string;
+  channel?: VendorChannel | undefined;
+  consent_basis: ConsentBasis;
+  note?: string | undefined;
+  business_ref?: string | undefined;
+  category?: string | undefined;
+}
+export type AddOutcome =
+  | { ok: true; row: Awaited<ReturnType<VendorEngine["addWorkspaceVendor"]>>; replaced: boolean; channel: VendorChannel }
+  | { ok: false; status: number; code: string; message: string; fix: string };
+
+/** The day's additions every add path shares (the Vendors page and deal's found businesses). */
+const sharedDaily = new DailyAdds();
+const sharedAdds = dailyAdds(sharedDaily);
+
+/** Additions left today for this workspace. */
+export async function addsLeftToday(engine: VendorEngine, ws: string, daily = sharedAdds): Promise<number> {
+  return Math.max(0, MAX_ADDS_PER_DAY - (await daily.used(engine, ws)));
+}
+
+/**
+ * The one vendor-add path (the Vendors page, and deal when the user confirms businesses Haggle found):
+ * the consent rule for the channel, no simulated contact in live mode, never the approver's contact,
+ * never a suppressed contact, the vendor cap and the daily add limit; then stores it with the listing's
+ * hours. `attestedBy` is who confirmed it ("web:<user>", or "agent:<client> on the user's yes").
+ * Engine errors (a bad contact) are thrown for the caller to report.
+ */
+export async function addVendorChecked(
+  rt: { engine: VendorEngine; mode: "mock" | "live"; listing?: ListingProvider },
+  ws: string,
+  b: VendorAdd,
+  o: { attestedBy: string; now: Date; daily?: ReturnType<typeof dailyAdds> },
+): Promise<AddOutcome> {
+  const daily = o.daily ?? sharedAdds;
+  const no = (status: number, code: string, message: string, fix: string): AddOutcome => ({ ok: false, status, code, message, fix });
+  const isEmail = b.contact.includes("@");
+  const channel: VendorChannel = b.channel ?? (isEmail ? "email" : "phone");
+  if ((channel === "email") !== isEmail) return no(400, "BAD_CHANNEL", `Channel ${channel} doesn't fit ${isEmail ? "an email address" : "a phone number"}.`, "Use email for an address; phone (a call) or imessage (a text) for a number.");
+  const weak = consentProblem(b.consent_basis, channel);
+  if (weak) return no(422, "CONSENT_TOO_WEAK", weak, "Add the business's email instead, or choose 'existing relationship' or 'the business agreed' if that is true.");
+  if (rt.mode === "live") {
+    const sim = simulatedContact(b.contact);
+    if (sim) return no(422, "SIMULATED_CONTACT", `${b.contact} is ${sim}, not a real business.`, "Add the business's real email or phone number.");
+  }
+  const settings = await rt.engine.getSettings(ws);
+  if (b.contact === settings.approver_phone || b.contact === settings.approver_email?.toLowerCase()) {
+    return no(422, "RESERVED_FOR_APPROVALS", "That is the approver's own contact; it is reserved for approvals.", "Add the business's own email or phone number.");
+  }
+  const [suppressed] = await rt.engine.contactSuppressions([b.contact]);
+  if (suppressed) {
+    return no(422, "CONTACT_SUPPRESSED", suppressed.reason === "opt_out" ? `${b.contact} asked not to be contacted by Haggle.` : `Mail to ${b.contact} bounced.`,
+      suppressed.reason === "opt_out" ? "Haggle never contacts a business that opted out. Choose another business, or another contact the business gave you." : "Check the address with the business and add the correct one.");
+  }
+  const existing = await rt.engine.workspaceVendors(ws);
+  const replaced = existing.some((v) => v.contact === b.contact);
+  if (!replaced && existing.length >= MAX_VENDORS) return no(409, "VENDOR_LIMIT", `This workspace already has ${existing.length} vendors (the limit is ${MAX_VENDORS}).`, "Remove vendors you no longer use, then add this one.");
+  // A new vendor takes one of the day's additions before it is stored; re-authorizing one takes none.
+  if (!replaced && !(await daily.take(rt.engine, ws))) return no(429, "DAILY_LIMIT", `This workspace added ${MAX_ADDS_PER_DAY} vendors today (the daily limit).`, "Try again tomorrow (UTC).");
+  const listed = b.business_ref ? { ...(await listedHours(ws, b.business_ref, rt)), business_ref: b.business_ref } : {};
+  const category = categoryInput(b.category);
+  const row = await rt.engine.addWorkspaceVendor({
+    workspace_id: ws, contact: b.contact, name: b.name, channel: channel as Channel, ...listed,
+    consent: consentText(b.consent_basis, b.note || undefined, o.attestedBy, o.now, true), added_by: o.attestedBy.slice(0, 120),
+    ...(category ? { category } : {}),
+  });
+  return { ok: true, row, replaced, channel };
+}
+
 export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions = {}) {
   const guard = opts.guard ?? (serviceGuard as unknown as NonNullable<VendorRouteOptions["guard"]>);
-  const daily = dailyAdds(opts.daily ?? new DailyAdds());
+  const daily = opts.daily ? dailyAdds(opts.daily) : sharedAdds;
   const now = opts.now ?? (() => new Date());
 
   app.get("/internal/vendors", async (c) => {
@@ -166,44 +240,19 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
     const parsed = AddBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return fail(c, 400, "INVALID_INPUT", issues(parsed.error), "Pass name, contact (email or E.164 phone), optional channel (email, phone or imessage), consent_basis (existing_relationship, business_agreed or public_listing_email) and an optional note.");
     const b = parsed.data;
-    const isEmail = b.contact.includes("@");
-    const channel: VendorChannel = b.channel ?? (isEmail ? "email" : "phone");
-    if ((channel === "email") !== isEmail) return fail(c, 400, "BAD_CHANNEL", `Channel ${channel} doesn't fit ${isEmail ? "an email address" : "a phone number"}.`, "Use email for an address; phone (a call) or imessage (a text) for a number.");
-    const weak = consentProblem(b.consent_basis, channel);
-    if (weak) return fail(c, 422, "CONSENT_TOO_WEAK", weak, "Add the business's email instead, or choose 'existing relationship' or 'the business agreed' if that is true.");
-    if (g.rt.mode === "live") {
-      const sim = simulatedContact(b.contact);
-      if (sim) return fail(c, 422, "SIMULATED_CONTACT", `${b.contact} is ${sim}, not a real business.`, "Add the business's real email or phone number.");
-    }
-    const settings = await g.rt.engine.getSettings(ws);
-    if (b.contact === settings.approver_phone || b.contact === settings.approver_email?.toLowerCase()) {
-      return fail(c, 422, "RESERVED_FOR_APPROVALS", "That is the approver's own contact; it is reserved for approvals.", "Add the business's own email or phone number.");
-    }
-    const [suppressed] = await g.rt.engine.contactSuppressions([b.contact]);
-    if (suppressed) {
-      return fail(c, 422, "CONTACT_SUPPRESSED", suppressed.reason === "opt_out" ? `${b.contact} asked not to be contacted by Haggle.` : `Mail to ${b.contact} bounced.`,
-        suppressed.reason === "opt_out" ? "Haggle never contacts a business that opted out. Choose another business, or another contact the business gave you." : "Check the address with the business and add the correct one.");
-    }
-    const existing = await g.rt.engine.workspaceVendors(ws);
-    const replacing = existing.some((v) => v.contact === b.contact);
-    if (!replacing && existing.length >= MAX_VENDORS) return fail(c, 409, "VENDOR_LIMIT", `This workspace already has ${existing.length} vendors (the limit is ${MAX_VENDORS}).`, "Remove vendors you no longer use, then add this one.");
-    // A new vendor takes one of the day's additions before it is stored; re-authorizing one takes none.
-    if (!replacing && !(await daily.take(g.rt.engine, ws))) return fail(c, 429, "DAILY_LIMIT", `This workspace added ${MAX_ADDS_PER_DAY} vendors today (the daily limit).`, "Try again tomorrow (UTC).");
-    const listed = b.business_ref ? { ...(await listedHours(ws, b.business_ref, g.rt)), business_ref: b.business_ref } : {};
+    let r: AddOutcome;
     try {
-      const row = await g.rt.engine.addWorkspaceVendor({
-        workspace_id: ws, contact: b.contact, name: b.name, channel: channel as Channel, ...listed,
-        consent: consentText(b.consent_basis, b.note || undefined, g.actor, now()), added_by: `web:${g.actor}`.slice(0, 120),
-        ...(categoryInput(b.category) ? { category: categoryInput(b.category) } : {}),
-      });
-      return c.json({
-        ok: true, replaced: replacing,
-        vendor: { name: row.name, contact: row.contact, channel: row.channel ?? channel, consent: { basis: b.consent_basis, text: row.consent }, added_by: row.added_by, added_at: row.created_at, contactable: true, ...(asWeeklyHours(row.opening_hours) ? { hours: asWeeklyHours(row.opening_hours)!.display } : {}) },
-        next: `Haggle may now contact ${row.name} by ${channel === "email" ? "email" : channel === "phone" ? "a Voice AI call" : "text"} on this workspace's deals.`,
-      }, replacing ? 200 : 201);
+      r = await addVendorChecked(g.rt, ws, b, { attestedBy: `web:${g.actor}`, now: now(), daily });
     } catch (err) {
       return engineError(c, err);
     }
+    if (!r.ok) return fail(c, r.status, r.code, r.message, r.fix);
+    const { row, replaced: replacing, channel } = r;
+    return c.json({
+      ok: true, replaced: replacing,
+      vendor: { name: row.name, contact: row.contact, channel: row.channel ?? channel, consent: { basis: b.consent_basis, text: row.consent }, added_by: row.added_by, added_at: row.created_at, contactable: true, ...(asWeeklyHours(row.opening_hours) ? { hours: asWeeklyHours(row.opening_hours)!.display } : {}) },
+      next: `Haggle may now contact ${row.name} by ${channel === "email" ? "email" : channel === "phone" ? "a Voice AI call" : "text"} on this workspace's deals.`,
+    }, replacing ? 200 : 201);
   });
 
   app.post("/internal/vendors/remove", async (c) => {

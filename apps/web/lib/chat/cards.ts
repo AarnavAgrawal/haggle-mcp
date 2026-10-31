@@ -25,8 +25,23 @@ export interface Brief {
   must_haves: string[];
 }
 
+/**
+ * A business Haggle found in a public listing for this request: emailed only once the user starts the
+ * deal (which saves it to their businesses, email only). Never its email address.
+ */
+export interface FoundBusiness {
+  name: string;
+  /** Its listing ref ("aws:…" / "place:…"): what deal's confirm_discovered takes. */
+  ref: string;
+  /** "Google Places", "Amazon Location Service". */
+  listing: string;
+  /** Where its email was published: the listing itself or its own website. */
+  email_from: "listing" | "website";
+  hours_today?: string;
+}
+
 export type ToolCard =
-  | { kind: "preview"; demo: boolean; brief: Brief | null; contact: Contact[]; blocked: { name: string; reason: string }[] }
+  | { kind: "preview"; demo: boolean; brief: Brief | null; contact: Contact[]; found: FoundBusiness[]; blocked: { name: string; reason: string }[] }
   | { kind: "needs_info"; demo: boolean; label: string; missing: string[]; optional: string[] }
   | { kind: "started"; demo: boolean; job_id: string; title: string; when?: string; where?: string; budget_usd?: number; contacted: Contact[]; not_contacted: number };
 
@@ -117,6 +132,33 @@ export function briefFromInput(input: unknown): Brief | null {
   };
 }
 
+const LISTING_REF = /^(aws|place):[A-Za-z0-9_=+/-]{3,515}$/;
+const isFound = (c: unknown) => obj(c)?.contact_state === "will_authorize_on_start";
+
+/** Found businesses from deal's would_contact (contact_state will_authorize_on_start), whitelisted fields only. */
+function foundOf(v: unknown): FoundBusiness[] {
+  return arr(v).filter(isFound).flatMap((c) => {
+    const o = obj(c)!;
+    const via = obj(o.found_via);
+    const name = str(o.name);
+    const ref = typeof o.business_ref === "string" && LISTING_REF.test(o.business_ref) ? o.business_ref : undefined;
+    if (!name || !ref) return [];
+    const hours = str(o.hours_today);
+    return [{ name, ref, listing: str(via?.listing) ?? "a public listing", email_from: via?.email_from === "listing" ? "listing" as const : "website" as const, ...(hours ? { hours_today: hours } : {}) }];
+  }).slice(0, 12);
+}
+
+/**
+ * What "Start the deal" says on the user's behalf: with found businesses, exactly the ones the user kept
+ * (by name and ref, so the assistant passes them as confirm_discovered), or that they removed them all.
+ */
+export function startMessage(found: FoundBusiness[], removed: ReadonlySet<string> = new Set()): string {
+  if (!found.length) return "Yes, start the deal.";
+  const kept = found.filter((f) => !removed.has(f.ref));
+  if (!kept.length) return "Yes, start the deal, but without the businesses Haggle found (confirm_discovered: []).";
+  return `Yes, start the deal. Include these businesses Haggle found (confirm_discovered): ${kept.map((f) => `${f.name} (${f.ref})`).join(", ")}.`;
+}
+
 const contacts = (v: unknown, nameKey: "name" | "business"): Contact[] =>
   arr(v).flatMap((c) => {
     const name = str(obj(c)?.[nameKey]);
@@ -143,12 +185,12 @@ export function toolCard(name: string, input: unknown, data: unknown, jobId?: st
     const qs = (v: unknown) => arr(v).flatMap((q) => (str(obj(q)?.question) ? [str(obj(q)?.question)!] : [])).slice(0, 10);
     return { kind: "needs_info", demo, label: str(needs.label) ?? "This request", missing: qs(needs.missing), optional: qs(needs.helpful) };
   }
-  if ((i.dry_run === true || d.dry_run === true) && Array.isArray(d.would_contact)) {
+  if ((i.dry_run === true || d.dry_run === true || d.needs_confirmation === true) && Array.isArray(d.would_contact)) {
     const blocked = arr(d.blocked).flatMap((b) => {
       const n = str(obj(b)?.name);
       return n ? [{ name: n, reason: str(obj(b)?.reason) ?? "can't be contacted" }] : [];
     });
-    return { kind: "preview", demo, brief: briefFromInput(input), contact: contacts(d.would_contact, "name"), blocked: blocked.slice(0, 12) };
+    return { kind: "preview", demo, brief: briefFromInput(input), contact: contacts(arr(d.would_contact).filter((c) => !isFound(c)), "name"), found: foundOf(d.would_contact), blocked: blocked.slice(0, 12) };
   }
   if (jobId) {
     const rd = obj(d.request_details);
@@ -193,7 +235,7 @@ export function storedToolCard(name: string, input: unknown, result: { content?:
   }
   const i = obj(input) ?? {};
   const d = obj(data);
-  const dry = i.dry_run === true || d?.dry_run === true;
+  const dry = i.dry_run === true || d?.dry_run === true || d?.needs_confirmation === true;
   const jobId = dry ? undefined : (typeof d?.job_id === "string" ? d.job_id : undefined) ?? /"job_id"\s*:\s*"([^"]+)"/.exec(text)?.[1] ?? /^Deal (job_[A-Za-z0-9_-]+) started/m.exec(text)?.[1];
   return toolCard(name, input, data, jobId);
 }

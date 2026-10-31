@@ -466,6 +466,16 @@ body:has(.chat-layout) {
   color: var(--ink-3);
   white-space: nowrap;
 }
+/* Businesses Haggle found: the line under the name wraps; the remove control stays at the end. */
+.cc-found li {
+  flex-wrap: wrap;
+}
+.cc-found .cc-contact-channel {
+  white-space: normal;
+}
+.cc-found li[data-removed] .cc-contact-name {
+  color: var(--ink-3);
+}
 .cc-blocked li {
   margin-top: var(--s-2);
   font-size: var(--t-14);
