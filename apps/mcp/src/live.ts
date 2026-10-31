@@ -48,6 +48,9 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const repo = new PostgresRepository(env.SUPABASE_DB_URL!, {
     max: Number.isInteger(poolMax) && poolMax >= 1 && poolMax <= 10 ? poolMax : 4, ...(env.HAGGLE_DB_SCHEMA?.trim() ? { schema: env.HAGGLE_DB_SCHEMA.trim() } : {}),
     queueTimeoutMs: Number.isInteger(queueTimeoutMs) && queueTimeoutMs >= 100 && queueTimeoutMs <= 60_000 ? queueTimeoutMs : 5_000, applicationName: `haggle-mcp-${deployEnv}`,
+    // A call holding a connection for 30 s is stuck (a dropped pooler socket never returns: the
+    // 2026-10-31 outage held all 4 for hours); it fails as transient and the connections are replaced.
+    holdTimeoutMs: 30_000, onReset: (pool) => logger.warn("db_pool_reset", { reason: "a database call held its connection over 30 s", pool }),
   });
   // Each outbound channel is OFF unless explicitly enabled (real calls / iMessages / A2A tasks need
   // Yash's go-ahead). A2A cards and phone numbers must still be on the recipient allowlist; iMessage

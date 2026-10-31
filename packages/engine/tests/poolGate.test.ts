@@ -5,7 +5,7 @@
 // the pool size and fragments still work.
 import { afterAll, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { gatedSql, isTransient, PoolBusyError, PoolGate, PostgresRepository } from "../src/index.ts";
+import { gatedSql, isTransient, PoolBusyError, PoolGate, PostgresRepository, QueryHungError, resettableSql } from "../src/index.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -91,6 +91,58 @@ describe("pool gate", () => {
     await expect(Promise.resolve(db`select 1`)).rejects.toThrow("boom");
     await expect(Promise.resolve(db`select 1`)).rejects.toThrow("boom");
     expect(gate.stats()).toMatchObject({ in_use: 0, queued: 0 });
+  });
+});
+
+describe("hung calls (2026-10-31: a dropped pooler socket held every slot for hours)", () => {
+  /** A client whose queries never settle until `heal()`; counts end() calls like postgres.js. */
+  function stuckClient() {
+    const c = { ended: 0, executed: 0, stuck: true };
+    const sql = ((strings: TemplateStringsArray) => ({
+      strings,
+      then: (ok?: (v: unknown) => unknown, fail?: (e: unknown) => unknown) => {
+        c.executed++;
+        return (c.stuck ? new Promise(() => {}) : Promise.resolve([{ ok: 1 }])).then(ok, fail);
+      },
+    })) as unknown as ((s: TemplateStringsArray, ...a: unknown[]) => PromiseLike<unknown>) & { end: (o: { timeout: number }) => Promise<void> };
+    sql.end = async () => { c.ended++; };
+    return { sql, c };
+  }
+
+  it("a call past holdTimeoutMs fails as transient, frees its slot and calls onHang once", async () => {
+    const { sql } = stuckClient();
+    const gate = new PoolGate(1, 1_000, 10, 40);
+    let hangs = 0;
+    gate.onHang = () => { hangs++; };
+    const db = gatedSql(sql, gate);
+    const e = await Promise.resolve(db`select 1`).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(QueryHungError);
+    expect(isTransient(e)).toBe(true);
+    expect(hangs).toBe(1);
+    expect(gate.stats()).toMatchObject({ in_use: 0, hung: 1 });
+  });
+
+  it("without holdTimeoutMs nothing changes: no deadline", async () => {
+    const gate = new PoolGate(1);
+    let done = false;
+    void gate.run(() => new Promise<void>((r) => setTimeout(r, 30))).then(() => { done = true; });
+    await sleep(60);
+    expect(done).toBe(true);
+    expect(gate.stats().hung).toBe(0);
+  });
+
+  it("onHang resets the client: the stuck one is ended at once and the next call reaches a fresh one", async () => {
+    const made: ReturnType<typeof stuckClient>[] = [];
+    const client = resettableSql(() => { const x = stuckClient(); if (made.length) x.c.stuck = false; made.push(x); return x.sql as never; });
+    const gate = new PoolGate(1, 1_000, 10, 40);
+    gate.onHang = () => client.reset();
+    const db = gatedSql(client.sql, gate);
+    await expect(Promise.resolve(db`select 1`)).rejects.toBeInstanceOf(QueryHungError);
+    expect(made).toHaveLength(2);
+    expect(made[0]!.c.ended).toBe(1);
+    await expect(Promise.resolve(db`select 2`)).resolves.toEqual([{ ok: 1 }]);
+    expect(made[1]!.c.executed).toBe(1);
+    expect(gate.stats()).toMatchObject({ in_use: 0, hung: 1 });
   });
 });
 

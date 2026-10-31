@@ -107,6 +107,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-10-31 · Aarnav · Production outage fixed: the live MCP server's 4 database connections hung for hours on a dropped pooler socket (every web page "couldn't load", 500s). Restarted, then shipped a guard: a database call holding a connection over 30 s fails as transient and the server replaces its connections (db_pool_reset log, `hung` in /ready pool stats).
 - 2026-10-31 · Aarnav · Web redesign (apps/web/DESIGN.md, "marked-up quote"): new tokens and type, shared UI primitives, a persistent app rail; landing, sign-in, onboarding, legal and error pages, chat (deal cards, auto-growing composer, streaming that survives refresh), deals list and deal board (quote sheet, docked approval, plain activity), vendors, settings and account rebuilt; loading skeletons and transitions on every route, cached session lookups, Vercel region cle1. Vitest 197 passed, tsc and next build clean, Playwright tier 1 (9) and tier 2 (demo deal through approval to the booking step) pass.
 - 2026-10-31 · Aarnav · Production texts on (e968d91): iMessage approvals (YES/PAID <code>) to the connected approver and texts with vendors who connected first; webhook adds imessage.received; SMS stays off. get_identity reports imessage_approvals ready.
 

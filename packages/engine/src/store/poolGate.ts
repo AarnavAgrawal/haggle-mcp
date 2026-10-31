@@ -14,6 +14,20 @@ export class PoolBusyError extends Error {
   }
 }
 
+/**
+ * A query or transaction that held its slot past holdTimeoutMs (a socket the pooler dropped without
+ * telling either side waits forever: the 2026-10-31 outage, all 4 slots held for hours). The slot is
+ * freed and the caller gets this transient error ("timed out"); onHang lets the owner replace the
+ * stuck connections. The query itself may still finish on the server.
+ */
+export class QueryHungError extends Error {
+  override name = "QueryHungError";
+  readonly code = "EQUERYHUNG";
+  constructor(ms: number) {
+    super(`database call held its connection for over ${ms} ms (timed out)`);
+  }
+}
+
 export interface PoolStats {
   max: number;
   in_use: number;
@@ -24,23 +38,30 @@ export interface PoolStats {
   timeouts: number;
   /** Waiters refused because the queue was full. */
   rejected: number;
+  /** Queries or transactions abandoned after holdTimeoutMs (QueryHungError). */
+  hung: number;
 }
 
 export class PoolGate {
   private inUse = 0;
   private readonly waiters: { grant: () => void; timer: ReturnType<typeof setTimeout> }[] = [];
-  private s = { peak_in_use: 0, peak_queued: 0, timeouts: 0, rejected: 0 };
+  private s = { peak_in_use: 0, peak_queued: 0, timeouts: 0, rejected: 0, hung: 0 };
 
   readonly max: number;
   readonly queueTimeoutMs: number;
   readonly maxQueue: number;
+  /** How long one query or transaction may hold a slot; 0 = no limit. */
+  readonly holdTimeoutMs: number;
+  /** Called once per QueryHungError (the owner resets its connections). */
+  onHang?: () => void;
 
   // No parameter properties: the operator scripts load this under Node's type stripping.
-  constructor(max: number, queueTimeoutMs = 5_000, maxQueue = 500) {
+  constructor(max: number, queueTimeoutMs = 5_000, maxQueue = 500, holdTimeoutMs = 0) {
     if (!(Number.isInteger(max) && max >= 1)) throw new Error("pool max must be a positive integer");
     this.max = max;
     this.queueTimeoutMs = queueTimeoutMs;
     this.maxQueue = maxQueue;
+    this.holdTimeoutMs = holdTimeoutMs;
   }
 
   /** Waits for a slot; resolves to its release function (call it exactly once). */
@@ -80,9 +101,20 @@ export class PoolGate {
 
   async run<T>(f: () => PromiseLike<T>): Promise<T> {
     const release = await this.acquire();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await f();
+      if (!(this.holdTimeoutMs > 0)) return await f();
+      const hung = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          this.s.hung++;
+          reject(new QueryHungError(this.holdTimeoutMs));
+          try { this.onHang?.(); } catch { /* the reset is best effort */ }
+        }, this.holdTimeoutMs);
+        (timer as { unref?: () => void }).unref?.();
+      });
+      return await Promise.race([Promise.resolve().then(f), hung]);
     } finally {
+      clearTimeout(timer);
       release();
     }
   }

@@ -63,6 +63,32 @@ export function retryingReads(sql: Sql, delayMs = 300): Sql {
   }) as unknown as Sql;
 }
 
+/**
+ * A postgres.js client that can be swapped for a fresh one: calls and properties go to the current
+ * client. reset() opens a new client and closes the old one at once (timeout 0), so connections stuck
+ * on a socket the pooler dropped are destroyed instead of holding the pool forever.
+ */
+export function resettableSql(make: () => Sql): { sql: Sql; reset: () => void } {
+  let current = make();
+  const sql = new Proxy(function () {} as unknown as object, {
+    apply(_t, thisArg, args: unknown[]) {
+      return Reflect.apply(current as unknown as (...a: unknown[]) => unknown, thisArg, args);
+    },
+    get(_t, p) {
+      const v = Reflect.get(current as object, p);
+      return typeof v === "function" ? v.bind(current) : v;
+    },
+  }) as unknown as Sql;
+  return {
+    sql,
+    reset() {
+      const old = current;
+      current = make();
+      void Promise.resolve(old.end({ timeout: 0 })).catch(() => {});
+    },
+  };
+}
+
 export class PostgresRepository implements Repository {
   private readonly sql: Sql;
 
@@ -74,17 +100,28 @@ export class PostgresRepository implements Repository {
    * `queueTimeoutMs`: how long a query waits for a free pooled connection before failing as transient
    * (PoolBusyError); `maxQueue`: waiters beyond this fail at once. `applicationName` shows in pg_stat_activity.
    */
-  constructor(url: string, opts: { max?: number; schema?: string; retryDelayMs?: number; queueTimeoutMs?: number; maxQueue?: number; applicationName?: string } = {}) {
+  constructor(url: string, opts: { max?: number; schema?: string; retryDelayMs?: number; queueTimeoutMs?: number; maxQueue?: number; applicationName?: string; holdTimeoutMs?: number; onReset?: (stats: PoolStats) => void } = {}) {
     if (opts.schema !== undefined && !/^[a-z_][a-z0-9_]*$/.test(opts.schema)) throw new Error(`invalid database schema name: ${opts.schema}`);
     const max = opts.max ?? 4;
     // Small pool, idle connections released after 20 s, recycled after 30 min: Supabase's session
     // pooler caps clients per database (15), shared by every process and reload. The gate bounds the
     // wait for one of them, so polling boards can't queue without limit behind a saturated pool.
-    this.gate = new PoolGate(max, opts.queueTimeoutMs ?? 5_000, opts.maxQueue ?? 500);
-    this.sql = retryingReads(gatedSql(postgres(url, {
+    // `holdTimeoutMs` (off unless given; the live server sets it) bounds how long one call may hold a
+    // connection: past it the call fails as transient and the whole client is replaced (resettableSql),
+    // because a call stuck on a dropped socket never returns on its own.
+    this.gate = new PoolGate(max, opts.queueTimeoutMs ?? 5_000, opts.maxQueue ?? 500, opts.holdTimeoutMs ?? 0);
+    const client = resettableSql(() => postgres(url, {
       max, idle_timeout: 20, max_lifetime: 30 * 60, connect_timeout: 15, prepare: false, onnotice: () => {},
       connection: { application_name: (opts.applicationName ?? "haggle-engine").slice(0, 63), ...(opts.schema ? { search_path: opts.schema } : {}) },
-    }) as unknown as Sql, this.gate), opts.retryDelayMs ?? 300);
+    }) as unknown as Sql);
+    let lastReset = 0;
+    this.gate.onHang = () => {
+      if (Date.now() - lastReset < 10_000) return; // one reset covers every call hung on the old client
+      lastReset = Date.now();
+      client.reset();
+      opts.onReset?.(this.gate.stats());
+    };
+    this.sql = retryingReads(gatedSql(client.sql, this.gate), opts.retryDelayMs ?? 300);
   }
 
   async close() {
