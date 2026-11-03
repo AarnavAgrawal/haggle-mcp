@@ -1,0 +1,14 @@
+# Used by `docker build -f deploy/Dockerfile .` (BuildKit reads <Dockerfile>.dockerignore).
+# Secrets and local state never enter the image.
+**/node_modules
+**/.env
+**/.env.*
+!**/.env.example
+**/.mcp-use
+**/.next
+**/.haggle-data
+**/.vercel
+.git
+.claude
+**/*.log
+apps/bench/screenshots
