@@ -24,7 +24,9 @@ const extractor = {
 };
 
 function engine(shared?: { repo: InMemoryRepository; t: number }) {
-  let t = shared?.t ?? Date.now();
+  // A fixed clock the day before the requests' literal dates (2026-11-03), never the real one: with the real
+  // date a later year makes the RFQ print "Nov 3, 2026" (CI's skewed-clock run caught it).
+  let t = shared?.t ?? Date.parse("2026-11-02T18:00:00Z");
   const clock = { now: () => new Date(t), advance: (ms: number) => { t += ms; } };
   const sent: { to: string; subject: string; bodyText: string }[] = [];
   const texts: { to: string; text: string }[] = [];
@@ -94,7 +96,7 @@ describe("asynchronous resumption", () => {
     const rfq = (await first.repo.getBusinesses(deal.job_id)).find((b) => b.name === "Sparkle Co")!.rfq_message_id!;
 
     // The process restarts: a new engine over the same store, no in-memory state carried over.
-    const second = engine({ repo: first.repo, t: Date.now() + 60_000 });
+    const second = engine({ repo: first.repo, t: first.clock.now().getTime() + 60_000 });
     await second.engine.ingest({ providerEventId: "e9", eventType: "message.received", providerEmailId: "in_9", threadId: "t9", messageId: "<in_9@x>", inReplyTo: [rfq], references: [rfq], from: "hi@sparkle.test", to: ["haggle@inkboxmail.test"], subject: "Re: quote", bodyText: "$780 total incl. supplies and tax. $100 deposit.", attachments: [], attachmentsDownloadUrl: null }, trusted);
     expect((await second.engine.ingestIMessage({ messageId: "im_9", from: "+14155550177", text: "$720 total, $0 deposit, tax included", isGroup: false })).outcome).toBe("stored");
     await second.engine.advanceJob(deal.job_id);

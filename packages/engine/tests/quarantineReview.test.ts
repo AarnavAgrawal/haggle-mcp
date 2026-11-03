@@ -16,8 +16,11 @@ const HOW = "phoned Valley Catering at the number on its website; they confirmed
 async function threadOnlyReply(env: LiveEnv) {
   const d = await dealWith(env, [V, W]);
   const b = d.businesses.find((x) => x.email === V.email)!;
-  await env.repo.updateBusiness(d.jobId, b.business_id, { thread_id: "th_valley" });
-  const r = await vendorReply(env, b, "", { threadId: "th_valley", inReplyTo: [], references: [], subject: "Re: Quote request", bodyText: `We can do it: $1,150 total, delivered. Call me at (415) 555-0199 or write ${V.email}.\n\nOn Thu, Haggle <${BUYER}> wrote:\n> Budget: up to $2,000 total` });
+  // A thread id of its own per deal: on Postgres the tests share one database, and a fixed id matched the
+  // earlier test's still-open deal in the same thread (the reply landed there, not on this deal).
+  const thread = `th_valley_${d.jobId}`;
+  await env.repo.updateBusiness(d.jobId, b.business_id, { thread_id: thread });
+  const r = await vendorReply(env, b, "", { threadId: thread, inReplyTo: [], references: [], subject: "Re: Quote request", bodyText: `We can do it: $1,150 total, delivered. Call me at (415) 555-0199 or write ${V.email}.\n\nOn Thu, Haggle <${BUYER}> wrote:\n> Budget: up to $2,000 total` });
   expect(r.outcome).toBe("quarantined:identity_unverified");
   const held = (await env.repo.listMessages(d.jobId)).find((m) => m.direction === "in")!;
   return { ...d, b, held };
