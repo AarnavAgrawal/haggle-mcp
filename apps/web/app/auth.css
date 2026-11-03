@@ -74,6 +74,17 @@
   margin: var(--s-2) 0 -4px -12px;
   color: var(--pen);
 }
+/* Username + password (accounts created by the operator, e.g. for a reviewer). */
+.auth-password-toggle {
+  display: block;
+  margin: var(--s-3) auto 0;
+  color: var(--pen);
+}
+.auth-password {
+  margin-top: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--rule);
+}
 .auth-guest {
   margin-top: var(--s-4);
   padding-top: var(--s-4);

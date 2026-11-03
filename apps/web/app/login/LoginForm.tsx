@@ -6,18 +6,24 @@ import { useEffect, useState, useTransition, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { DEMO } from "@/lib/demo";
+import { loginEmail } from "@/lib/loginEmail";
 import { supabaseBrowser } from "@/lib/supabase/browser";
 import { Turnstile, TURNSTILE_SITE_KEY } from "./Turnstile";
 
 /**
- * Sign in with an emailed magic link or Google (both land on /auth/callback); on a demo site, also as a
- * guest. With NEXT_PUBLIC_TURNSTILE_SITE_KEY set, the link and guest sign-in carry a Turnstile token
- * (Supabase checks it); Google's own sign-in needs none.
+ * Sign in with an emailed magic link or Google (both land on /auth/callback); with a username and
+ * password (accounts the operator created in Supabase, e.g. for a reviewer who isn't a Google test user;
+ * this form never creates an account); on a demo site, also as a guest. With NEXT_PUBLIC_TURNSTILE_SITE_KEY
+ * set, the link, password and guest sign-ins carry a Turnstile token (Supabase checks it); Google's own
+ * sign-in needs none.
  */
 export function LoginForm({ notice }: { notice: string | null }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
-  const [state, setState] = useState<"idle" | "sending" | "sent" | "guest" | "google">("idle");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [withPassword, setWithPassword] = useState(false);
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "guest" | "google" | "password">("idle");
   const [error, setError] = useState<string | null>(null);
   const [captcha, setCaptcha] = useState<string | null>(null);
   const [resetKey, setResetKey] = useState(0);
@@ -65,6 +71,28 @@ export function LoginForm({ notice }: { notice: string | null }) {
       router.refresh();
     });
   };
+  const signInWithPassword = async (e: FormEvent) => {
+    e.preventDefault();
+    const address = loginEmail(username);
+    if (!address) return setError("Enter your username (or email) and password.");
+    if (needsCaptcha) return setError("Complete the check below first.");
+    setError(null);
+    setState("password");
+    const { error } = await supabaseBrowser().auth.signInWithPassword({ email: address, password, options: { ...captchaOpts } });
+    used();
+    if (error) {
+      // One message for an unknown user and a wrong password (never says which).
+      setError(/invalid login credentials/i.test(error.message) ? "That username and password don't match." : error.message);
+      setState("idle");
+      return;
+    }
+    setPassword("");
+    // Same landing as Google and the email link: / sends a signed-in person on to their workspace.
+    startTransition(() => {
+      router.push("/");
+      router.refresh();
+    });
+  };
   // Back from Google's page (restored from the back/forward cache): the Google button is usable again.
   useEffect(() => {
     const onShow = (e: PageTransitionEvent) => {
@@ -73,7 +101,7 @@ export function LoginForm({ notice }: { notice: string | null }) {
     window.addEventListener("pageshow", onShow);
     return () => window.removeEventListener("pageshow", onShow);
   }, []);
-  const busy = state === "sending" || state === "google" || state === "guest" || navigating;
+  const busy = state === "sending" || state === "google" || state === "guest" || state === "password" || navigating;
 
   return (
     <div className="ui-sheet auth-sheet">
@@ -111,6 +139,24 @@ export function LoginForm({ notice }: { notice: string | null }) {
           </Button>
         </form>
       )}
+      {state !== "sent" &&
+        (withPassword ? (
+          <form className="auth-form auth-password" onSubmit={signInWithPassword}>
+            <Field label="Username">
+              <input id="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} required value={username} onChange={(e) => setUsername(e.target.value)} />
+            </Field>
+            <Field label="Password">
+              <input id="password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+            </Field>
+            <Button type="submit" block pending={state === "password"} disabled={busy && state !== "password"}>
+              Sign in
+            </Button>
+          </form>
+        ) : (
+          <Button variant="quiet" size="s" className="auth-password-toggle" disabled={busy} onClick={() => setWithPassword(true)}>
+            Sign in with a username and password
+          </Button>
+        ))}
       {DEMO && (
         <div className="auth-guest">
           <Button block pending={state === "guest" || navigating} disabled={busy && state !== "guest"} onClick={() => void guest()}>
