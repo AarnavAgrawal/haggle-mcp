@@ -109,6 +109,25 @@
 .auth-legal a {
   color: var(--ink-2);
 }
+/* Onboarding: who is signed in, and Sign out (a link-styled button; sign-out is a POST). */
+.onb-switch strong {
+  color: var(--ink-2);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.onb-switch-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--ink-2);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.onb-switch-btn:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
 
 /* Onboarding: two short groups on the sheet. */
 .onb-group {

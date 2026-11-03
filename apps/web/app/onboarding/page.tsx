@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useState, type FormEvent } from "react";
+import { useActionState, useEffect, useState, type FormEvent } from "react";
 import { Footer } from "@/components/Footer";
 import { Field } from "@/components/ui/Field";
 import { SubmitButton } from "@/components/ui/SubmitButton";
+import { supabaseBrowser } from "@/lib/supabase/browser";
 import { createWorkspace, type OnboardState } from "./actions";
 import "../auth.css";
 
@@ -105,9 +106,39 @@ export default function OnboardingPage() {
             </SubmitButton>
           </form>
         </div>
+        <SwitchAccount />
       </main>
       <Footer />
     </>
+  );
+}
+
+/**
+ * Who is signed in, and a way out: someone who signed in with the wrong Google account can leave
+ * onboarding (nothing has been created yet) and sign in again. POST, like the rail's Sign out.
+ */
+function SwitchAccount() {
+  const [email, setEmail] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void supabaseBrowser()
+      .auth.getUser()
+      .then(({ data }) => live && setEmail(data.user?.email ?? null));
+    return () => {
+      live = false;
+    };
+  }, []);
+  return (
+    <form className="auth-legal onb-switch" action="/auth/sign-out" method="post">
+      {email ? (
+        <>
+          Signed in as <strong>{email}</strong>.{" "}
+        </>
+      ) : null}
+      <button type="submit" className="onb-switch-btn">
+        {email ? "Not you? Sign out" : "Sign out"}
+      </button>
+    </form>
   );
 }
 

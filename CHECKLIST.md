@@ -107,6 +107,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-11-02 · Aarnav · Onboarding shows who is signed in with "Not you? Sign out" (someone who signed in with the wrong Google account can leave before a workspace exists); the app rail already had Sign out. Web tests 255 passed, build clean.
 - 2026-11-02 · Aarnav · Web on 1a6c27b (Vercel): favicon; sign in with a username and password for operator-created accounts (never creates one); YC reviewer account `ycombinator` created in prod Supabase (signs in as ycombinator@users.tryhaggle.tech, lands on onboarding). CI green again (date-dependent and shared-Postgres test fixes).
 
 - 2026-11-02 · Aarnav · Discovery finds only businesses that do the work: a listing qualifies by its PRIMARY category (a live SoMa catering search had offered an architecture firm with a stray catering tag; plumbing offered a supply store), home repairs exclude auto shops, trades also search their Amazon category near the area (electrical/cleaning/moving 1-3 → 12 results live), rentals search as "event rentals". Vitest 2187 passed; checked live on Amazon. Not yet deployed.
