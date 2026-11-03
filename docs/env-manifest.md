@@ -126,6 +126,8 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `HAGGLE_CONTACT_DAYS` | Weekdays vendors may be contacted, e.g. Mon-Sat or Mon,Wed,Fri |  | server | – | optional | optional | optional | weekday names, e.g. Mon-Sat or Mon,Wed,Fri; warning |  |
 | `HAGGLE_CONTACT_TIMEZONE` | Time zone of the vendor-contact window |  | server | – | optional | optional | optional | IANA time zone; warning | `America/Los_Angeles` |
 | `HAGGLE_CUSTOMER_NAME` | Customer name used in outreach (40 characters max) |  | server | – | optional | optional | optional | free text; warning |  |
+| `HAGGLE_SELLERS_JSON` | Haggle's own demo sellers answered by this server: JSON {"<handle>": {"email", "signingKey"}} for each seller Inkbox identity (webhooks to <url>/webhooks/sellers/<handle>); needs INKBOX_ADMIN_API_KEY. Unset: off | yes | server | – | optional | optional | optional | free text; warning |  |
+| `HAGGLE_DEMO_WORKSPACES` | Comma-separated workspace ids that are demo logins on a live server: Haggle never finds businesses for them and the app can't add vendors to them; their deals contact only the vendors the operator saved (Haggle's own demo sellers) |  | server | – | optional | optional | optional | free text; warning |  |
 | `HAGGLE_VOICE_WORKSPACE` | Workspace whose settings the voice line uses |  | server | – | optional | optional | optional | free text; warning |  |
 | `HAGGLE_NOTIFY_PHONE` | Phone (E.164) for update texts, else the settings approver | PII | server | – | optional | optional | optional | a phone number; warning |  |
 | `HAGGLE_ALLOWED_RECIPIENTS` | Extra contacts outreach may reach (comma-separated); discovery is not permission | PII | server | optional | optional | optional | optional | free text; warning |  |

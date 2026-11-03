@@ -15,6 +15,7 @@
 // The daily count is shared by every server process on the database (take_rate_slot, migration 124);
 // on a store without it, or while it fails, each process counts in memory. The slot is taken before
 // the insert (concurrent adds can't overshoot); re-authorizing an existing vendor takes none.
+import { DEMO_WORKSPACE_REASON, isDemoWorkspace } from "../demoWorkspace.ts";
 import { z } from "zod";
 import { asWeeklyHours, simulatedContact, type Channel, type HaggleEngine, type ListingProvider } from "@haggle/engine";
 import { discoveredFor, knownCategory, LISTING_REF, storedListing, vendorCategory } from "../businesses.ts";
@@ -171,6 +172,7 @@ export async function addVendorChecked(
 ): Promise<AddOutcome> {
   const daily = o.daily ?? sharedAdds;
   const no = (status: number, code: string, message: string, fix: string): AddOutcome => ({ ok: false, status, code, message, fix });
+  if (isDemoWorkspace(ws)) return no(403, "DEMO_WORKSPACE", `Can't add businesses: ${DEMO_WORKSPACE_REASON}.`, "Sign in with your own account to add the businesses you work with.");
   const isEmail = b.contact.includes("@");
   const channel: VendorChannel = b.channel ?? (isEmail ? "email" : "phone");
   if ((channel === "email") !== isEmail) return no(400, "BAD_CHANNEL", `Channel ${channel} doesn't fit ${isEmail ? "an email address" : "a phone number"}.`, "Use email for an address; phone (a call) or imessage (a text) for a number.");
@@ -259,6 +261,7 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
     const g = await guard(c, { workspace: true });
     if (g instanceof Response) return g;
     if (!g.actor) return fail(c, 400, "ACTOR_REQUIRED", "Removing a vendor records who removed it.", "Send x-haggle-actor with the signed-in user.");
+    if (isDemoWorkspace(g.workspaceId)) return fail(c, 403, "DEMO_WORKSPACE", `The demo businesses can't be changed: ${DEMO_WORKSPACE_REASON}.`, "Sign in with your own account to manage the businesses you work with.");
     const parsed = RemoveBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return fail(c, 400, "INVALID_INPUT", issues(parsed.error), "Pass the vendor's contact.");
     const removed = await g.rt.engine.removeWorkspaceVendor(g.workspaceId!, parsed.data.contact);
@@ -271,6 +274,7 @@ export function registerVendorRoutes(app: ServiceApp, opts: VendorRouteOptions =
     const g = await guard(c, { workspace: true });
     if (g instanceof Response) return g;
     if (!g.actor) return fail(c, 400, "ACTOR_REQUIRED", "Changing a vendor records who changed it.", "Send x-haggle-actor with the signed-in user.");
+    if (isDemoWorkspace(g.workspaceId)) return fail(c, 403, "DEMO_WORKSPACE", `The demo businesses can't be changed: ${DEMO_WORKSPACE_REASON}.`, "Sign in with your own account to manage the businesses you work with.");
     const parsed = CategoryBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return fail(c, 400, "INVALID_INPUT", issues(parsed.error), "Pass the vendor's contact and what it does (e.g. plumbing), or null to clear it.");
     const category = categoryInput(parsed.data.category);

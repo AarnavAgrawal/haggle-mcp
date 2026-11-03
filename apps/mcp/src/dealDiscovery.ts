@@ -10,6 +10,7 @@
 // simulated contacts never appear.
 import { DEFAULT_CONTACT_TIMEZONE, PlacesError, simulatedContact, type ListingProvider } from "@haggle/engine";
 import { hoursLine, publishedEmails, withWebsite, type Discovered, type DiscoveryRegistry } from "./businesses.ts";
+import { DEMO_WORKSPACE_REASON } from "./demoWorkspace.ts";
 import type { Runtime } from "./runtime.ts";
 
 /** How many listings deal asks for (more than it keeps: many publish no email). */
@@ -69,12 +70,15 @@ export interface FindOptions {
   limit: number;
   now?: Date;
   timezone?: string;
+  /** A demo workspace (HAGGLE_DEMO_WORKSPACES): never finds businesses. */
+  demoWorkspace?: boolean;
 }
 
 const none = (status: Exclude<DiscoveryStatus, "ok">, reason: string, skipped = { no_email: 0, suppressed: 0, existing: 0 }): DiscoveryOutcome => ({ status, candidates: [], reason, skipped });
 
 /** The businesses deal would email for this request, best first, or why there are none. Never contacts anyone. */
 export async function findForDeal(o: FindOptions): Promise<DiscoveryOutcome> {
+  if (o.demoWorkspace) return none("off", DEMO_WORKSPACE_REASON);
   if (!o.rt.listing) return none("off", "finding businesses is off on this server (no public-listing key is configured)");
   if (!o.area) return none("no_area", "no area was given and the workspace has no default area");
   if (!(await o.rt.channels()).email) return none("email_off", "email outreach is off on this server, and found businesses are only ever emailed");

@@ -6,9 +6,10 @@
  *   npm run dev -w @haggle/sellers     # SELLERS_FAST=1 for demo-speed replies
  */
 import { createServer, type IncomingMessage } from "node:http";
-import { Inkbox, type AgentIdentity } from "@inkbox/sdk";
+import { Inkbox } from "@inkbox/sdk";
 import { createSellerApp, type SellerPorts } from "./app.ts";
 import { createClaudeComposer, templateReply, type Composer } from "./compose.ts";
+import { sellerPorts } from "./hosted.ts";
 import { PERSONAS } from "./personas.ts";
 import { join } from "node:path";
 import { DATA_DIR, StateStore, loadRegistry } from "./store.ts";
@@ -20,32 +21,7 @@ const ROUTE = /^\/webhooks\/inkbox\/([a-z0-9-]+)\/?$/;
 
 const registry = loadRegistry();
 const inkbox = new Inkbox(); // INKBOX_API_KEY
-const identities = new Map<string, Promise<AgentIdentity>>();
-const identity = (handle: string) => {
-  if (!identities.has(handle)) identities.set(handle, inkbox.getIdentity(handle));
-  return identities.get(handle)!;
-};
-
-const ports: SellerPorts = {
-  async replyEmail(handle, { messageId, bodyText, attachments }) {
-    await (await identity(handle)).replyAllEmail(messageId, { bodyText, attachments, idempotencyKey: `seller-reply-${messageId}` });
-  },
-  async getEmailBody(handle, messageId) {
-    return (await (await identity(handle)).getMessage(messageId)).bodyText ?? "";
-  },
-  async getA2ATask(handle, taskId) {
-    const task = await (await identity(handle)).a2aTask(taskId);
-    const last = [...task.messages].reverse().find((m) => m.role !== "agent") ?? task.messages.at(-1);
-    const parts = last?.parts ?? [];
-    const text = parts.flatMap((part) => (typeof part.text === "string" ? [part.text] : [])).join("\n");
-    const data = parts.find((part) => part.data && typeof part.data === "object")?.data;
-    return { contextId: task.contextId, text, data };
-  },
-  async replyA2A(handle, taskId, { text, data }) {
-    // The SDK takes text or parts, not both: send the prose and quote.json as two parts.
-    await (await identity(handle)).a2aReply(taskId, data ? { intent: "complete", parts: [{ text }, { data }] } : { intent: "complete", text });
-  },
-};
+const ports: SellerPorts = sellerPorts(inkbox);
 
 const useClaude = Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 const composer: Composer = useClaude ? createClaudeComposer() : { write: async (p, plan) => templateReply(p, plan) };

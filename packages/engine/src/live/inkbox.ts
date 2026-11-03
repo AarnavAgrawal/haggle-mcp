@@ -49,6 +49,9 @@ export interface InkboxMessageDetail {
   createdAt?: Date | string;
 }
 
+/** The mail API for an API key (e.g. the org-level key the sender check reads same-org outbound mail with). */
+export const inkboxMailApiForKey = (apiKey: string): InkboxMailApi => inkboxMailApi(new Inkbox({ apiKey }));
+
 export function inkboxMailApi(inkbox: Inkbox): InkboxMailApi {
   const m = inkbox.messages;
   return {
@@ -198,8 +201,10 @@ const noEvidence = { dmarc: null, dmarcPolicy: null, dmarcFromDomain: null, spf:
  *   same-org Inkbox identity (webhook from-bucket match) AND on `allowedSenders` (the demo fleet).
  *   Weaker: the identity match is by address and inkboxmail.com publishes DMARC p=none, so it is
  *   recorded as "inkbox-org-identity" (outbound not verified), never as fully verified.
+ * `verifyApi`: an org-level (admin) key's mail API that can read the seller's outbound mail, used for
+ * the outbound check when the buyer's own key is agent-scoped.
  */
-export type InkboxTrustPolicy = { policy: "outbound-verified"; lookbackMessages?: number } | { policy: "pinned-org-identity"; allowedSenders: string[] };
+export type InkboxTrustPolicy = { policy: "outbound-verified"; lookbackMessages?: number; verifyApi?: InkboxMailApi } | { policy: "pinned-org-identity"; allowedSenders: string[] };
 
 /**
  * Is this inbound message really from its From address? See InkboxTrustPolicy. API failures are
@@ -223,7 +228,8 @@ export async function inkboxSenderTrust(api: InkboxMailApi, payload: Pick<MailWe
   if (!want) return { trusted: false, retryable: false, reason: "sender-not-verifiable", evidence: noEvidence };
   try {
     let seen = 0;
-    for await (const m of api.list(from, { direction: "outbound", pageSize: 25 })) {
+    const reader = ("verifyApi" in opts && opts.verifyApi) || api;
+    for await (const m of reader.list(from, { direction: "outbound", pageSize: 25 })) {
       if (normalizeMessageId(m.messageId ?? "") === want) return { trusted: true, address: from, reason: "trusted", evidence: { ...noEvidence, dmarc: "inkbox-identity-outbound-match" } };
       if (++seen >= (lookback ?? 50)) break;
     }

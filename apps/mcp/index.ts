@@ -13,6 +13,8 @@ import { webAppOn } from "./src/service/approvals.ts";
 import { blockerLines, businessRef, findVendors, rosterBusinessId, workspaceVendorList, type ChannelStatus, type RosterEntry } from "./src/vendors.ts";
 import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, historyEvidence, hoursLine, hoursOf, knownCategory, learningFor, LISTING_REF, listingEvidence, publishedEmails, requestCategory, resolveSelection, servesCategory, vendorCategory, storedListing, unknowns, vendorRoutes, websiteItems, withWebsite, type Discovered, type Selected } from "./src/businesses.ts";
 import { handleInkboxWebhook } from "./src/webhook.ts";
+import { isDemoWorkspace } from "./src/demoWorkspace.ts";
+import { hostedSellersFromEnv, SELLER_WEBHOOK_MAX_BYTES } from "./src/sellers.ts";
 import { confirmedBy, findForDeal, MAX_DISCOVERED_PER_DEAL, MIN_OWN_VENDORS, previewEntry, searchListings, type DiscoveryOutcome, type FoundCandidate } from "./src/dealDiscovery.ts";
 import { addsLeftToday, addVendorChecked } from "./src/service/vendors.ts";
 import { limitsMiddleware } from "./src/limits.ts";
@@ -482,7 +484,7 @@ export const deal = server.tool(
       if (fromRoster && mine.length < MIN_OWN_VENDORS && !(mine.length === 0 && roster.length > 0)) {
         const s = await engine.getSettings();
         discovery = await findForDeal({
-          rt, registry: discoveredFor(workspaceId), category, area,
+          rt, registry: discoveredFor(workspaceId), category, area, demoWorkspace: isDemoWorkspace(workspaceId),
           existing: new Set(own.map((v) => v.contact.toLowerCase())),
           reserved: new Set([s.approver_email?.toLowerCase(), s.approver_phone].filter((x): x is string => !!x)),
           suppressed: async (cs) => new Set((await rt.engine.contactSuppressions(cs)).map((x) => x.contact.toLowerCase())),
@@ -1691,6 +1693,18 @@ server.post("/webhooks/inkbox/:handle", async (c) => {
   }
   const r = await handleInkboxWebhook(rt, await c.req.text(), c.req.raw.headers, undefined, c.req.param("handle"));
   return c.json(r.body, r.status, r.retryAfterS ? { "Retry-After": String(r.retryAfterS) } : undefined);
+});
+
+/** Haggle's own demo sellers (HAGGLE_SELLERS_JSON, src/sellers.ts): Inkbox mail for each seller identity, verified with its key. */
+const hostedSellers = hostedSellersFromEnv(process.env);
+server.post("/webhooks/sellers/:handle", async (c) => {
+  if (!hostedSellers) return c.json({ error: "not configured" }, 404);
+  const declared = Number(c.req.header("content-length") ?? 0);
+  if (declared > SELLER_WEBHOOK_MAX_BYTES) return c.json({ error: "too large" }, 413);
+  const raw = Buffer.from(await c.req.arrayBuffer());
+  if (raw.byteLength > SELLER_WEBHOOK_MAX_BYTES) return c.json({ error: "too large" }, 413);
+  const r = hostedSellers.webhook(c.req.param("handle"), raw, Object.fromEntries(c.req.raw.headers));
+  return r.body ? c.text(r.body, r.status) : c.body(null, r.status);
 });
 
 /**

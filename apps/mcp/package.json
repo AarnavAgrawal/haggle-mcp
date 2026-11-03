@@ -21,6 +21,7 @@
     "@haggle/brain": "*",
     "@haggle/core": "*",
     "@haggle/engine": "*",
+    "@haggle/sellers": "*",
     "mcp-use": "2.10.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

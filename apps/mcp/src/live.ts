@@ -6,7 +6,7 @@
 // when HAGGLE_ENABLE_PAYMENTS=true and the key is sk_test_ (refuses to start otherwise); without the
 // flag every payment is refused (disabledPayer), never faked. No Primitive/x402 keys.
 import {
-  businessIdForContact, listingProviderFromEnv, MAX_ROUNDS, WorkspaceMailboxes, inkboxAdminApi, ReconcilerGroup, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
+  businessIdForContact, listingProviderFromEnv, MAX_ROUNDS, WorkspaceMailboxes, inkboxAdminApi, ReconcilerGroup, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, inkboxMailApiForKey, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
   withHeuristicFallback, AiUsageMeter, aiUsageSink, aiLimitsFromEnv, hydrateAiMeter, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
 } from "@haggle/engine";
 import { haggleEnv } from "./config.ts";
@@ -78,9 +78,11 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   const allowlist = [...new Set([...fleet.map((b) => b.email), ...rosterRecipients(vendorConfig.contacts), ...(env.HAGGLE_ALLOWED_RECIPIENTS ?? "").split(",").map((s) => s.trim()).filter(Boolean)])];
   // Seller-reply trust (see InkboxTrustPolicy): strict by default; "pinned-org-identity" is the
   // operator opt-in for an agent-scoped buyer key, limited to the pinned fleet/allowlist addresses.
+  // With an org-level key (INKBOX_ADMIN_API_KEY) the strict check reads the same-org sender's outbound
+  // mail with it, so replies from our own Inkbox identities (the demo sellers) verify fully.
   const senderTrust: InkboxTrustPolicy = env.INKBOX_SENDER_TRUST === "pinned-org-identity"
     ? { policy: "pinned-org-identity", allowedSenders: allowlist.filter((a) => a.includes("@") && !a.startsWith("@")) }
-    : { policy: "outbound-verified" };
+    : { policy: "outbound-verified", ...(env.INKBOX_ADMIN_API_KEY?.trim() ? { verifyApi: inkboxMailApiForKey(env.INKBOX_ADMIN_API_KEY.trim()) } : {}) };
   // Every configured vendor's identity (name + contact) is known to the brain, so its memory, including
   // quotes learned under an older contact-only id, is found by the same id deal uses.
   const vendorIdentities = Object.entries(vendorConfig.contacts).flatMap(([key, c]) => {

@@ -76,6 +76,18 @@ describe("inkboxSenderTrust", () => {
     api.listError = new InkboxAPIError(502, "bad gateway");
     expect(await inkboxSenderTrust(api, { data: { agent_identities: [{ bucket: "from", address: seller }] } as never }, spoof)).toMatchObject({ trusted: false, retryable: true });
   });
+  it("with an org-level key (verifyApi) the outbound check reads the seller's mailbox the buyer's own key can't see", async () => {
+    const buyer = new FakeInkbox();
+    const org = new FakeInkbox();
+    const d = org.reply(seller, "<m_9@inkbox.test>", "quote");
+    buyer.listError = new InkboxAPIError(403, "forbidden");
+    const payload = { data: { agent_identities: [{ bucket: "from", address: seller }] } as never };
+    expect(await inkboxSenderTrust(buyer, payload, d)).toMatchObject({ trusted: false, retryable: false });
+    expect(await inkboxSenderTrust(buyer, payload, d, { policy: "outbound-verified", verifyApi: org })).toMatchObject({ trusted: true, address: seller });
+    // The org key still demands the exact Message-ID in the sender's outbound mail.
+    const spoof = org.reply(seller, "<m_10@inkbox.test>", "spoofed", [], { recordOutbound: false });
+    expect(await inkboxSenderTrust(buyer, payload, spoof, { policy: "outbound-verified", verifyApi: org })).toMatchObject({ trusted: false, reason: "sender-not-verifiable" });
+  });
 });
 
 describe("Inkbox email loop through the engine", () => {
