@@ -7,6 +7,7 @@
 //   match confidence (phone match = sure; else name similarity). Below MIN_MATCH it is "ambiguous"
 //   and the ranking treats it as no data (neutral). Nothing is ever invented.
 import type { ReputationEvidence, ValueInput } from "../ranking/value.ts";
+import { fitsCategory, searchPhrase } from "./fit.ts";
 import type { WeeklyHours } from "./hours.ts";
 
 export interface ReputationSubject {
@@ -235,10 +236,11 @@ export async function placesDiscover(opts: { apiKey?: string; fetch?: Fetch; now
   const body = await placesCall(doFetch, "https://places.googleapis.com/v1/places:searchText", {
     method: "POST",
     headers: { "content-type": "application/json", "X-Goog-Api-Key": opts.apiKey, "X-Goog-FieldMask": FIELDS.map((f) => `places.${f}`).join(",") },
-    body: JSON.stringify({ textQuery: `${category} in ${area}`, pageSize: Math.min(Math.max(count * 2, 5), 20) }),
+    body: JSON.stringify({ textQuery: `${searchPhrase(category)} in ${area}`, pageSize: Math.min(Math.max(count * 2, 5), 20) }),
     signal: AbortSignal.timeout(6000),
   });
-  return resolveListings(((body as { places?: PlaceResult[] }).places ?? []), category, area, opts.now?.()).slice(0, count);
+  // Only businesses whose main line of work is the request's (a stray secondary tag never qualifies).
+  return resolveListings(((body as { places?: PlaceResult[] }).places ?? []), category, area, opts.now?.()).filter((b) => fitsCategory(category, b)).slice(0, count);
 }
 
 /** One place by its id (Place Details), fresh; null without a key. */

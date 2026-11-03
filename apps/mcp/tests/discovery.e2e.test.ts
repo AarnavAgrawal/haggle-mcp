@@ -52,7 +52,7 @@ describe("discover real businesses, understand them, reach only the authorized o
     const r = await call(fx, "discover", { category: "plumber", area: "Oakland, CA" });
     const d = r.structuredContent;
     expect(d.public_discovery.status).toBe("ok");
-    expect(d.found.map((f: { name: string }) => f.name)).toEqual(["Ace Plumbing & Drain", "Bolt Plumbing", "FiveStar Rooter", "Quiet Drains", "Bay Pizza"]);
+    expect(d.found.map((f: { name: string }) => f.name)).toEqual(["Ace Plumbing & Drain", "Bolt Plumbing", "FiveStar Rooter", "Quiet Drains"]); // Bay Pizza is not a plumber: left out
     const [ace, bolt] = d.found;
     expect(ace).toMatchObject({ business_ref: "place:ChIJAcePlumbingOakland01", rating: 4.7, review_count: 318, contact_state: "authorized", attribution: "Google Maps", phone_published: true });
     expect(bolt.contact_state).toBe("contact_found"); // published phone, not authorized

@@ -35,6 +35,7 @@ export * from "./reputation/places.ts";
 export * from "./reputation/website.ts";
 export * from "./reputation/hours.ts";
 export * from "./reputation/listing.ts";
+export * from "./reputation/fit.ts";
 export * from "./workflow/businessHours.ts";
 export * from "./outbound/email.ts";
 export * from "./ids.ts";

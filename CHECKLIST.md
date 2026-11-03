@@ -107,6 +107,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-11-02 · Aarnav · Discovery finds only businesses that do the work: a listing qualifies by its PRIMARY category (a live SoMa catering search had offered an architecture firm with a stray catering tag; plumbing offered a supply store), home repairs exclude auto shops, trades also search their Amazon category near the area (electrical/cleaning/moving 1-3 → 12 results live), rentals search as "event rentals". Vitest 2187 passed; checked live on Amazon. Not yet deployed.
+
 - 2026-11-02 · Aarnav · Production (tryhaggle.tech) on 4c9a1e0: migrations 127-129 applied and recorded (ledger OK, 33 applied), Manufact haggle-prod deployment #14 running, Vercel production READY; /ready true, web /api/health ok. main fast-forwarded to aarnav-prod. Typecheck, build and migration check clean; vitest 2170 passed (4 load timeouts pass alone).
 
 - 2026-10-31 · Aarnav · state-and-next-fixes §3 §4 §5 §6.1 §6.3 §8 in code on aarnav-prod (not deployed): Haggle finds businesses inside `deal` (preview, then saved as email-only on the user's yes); the owner edits settings in the app (approver changes verified by code/link, audited; migration 129); each deal has its own spending limit, raised only by a human (migration 128, Approval `deal_limit_usd`); short first emails with two asks, no AI label or JSON attachment in email, signed with the workspace's sender name; Ledger colors. Vitest 2174 passed, typecheck, MCP and web builds clean. To ship: apply 127-129, Manufact deploy, Vercel deploy.

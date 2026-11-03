@@ -53,7 +53,7 @@ describe("Amazon Location discovery: contacts, hours and contact timing", () => 
     const r = await call(fx, "discover", { category: "plumber", area: "Oakland, CA" });
     const d = r.structuredContent;
     expect(d.public_discovery).toMatchObject({ status: "ok", message: expect.stringMatching(/in Amazon Location Service listings/) });
-    expect(d.found.map((f: { name: string }) => f.name)).toEqual(["Ace Plumbing & Drain", "Night Owl Rooter", "Bolt Plumbing", "Quiet Drains", "Bay Pizza"]);
+    expect(d.found.map((f: { name: string }) => f.name)).toEqual(["Ace Plumbing & Drain", "Night Owl Rooter", "Bolt Plumbing", "Quiet Drains"]); // Bay Pizza is not a plumber: left out
     const by = (n: string) => d.found.find((f: { name: string }) => f.name === n);
     const ace = by("Ace Plumbing & Drain");
     expect(ace).toMatchObject({ business_ref: ACE_REF, contact_state: "authorized", attribution: "Amazon Location Service (data © HERE)", phone_published: true, published_emails: ["jobs@aceplumbing.example"] });

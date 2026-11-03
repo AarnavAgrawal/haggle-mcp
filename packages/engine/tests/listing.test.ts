@@ -65,7 +65,10 @@ describe("Amazon Location provider (API key, plain HTTPS)", () => {
     const p = amazonLocationProvider({ apiKey: "k/ey", region: "us-west-2", fetch: f.fetch, now: NOW });
     const list = await p.discover("plumber", "Oakland, CA", 3);
     expect(list.map((b) => b.name)).toEqual(["Ace Plumbing & Drain", "Night Owl Rooter", "Bolt Plumbing"]);
-    expect(f.calls.map((c) => `${c.method} ${c.url.host}${c.url.pathname}`)).toEqual(["POST places.geo.us-west-2.amazonaws.com/v2/geocode", "POST places.geo.us-west-2.amazonaws.com/v2/search-text"]);
+    // A known kind of work (plumber -> plumbing) also searches that category near the area; the fake
+    // answers 404 there, and the text results stand.
+    expect(f.calls.map((c) => `${c.method} ${c.url.host}${c.url.pathname}`)).toEqual(["POST places.geo.us-west-2.amazonaws.com/v2/geocode", "POST places.geo.us-west-2.amazonaws.com/v2/search-text", "POST places.geo.us-west-2.amazonaws.com/v2/search-nearby"]);
+    expect(f.calls[2]!.body).toMatchObject({ QueryPosition: [-122.2711, 37.8044], Filter: { IncludeCategories: ["plumbing"] }, AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" });
     expect(f.calls[0]!.url.searchParams.get("key")).toBe("k/ey");
     expect(f.calls[1]!.body).toMatchObject({ QueryText: "plumber", BiasPosition: [-122.2711, 37.8044], AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse", MaxResults: 6 });
     // The area's position is cached briefly: a second search geocodes nothing.
@@ -119,7 +122,7 @@ describe("provider selection", () => {
 
   it("Google stays a provider: place refs, Places (New) wire format", async () => {
     const calls: string[] = [];
-    const p = googlePlacesProvider({ apiKey: "g", fetch: async (url) => { calls.push(url); return res(200, { places: [{ id: "ChIJace000000001", displayName: { text: "Ace" }, businessStatus: "OPERATIONAL" }] }); } });
+    const p = googlePlacesProvider({ apiKey: "g", fetch: async (url) => { calls.push(url); return res(200, { places: [{ id: "ChIJace000000001", displayName: { text: "Ace" }, primaryType: "plumber", businessStatus: "OPERATIONAL" }] }); } });
     expect(p.owns("place:ChIJace000000001")).toBe(true);
     expect((await p.discover("plumber", "Oakland", 3))[0]).toMatchObject({ business_ref: "place:ChIJace000000001", source: "Google Places" });
     expect(calls[0]).toBe("https://places.googleapis.com/v1/places:searchText");

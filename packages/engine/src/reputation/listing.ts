@@ -9,6 +9,7 @@
 // - Amazon listings carry no ratings or reviews: ranking uses relevance, being in the area and having
 //   a published contact; nothing is invented.
 // - Listing text is untrusted data: only fixed fields are read; nothing in it is followed.
+import { fitsCategory, kindOf, searchPhrase } from "./fit.ts";
 import { amazonHours, validTimezone, type AmazonOpeningHours } from "./hours.ts";
 import { nameSimilarity, placeDetails, PlacesError, placesDiscover, type FoundBusiness, type PlacesFailure } from "./places.ts";
 
@@ -138,6 +139,23 @@ function awsFailure(status: number): PlacesError {
 
 const PLACE_ID_RE = /^[A-Za-z0-9_=+/-]{8,500}$/;
 
+/**
+ * Amazon category ids to search near the area for each kind of work (ids checked against the live API
+ * on 2026-11-02; an unknown id makes the call fail with HTTP 400). Text search alone is thin for trades:
+ * "electrical" near Oakland returned 1 business by text and 20 by category.
+ */
+export const AMAZON_KIND_CATEGORIES: Record<string, string[]> = {
+  catering: ["catering_and_other_food_services"],
+  plumbing: ["plumbing"],
+  electrical: ["electrical"],
+  cleaning: ["maid_services"],
+  moving: ["mover"],
+  repairs: ["specialty_trade_contractors"],
+  photography: ["photography"],
+};
+/** How far from the area's center the category search looks (meters). */
+export const AMAZON_NEARBY_RADIUS_M = 10_000;
+
 /** Amazon Location Places v2 with an API key (plain HTTPS; no AWS SDK, no request signing). */
 export function amazonLocationProvider(o: { apiKey: string; region?: string; fetch?: ListingFetch; now?: () => Date }): ListingProvider {
   const region = /^[a-z]{2}(-[a-z]+)+-\d$/.test(o.region ?? "") ? o.region! : "us-east-1";
@@ -177,11 +195,28 @@ export function amazonLocationProvider(o: { apiKey: string; region?: string; fet
     async discover(category, area, count) {
       const pos = await position(area);
       if (!pos) throw new PlacesError("area_not_found", `Amazon Location couldn't find "${area.slice(0, 80)}"; pass a city and state (e.g. "Oakland, CA") or a street address.`);
-      const r = (await call("/search-text", {
-        method: "POST",
-        body: { QueryText: category.slice(0, 200), BiasPosition: pos, MaxResults: Math.min(Math.max(count * 2, 5), 20), AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" },
-      })) as { ResultItems?: AwsPlace[] };
-      return resolveAmazonPlaces(r.ResultItems ?? [], category, area, now()).slice(0, count);
+      const max = Math.min(Math.max(count * 2, 5), 20);
+      const kind = kindOf(category);
+      const cats = kind ? AMAZON_KIND_CATEGORIES[kind] : undefined;
+      // Text search, plus (for a known kind of work) businesses of that category near the area. The
+      // category search only adds: if it fails, the text results stand.
+      const [text, nearby] = await Promise.all([
+        call("/search-text", {
+          method: "POST",
+          body: { QueryText: searchPhrase(category).slice(0, 200), BiasPosition: pos, MaxResults: max, AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" },
+        }) as Promise<{ ResultItems?: AwsPlace[] }>,
+        cats
+          ? (call("/search-nearby", {
+            method: "POST",
+            body: { QueryPosition: pos, QueryRadius: AMAZON_NEARBY_RADIUS_M, MaxResults: 20, Filter: { IncludeCategories: cats }, AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" },
+          }) as Promise<{ ResultItems?: AwsPlace[] }>).catch(() => ({ ResultItems: [] as AwsPlace[] }))
+          : Promise.resolve({ ResultItems: [] as AwsPlace[] }),
+      ]);
+      // Only businesses whose main line of work is the request's: a catering search near SoMa returned an
+      // architecture firm with a stray secondary catering tag; a plumbing search, a plumbing supply store.
+      const seen = new Set<string>();
+      const items = [...(text.ResultItems ?? []), ...(nearby.ResultItems ?? [])].filter((p) => !p.PlaceId || (!seen.has(p.PlaceId) && !!seen.add(p.PlaceId)));
+      return resolveAmazonPlaces(items, category, area, now()).filter((b) => fitsCategory(category, b)).slice(0, count);
     },
     async details(ref, d = {}) {
       const id = ref.replace(/^aws:/, "");
