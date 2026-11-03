@@ -10,7 +10,9 @@ import { buildOpsReport, disabledPayer, formatOpsBrief, formatOpsReport, HaggleE
 import { pilotExtractor } from "./helpers/pilotExtractor.ts";
 
 const T0 = Date.parse("2026-10-22T16:00:00Z");
-const APPROVER = "+14155550101";
+// This run's own approver number: on Postgres the test database keeps other tests' deals, many for
+// +14155550101, and a shared 4-digit approval code made "PAID <code>" rightly ambiguous (CI flake).
+const APPROVER = `+1415555${7000 + Math.floor(Math.random() * 1000)}`;
 const TEXT_VENDOR = "+14155550177";
 const PHONE_VENDOR = "+14155550188";
 const MISSION = "+14155550142";
@@ -114,7 +116,9 @@ async function scenario(env: Env) {
   const paid = await emailDeal(env, [{ name: "Bay Bites", email: "orders@baybites.example", reply: "$2,240 total, 14 vegetarian, delivered by 11:00, $450 deposit." }]);
   const paidCode = await approve(env, paid.jobId, paid.quote("Bay Bites").quote_id);
   expect((await emailReply(env, paid.jobId, "orders@baybites.example", "Confirmed, all set. For the $450 deposit, Zelle pay@baybites.example")).outcome).toMatch(/booking_confirmed|instructions/);
-  expect((await approverText(env, `PAID ${paidCode}`)).outcome).toBe("handoff_confirmed");
+  // With the deal code, as Haggle asks when two deals share a code: this deal and no other.
+  const paidJob = (await env.repo.getJob(paid.jobId))!;
+  expect((await approverText(env, `PAID ${paidCode} HG-${paidJob.short_code}`)).outcome).toBe("handoff_confirmed");
 
   // 6. Two workspaces, one vendor number on both: a code-less text is held (ambiguous workspace).
   await repo.insertWorkspace({ id: "ws_beta", name: "Beta", token_hash: null, connector_secret_hash: null, timezone: "America/Los_Angeles" });
