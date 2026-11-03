@@ -107,6 +107,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-11-02 · Aarnav · Demo login `haggle-demo` live on prod (e203d31, Manufact running): its workspace (HAGGLE_DEMO_WORKSPACES) contacts only Haggle's 6 demo sellers (operator-added vendors), never finds or adds real businesses; the seller personas now run inside the prod server (HAGGLE_SELLERS_JSON, /webhooks/sellers/<handle>); seller replies verify with the org Inkbox key. Checked live: a plumbing request contacted nobody; a catering deal got 3 quotes in 30 s. Vitest 2197 passed.
 - 2026-11-02 · Aarnav · Onboarding shows who is signed in with "Not you? Sign out" (someone who signed in with the wrong Google account can leave before a workspace exists); the app rail already had Sign out. Web tests 255 passed, build clean.
 - 2026-11-02 · Aarnav · Web on 1a6c27b (Vercel): favicon; sign in with a username and password for operator-created accounts (never creates one); YC reviewer account `ycombinator` created in prod Supabase (signs in as ycombinator@users.tryhaggle.tech, lands on onboarding). CI green again (date-dependent and shared-Postgres test fixes).
 
