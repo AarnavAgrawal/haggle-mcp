@@ -141,6 +141,11 @@ export interface PayerPort {
 
 export interface EngineConfig {
   mode: Mode;
+  /**
+   * Demo workspaces on a live server (the server's PhonePort plays their calls instead of dialing):
+   * their calls aren't held to call hours or cooldowns, since nobody real is rung.
+   */
+  simulatedCallWorkspace?: (workspaceId: string) => boolean;
   inboxDomain: string;
   collectionWindowMs: number;
   negotiationWindowMs: number;

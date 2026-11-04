@@ -3965,6 +3965,7 @@ export class HaggleEngine {
    * first or last 30 minutes; businessHours.ts). Returns null when it may be placed now, else when to try again.
    */
   private async callBlockedUntil(job: JobRow, phone: string, kind?: MessageRow["kind"], opts: { gap?: boolean } = {}): Promise<Date | null> {
+    if (this.d.config.simulatedCallWorkspace?.(job.workspace_id)) return null; // a demo workspace's call is played, nobody is rung
     const now = this.now();
     const base = this.d.config.callCooldownMs ?? DEFAULT_CALL_COOLDOWN_MS;
     // A counteroffer call to a business that just quoted on a call waits less (never under the minimum gap).

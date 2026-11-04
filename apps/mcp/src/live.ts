@@ -9,7 +9,9 @@ import {
   businessIdForContact, listingProviderFromEnv, MAX_ROUNDS, WorkspaceMailboxes, inkboxAdminApi, ReconcilerGroup, claudeExtractor, claudeStrategist, createAnthropicClient, placesReputation, connectInkboxBuyer, inkboxMailApiForKey, disabledPayer, InboundReconciler, stripeTestPayments, type InkboxTrustPolicy, HaggleEngine, inkboxAttachments, inkboxEmail, parseFleet, PostgresRepository, slugify,
   withHeuristicFallback, AiUsageMeter, aiUsageSink, aiLimitsFromEnv, hydrateAiMeter, createAlerter, createLogger, meteredClient, meteredExtractor, StalledJobMonitor, DEFAULT_STALL_THRESHOLDS, contactWindowFromEnv, alertingLog,
 } from "@haggle/engine";
+import { demoCallTranscript } from "@haggle/sellers/hosted";
 import { haggleEnv } from "./config.ts";
+import { demoPhonePort, demoWorkspaceIds, type DemoCallEnded } from "./demoWorkspace.ts";
 import { storeFromEnv } from "@haggle/brain";
 import { brainStoreEnv, makeBrain, probeBrainSchema } from "./brain.ts";
 import { registerLiveFactory, type Runtime } from "./runtime.ts";
@@ -55,7 +57,14 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // Each outbound channel is OFF unless explicitly enabled (real calls / iMessages / A2A tasks need
   // Yash's go-ahead). A2A cards and phone numbers must still be on the recipient allowlist; iMessage
   // only ever goes to the settings approver.
-  const phonePort = env.HAGGLE_ENABLE_CALLS === "true" ? phone() : null;
+  const realPhonePort = env.HAGGLE_ENABLE_CALLS === "true" ? phone() : null;
+  // Demo workspaces (HAGGLE_DEMO_WORKSPACES): their calls are played (the phone persona's transcript,
+  // stored as simulated), never dialed; everyone else's go to Inkbox. Only where calls are on (HAGGLE_ENABLE_CALLS). Bound to the engine below.
+  const demoIds = demoWorkspaceIds(env);
+  let demoIngest: ((call: DemoCallEnded) => Promise<unknown>) | null = null;
+  const phonePort = realPhonePort && demoIds.size
+    ? demoPhonePort({ real: realPhonePort, demoIds, transcript: demoCallTranscript, workspaceOf: async (id) => (await repo.getJob(id))?.workspace_id ?? null, ingest: (c) => demoIngest ? demoIngest(c) : Promise.reject(new Error("engine not ready")), log: (e, d) => logger.info(e, d) })
+    : realPhonePort;
   const callsEnabled = phonePort !== null;
   if (env.HAGGLE_ENABLE_CALLS === "true" && !phonePort) logger.warn("calls_unavailable", { reason: "the buyer identity has no phone number and iMessage is off" });
   const a2aPort = env.HAGGLE_ENABLE_A2A === "true" ? a2a() : null;
@@ -160,6 +169,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
       trustInboundCallerId: env.HAGGLE_TRUST_INBOUND_CALLER_ID === "true",
       // HAGGLE_CALL_DELAY_S and HAGGLE_ESCALATE_EMAIL_TO_CALL_S are read by liveTimings (timings.engine).
       callHours,
+      ...(demoIds.size ? { simulatedCallWorkspace: (ws: string) => demoIds.has(ws) } : {}),
       ...(notifyPhone && /^\+\d{8,15}$/.test(notifyPhone) ? { notifyPhone } : {}),
       // Who messages to businesses are for: emails are signed with it, calls and texts name it (a request's "Customer" detail wins; default "a customer").
       ...(env.HAGGLE_CUSTOMER_NAME?.trim() ? { customerName: env.HAGGLE_CUSTOMER_NAME.trim().slice(0, 40) } : {}),
@@ -181,6 +191,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
     },
     log,
   });
+  demoIngest = (c) => engine.ingestCall(c);
   brain.useAliases((b) => engine.businessAliases(b));
   reconciler = reconcileOn
     ? new InboundReconciler({

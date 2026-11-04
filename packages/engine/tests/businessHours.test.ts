@@ -180,6 +180,15 @@ describe("the engine waits for a closed business", () => {
     expect(fleet.calls).toHaveLength(1);
   });
 
+  it("a demo workspace (simulatedCallWorkspace) calls at once, outside call hours and opening hours: nobody real is rung", async () => {
+    const shop: Persona = { name: "Ace Plumbing & Drain", email: "", phone: "+15105550141", delayMs: 1_000, reply: () => null };
+    const { engine, fleet } = createMockEngine({ now: () => at("2026-10-19T09:00:00Z"), personas: [shop], config: { callHours: { start: 9, end: 20 }, simulatedCallWorkspace: () => true } }); // Mon 02:00 PDT
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, reply_by: "2026-10-21T10:00:00Z", businesses: [{ name: shop.name, phone: shop.phone!, opening_hours: ace }] });
+    expect(fleet.calls).toHaveLength(1);
+    expect(deal.not_contacted).toEqual([]);
+  });
+
   it("without hours nothing changes: the call goes at once", async () => {
     const shop: Persona = { name: "Night Shop", email: "", phone: "+15105550188", delayMs: 1_000, reply: () => null };
     const { engine, fleet } = createMockEngine({ now: () => at("2026-10-19T10:00:00Z"), personas: [shop] });
