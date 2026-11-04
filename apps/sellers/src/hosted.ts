@@ -9,8 +9,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Inkbox, type AgentIdentity } from "@inkbox/sdk";
 import { createSellerApp, type SellerPorts } from "./app.ts";
 import { createClaudeComposer, templateReply, type Composer } from "./compose.ts";
-import { parseRfq } from "./logic.ts";
-import { personaByHandle, type Persona } from "./personas.ts";
 import { StateStore, type Registry } from "./store.ts";
 import { isSignedWebhook } from "./webhook.ts";
 
@@ -55,51 +53,6 @@ export function parseSellerRegistry(json: string): Registry {
     out[handle] = { identityId: r.identityId ?? "", ...(r.email ? { email: r.email } : {}), signingKey: r.signingKey };
   }
   return out;
-}
-
-/**
- * What a call to the phone persona (Mission Eats) sounds like, for a demo workspace whose calls are
- * played instead of dialed: the call brief Haggle wrote (`reason`) decides the conversation (a quote,
- * a counteroffer or a confirmation), with the persona's real prices. Pure.
- */
-export function demoCallTranscript(reason: string, p: Persona = personaByHandle("mission-eats-sf")!): string {
-  const r = parseRfq(reason);
-  const people = r.quantity ?? 30;
-  const veg = r.vegetarian;
-  const money = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 })}`;
-  const total = Math.round(p.perHead * people * 100) / 100;
-  const floorHead = Math.round(p.perHead * (1 - p.negotiation.dropPct) * 100) / 100;
-  const ai = (t: string) => `haggle (AI assistant): ${t}`;
-  const biz = (t: string) => `${p.name}: ${t}`;
-  if (/match or beat/i.test(reason)) {
-    const lower = Math.round(floorHead * people * 100) / 100;
-    return [
-      biz(`${p.name}, hi!`),
-      ai(`Hi, this is an AI assistant calling back about the catering quote for ${people}. We've received another quote for the same order that comes in lower. Is there any flexibility on your price?`),
-      biz(`For you, okay. I can do ${money(floorHead)} a person, so ${money(lower)} total, delivery included, no deposit.`),
-      ai(`Great. So that's ${money(lower)} all-in for ${people} people, delivered, no deposit?`),
-      biz(`That's right. Good for seven days.`),
-      ai(`Thank you, I'll pass that along.`),
-    ].join("\n");
-  }
-  if (/go ahead with their quote|ask them to confirm/i.test(reason)) {
-    return [
-      biz(`${p.name}, hi!`),
-      ai(`Hi, I'm an AI assistant calling for the customer about the catering order for ${people}. They'd like to go ahead with your quote.`),
-      biz(`Perfect, we've got you down. We'll confirm the delivery time the day before.`),
-      ai(`Thank you, that's confirmed then.`),
-    ].join("\n");
-  }
-  return [
-    biz(`${p.name}, hi, how can I help?`),
-    ai(`Hi, I'm an AI assistant calling on behalf of a customer to request a catering quote: lunch for ${people} people${veg ? `, ${veg} of them vegetarian` : ""}, delivered.`),
-    biz(`Sure. We do a ${p.menu.slice(0, 2).join(" or ").toLowerCase()} spread, and ${p.vegItem} for the vegetarians. It's ${money(p.perHead)} a person, delivery included.`),
-    ai(`So for ${people} people that comes to...?`),
-    biz(`${money(total)} total. No deposit, delivery's included.`),
-    ai(`Got it: ${money(total)} all-in for ${people}, delivered, no deposit. How long is that price good for?`),
-    biz(`Seven days.`),
-    ai(`Thank you, I'll send this to the customer.`),
-  ].join("\n");
 }
 
 export interface HostedSellersOptions {

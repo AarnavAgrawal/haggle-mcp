@@ -97,8 +97,9 @@ describe("config.ts is driven by the manifest", () => {
 
   it("settings with a safe fallback only warn", () => {
     const r = checkConfig({ HAGGLE_ENABLE_CALLS: "yes", HAGGLE_LOG_LEVEL: "verbose", HAGGLE_CALL_HOURS: "nine-five", INKBOX_SENDER_TRUST: "trusting" });
+    expect(checkConfig({ HAGGLE_CALL_HOURS: "business" }).warnings).not.toContain("HAGGLE_CALL_HOURS must be start-end hours, e.g. 9-20, or business");
     expect(r.errors).toEqual([]);
-    expect(r.warnings).toEqual(expect.arrayContaining(["HAGGLE_ENABLE_CALLS must be true or false (anything else counts as false)", "HAGGLE_LOG_LEVEL must be one of debug, info, warn, error", "HAGGLE_CALL_HOURS must be start-end hours, e.g. 9-20", "INKBOX_SENDER_TRUST must be one of outbound-verified, pinned-org-identity"]));
+    expect(r.warnings).toEqual(expect.arrayContaining(["HAGGLE_ENABLE_CALLS must be true or false (anything else counts as false)", "HAGGLE_LOG_LEVEL must be one of debug, info, warn, error", "HAGGLE_CALL_HOURS must be start-end hours, e.g. 9-20, or business", "INKBOX_SENDER_TRUST must be one of outbound-verified, pinned-org-identity"]));
   });
 
   it("a live development or staging server without HAGGLE_PROD_DB_HOSTS is warned", () => {

@@ -3962,10 +3962,11 @@ export class HaggleEngine {
    * When a call to this number may be placed: never during another call to it, not within the
    * cooldown after the last one (either direction), only inside call hours in the workspace's
    * timezone, and, when the business's opening hours are known, only while it is open (not in its
-   * first or last 30 minutes; businessHours.ts). Returns null when it may be placed now, else when to try again.
+   * first or last 30 minutes; businessHours.ts). With callHoursOnlyWithoutBusinessHours the call hours
+   * apply only when the business's hours are unknown; a callAnytimeWorkspace has no hours at all.
+   * Returns null when it may be placed now, else when to try again.
    */
   private async callBlockedUntil(job: JobRow, phone: string, kind?: MessageRow["kind"], opts: { gap?: boolean } = {}): Promise<Date | null> {
-    if (this.d.config.simulatedCallWorkspace?.(job.workspace_id)) return null; // a demo workspace's call is played, nobody is rung
     const now = this.now();
     const base = this.d.config.callCooldownMs ?? DEFAULT_CALL_COOLDOWN_MS;
     // A counteroffer call to a business that just quoted on a call waits less (never under the minimum gap).
@@ -3980,8 +3981,12 @@ export class HaggleEngine {
       const last = Math.max(0, ...recent.map((m) => Date.parse(m.created_at)));
       if (opts.gap !== false && last && now.getTime() - last < cooldown) return new Date(last + cooldown);
     }
-    const hours = this.d.config.callHours;
+    // A demo workspace calling the operator's own phone: any hour (the gap above still applies).
+    if (this.d.config.callAnytimeWorkspace?.(job.workspace_id)) return null;
     const open = this.hoursOf((await this.repo.getBusinesses(job.id)).find((x) => x.phone === phone));
+    // Business hours first (callHoursOnlyWithoutBusinessHours): a business with known hours is called
+    // while it's open; the operator's call hours are only the fallback for one whose hours are unknown.
+    const hours = open && this.d.config.callHoursOnlyWithoutBusinessHours ? undefined : this.d.config.callHours;
     if (hours || open) {
       const tz = (await this.repo.getWorkspace(job.workspace_id))?.timezone ?? "America/Los_Angeles";
       return callSlot(now, { callHours: hours, timezone: tz, business: open });

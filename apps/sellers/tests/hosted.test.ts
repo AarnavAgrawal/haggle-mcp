@@ -5,7 +5,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { SellerPorts } from "../src/app.ts";
 import { templateReply } from "../src/compose.ts";
-import { createHostedSellers, demoCallTranscript, parseSellerRegistry } from "../src/hosted.ts";
+import { createHostedSellers, parseSellerRegistry } from "../src/hosted.ts";
 
 const KEY = "whsec_harbortest";
 const RFQ = "Hi! We need lunch for our 40-person offsite on Thursday, Oct 22 in SF. At least 12 vegetarian meals, delivered by 11:45. Budget under $1,200.";
@@ -55,14 +55,5 @@ describe("hosted sellers", () => {
     const r = parseSellerRegistry(JSON.stringify({ "harbor-table-sf": { email: "h@inkboxmail.com", signingKey: KEY }, "no-key": { email: "x@inkboxmail.com" }, "../bad": { signingKey: KEY } }));
     expect(Object.keys(r)).toEqual(["harbor-table-sf"]);
     expect(() => parseSellerRegistry("{oops")).toThrow();
-  });
-
-  it("a played demo call quotes Mission Eats' real price for the headcount, counters and confirms by the brief, and the assistant says it's an AI", () => {
-    const quote = demoCallTranscript("You are an AI assistant calling Mission Eats on behalf of Acme to request a price quote. Ask Mission Eats for a quote for: lunch catering for 30 people, 8 vegetarian.");
-    expect(quote).toMatch(/\$810 total/); // $27 x 30
-    expect(quote).toMatch(/haggle \(AI assistant\): Hi, I'm an AI assistant/);
-    const counter = demoCallTranscript("Mission Eats quoted $810.00 total for lunch catering for 30 people. ... ask whether they can match or beat it.");
-    expect(counter).toMatch(/\$769\.50 total/); // $25.65 x 30 (5% off)
-    expect(demoCallTranscript("Tell Mission Eats the customer would like to go ahead with their quote for lunch for 30. Ask them to confirm.")).toMatch(/got you down/);
   });
 });

@@ -121,7 +121,7 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `HAGGLE_RECONCILE_EVERY_S` | Reconciliation sweep interval (seconds) |  | server | – | optional | optional | optional | number > 0; warning | `60` |
 | `HAGGLE_CALL_DELAY_S` | Delay before a Voice AI call (seconds) |  | server | – | optional | optional | optional | number > 0; warning |  |
 | `HAGGLE_ESCALATE_EMAIL_TO_CALL_S` | Unanswered email escalates to a call after this many seconds |  | server | – | optional | optional | optional | number > 0; warning |  |
-| `HAGGLE_CALL_HOURS` | Local call hours, start-end (24h) |  | server | – | optional | optional | optional | start-end hours, e.g. 9-20; warning | `9-20` |
+| `HAGGLE_CALL_HOURS` | Local call hours, start-end (24h); or business: a business with known opening hours is called only while open, 9-20 only when its hours are unknown |  | server | – | optional | optional | optional | start-end hours, e.g. 9-20, or business; warning | `9-20` |
 | `HAGGLE_CONTACT_HOURS` | Business-hours window for contacting vendors, HH:MM-HH:MM local; off disables the window |  | server | – | optional | optional | optional | HH:MM-HH:MM (e.g. 08:00-19:00) or off; warning |  |
 | `HAGGLE_CONTACT_DAYS` | Weekdays vendors may be contacted, e.g. Mon-Sat or Mon,Wed,Fri |  | server | – | optional | optional | optional | weekday names, e.g. Mon-Sat or Mon,Wed,Fri; warning |  |
 | `HAGGLE_CONTACT_TIMEZONE` | Time zone of the vendor-contact window |  | server | – | optional | optional | optional | IANA time zone; warning | `America/Los_Angeles` |

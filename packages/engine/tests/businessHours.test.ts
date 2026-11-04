@@ -180,13 +180,24 @@ describe("the engine waits for a closed business", () => {
     expect(fleet.calls).toHaveLength(1);
   });
 
-  it("a demo workspace (simulatedCallWorkspace) calls at once, outside call hours and opening hours: nobody real is rung", async () => {
+  it("a demo workspace (callAnytimeWorkspace) calls at once, outside call hours and opening hours: it rings the operator's own phone", async () => {
     const shop: Persona = { name: "Ace Plumbing & Drain", email: "", phone: "+15105550141", delayMs: 1_000, reply: () => null };
-    const { engine, fleet } = createMockEngine({ now: () => at("2026-10-19T09:00:00Z"), personas: [shop], config: { callHours: { start: 9, end: 20 }, simulatedCallWorkspace: () => true } }); // Mon 02:00 PDT
+    const { engine, fleet } = createMockEngine({ now: () => at("2026-10-19T09:00:00Z"), personas: [shop], config: { callHours: { start: 9, end: 20 }, callAnytimeWorkspace: () => true } }); // Mon 02:00 PDT
     const { budget_usd, ...request } = GOLDEN_REQUEST;
     const deal = await engine.deal({ request, budget_usd, reply_by: "2026-10-21T10:00:00Z", businesses: [{ name: shop.name, phone: shop.phone!, opening_hours: ace }] });
     expect(fleet.calls).toHaveLength(1);
     expect(deal.not_contacted).toEqual([]);
+  });
+
+  it("business hours first (callHoursOnlyWithoutBusinessHours): a business open late is called while open even after call hours; one with unknown hours waits for call hours", async () => {
+    const owlShop: Persona = { name: "Night Owl Catering", email: "", phone: "+15105550177", delayMs: 1_000, reply: () => null };
+    const plain: Persona = { name: "No Hours Catering", email: "", phone: "+15105550178", delayMs: 1_000, reply: () => null };
+    // Mon 21:00 PDT: past 9-20 call hours; the owl is open (see `owl`), the other's hours are unknown.
+    const { engine, fleet } = createMockEngine({ now: () => at("2026-10-20T04:00:00Z"), personas: [owlShop, plain], config: { callHours: { start: 9, end: 20 }, callHoursOnlyWithoutBusinessHours: true } });
+    const { budget_usd, ...request } = GOLDEN_REQUEST;
+    const deal = await engine.deal({ request, budget_usd, reply_by: "2026-10-22T10:00:00Z", businesses: [{ name: owlShop.name, phone: owlShop.phone!, opening_hours: owl }, { name: plain.name, phone: plain.phone! }] });
+    expect(fleet.calls.map((c) => c.toNumber)).toEqual([owlShop.phone]);
+    expect(deal.not_contacted).toEqual([expect.objectContaining({ business: plain.name, reason: expect.stringMatching(/call scheduled for 2026-10-20T16:00:00/) })]);
   });
 
   it("without hours nothing changes: the call goes at once", async () => {

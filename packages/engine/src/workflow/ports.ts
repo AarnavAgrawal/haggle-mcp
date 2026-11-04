@@ -142,10 +142,15 @@ export interface PayerPort {
 export interface EngineConfig {
   mode: Mode;
   /**
-   * Demo workspaces on a live server (the server's PhonePort plays their calls instead of dialing):
-   * their calls aren't held to call hours or cooldowns, since nobody real is rung.
+   * Workspaces whose calls may go at any hour (a demo workspace whose only phone vendor is the
+   * operator's own phone): no call hours and no opening hours; the gap between calls still applies.
    */
-  simulatedCallWorkspace?: (workspaceId: string) => boolean;
+  callAnytimeWorkspace?: (workspaceId: string) => boolean;
+  /**
+   * true: a business whose opening hours are known is called only while it is open (callHours don't
+   * narrow it further); callHours apply only to a business whose hours are unknown.
+   */
+  callHoursOnlyWithoutBusinessHours?: boolean;
   inboxDomain: string;
   collectionWindowMs: number;
   negotiationWindowMs: number;
