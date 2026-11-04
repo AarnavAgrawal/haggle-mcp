@@ -1,0 +1,6 @@
+.env*
+!.env.example
+.haggle-data
+.claude
+.mcp-use
+node_modules

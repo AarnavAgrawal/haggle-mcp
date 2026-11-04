@@ -40,7 +40,7 @@ Functions, and any setup with scale-to-zero. The next section explains why.
    is needed unless Supabase network restrictions are turned on.
 7. **Size:** 1 vCPU, 2 GB memory is plenty (the database pool is 4 connections).
 8. **The same environment variables as Manufact,** from your secret store. Generate the list exactly as for Manufact:
-   in `../haggle-prod-deploy`, run `node .haggle-data/prod.mjs env` → `.env.deploy` (gitignored). Then change:
+   from the repo root, run `node .haggle-data/prod.mjs env` → `.env.deploy` (gitignored). Then change:
    - `HAGGLE_WEBHOOK_BASE_URL` → the new public origin (per-workspace mailboxes' webhooks go to
      `<origin>/webhooks/inkbox/<handle>`)
    - `MCP_URL` / `PUBLIC_BASE_URL` (if set) → the new origin
@@ -147,7 +147,7 @@ Plan about 15 minutes. Deals keep their state in Supabase; nothing is lost while
 3. **Start the new host live** at exactly 1 instance. AWS: `desiredCount 1`. Azure: switch the env to the live values
    (step 4 of Option B). Check `https://mcp.tryhaggle.tech/ready` → `"ready": true` with `migrations.ok` and
    `database.ok`, and that `/health` shows the expected `build_sha`.
-4. **Inkbox webhooks → the new URL.** The buyer mailbox: in `../haggle-prod-deploy`, run
+4. **Inkbox webhooks → the new URL.** The buyer mailbox: from the repo root, run
    `node .haggle-data/prod.mjs finish https://mcp.tryhaggle.tech/mcp`. It subscribes `<origin>/webhooks/inkbox`,
    redeploys the Vercel web app with the new `HAGGLE_MCP_URL`, re-applies Supabase sign-in and runs the checks.
    If it reports that Inkbox issued a NEW signing key, update the server's `INKBOX_WEBHOOK_SECRET` and restart.

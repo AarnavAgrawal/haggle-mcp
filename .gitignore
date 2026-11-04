@@ -24,3 +24,5 @@ playwright-report/
 # Supabase CLI state for the tier-2 browser test stack
 apps/web/e2e/supabase/.temp/
 apps/web/e2e/supabase/.branches/
+# Vercel project link (per checkout)
+.vercel/
