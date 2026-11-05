@@ -26,3 +26,5 @@ apps/web/e2e/supabase/.temp/
 apps/web/e2e/supabase/.branches/
 # Vercel project link (per checkout)
 .vercel/
+# Agent worktrees: both hosts upload what is on disk, so these must stay ignored
+.claude/worktrees/

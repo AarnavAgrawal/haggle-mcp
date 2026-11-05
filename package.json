@@ -17,6 +17,7 @@
     "dev:sellers": "npm run dev -w @haggle/sellers",
     "test:pg": "scripts/test-postgres.sh",
     "verify:db": "scripts/verify-migrations.sh",
+    "deploy": "node scripts/deploy-prod.mjs",
     "demo": "npm run demo -w @haggle/engine",
     "demo:server": "npm run build -w @haggle/mcp && cd apps/mcp && HAGGLE_MODE=mock HAGGLE_SIM_DELAY_SCALE=${HAGGLE_SIM_DELAY_SCALE:-0.5} npx mcp-use start --with-inspector",
     "verify": "npm run typecheck && npm test && npm run build && scripts/verify-migrations.sh && scripts/test-postgres.sh"

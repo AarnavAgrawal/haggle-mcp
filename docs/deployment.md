@@ -231,6 +231,10 @@ npx tsx apps/mcp/scripts/migrations.ts verify
 
 ## 5. Deploy to Manufact (CLI upload)
 
+**Production: `npm run deploy` from the repo root.** It refuses unless you are on `main` with nothing uncommitted, `main` matches `origin/main` and CI passed on that commit, then runs the build and launch gate, deploys the MCP server and the web app, and checks both. `--mcp` or `--web` deploys one, `--dry-run` only checks. It keeps server env vars as they are; apply new migrations first (section 4). The steps below are for other servers, such as staging.
+
+The upload skips `.git`, `node_modules`, build output, `.env*` and everything in the root `.gitignore`. Anything else on disk is uploaded, including uncommitted changes, which is why the command requires a clean `main`.
+
 The hosted server `calm-spark-ck3qm` is a **managed upload**: pushing to GitHub, `main` included, does **not** deploy it. Each deploy uploads the local checkout, and each one costs build credits, so deploy once per pass.
 
 1. **Make a clean worktree of the exact commit**, and copy the gitignored link file in from your main checkout:

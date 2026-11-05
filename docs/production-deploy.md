@@ -181,7 +181,7 @@ node apps/mcp/scripts/migrations.ts status      # no drift, nothing pending
 Follow [deployment.md](deployment.md) §3 (pre-deploy gate) and §5 (deploy) with the **production** link file and env. In short:
 1. Set every variable in §2.1 in the dashboard.
 2. Start command: `cd apps/mcp && ../../node_modules/.bin/mcp-use start --host 0.0.0.0`, port 3000.
-3. Run the launch gate against the production env file (§7.2), then deploy from a clean worktree of the commit, then set `HAGGLE_BUILD_SHA`.
+3. Run the launch gate against the production env file (§7.2), then deploy. `npm run deploy` does all of this and the web app in one command ([deployment.md](deployment.md) §5).
 4. **Copy the MCP URL from the Manufact dashboard.** Never guess it. The web app's `HAGGLE_MCP_URL` is that URL **without** the trailing `/mcp`.
 5. Optional custom domain `mcp.<domain>` (Manufact dashboard → domains, plus the CNAME it gives). Update `HAGGLE_MCP_URL` and the Inkbox webhook URL if you switch.
 
