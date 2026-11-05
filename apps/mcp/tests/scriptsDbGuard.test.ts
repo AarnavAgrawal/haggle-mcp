@@ -22,6 +22,7 @@ const SCRIPT_DIRS = ["apps/mcp/scripts", "packages/engine/scripts", "scripts"];
  */
 const EXEMPT: Record<string, string> = {
   "apps/mcp/scripts/dbGuard.ts": "the guard itself",
+  "scripts/deploy-prod.mjs": "never connects: it only names the variable for launch-gate.ts, which is guarded and does the read",
   "scripts/spikes/preflight.ts": "legacy pre-v5 credential spike: one read-only session (default_transaction_read_only = on), no writes; not an operator script",
 };
 

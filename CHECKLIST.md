@@ -107,6 +107,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-11-04 · Aarnav · CI fix: the deploy script is exempt from the production-database guard test (it never connects; the guarded launch gate does the read)
 - 2026-11-04 · Aarnav · `npm run deploy`: one command from a clean, pushed main (checks CI and the launch gate, deploys Manufact and Vercel, verifies both). Unused agent worktrees and branches removed after checking main has all their code.
 - 2026-11-04 · Aarnav · One checkout: `haggle-prod-deploy` worktree removed, its deploy keys and `.haggle-data` scripts now live in haggle-mcp (gitignored); main fast-forwarded to aarnav-prod. Prod redeployed on 9af98cf from a clean temporary worktree (Manufact deployment #23, Vercel READY), no runtime change from 02ec51e; /ready true, 33 migrations, launch gate OK, CI green. `yashnil` still unmerged.
 - 2026-11-03 · Aarnav · Prod on 02ec51e: real calls (Inkbox plan upgraded); HAGGLE_CALL_HOURS=business: a business with known opening hours is called only while open, 9-20 local only when hours are unknown; the demo workspace calls the operator's phone (Mission Eats) at any hour. Demo vendors: 4 email sellers, QuickQuote Deli by text (+1 408, needs `connect @haggle-buyer` once), Mission Eats by phone. Vitest 2199 passed.
