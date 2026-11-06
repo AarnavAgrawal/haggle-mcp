@@ -105,6 +105,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 ## Log
 
+- 2026-11-05 · Aarnav · Bug fix: the same request starts a new deal in a new conversation (New request always opens a fresh chat; `client_request_id` is a 10-minute retry guard, set per turn in the web chat); `deal` carries `price_context` from the brain, as estimates
 _One line per finished task, newest first: `time · who · what changed`._
 
 - 2026-11-04 · Aarnav · CI fix: the deploy script is exempt from the production-database guard test (it never connects; the guarded launch gate does the read)

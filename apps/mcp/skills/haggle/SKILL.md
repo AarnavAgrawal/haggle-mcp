@@ -32,7 +32,9 @@ itself (by email only).
    cancellation policy and quote validity, plus the category's own asks (e.g. a plumber's call-out fee,
    flat vs hourly, parts, earliest arrival, warranty), so you needn't add those to `ask`.
 1. `deal` with `request`, `budget_usd` (omit it if the user gave none: Haggle never assumes one) and a
-   `client_request_id` so retries never contact anyone twice. Omit `businesses` to use the saved businesses
+   a fresh random `client_request_id` (a UUID, never derived from the request) so a retry of this call never
+   contacts anyone twice; it replays for 10 minutes only. A new request is always a new deal, even one identical
+   to an earlier deal: never reuse an id for it, and never answer it with the earlier deal. Omit `businesses` to use the saved businesses
    for the request's kind of work, or pass just names (`businesses: ["Mission Eats"]`): Haggle already has
    their contact details and channel, so never ask the user for them. A business Haggle doesn't know needs its
    email, phone or `a2a_card_url`. `dry_run: true` previews who would be contacted. Returns at once with a
