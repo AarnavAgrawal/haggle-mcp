@@ -2,6 +2,7 @@
 import { registerAccountRoutes } from "./account.ts";
 import { registerApprovalRoutes } from "./approvals.ts";
 import type { ServiceApp } from "./http.ts";
+import { registerLedgerRoutes } from "./ledger.ts";
 import { registerVendorRoutes } from "./vendors.ts";
 import { registerWorkspaceRoutes } from "./workspaces.ts";
 
@@ -10,4 +11,5 @@ export function registerServiceRoutes(app: ServiceApp) {
   registerApprovalRoutes(app);
   registerVendorRoutes(app);
   registerAccountRoutes(app);
+  registerLedgerRoutes(app);
 }
