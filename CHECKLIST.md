@@ -107,6 +107,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-11-06 · Aarnav · Prod on 042857c: admin dashboard, landing redesign, vendor search (found businesses reached by email, call or text), new-request fix. `npm run deploy` shipped both hosts (Vercel dpl_E2J9cGZ67RuLh588pStYtz9YiKTf) but stopped at its last check: it reads `meta.gitCommitSha`, and Vercel recorded `githubCommitSha` (042857c) for this pushed commit. Checked by hand: /ready true on 042857c, 33 migrations, tryhaggle.tech serves that deployment, /api/health ok, ledger route 401 without a token. Signed-in dashboard not yet checked on prod.
 - 2026-11-05 · Aarnav · Admin dashboard (branch `worktree-dashboard-admin-redesign`, not deployed): `/dashboard` overview, `/deals` table (filters, sort, bulk cancel, CSV), `/quotes`, `/history`, Compare and totals on the deal board, fed by a new read-only service route (`GET /internal/workspaces/ledger`: every deal with quotes, open questions, approval, payment and history in one call)
 - 2026-11-05 · Aarnav · Bug fix: the same request starts a new deal in a new conversation (New request always opens a fresh chat; `client_request_id` is a 10-minute retry guard, set per turn in the web chat); `deal` carries `price_context` from the brain, as estimates
 - 2026-11-05 · Aarnav · Product copy across web and MCP views says Haggle finds and contacts businesses; limitation wording removed (copy only, consent rules unchanged), on `landing-redesign`
