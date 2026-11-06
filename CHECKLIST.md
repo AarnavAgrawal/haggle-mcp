@@ -107,6 +107,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-11-05 · Aarnav · Bug fix: the same request starts a new deal in a new conversation (New request always opens a fresh chat; `client_request_id` is a 10-minute retry guard, set per turn in the web chat); `deal` carries `price_context` from the brain, as estimates
 - 2026-11-05 · Aarnav · Product copy across web and MCP views says Haggle finds and contacts businesses; limitation wording removed (copy only, consent rules unchanged), on `landing-redesign`
 - 2026-11-05 · Aarnav · Landing page redesigned as a company front page on branch `landing-redesign` (not merged or deployed): wordmark-led hero, quote sheet marked up by scrolling the deal log, section nav; `e2e/landing.spec.ts` added
 - 2026-11-05 · Aarnav · Vendor search, every kind of work: also reaches related businesses (restaurants for catering, handymen for plumbing), labelled `adjacent` and spread across the range; price point (and cuisine for food) asked as optional questions that steer and never filter; found businesses are reached by email, else call, else text, and the rule limiting them to email is gone (`CLAUDE.md` §7); wider searches that fail are logged. Mock-tested only: needs one live run, and cold calls need the buyer's own line.

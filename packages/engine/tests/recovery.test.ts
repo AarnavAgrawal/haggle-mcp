@@ -120,5 +120,46 @@ describe("duplicated and repeated events", () => {
     expect(calls).toHaveLength(1);
     expect((await repo.listMessages(deal.job_id)).filter((m) => m.direction === "in")).toHaveLength(1);
   });
+
+  // client_request_id is a retry guard, not a name for a purchase: an agent that derives it from the
+  // request must not get last week's deal back when the user asks for the same thing again.
+  it("a retry with the same client_request_id says it replayed and sends nothing", async () => {
+    const { engine, clock, emails } = setup();
+    const input = { request, budget_usd, businesses: [BUSINESSES[0]!], client_request_id: "retry-1" };
+    const first = await engine.deal(input);
+    expect(first.replayed).toBeUndefined();
+    const sent = emails.length;
+    clock.advance(2 * 60_000);
+    const again = await engine.deal(input);
+    expect(again.job_id).toBe(first.job_id);
+    expect(again.replayed).toBe(true);
+    expect(emails.length).toBe(sent);
+  });
+
+  it("the same client_request_id after the replay window starts a new deal and contacts the businesses again", async () => {
+    const { engine, repo, clock, emails } = setup();
+    const input = { request, budget_usd, businesses: [BUSINESSES[0]!], client_request_id: "yc-lunch-40" };
+    const first = await engine.deal(input);
+    const sent = emails.length;
+    clock.advance(60 * 60_000);
+    const second = await engine.deal(input);
+    expect(second.job_id).not.toBe(first.job_id);
+    expect(second.replayed).toBeUndefined();
+    expect(emails.length).toBeGreaterThan(sent);
+    expect(await repo.getJob(first.job_id)).toMatchObject({ id: first.job_id, client_request_id: null }); // the earlier deal is left as it was, minus the id
+  });
+
+  it("after the window the id belongs to the new deal: a retry of it gets the new job", async () => {
+    const { engine, clock, emails } = setup();
+    const input = { request, budget_usd, businesses: [BUSINESSES[0]!], client_request_id: "yc-lunch-40" };
+    await engine.deal(input);
+    clock.advance(60 * 60_000);
+    const second = await engine.deal(input);
+    const sent = emails.length;
+    const retry = await engine.deal(input);
+    expect(retry.job_id).toBe(second.job_id);
+    expect(retry.replayed).toBe(true);
+    expect(emails.length).toBe(sent);
+  });
 });
 

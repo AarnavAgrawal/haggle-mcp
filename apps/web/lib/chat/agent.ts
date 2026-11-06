@@ -5,6 +5,7 @@
 // Safety (CLAUDE.md §7): only allowlisted tools ever reach the Haggle server (approve / pay /
 // call_back are the human's buttons); a tool result carries the tool's text and data, never `meta`
 // (it can hold one-time approval codes).
+import { createHash, randomUUID } from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
 import { HaggleError, type HaggleClient } from "../haggle";
 import { isLlmTool, llmToolDefinitions } from "../tools";
@@ -111,13 +112,29 @@ export function startedJobId(name: string, input: Record<string, unknown>, data:
   return id || undefined;
 }
 
+/**
+ * A deal's client_request_id: this turn's, never the model's. The model derives one from the request
+ * ("yc-lunch-40-2026-11-14"), so the same request in a new conversation got the earlier deal back. Per
+ * turn and per arguments (in any order): a retry inside the turn stays one deal, and every new message
+ * can start a new one.
+ */
+export function dealRequestId(turnKey: string, input: Record<string, unknown>): string {
+  const { client_request_id: _modelsId, ...args } = input;
+  return `chat-${createHash("sha256").update(`${turnKey}:${JSON.stringify(sortedKeys(args))}`).digest("hex").slice(0, 40)}`;
+}
+
+const sortedKeys = (v: unknown): unknown =>
+  Array.isArray(v) ? v.map(sortedKeys)
+  : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, x]) => [k, sortedKeys(x)]))
+  : v;
+
 interface ToolOutcome {
   result: ToolResultBlockParam;
   jobId?: string;
 }
 
 /** Runs one tool_use block: allowlist first, then the Haggle server. Never forwards `meta`. */
-export async function runTool(haggle: ChatHaggle, block: { id: string; name: string; input: unknown }, onEvent: (e: ChatEvent) => void, signal?: AbortSignal): Promise<ToolOutcome> {
+export async function runTool(haggle: ChatHaggle, block: { id: string; name: string; input: unknown }, onEvent: (e: ChatEvent) => void, signal?: AbortSignal, turnKey: string = randomUUID()): Promise<ToolOutcome> {
   const errorResult = (text: string): ToolOutcome => ({ result: { type: "tool_result", tool_use_id: block.id, is_error: true, content: text } });
   if (!isLlmTool(block.name)) {
     onEvent({ type: "tool", name: block.name, status: "error", summary: "Not available in chat" });
@@ -130,6 +147,7 @@ export async function runTool(haggle: ChatHaggle, block: { id: string; name: str
     const t = typeof input.timeout_s === "number" ? input.timeout_s : WAIT_TIMEOUT_CAP_S;
     input.timeout_s = Math.max(0, Math.min(Math.floor(t), WAIT_TIMEOUT_CAP_S));
   }
+  if (block.name === "deal") input.client_request_id = dealRequestId(turnKey, input);
   onEvent({ type: "tool", name: block.name, status: "start", summary: startSummary(block.name, input) });
   try {
     const r = await haggle.callTool(block.name, input, signal);
@@ -183,6 +201,7 @@ export async function runChatTurn(opts: RunChatTurnOptions): Promise<ChatTurnRes
   const model = opts.model ?? DEFAULT_CHAT_MODEL;
   const maxCalls = opts.maxModelCalls ?? MAX_MODEL_CALLS;
   const fresh: MessageParam[] = [userTurn(opts.userText, opts.today ?? new Date())];
+  const turnKey = randomUUID();
   let jobId: string | undefined;
 
   try {
@@ -218,7 +237,7 @@ export async function runChatTurn(opts: RunChatTurnOptions): Promise<ChatTurnRes
         const uses = message.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
         const results: ToolResultBlockParam[] = [];
         for (const u of uses) {
-          const out = await runTool(haggle, u, onEvent, signal);
+          const out = await runTool(haggle, u, onEvent, signal, turnKey);
           results.push(out.result);
           if (out.jobId) jobId = out.jobId;
         }

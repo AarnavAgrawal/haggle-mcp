@@ -164,6 +164,11 @@ export const DealBoardPlus = DealBoardOrEmpty.extend({
    * human raises it later.
    */
   spending_limit: z.object({ usd: z.number().nullable(), source: z.enum(["budget", "stated", "default"]), default_usd: z.number() }).optional(),
+  /** deal: what earlier quotes suggest for this kind of work (the brain). Estimates, not quotes; for the user only. */
+  price_context: z.object({
+    estimates: z.array(z.object({ business: z.string(), total_usd: z.number(), confidence: z.number(), n_quotes: z.number().int(), basis: z.string() })),
+    note: z.string(),
+  }).optional(),
   /** deal: the essentials a business needs to quote are missing (intake); nothing was sent. Ask the user, then call deal again. */
   needs_info: z.object({
     category: z.string(), label: z.string(),

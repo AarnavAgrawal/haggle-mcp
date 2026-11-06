@@ -213,3 +213,57 @@ describe("runChatTurn", () => {
     expect(r.messages).toHaveLength(1);
   });
 });
+
+// The same request in a new conversation must start a new deal: a model-chosen id ("yc-lunch-40-2026-11-14")
+// is derived from the request, so a repeat of the request used to get the earlier deal back.
+describe("a deal's client_request_id belongs to the turn, never to the model", () => {
+  const DERIVED = "yc-lunch-40-2026-11-14";
+  const dealArgs = { request: { what: "lunch", quantity: 40 }, budget_usd: 1200, client_request_id: DERIVED };
+  const started = () => ({ data: { ok: true, mode: "mock", job_id: "job_1" }, text: "Deal job_1 started" });
+  const idsOf = (t: { calls: { name: string; args: Record<string, unknown> }[] }) => t.calls.filter((c) => c.name === "deal").map((c) => c.args.client_request_id);
+
+  it("replaces the model's id, and two turns with the same request get different ids", async () => {
+    const one = await turn([reply("tool_use", toolUse("deal", dealArgs)), reply("end_turn", text("Started."))], { deal: started });
+    const two = await turn([reply("tool_use", toolUse("deal", dealArgs)), reply("end_turn", text("Started."))], { deal: started });
+    const [a] = idsOf(one);
+    const [b] = idsOf(two);
+    expect(a).toEqual(expect.any(String));
+    expect(a).not.toBe(DERIVED);
+    expect(b).not.toBe(DERIVED);
+    expect(a).not.toBe(b);
+    expect(String(a).length).toBeLessThanOrEqual(64); // the deal tool's limit
+  });
+
+  it("gives a retry of the same call inside one turn the same id, so nobody is contacted twice", async () => {
+    const t = await turn([reply("tool_use", toolUse("deal", dealArgs)), reply("tool_use", toolUse("deal", dealArgs)), reply("end_turn", text("Started."))], { deal: started });
+    const [a, b] = idsOf(t);
+    expect(a).toEqual(expect.any(String));
+    expect(a).toBe(b);
+  });
+
+  it("keeps the id when a retry writes the same arguments in another order", async () => {
+    const reordered = { budget_usd: 1200, request: { quantity: 40, what: "lunch" } };
+    const t = await turn([reply("tool_use", toolUse("deal", dealArgs)), reply("tool_use", toolUse("deal", reordered)), reply("end_turn", text("Started."))], { deal: started });
+    const [a, b] = idsOf(t);
+    expect(a).toBe(b);
+  });
+
+  it("gives two different purchases in one turn different ids", async () => {
+    const chairs = { ...dealArgs, request: { what: "chairs", quantity: 100 } };
+    const t = await turn([reply("tool_use", toolUse("deal", dealArgs), toolUse("deal", chairs)), reply("end_turn", text("Started."))], { deal: started });
+    const [a, b] = idsOf(t);
+    expect(a).not.toBe(b);
+  });
+
+  it("leaves every other tool's arguments alone", async () => {
+    const t = await turn([reply("tool_use", toolUse("get_quotes", { job_id: "job_1" })), reply("end_turn", text("ok"))]);
+    expect(t.calls[0]!.args).toEqual({ job_id: "job_1" });
+  });
+});
+
+describe("the chat prompt on repeated requests", () => {
+  it("makes a new request a new deal, and offers the brain's context instead of the old deal", () => {
+    expect(CHAT_SYSTEM_PROMPT).toMatch(/new request is a new deal/i);
+    expect(CHAT_SYSTEM_PROMPT).toContain("price_context");
+  });
+});
