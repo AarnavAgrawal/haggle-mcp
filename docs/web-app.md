@@ -60,6 +60,7 @@ The web app owns only three things: sign-in, which workspace a user belongs to, 
 | `POST /api/deals/<jobId>/approve` | `{ quote_id, action?: "pay" \| "confirm" }` | `{ ok, status: approved \| confirmed \| paid \| refused \| pending_text, amount_usd?, next }` |
 | `POST /api/deals/<jobId>/pay` | `{ quote_id }` (never an amount) | `{ ok, status, amount_usd, receipt_url? (https only), simulated?, next }` |
 | `POST /api/deals/<jobId>/callback` | `{ business_id }` | `{ ok, status: placed \| scheduled \| pending_text \| declined, next }` |
+| `GET /internal/workspaces/ledger?limit=50` | none | Service route on the MCP server (service token and `x-haggle-workspace`; not a web route), read by the dashboard: `{ ok, mode, deals, truncated, next }`, every deal with its quotes, open questions, approval, payment and history in one read. `limit` 1 to 100. Any member. |
 | `GET /api/settings` | none | `{ ok, mode, settings, can_edit }`. Approver contacts are masked. |
 | `POST /api/settings` | `{ name?, timezone?, sender_name?, default_area?, approver_email?, approver_phone?, default_deal_limit_usd? }`; `""` clears an optional field | `{ ok, settings, changed, pending_verification, demo_codes?, next }`, or `400 invalid_form` with `fields`. Owner only. |
 | `POST /api/settings/confirm` | `{ kind: "phone" \| "email", code }` or `{ token }` from the confirm link | `{ ok, confirmed, settings }`, or the server's refusal (`wrong_code`, `verification_expired`). Owner only. |
@@ -102,6 +103,7 @@ API routes never redirect: they answer with JSON (`401` signed out, `403` no wor
 
 ## The dashboard
 
+- **The ledger pages.** `/dashboard` (where signing in lands), `/deals`, `/quotes` and `/history` read one service call, `GET /internal/workspaces/ledger` (`lib/dashboard/ledgerData.ts`), because a `get_quotes` board per deal is too slow live. The logic is pure, in `lib/dashboard/ledger.ts`. Filters and sort live in the URL and run in the browser (`components/admin`). CSV export happens in the browser too, and a cell a spreadsheet would run as a formula is defused. These pages only read, except answering a business and cancelling deals, which use the same `/api/deals/<jobId>/actions` route as a deal's board; a quote is approved or paid only on its board. While deals are open they re-read every 30 s when the tab is visible. Deploy the MCP server first (`npm run deploy` does): without the route these pages show an error.
 - **Live updates.** `LiveRefresh` opens an `EventSource` on `/api/deals/<jobId>/stream`. On each `update`, it calls `router.refresh()` (debounced by 400 ms), so the server re-renders the page from a fresh `get_quotes`.
 - **The stream** (`lib/dashboard/stream.ts`) long-polls `wait_for_update`, 25 s per poll:
   - **Fresh page:** a `timeout_s: 0` call learns the current cursor, then the stream sends `ready`.

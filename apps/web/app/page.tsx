@@ -38,7 +38,7 @@ const PROMISES: { fact: string; detail: string }[] = [
 
 /** Public landing page; a signed-in visitor goes straight to a new request. */
 export default async function Home() {
-  if (await sessionUser()) redirect("/chat");
+  if (await sessionUser()) redirect("/dashboard");
   return (
     <>
       <DemoBanner />

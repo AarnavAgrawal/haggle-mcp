@@ -1,103 +1,46 @@
-// /deals: every deal in the workspace (list_deals, newest 20), grouped the way the shell rail groups
-// them (Needs you, In progress, Done); each row links to its live board.
+// /deals: every deal in the workspace as a table (DESIGN.md "Deals"): views, search, stage filter, sort
+// and export, with the view kept in the URL; each row links to its live board.
 import Link from "next/link";
-import { dealHref, dealStatus, groupDeals } from "@/components/shell/deals";
-import { loadDeals } from "@/components/shell/data";
-import { RetryButton } from "@/components/shell/RetryButton";
+import { AutoRefresh } from "@/components/admin/AutoRefresh";
+import { DealsTable } from "@/components/admin/DealsTable";
+import { LedgerError, TruncatedNote } from "@/components/admin/LedgerError";
 import { Badge } from "@/components/ui/Badge";
 import { buttonClass } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
-import { Price } from "@/components/ui/Price";
 import { EmptyState } from "@/components/ui/Sheet";
-import { Status } from "@/components/ui/Status";
-import { ago, dayWords, dealCounts, sentence, stamp } from "@/lib/dashboard/format";
-import type { DealRow } from "@/lib/dashboard/types";
+import { DEAL_CHOICES, DEAL_DEFAULTS, isOpen, readQuery } from "@/lib/dashboard/ledger";
+import { loadLedger } from "@/lib/dashboard/ledgerData";
 import "@/components/dashboard/board.css";
+import "@/components/admin/admin.css";
 
 export const dynamic = "force-dynamic";
 
-function DealLine({ d }: { d: DealRow }) {
-  const s = dealStatus(d);
-  const sub = [d.quantity !== undefined ? `${d.quantity} ${d.unit ?? "people"}` : null, d.date ? dayWords(d.date) : null, d.area].filter((x): x is string => !!x);
-  const counts = dealCounts(d);
-  return (
-    <Link className="deal-row" href={dealHref(d.job_id)}>
-      <span className="deal-what">
-        <strong>{sentence(d.what)}</strong>
-        {sub.length ? (
-          <span className="deal-sub">
-            {sub.map((x) => (
-              <span key={x}>{x}</span>
-            ))}
-          </span>
-        ) : null}
-      </span>
-      <span className="deal-state">
-        <Status tone={s.tone}>{d.purchase && d.state === "paying" ? sentence(d.purchase.stage.replace(/_/g, " ")) : s.words}</Status>
-        {counts ? <span className="deal-counts">{counts}</span> : null}
-      </span>
-      <span className="deal-best">
-        {d.leading ? (
-          <>
-            <Price amount={d.leading.total_usd} size="m" />
-            <span className="hint">{d.leading.business}</span>
-          </>
-        ) : (
-          <span className="hint">No quote yet</span>
-        )}
-      </span>
-      <span className="deal-time hint">
-        {d.created_at ? (
-          <time dateTime={d.created_at} title={`Started ${stamp(d.created_at)}`}>
-            {ago(d.created_at)}
-          </time>
-        ) : null}
-      </span>
-    </Link>
-  );
-}
-
-export default async function DealsPage() {
-  // Shared with the shell rail's deals list: one list_deals call per request.
-  const { deals = null, error = null } = await loadDeals();
-  const groups = deals ? groupDeals(deals.deals) : [];
+export default async function DealsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const [{ ledger, error }, params] = await Promise.all([loadLedger(), searchParams]);
+  const deals = ledger?.deals ?? [];
 
   return (
-    <main className="shell deals-page">
-      <header className="page-head">
+    <main className="adm" aria-labelledby="deals-h">
+      <header className="adm-head">
         <div className="page-title">
-          <h1>Deals</h1>
-          {deals?.mode === "mock" ? <Badge /> : null}
+          <h1 id="deals-h">Deals</h1>
+          {ledger?.mode === "mock" ? <Badge /> : null}
         </div>
-        <Link className={buttonClass("primary")} href="/chat">
-          <Icon name="plus" />
-          New request
-        </Link>
+        <div className="adm-head-actions">
+          <AutoRefresh active={deals.some(isOpen)} />
+          <Link className={buttonClass("primary")} href="/chat">
+            <Icon name="plus" />
+            New request
+          </Link>
+        </div>
       </header>
       {error ? (
-        <div className="board-error" role="alert">
-          <p>{error.message}</p>
-          <p className="fix">{error.fix}</p>
-          <RetryButton />
-        </div>
-      ) : groups.length ? (
-        <div className="deals-groups">
-          {groups.map((g) => (
-            <section key={g.key} aria-labelledby={`dg-${g.key}`}>
-              <h2 id={`dg-${g.key}`} className="deals-group-h">
-                {g.label}
-                <span className="hint">{g.deals.length}</span>
-              </h2>
-              <ul className="deals-list">
-                {g.deals.map((d) => (
-                  <li key={d.job_id}>
-                    <DealLine d={d} />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
-        </div>
+        <LedgerError error={error} />
+      ) : deals.length ? (
+        <>
+          {ledger?.truncated ? <TruncatedNote shown={deals.length} /> : null}
+          <DealsTable deals={deals.map((d) => ({ ...d, events: [] }))} initial={readQuery(params, DEAL_DEFAULTS, DEAL_CHOICES)} now={new Date().toISOString()} />
+        </>
       ) : (
         <EmptyState
           title="No deals yet"

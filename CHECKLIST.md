@@ -107,6 +107,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-11-05 · Aarnav · Admin dashboard (branch `worktree-dashboard-admin-redesign`, not deployed): `/dashboard` overview, `/deals` table (filters, sort, bulk cancel, CSV), `/quotes`, `/history`, Compare and totals on the deal board, fed by a new read-only service route (`GET /internal/workspaces/ledger`: every deal with quotes, open questions, approval, payment and history in one call)
 - 2026-11-04 · Aarnav · CI fix: the deploy script is exempt from the production-database guard test (it never connects; the guarded launch gate does the read)
 - 2026-11-04 · Aarnav · `npm run deploy`: one command from a clean, pushed main (checks CI and the launch gate, deploys Manufact and Vercel, verifies both). Unused agent worktrees and branches removed after checking main has all their code.
 - 2026-11-04 · Aarnav · One checkout: `haggle-prod-deploy` worktree removed, its deploy keys and `.haggle-data` scripts now live in haggle-mcp (gitignored); main fast-forwarded to aarnav-prod. Prod redeployed on 9af98cf from a clean temporary worktree (Manufact deployment #23, Vercel READY), no runtime change from 02ec51e; /ready true, 33 migrations, launch gate OK, CI green. `yashnil` still unmerged.

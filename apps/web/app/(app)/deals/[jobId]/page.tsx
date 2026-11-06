@@ -3,12 +3,15 @@
 // paints the board's shape instantly while the first read is in flight.
 import Link from "next/link";
 import { Activity, BoardHeader, Callbacks, NeedsAnswer, PurchaseStatus, QuoteSheet, RequestAside, SetupNotes } from "@/components/dashboard/DealSections";
+import { DealTotals } from "@/components/dashboard/DealTotals";
+import { QuoteCompare } from "@/components/dashboard/QuoteCompare";
 import { RetryButton } from "@/components/shell/RetryButton";
 import { isTerminal } from "@/lib/dashboard/format";
 import type { DealBoardView } from "@/lib/dashboard/types";
 import { HaggleError } from "@/lib/haggle";
 import { requireHaggle } from "@/lib/workspace";
 import "@/components/dashboard/board.css";
+import "@/components/admin/admin.css";
 
 export const dynamic = "force-dynamic";
 
@@ -57,11 +60,13 @@ export default async function DealPage({ params }: { params: Promise<{ jobId: st
   return (
     <main className="shell board" aria-labelledby="deal-h">
       <BoardHeader board={board} jobId={jobId} canNegotiate={canNegotiate} />
+      <DealTotals board={board} />
       <div className="board-grid">
         <div className="board-main">
           <SetupNotes board={board} />
           <NeedsAnswer board={board} jobId={jobId} />
           <QuoteSheet board={board} jobId={jobId} mode={mode}>
+            <QuoteCompare board={board} />
             {barShowsPurchase ? null : <PurchaseStatus board={board} />}
             <Callbacks board={board} jobId={jobId} />
             <Activity board={board} jobId={jobId} />

@@ -1,6 +1,6 @@
-// The left rail (DESIGN.md "App shell"): wordmark, New request, the deals list (streamed), workspace
-// links, and who is signed in with Sign out. Rendered by app/(app)/layout.tsx, inside AppShell (as the
-// desktop rail and inside the mobile drawer).
+// The left rail (DESIGN.md "App shell"): wordmark, New request, the workspace pages, the open deals
+// (streamed), workspace links, and who is signed in with Sign out. Rendered by app/(app)/layout.tsx,
+// inside AppShell (as the desktop rail and inside the mobile drawer).
 import Link from "next/link";
 import { Suspense } from "react";
 import { buttonClass } from "@/components/ui/Button";
@@ -13,7 +13,7 @@ export function Rail({ email, guest }: { email?: string; guest?: boolean }) {
   return (
     <div className="rail">
       <div className="rail-top">
-        <Link className="brand rail-brand" href="/deals">
+        <Link className="brand rail-brand" href="/dashboard">
           Haggle
         </Link>
         <Link className={buttonClass("primary", { block: true })} href="/chat">
@@ -21,8 +21,13 @@ export function Rail({ email, guest }: { email?: string; guest?: boolean }) {
           New request
         </Link>
       </div>
-      <nav className="rail-deals" aria-label="Deals">
-        <RailLink href="/deals" className="rail-heading" label="Deals" />
+      <nav className="rail-pages" aria-label="Pages">
+        <RailLink href="/dashboard" label="Overview" />
+        <RailLink href="/deals" match="prefix" label="Deals" />
+        <RailLink href="/quotes" label="Quotes" />
+        <RailLink href="/history" label="History" />
+      </nav>
+      <nav className="rail-deals" aria-label="Open deals">
         <Suspense fallback={<RailDealsSkeleton />}>
           <RailDeals />
         </Suspense>

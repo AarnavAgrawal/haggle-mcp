@@ -68,6 +68,13 @@
   padding: 4px 4px 0;
   justify-self: start;
 }
+.rail-pages {
+  display: grid;
+  gap: 1px;
+}
+.rail-pages .rail-link {
+  font-weight: 500;
+}
 .rail-deals {
   flex: 1;
   display: flex;
@@ -100,10 +107,6 @@
 }
 .rail-link-label .pen-underline {
   bottom: -2px;
-}
-.rail-heading {
-  font-weight: 600;
-  color: var(--ink);
 }
 .rail-group {
   display: grid;
