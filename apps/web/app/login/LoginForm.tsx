@@ -41,7 +41,8 @@ export function LoginForm({ notice }: { notice: string | null }) {
     const { error } = await supabaseBrowser().auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: redirectTo(), ...captchaOpts } });
     used();
     if (error) {
-      setError(error.message);
+      // Sign-ups are closed on a live site: only someone let in from the waitlist has an account.
+      setError(/signups? not allowed/i.test(error.message) ? "There's no Haggle account for that email yet. Join the waitlist and we'll email you when you're in." : error.message);
       setState("idle");
     } else setState("sent");
   };

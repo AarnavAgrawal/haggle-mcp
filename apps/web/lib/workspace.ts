@@ -88,7 +88,7 @@ export const requireHaggle = cache(async () => {
   const m = await membership(user.id);
   if (!m) {
     // Guests, and everyone on a demo site, get their workspace without the onboarding form.
-    if (!autoOnboard(user)) redirect(mayProvision(await admission(user)) ? "/onboarding" : "/waitlist");
+    if (!autoOnboard(user)) redirect((await admission(user).then(mayProvision, () => false)) ? "/onboarding" : "/waitlist"); // /waitlist explains a failed check
     const workspaceId = await onboard(user, { name: user.is_anonymous ? "Guest workspace" : "Demo workspace" });
     return { user, workspaceId, haggle: haggleClient(haggleConfig(), workspaceId) };
   }

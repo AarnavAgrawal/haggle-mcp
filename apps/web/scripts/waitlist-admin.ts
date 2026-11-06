@@ -9,18 +9,20 @@
 // `list` prints the project it reached; anything that changes data must name that project with --target,
 // because that file points at production and dbGuard (apps/mcp) doesn't cover this script.
 //
-// admit: marks the person admitted first, so they can get in from /login even if the email fails, then
-// creates their confirmed sign-in, sends the sign-in link and records that it went. Running it again
-// retries only the people not yet notified. --no-email only admits (accounts that sign in with a password,
-// and anyone you'll tell yourself). Addresses on the username domain are never mailed; nothing receives there.
+// admit: makes sure the person has a confirmed sign-in nobody else prepared, marks them admitted, sends the
+// sign-in link and records that it went. If the email fails they can still get in from /login. Running it
+// again retries only the people not yet notified. --no-email sends nothing (anyone you'll tell yourself).
+// Addresses on the username domain are password accounts: they are never mailed, nothing receives there.
 // --name and --org add someone who never filled in the form.
+// remove: deletes the entry and, when they have no workspace, their sign-in. Someone with a workspace deletes
+// their own account at /account, which stops their deals first.
 //
 // Exit 0 = done, 1 = something failed (the output says what), 2 = usage. Runs on plain Node (type stripping).
 import { createClient } from "@supabase/supabase-js";
 import { USERNAME_DOMAIN } from "../lib/loginEmail.ts";
+import { EMAIL, parseJoin } from "../lib/waitlist/schema.ts";
 
 const COMMANDS = "list, admit, remove";
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export type ListFilter = "waiting" | "admitted" | "all";
 export type Command =
@@ -46,9 +48,12 @@ export interface WaitlistRepo {
   markAdmitted(email: string, by: string, at: string): Promise<void>;
   markNotified(email: string, at: string): Promise<void>;
   remove(email: string): Promise<void>;
-  /** A confirmed sign-in for this address; fine if one exists. */
+  /** A confirmed sign-in for this address that nobody else can have prepared; fine if a real one exists. */
   ensureUser(email: string): Promise<void>;
   sendLink(email: string): Promise<void>;
+  /** The sign-in for this address, and whether it belongs to a workspace; null when there is none. */
+  accountOf(email: string): Promise<{ id: string; member: boolean } | null>;
+  deleteUser(id: string): Promise<void>;
 }
 
 export interface RunOptions {
@@ -99,6 +104,10 @@ export function planCommand(argv: string[]): Command {
     if (!positional.length) throw new Error("admit needs at least one email");
     const emails = positional.map(emailOf);
     if ((values["--name"] || values["--org"]) && emails.length > 1) throw new Error("--name and --org apply to one person at a time");
+    if (values["--name"] && values["--org"]) {
+      const row = parseJoin({ email: emails[0], full_name: values["--name"], organization: values["--org"] });
+      if (!row.ok) throw new Error(Object.values(row.errors)[0]);
+    }
     return {
       kind, emails,
       by: required(values, "--by", "who is letting them in (it is recorded)"),
@@ -129,6 +138,8 @@ function describe(e: WaitlistEntry): string {
   return [`- ${who(e)}, ${state}`, ...(e.use_case ? [`  Use case: ${oneLine(e.use_case)}`] : [])].join("\n");
 }
 
+const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
 async function admitOne(email: string, cmd: Extract<Command, { kind: "admit" }>, repo: WaitlistRepo, at: string): Promise<{ line: string; failed: boolean }> {
   let entry = await repo.find(email);
   if (!entry) {
@@ -137,17 +148,29 @@ async function admitOne(email: string, cmd: Extract<Command, { kind: "admit" }>,
     entry = await repo.find(email);
     if (!entry) return { line: `${email}: couldn't add them to the list.`, failed: true };
   }
-  if (!entry.admitted_at) await repo.markAdmitted(email, cmd.by, at);
-  if (cmd.noEmail || email.endsWith(`@${USERNAME_DOMAIN}`)) return { line: `${who(entry)}: admitted, no email sent.`, failed: false };
   if (entry.notified_at) return { line: `${who(entry)}: already admitted and emailed.`, failed: false };
-  try {
-    await repo.ensureUser(email);
-    await repo.sendLink(email);
-    await repo.markNotified(email, at);
-    return { line: `${who(entry)}: admitted, sign-in email sent.`, failed: false };
-  } catch (err) {
-    return { line: `${who(entry)}: admitted, but the email failed (${err instanceof Error ? err.message : String(err)}). They can sign in at /login; run this again to retry.`, failed: true };
+  const mailable = !email.endsWith(`@${USERNAME_DOMAIN}`);
+  // Before admitting, on every path: an admitted address must never rest on a sign-in a stranger prepared.
+  if (mailable) {
+    try {
+      await repo.ensureUser(email);
+    } catch (err) {
+      return { line: `${who(entry)}: not admitted, because their sign-in couldn't be prepared (${message(err)}). Run this again.`, failed: true };
+    }
   }
+  if (!entry.admitted_at) await repo.markAdmitted(email, cmd.by, at);
+  if (cmd.noEmail || !mailable) return { line: `${who(entry)}: admitted, no email sent.`, failed: false };
+  try {
+    await repo.sendLink(email);
+  } catch (err) {
+    return { line: `${who(entry)}: admitted, but the email failed (${message(err)}). They can sign in at /login; run this again to retry.`, failed: true };
+  }
+  try {
+    await repo.markNotified(email, at);
+  } catch (err) {
+    return { line: `${who(entry)}: admitted and sign-in email sent, but that couldn't be recorded (${message(err)}), so running this again would email them twice.`, failed: true };
+  }
+  return { line: `${who(entry)}: admitted, sign-in email sent.`, failed: false };
 }
 
 /** Run one command against a repository; returns what to print and whether anything failed. */
@@ -161,12 +184,21 @@ export async function runCommand(cmd: Command, repo: WaitlistRepo, opts: RunOpti
   if (cmd.target !== opts.projectRef) return { text: `Refused: --target ${cmd.target} doesn't match the project this reaches (${opts.projectRef}). Nothing changed.`, failed: true };
   if (cmd.kind === "remove") {
     if (!(await repo.find(cmd.email))) return { text: `${cmd.email}: not on the list.`, failed: true };
+    const account = await repo.accountOf(cmd.email);
+    if (account?.member) return { text: `${cmd.email} has a workspace, so nothing changed. They delete their own account at /account, which stops their deals first.`, failed: true };
     await repo.remove(cmd.email);
-    return { text: `Removed ${cmd.email} (by ${cmd.by}).`, failed: false };
+    if (account) await repo.deleteUser(account.id);
+    return { text: `Removed ${cmd.email}${account ? " and their sign-in" : ""} (by ${cmd.by}).`, failed: false };
   }
   const at = (opts.now?.() ?? new Date()).toISOString();
   const results: { line: string; failed: boolean }[] = [];
-  for (const email of cmd.emails) results.push(await admitOne(email, cmd, repo, at));
+  for (const email of cmd.emails) {
+    try {
+      results.push(await admitOne(email, cmd, repo, at));
+    } catch (err) {
+      results.push({ line: `${email}: ${message(err)}`, failed: true }); // the rest still run, and each is reported
+    }
+  }
   return { text: results.map((r) => r.line).join("\n"), failed: results.some((r) => r.failed) };
 }
 
@@ -220,6 +252,14 @@ function supabaseRepo(url: string, serviceKey: string): WaitlistRepo {
     async sendLink(email) {
       check(await db.auth.signInWithOtp({ email, options: { shouldCreateUser: false } }));
     },
+    async accountOf(email) {
+      const user = await findUser(email);
+      if (!user) return null;
+      const { data, error } = await db.from("workspace_members").select("user_id").eq("user_id", user.id).limit(1);
+      if (error) throw new Error(error.message);
+      return { id: user.id, member: (data?.length ?? 0) > 0 };
+    },
+    deleteUser: async (id) => check(await db.auth.admin.deleteUser(id)),
   };
 }
 

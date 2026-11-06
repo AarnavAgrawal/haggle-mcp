@@ -3,12 +3,17 @@
 // project; skipped unless WAITLIST_E2E_SUPABASE_URL is set. Needs a local stack set up like production:
 //
 //   supabase/config.toml: [auth.email] enable_confirmations = true, a [auth.email.template.magic_link]
-//   content_path whose link is {{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=email, and
-//   site_url set to the web app; `npx supabase start`, then apply supabase/migrations/*.sql.
+//   content_path whose link is {{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email, and
+//   site_url set to the web app, with the same host as E2E_BASE_URL (next start redirects to localhost, so use
+//   localhost throughout); `npx supabase start`, then apply supabase/migrations/*.sql.
 //   Build with demo off and NEXT_PUBLIC_SUPABASE_* pointing at it; `next start` with the service key.
 //
 //   E2E_BASE_URL=<web> WAITLIST_E2E_SUPABASE_URL=<api> WAITLIST_E2E_ANON_KEY=<anon> WAITLIST_E2E_SERVICE_KEY=<service>
 //   WAITLIST_E2E_MAIL_URL=<mailpit> WAITLIST_E2E_DB_CONTAINER=<db container> npx playwright test e2e/waitlist-gate.spec.ts
+//
+// Run it twice: with sign-ups on, then with enable_signup = false in [auth] and WAITLIST_E2E_SIGNUPS=off, which is
+// how production runs (docs/production-deploy.md §3.4). Leave it true in [auth.email]: that one is the whole email
+// provider, and turning it off stops email sign-in for everyone.
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +25,8 @@ const SERVICE = process.env.WAITLIST_E2E_SERVICE_KEY ?? "";
 const MAIL = process.env.WAITLIST_E2E_MAIL_URL ?? "";
 const DB = process.env.WAITLIST_E2E_DB_CONTAINER ?? "";
 const BASE = process.env.E2E_BASE_URL ?? "";
+const SIGNUPS_OFF = process.env.WAITLIST_E2E_SIGNUPS === "off";
+const AUTH_HEADERS = { apikey: ANON, "content-type": "application/json" };
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "waitlist-admin.ts");
 
 test.skip(!SB, "needs a local Supabase stack: see the top of this file");
@@ -63,6 +70,11 @@ const askForLink = async (page: Page, email: string) => {
   await page.getByRole("button", { name: "Email me a sign-in link" }).click();
   await expect(page.getByText("Check your email")).toBeVisible();
 };
+/** Opens an emailed link and, if it lands on the confirm page, presses its button, as a person would. */
+const follow = async (page: Page, link: string) => {
+  await page.goto(link);
+  if (link.includes("/auth/confirm")) await page.getByRole("button", { name: "Continue to Haggle" }).click();
+};
 const inFreshBrowser = async (browser: Browser) => (await browser.newContext({ baseURL: BASE })).newPage();
 const joinBody = (email: string) => ({ email, full_name: "Grace Hopper", organization: "Navy", use_case: null });
 
@@ -74,9 +86,11 @@ test.beforeAll(() => {
 });
 
 test("someone signed in but not let in is held at the waitlist, and can join from there", async ({ page }) => {
+  test.skip(SIGNUPS_OFF, "needs an account made by signing in");
   await askForLink(page, person);
-  await page.goto(linkIn(await mail(person)));
+  await follow(page, linkIn(await mail(person)));
   await expect(page).toHaveURL(/\/waitlist$/);
+  await expect(page.getByText("Your data")).toBeVisible();
   await expect(page.getByLabel("Email")).toHaveValue(person);
   await expect(page.getByLabel("Email")).not.toBeEditable();
   await page.getByLabel("Full name").fill("Ada Lovelace");
@@ -96,32 +110,46 @@ test("someone signed in but not let in is held at the waitlist, and can join fro
 });
 
 test("the admit email finishes sign-in in a browser that never started one", async ({ browser }) => {
+  test.skip(SIGNUPS_OFF);
   const before = await mailCount(person);
   admit(person);
   const m = await mail(person, before);
   expect(m.subject).toBe("Your Haggle sign-in link");
   expect(m.html).toContain("you're in");
-  expect(linkIn(m)).toContain("/auth/callback?token_hash=");
+  const link = linkIn(m);
+  expect(link).toContain("/auth/confirm?token_hash=");
+
+  // Merely opening the link, as a mail scanner does, signs nobody in and doesn't use it up.
+  const scanner = await inFreshBrowser(browser);
+  await scanner.goto(link);
+  await expect(scanner.getByRole("button", { name: "Continue to Haggle" })).toBeVisible();
+  await scanner.goto("/chat");
+  await expect(scanner).toHaveURL(/\/login/);
+  // Nor does a GET to the callback: a link someone sends you can't sign you in by being opened.
+  await scanner.goto(link.replace("/auth/confirm", "/auth/callback"));
+  await expect(scanner).toHaveURL(/\/login\?error=sign_in_failed/);
 
   const page = await inFreshBrowser(browser);
-  await page.goto(linkIn(m));
+  await follow(page, link);
   await expect(page).toHaveURL(/\/onboarding$/);
   await expect(page.getByRole("heading", { name: "Set up your workspace" })).toBeVisible();
 });
 
 test("an ordinary sign-in link still works with the same template", async ({ browser }) => {
+  test.skip(SIGNUPS_OFF);
   const page = await inFreshBrowser(browser);
   const before = await mailCount(person);
   await askForLink(page, person);
-  await page.goto(linkIn(await mail(person, before)));
+  await follow(page, linkIn(await mail(person, before)));
   await expect(page).toHaveURL(/\/onboarding$/);
 });
 
 test("the server refuses a workspace to someone whose admission is gone, even from the open form", async ({ browser }) => {
+  test.skip(SIGNUPS_OFF);
   const page = await inFreshBrowser(browser);
   const before = await mailCount(person);
   await askForLink(page, person);
-  await page.goto(linkIn(await mail(person, before)));
+  await follow(page, linkIn(await mail(person, before)));
   await expect(page).toHaveURL(/\/onboarding$/);
 
   sql(`update public.web_waitlist set admitted_at = null, admitted_by = null, notified_at = null where email = '${person}';`);
@@ -133,9 +161,40 @@ test("the server refuses a workspace to someone whose admission is gone, even fr
   expect(sql(`select count(*) from public.web_profiles p join auth.users u on u.id = p.user_id where u.email = '${person}' and p.accepted_terms_at is not null;`)).toBe("0");
 });
 
+test("with sign-ups closed, only someone let in can get an account", async ({ page, request }) => {
+  test.skip(!SIGNUPS_OFF, "for a stack with sign-ups off");
+  const email = `closed-${Date.now()}@example.com`;
+  const signup = await request.post(`${SB}/auth/v1/signup`, { headers: AUTH_HEADERS, data: { email, password: "attacker-chose-this-1" } });
+  expect(signup.ok(), "nobody can pre-register an address").toBe(false);
+  expect(sql(`select count(*) from auth.users where email = '${email}';`)).toBe("0");
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
+  await expect(page.locator(".auth-error")).toContainText("Join the waitlist");
+
+  expect((await request.post("/api/waitlist", { headers: { origin: BASE }, data: joinBody(email) })).status()).toBe(200);
+  const before = await mailCount(email);
+  admit(email);
+  await follow(page, linkIn(await mail(email, before)));
+  await expect(page).toHaveURL(/\/onboarding$/);
+});
+
+test("removing someone takes their sign-in too", async ({ request }) => {
+  const email = `leaving-${Date.now()}@example.com`;
+  expect((await request.post("/api/waitlist", { headers: { origin: BASE }, data: joinBody(email) })).status()).toBe(200);
+  admit(email);
+  expect(sql(`select count(*) from auth.users where email = '${email}';`)).toBe("1");
+  const r = cli("remove", email, "--by", "e2e", "--target", new URL(SB).hostname.split(".")[0]!);
+  expect(r.stdout).toContain("and their sign-in");
+  expect(sql(`select count(*) from auth.users where email = '${email}';`)).toBe("0");
+  expect(sql(`select count(*) from public.web_waitlist where email = '${email}';`)).toBe("0");
+});
+
 test("a password set before admission doesn't survive it", async ({ page, request }) => {
+  test.skip(SIGNUPS_OFF, "sign-ups are closed: nobody can pre-register");
   const password = "attacker-chose-this-1";
-  const headers = { apikey: ANON, "content-type": "application/json" };
+  const headers = AUTH_HEADERS;
   const signup = await request.post(`${SB}/auth/v1/signup`, { headers, data: { email: victim, password } });
   expect(signup.ok()).toBe(true);
   expect(sql(`select email_confirmed_at is null from auth.users where email = '${victim}';`)).toBe("t");
@@ -145,7 +204,7 @@ test("a password set before admission doesn't survive it", async ({ page, reques
   const before = await mailCount(victim);
   await page.waitForTimeout(1500); // the sign-up above sent a mail; see askForLink
   admit(victim);
-  await page.goto(linkIn(await mail(victim, before)));
+  await follow(page, linkIn(await mail(victim, before)));
 
   // The real person has clicked their link, so the address is confirmed: the attacker's password must not work.
   const stolen = await request.post(`${SB}/auth/v1/token?grant_type=password`, { headers, data: { email: victim, password } });

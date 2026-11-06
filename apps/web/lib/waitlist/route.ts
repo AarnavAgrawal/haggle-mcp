@@ -15,9 +15,9 @@ export type { WaitlistRow };
 export interface WaitlistDeps {
   /** Adds the entry unless the email is already there; true when a row was really added. */
   insert(row: WaitlistRow): Promise<boolean>;
-  /** Per client address: 5 joins an hour, so one address can't use up the day's cap on its own. */
+  /** Per client address: 20 joins an hour. Room for a shared office or event network, and one address still can't use up the day's cap. */
   ipLimiter: Limiter;
-  /** Across the site: 2,000 joins per UTC day (key "site"). */
+  /** Across the site: 5,000 joins per UTC day (key "site"). */
   dailyLimiter: Limiter;
   /** Tells the operator (Slack). Never throws. */
   announce(row: WaitlistRow): Promise<void>;
@@ -37,7 +37,8 @@ export async function handleJoin(req: Request, deps: WaitlistDeps): Promise<Resp
   if (!sameOrigin(req) || !req.headers.get("content-type")?.includes("application/json")) {
     return accountError(403, "cross_site", "This request must come from Haggle's own waitlist page.", "Use the form on /waitlist.");
   }
-  if (!(await deps.ipLimiter.take(clientKey(req))).ok) return accountError(429, "rate_limited", "Too many attempts.", "Wait a few minutes, then try again.");
+  const limit = await deps.ipLimiter.take(clientKey(req));
+  if (!limit.ok) return accountError(429, "rate_limited", "Too many attempts from this network.", `Try again in about ${Math.ceil(limit.retryAfterS / 60)} minutes.`);
 
   const raw = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   if (raw === null || typeof raw !== "object") return accountError(400, "bad_body", "The request body isn't JSON.", "Send a JSON body.");

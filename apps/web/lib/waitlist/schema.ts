@@ -11,8 +11,12 @@ export interface WaitlistRow {
 export type WaitlistField = keyof WaitlistRow;
 export type WaitlistErrors = Partial<Record<WaitlistField, string>>;
 
-// Printable ASCII only: JS and Postgres lowercase some other letters differently, and the table checks email = lower(email).
-const EMAIL = /^[!-?A-~]+@[!-?A-~]+\.[!-?A-~]+$/;
+/**
+ * A lowercase address, in the characters real ones use. Strict on purpose: strangers type this, and it ends up
+ * in a command the operator's tools run, so it must never hold shell characters like $ ` ; | ( ). Plain ASCII
+ * also means JS and Postgres lowercase it alike. Migration 303 checks the same pattern.
+ */
+export const EMAIL = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/;
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
 /** The row to store, or what's wrong with each field (in the form's order). */

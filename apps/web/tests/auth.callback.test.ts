@@ -1,50 +1,44 @@
-// The sign-in return (lib/auth/callback.ts): Google comes back with ?code=, an emailed link with
-// ?token_hash=&type=. The operator's admit email is requested by a script, so it has no PKCE verifier in
-// the person's browser and can only finish through the token_hash branch.
+// Finishing an emailed sign-in link (lib/auth/callback.ts). The operator's admit email is requested by a
+// script, so it has no PKCE verifier in the person's browser and can only finish through a token_hash.
 import { describe, expect, it } from "vitest";
-import { finishSignIn, type CallbackAuth } from "../lib/auth/callback.ts";
+import { confirmEmailLink, refusedNewAccount, type EmailLinkAuth } from "../lib/auth/callback.ts";
 
-function fake(over: Partial<CallbackAuth> = {}) {
+function fake(over: Partial<EmailLinkAuth> = {}) {
   const calls: unknown[] = [];
-  const auth: CallbackAuth = {
-    exchangeCodeForSession: async (code) => (calls.push({ code }), { error: null }),
-    verifyOtp: async (params) => (calls.push(params), { error: null }),
-    ...over,
-  };
+  const auth: EmailLinkAuth = { verifyOtp: async (params) => (calls.push(params), { error: null }), ...over };
   return { auth, calls };
 }
-const q = (s: string) => new URLSearchParams(s);
 
-describe("finishSignIn", () => {
-  it("exchanges a code", async () => {
-    const { auth, calls } = fake();
-    expect(await finishSignIn(q("code=abc"), auth)).toBe(true);
-    expect(calls).toEqual([{ code: "abc" }]);
-  });
-
+describe("confirmEmailLink", () => {
   it("verifies an emailed link's token hash", async () => {
     const { auth, calls } = fake();
-    expect(await finishSignIn(q("token_hash=h1&type=email"), auth)).toBe(true);
+    expect(await confirmEmailLink({ token_hash: "h1", type: "email" }, auth)).toBe(true);
     expect(calls).toEqual([{ token_hash: "h1", type: "email" }]);
   });
 
   it("accepts the magiclink type", async () => {
-    expect(await finishSignIn(q("token_hash=h1&type=magiclink"), fake().auth)).toBe(true);
+    expect(await confirmEmailLink({ token_hash: "h1", type: "magiclink" }, fake().auth)).toBe(true);
   });
 
-  it.each(["recovery", "email_change", "invite", "signup", ""])("refuses a link of type %j", async (type) => {
+  it.each(["recovery", "email_change", "invite", "signup", "", null])("refuses a link of type %j", async (type) => {
     const { auth, calls } = fake();
-    expect(await finishSignIn(q(`token_hash=h1&type=${type}`), auth)).toBe(false);
+    expect(await confirmEmailLink({ token_hash: "h1", type }, auth)).toBe(false);
     expect(calls).toEqual([]);
   });
 
   it("fails when Supabase refuses", async () => {
-    const { auth } = fake({ verifyOtp: async () => ({ error: { message: "expired" } }), exchangeCodeForSession: async () => ({ error: { message: "bad code" } }) });
-    expect(await finishSignIn(q("token_hash=h1&type=email"), auth)).toBe(false);
-    expect(await finishSignIn(q("code=abc"), auth)).toBe(false);
+    expect(await confirmEmailLink({ token_hash: "h1", type: "email" }, fake({ verifyOtp: async () => ({ error: { message: "expired" } }) }).auth)).toBe(false);
   });
 
-  it("fails with nothing to finish", async () => {
-    expect(await finishSignIn(q(""), fake().auth)).toBe(false);
+  it("fails with no token", async () => {
+    expect(await confirmEmailLink({ token_hash: null, type: "email" }, fake().auth)).toBe(false);
+  });
+});
+
+describe("refusedNewAccount", () => {
+  it("spots Supabase refusing a new account, so Google sign-in can go to the waitlist", () => {
+    expect(refusedNewAccount(new URLSearchParams("error=access_denied&error_code=signup_disabled"))).toBe(true);
+    expect(refusedNewAccount(new URLSearchParams("error=server_error"))).toBe(false);
+    expect(refusedNewAccount(new URLSearchParams("code=abc"))).toBe(false);
   });
 });

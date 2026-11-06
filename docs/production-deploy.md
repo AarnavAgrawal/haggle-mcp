@@ -174,11 +174,13 @@ node apps/mcp/scripts/migrations.ts status      # no drift, nothing pending
 4. **URL configuration.** Site URL `https://app.<domain>`. Redirect URLs: `https://app.<domain>/auth/callback` only. No localhost and no preview wildcards on production.
 5. **Google (optional).** Create an OAuth client in Google Cloud. Use the authorized redirect URI that Supabase shows (`https://<ref>.supabase.co/auth/v1/callback`), and put the client id and secret under Auth → Providers → Google. Publish the OAuth consent screen with the Privacy and Terms URLs (§10).
 6. **Confirm email: ON** (Auth → Sign In / Providers → Email). The waitlist admits an address, so this is what proves someone owns it: with it off, anyone could register an admitted address through the API and get in.
-7. Email templates: brand the magic-link email, and point its link at `{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=email` instead of `{{ .ConfirmationURL }}`. Say that it also means they're in, for example "Your Haggle sign-in link. If you were on the waitlist, you're in." The operator's admit email is requested by a script, so the person's browser holds no PKCE verifier and only this link can finish the sign-in. Change the template **after** deploying a web app that reads `token_hash`.
+7. Email templates: brand the magic-link email, and point its link at `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email` instead of `{{ .ConfirmationURL }}`. Say that it also means they're in, for example "Your Haggle sign-in link. If you were on the waitlist, you're in." The operator's admit email is requested by a script, so the person's browser holds no PKCE verifier and only this link can finish the sign-in. It opens a page with a button, so a mail scanner that opens links can't use up the one-time token. Change the template **after** deploying a web app that has `/auth/confirm`.
 
 ### 3.4 Waitlist: sign-up is by invitation [YOU + SCRIPT]
 
-Supabase sign-ups stay on: anyone can sign in, but only someone admitted gets a workspace, and everyone else lands on `/waitlist`. Existing members are never affected. A demo site has no waitlist. Nobody is admitted automatically.
+Only someone admitted gets a workspace, and everyone else lands on `/waitlist`. Existing members are never affected. A demo site has no waitlist. Nobody is admitted automatically.
+
+Close sign-ups in Supabase too (step 7 below). While they're open, anyone can register a stranger's address with a password of their own through the public API; if that person later signs in with a magic link, the link confirms the account and the stranger's password opens it. The app's gate can't see that. With sign-ups closed, `admit` is the only way an account is created. People without one get a message at `/login` pointing them to the waitlist, and Google sends them to `/waitlist`.
 
 Day to day, in Claude Code from the main checkout (`.claude/skills/waitlist`): ask "who's waiting?", then say "let in Jane from Stanford". That runs `npm run waitlist -- list` and `admit`, which reads `.env.vercel`. Each join posts to Slack when `WAITLIST_SLACK_WEBHOOK_URL` is set.
 
@@ -190,7 +192,9 @@ Turning it on for the first time, in this order:
 5. Change the Magic Link template (§3.3 step 7).
 6. Run one real `admit` on an address you own and finish the sign-in from the email, then check that an ordinary `/login` magic link still works: the template serves both.
 
-To roll back: restore the template, then promote the previous deployment (§9). The table can stay.
+7. Turn off "Allow new users to sign up" (Auth → Sign In / Providers). Only that one: leave the Email provider itself enabled, or nobody can sign in by email and `admit` can't send its link. Then check that `/login` with an unknown address shows the waitlist message and that `admit` still works.
+
+To roll back: turn sign-ups back on, restore the template, then promote the previous deployment (§9). The table can stay.
 
 ---
 
@@ -349,7 +353,7 @@ The criteria for rolling back are in [runbook-incidents.md](runbook-incidents.md
 | `WEB_CHAT_DAILY_CAP` | web | Chat turns per UTC day, site-wide (e.g. `2000`). Past it, the chat answers 429 until tomorrow |
 | Per-user chat limit | web (code) | 20 turns per 10 minutes per user |
 | Approval route limit | web (code) | 30 actions per minute per user |
-| Waitlist limits | web (code) | 5 joins an hour per address; 2,000 a day across the site. Past the daily limit, joins answer 429 until tomorrow |
+| Waitlist limits | web (code) | 20 joins an hour per address; 5,000 a day across the site. Past the daily limit, joins answer 429 until tomorrow. The per-address limit trusts `x-real-ip` / `x-forwarded-for`, which Vercel sets; a container host must set them too, or every visitor shares one limit |
 | `HAGGLE_AI_DAILY_TOKEN_BUDGET`, `HAGGLE_AI_MAX_CALLS_PER_JOB` | server | Claude tokens per day and calls per job. Past them, replies wait for the human and nothing fails open |
 | Anthropic spend limits | Anthropic console | A monthly limit on **both** keys, with email alerts |
 | Per-workspace vendor limits | server (code) | At most 100 vendors per workspace and 25 additions per day |

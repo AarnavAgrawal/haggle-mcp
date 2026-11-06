@@ -55,6 +55,7 @@ export default async function WaitlistPage() {
               ) : (
                 <WaitlistForm {...(user?.email ? { email: user.email } : {})} />
               )}
+              {user ? <YourData /> : null}
             </>
           )}
         </div>
