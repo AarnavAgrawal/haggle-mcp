@@ -104,7 +104,8 @@ Shape and depth:
 - Buttons: primary is solid `--pen` with paper-white `--on-pen` text; secondary is an ink outline
   (`--ink-2`, `--ink` on hover) on the sheet; both 4px radius. No pills.
 - One shadow, only on floating things (drawer, menu, sticky approval bar): `0 8px 24px -12px rgb(26 41 32 / .28)`.
-  Sheets on the desk are separated by color and a 1px `--rule`, not shadows.
+  Sheets on the desk are separated by color and a 1px `--rule`, not shadows. The landing page's paper
+  on the blotter is the exception: it floats, so it carries a deeper local `--lift`.
 - Spacing on a 4px grid: 4, 8, 12, 16, 24, 32, 48, 64.
 
 ## Layout
@@ -124,12 +125,19 @@ Badges are allowed in exactly one case: the **Demo** marker, a 4px-radius tag (n
 
 ## Pages
 
-- **Landing** (`/`): left-aligned hero; headline that says the thing specifically; the hero visual is a
-  live quote sheet where, once on load, the pen strikes Golden Grill's $1,380, writes $1,240, highlights
-  −$140 and circles Bay Catering's total (the page's single orchestrated motion, ~1.4s, skipped under
-  reduced motion). Below: "A deal, start to finish" as a short timestamped log of one real-shaped deal
-  (09:02 emailed four caterers … 10:20 you approved Bay Catering), not four numbered columns. Then the
-  three channels (email, phone, text) with what each does, and the trust line. Light by default.
+- **Landing** (`/`): a company front page, and the one place the wordmark is the hero. The ground is the
+  **blotter**: a fixed deep ledger green (`--blotter`, local to `app/landing.css`, in both color schemes)
+  with the quote sheet as the one piece of paper on it. Top bar: section links, Sign in, Get started; the
+  pen underline marks the section you're in. The name fills the first screen, centered, with the headline,
+  lede and call to action under it and the example quote sheet peeking up from the bottom edge, tilted.
+  Scrolling lifts the sheet flat and into its column, where it pins beside "A deal, start to finish":
+  each log entry the reader passes moves the sheet on a step (quotes land, Golden Grill's $1,380 is struck
+  to $1,240, −$140 is highlighted, Bay Catering is circled, the deposit is approved). Marks still only
+  ever mark something true at that point in the story. Then the three channels as sheets that slide over
+  one another (a stack on phones is just a list), the promises as large statements, and a closing call to
+  action with the wordmark again as the sign-off. Scroll state lives in `components/LandingMotion.tsx`,
+  which renders nothing; the page stays a server component and the markup is the finished sheet, so with
+  reduced motion or no script it is simply marked up and everything is visible.
 - **Sign in / onboarding**: one sheet centered on the desk, wordmark above; onboarding is a short
   stepped form with clear defaults.
 - **Chat** (`/chat`, `/chat/[id]`): one column, max 720px; the composer is an auto-growing textarea
@@ -174,6 +182,8 @@ Fast is part of the design:
 - Live updates never shift layout; a newly arrived quote flashes `--pen-wash` once (600ms).
 - Motion answers actions (expand, open drawer, confirm) with 150-220ms ease-out; no entrance
   animations on scroll, no hover lifts on cards. `prefers-reduced-motion` removes all non-essential motion.
+  The landing page is the one exception: it is a marketing page, so it animates on load and on scroll
+  (see Pages). Signed-in pages stay as described here.
 
 ## Words
 

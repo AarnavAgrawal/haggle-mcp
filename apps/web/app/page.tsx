@@ -3,13 +3,19 @@ import { redirect } from "next/navigation";
 import { DemoBanner } from "@/components/DemoBanner";
 import { Footer } from "@/components/Footer";
 import { GuestButton } from "@/components/GuestButton";
-import { buttonClass, Circled, Highlighted, Icon, Price, Struck, type IconName } from "@/components/ui";
+import { LandingMotion } from "@/components/LandingMotion";
+import { buttonClass, Circled, Highlighted, Icon, PenUnderline, Price, Status, Struck, type IconName } from "@/components/ui";
 import { DEMO } from "@/lib/demo";
 import { sessionUser } from "@/lib/workspace";
 import "./landing.css";
 
-// One example deal runs through the whole page: the hero's quote sheet, the log and the channel
-// samples all describe it. It is illustrative and labelled "Example" where it appears.
+// One example deal runs through the whole page: the quote sheet, the log and the channel samples all
+// describe it. It is illustrative and labelled "Example" where it appears.
+//
+// The sheet and the log are one piece: each log entry the reader scrolls past moves the sheet on a step
+// (components/LandingMotion.tsx sets the step, landing.css draws it). The markup is the finished sheet;
+// .from-N hides a thing until step N and .until-N shows a status up to it, so without script or with
+// reduced motion the sheet is simply marked up. Steps are indexes into LOG.
 
 /** "A deal, start to finish": the example deal as Haggle would log it. */
 const LOG: { at: string; who: string; you?: boolean; text: string }[] = [
@@ -36,93 +42,146 @@ const PROMISES: { fact: string; detail: string }[] = [
   { fact: "Haggle only contacts businesses you add.", detail: "Your vendors list is the whole list. No cold lists, no surprise outreach." },
 ];
 
+const SECTIONS: { id: string; label: string }[] = [
+  { id: "how-it-works", label: "How it works" },
+  { id: "channels", label: "Channels" },
+  { id: "promises", label: "Promises" },
+];
+
 /** Public landing page; a signed-in visitor goes straight to a new request. */
 export default async function Home() {
   if (await sessionUser()) redirect("/chat");
   return (
-    <>
+    <div className="lp-page">
+      <LandingMotion />
       <DemoBanner />
-      <header className="lp-bar">
+      <header className="lp-bar on-blotter" data-top="">
         <div className="wrap lp-bar-inner">
           <Link className="brand" href="/">
             Haggle
           </Link>
-          <Link className={buttonClass("quiet")} href="/login">
-            Sign in
-          </Link>
+          <nav className="lp-nav" aria-label="Sections">
+            {SECTIONS.map((s) => (
+              <a key={s.id} href={`#${s.id}`}>
+                {s.label}
+                <PenUnderline animate />
+              </a>
+            ))}
+          </nav>
+          <div className="lp-bar-actions">
+            <Link className={buttonClass("quiet")} href="/login">
+              Sign in
+            </Link>
+            <Link className={buttonClass("primary")} href="/login">
+              Get started
+            </Link>
+          </div>
         </div>
       </header>
+
       <main className="lp">
-        <section className="wrap lp-hero" aria-labelledby="lp-title">
-          <div className="lp-copy">
-            <h1 id="lp-title">Real quotes from real businesses, without making the calls.</h1>
-            <p className="lp-lede">
-              Tell Haggle what you need. It emails, phones and texts the businesses you choose, reads every reply, and pushes the price down with the other quotes
-              it gets. You pick the winner.
-            </p>
+        <div className="lp-blotter">
+          <section className="lp-hero on-blotter" aria-labelledby="lp-title">
+            <div className="wrap lp-hero-inner">
+              <h1 id="lp-title">
+                <span className="lp-wordmark">
+                  <span className="sr-only">Haggle: </span>
+                  <span className="lp-letters" aria-hidden="true">
+                    {[..."Haggle"].map((letter, i) => (
+                      <span key={i}>{letter}</span>
+                    ))}
+                  </span>
+                </span>
+                <span className="lp-line">Real quotes from real businesses, without making the calls.</span>
+              </h1>
+              <p className="lp-lede">
+                Tell Haggle what you need. It emails, phones and texts the businesses you choose, reads every reply, and pushes the price down with the other quotes
+                it gets. You pick the winner.
+              </p>
+              <Ctas />
+            </div>
+          </section>
+
+          <section id="how-it-works" className="deal" data-step="0" aria-labelledby="log-title">
+            <div className="wrap deal-grid">
+              <div className="deal-stage">
+                <QuoteSheet />
+              </div>
+              <div className="deal-log on-blotter">
+                <header className="deal-head">
+                  <h2 id="log-title">A deal, start to finish</h2>
+                  <p>This example, as Haggle logged it. Seventy-eight minutes, four businesses, no phone calls for you.</p>
+                </header>
+                <ol className="log">
+                  {LOG.map((e) => (
+                    <li key={e.at} className={e.you ? "log-row log-you" : "log-row"}>
+                      <span className="log-meta">
+                        <time className="log-at num">{e.at}</time>
+                        <span className="log-who">{e.who}</span>
+                      </span>
+                      <span className="log-text">{e.text}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <section id="channels" className="lp-channels" aria-labelledby="ch-title">
+          <div className="wrap">
+            <div className="lp-head" data-reveal>
+              <h2 id="ch-title">Whichever way the business answers</h2>
+              <p>Haggle uses the channel each business already replies on.</p>
+            </div>
+            <ul className="ch-list">
+              {CHANNELS.map((c, i) => (
+                <li key={c.name} className="ch-row" data-reveal>
+                  <div className="ch-copy">
+                    <h3>
+                      <Icon name={c.icon} size={24} />
+                      {c.name}
+                    </h3>
+                    <p>{c.does}</p>
+                  </div>
+                  {i === 0 ? <EmailSample /> : i === 1 ? <CallSample /> : <TextSample />}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <section id="promises" className="lp-trust" aria-labelledby="trust-title">
+          <div className="wrap">
+            <div className="lp-head" data-reveal>
+              <h2 id="trust-title">What Haggle promises</h2>
+            </div>
+            <dl className="trust">
+              {PROMISES.map((p) => (
+                <div key={p.fact} className="trust-row" data-reveal>
+                  <dt>{p.fact}</dt>
+                  <dd>{p.detail}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </section>
+
+        <section className="lp-close on-blotter" aria-labelledby="close-title">
+          <div className="wrap" data-reveal>
+            <h2 id="close-title">Your next order, quoted by lunchtime.</h2>
             <Ctas />
           </div>
-          <QuoteSheet />
-        </section>
-
-        <section className="wrap lp-section lp-log" aria-labelledby="log-title">
-          <div className="lp-section-head">
-            <h2 id="log-title">A deal, start to finish</h2>
-            <p>The example above, as Haggle logged it. Seventy-eight minutes, four businesses, no phone calls for you.</p>
-          </div>
-          <ol className="log">
-            {LOG.map((e) => (
-              <li key={e.at} className={e.you ? "log-row log-you" : "log-row"}>
-                <time className="log-at num">{e.at}</time>
-                <span className="log-who">{e.who}</span>
-                <span className="log-text">{e.text}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-
-        <section className="wrap lp-section lp-channels" aria-labelledby="ch-title">
-          <div className="lp-section-head">
-            <h2 id="ch-title">Whichever way the business answers</h2>
-            <p>Haggle uses the channel each business already replies on.</p>
-          </div>
-          <ul className="ch-list">
-            {CHANNELS.map((c, i) => (
-              <li key={c.name} className="ch-row">
-                <div className="ch-copy">
-                  <h3>
-                    <Icon name={c.icon} size={20} />
-                    {c.name}
-                  </h3>
-                  <p>{c.does}</p>
-                </div>
-                {i === 0 ? <EmailSample /> : i === 1 ? <CallSample /> : <TextSample />}
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        <section className="wrap lp-section lp-trust" aria-labelledby="trust-title">
-          <div className="lp-section-head">
-            <h2 id="trust-title">What Haggle promises</h2>
-          </div>
-          <dl className="trust">
-            {PROMISES.map((p) => (
-              <div key={p.fact} className="trust-row">
-                <dt>{p.fact}</dt>
-                <dd>{p.detail}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-
-        <section className="wrap lp-close" aria-labelledby="close-title">
-          <h2 id="close-title">Your next order, quoted by lunchtime.</h2>
-          <Ctas />
         </section>
       </main>
-      <Footer />
-    </>
+
+      <div className="lp-end on-blotter">
+        <Footer />
+        <p className="lp-sign" aria-hidden="true">
+          Haggle
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -138,11 +197,16 @@ function Ctas() {
   );
 }
 
-/**
- * The hero: the example deal's quote sheet. On load the pen strikes Golden Grill's $1,380, writes in
- * $1,240, highlights the $140 saved and circles Bay Catering's total (the page's one orchestrated
- * motion; landing.css times the write-in, prefers-reduced-motion shows the marked-up sheet at once).
- */
+/** A status the sheet shows until the business has answered. Decorative: the log carries the words. */
+function Waiting({ until, children }: { until: number; children: string }) {
+  return (
+    <span className={`qs-wait until-${until}`} aria-hidden="true">
+      <Status tone="live">{children}</Status>
+    </span>
+  );
+}
+
+/** The example deal's quote sheet, finished. See the note at the top of this file for how it steps. */
 function QuoteSheet() {
   return (
     <figure className="qs" aria-labelledby="qs-title">
@@ -162,80 +226,106 @@ function QuoteSheet() {
         <span className="qs-example">Example</span>
       </div>
       <ol className="qs-rows">
-        <li className="qs-row qs-short">
+        <li className="qs-row qs-short arrive-3">
           <div className="qs-biz">
             <span className="qs-name">Mission Eats</span>
             <span className="qs-via">
               <span className="qs-channel">
                 <Icon name="message" /> Text
               </span>
-              <span className="qs-req qs-req-miss">
+              <span className="qs-req qs-req-miss from-3">
                 <Icon name="x" /> 1 of 2
               </span>
             </span>
           </div>
-          <div className="qs-total">
-            <Price amount={1080} size="l" />
-            <span className="qs-sub">
-              <span className="num">$27</span> a person
-            </span>
+          <div className="qs-right">
+            <Waiting until={3}>Waiting for a reply</Waiting>
+            <div className="qs-total from-3">
+              <Price amount={1080} size="l" />
+              <span className="qs-sub">
+                <span className="num">$27</span> a person
+              </span>
+            </div>
           </div>
-          <p className="qs-note">Only 8 vegetarian meals.</p>
+          <p className="qs-note from-3">Only 8 vegetarian meals.</p>
         </li>
-        <li className="qs-row qs-best">
+        <li className="qs-row qs-best arrive-4">
           <div className="qs-biz">
             <span className="qs-name">Bay Catering</span>
             <span className="qs-via">
               <span className="qs-channel">
                 <Icon name="mail" /> Email
               </span>
-              <span className="qs-req">
+              <span className="qs-req from-4">
                 <Icon name="check" /> 2 of 2
               </span>
             </span>
           </div>
-          <div className="qs-total">
-            <Circled animate delay={1000}>
-              <Price amount={1150} size="l" />
-            </Circled>
-            <span className="qs-sub">
-              <span>
-                <span className="num">$200</span> deposit
+          <div className="qs-right">
+            <Waiting until={4}>Waiting for a reply</Waiting>
+            <div className="qs-total from-4">
+              <Circled animate>
+                <Price amount={1150} size="l" />
+              </Circled>
+              <span className="qs-sub">
+                <span>
+                  <span className="num">$200</span> deposit
+                </span>
               </span>
-            </span>
+            </div>
           </div>
-          <p className="qs-note qs-why">Recommended: the lowest quote that meets both requirements.</p>
+          <p className="qs-note qs-why from-7">Recommended: the lowest quote that meets both requirements.</p>
         </li>
-        <li className="qs-row">
+        <li className="qs-row arrive-2">
           <div className="qs-biz">
             <span className="qs-name">Golden Grill</span>
             <span className="qs-via">
               <span className="qs-channel">
                 <Icon name="phone" /> Phone call
               </span>
-              <span className="qs-req">
+              <span className="qs-req from-2">
                 <Icon name="check" /> 2 of 2
               </span>
             </span>
           </div>
-          <div className="qs-total">
-            <span className="qs-nego">
-              <Struck animate delay={250} className="qs-was">
-                <Price amount={1380} size="s" />
-              </Struck>
-              <span className="qs-new">
-                <Price amount={1240} size="l" />
+          <div className="qs-right">
+            <Waiting until={2}>Calling now</Waiting>
+            <div className="qs-total from-2">
+              <span className="qs-nego">
+                <Struck animate className="qs-was">
+                  <Price amount={1380} size="s" />
+                </Struck>
+                <span className="qs-new">
+                  <Price amount={1240} size="l" />
+                </span>
+              </span>
+              <Highlighted animate delay={420} className="qs-saved from-6">
+                <Price amount={140} sign="-" size="s" />
+              </Highlighted>
+            </div>
+          </div>
+          <p className="qs-note from-6">Came down after Haggle mentioned a lower quote.</p>
+        </li>
+        <li className="qs-row qs-out arrive-5">
+          <div className="qs-biz">
+            <span className="qs-name">Sunset Deli</span>
+            <span className="qs-via">
+              <span className="qs-channel">
+                <Icon name="mail" /> Email
               </span>
             </span>
-            <Highlighted animate delay={720} className="qs-saved">
-              <Price amount={140} sign="-" size="s" />
-            </Highlighted>
           </div>
-          <p className="qs-note">Came down after Haggle mentioned a lower quote.</p>
+          <div className="qs-right">
+            <Waiting until={5}>Waiting for a reply</Waiting>
+            <span className="qs-declined from-5">Declined</span>
+          </div>
         </li>
       </ol>
       <figcaption className="qs-foot">
-        Three quotes from the four caterers asked. Sunset Deli is booked that day.
+        <span className="qs-caption from-5">Three quotes from the four caterers asked. Sunset Deli is booked that day.</span>
+        <span className="qs-approved from-8">
+          <Icon name="check" /> You approved the $200 deposit
+        </span>
       </figcaption>
     </figure>
   );
