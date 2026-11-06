@@ -79,6 +79,44 @@ describe("findForDeal", () => {
     });
   });
 
+  it("passes the user's preferences to the search", async () => {
+    let got: unknown;
+    const l = { ...listing(LISTED), discover: async (_c: string, _a: string, _n: number, prefs?: unknown) => { got = prefs; return LISTED; } };
+    await findForDeal(opts({ listing: l, preferences: { cuisine: "thai", price: "budget" } }));
+    expect(got).toEqual({ cuisine: "thai", price: "budget" });
+  });
+
+  it("asks for enough listings that restaurants without an email don't crowd out the rest", async () => {
+    let asked = 0;
+    await findForDeal(opts({ listing: { ...listing(LISTED), discover: async (_c, _a, n) => { asked = n; return LISTED; } } }));
+    expect(asked).toBe(20);
+  });
+
+  it("names the businesses it can't email, so a phone-only restaurant isn't dropped silently", async () => {
+    const r = await findForDeal(opts({ listing: listing([biz("Ace Plumbing", { listing_emails: ["jobs@ace.example"] }), biz("Domino's", { phone: "+15105550199" })]) }));
+    expect(r.not_emailable).toEqual([{ name: "Domino's", business_ref: "place:Dominos", phone_published: true }]);
+    expect(JSON.stringify(r.not_emailable)).not.toMatch(/5105550199/); // published numbers stay server-side
+  });
+
+  it("lists the businesses it can't email even when it found nobody it can", async () => {
+    const r = await findForDeal(opts({ listing: listing([biz("Domino's", { phone: "+15105550199" })]) }));
+    expect(r.status).toBe("nothing_found");
+    expect(r.not_emailable?.map((b) => b.name)).toEqual(["Domino's"]);
+  });
+
+  it("never emails a chain's corporate inbox: its website's address isn't the local store's", async () => {
+    const chain = biz("Domino's", { chain: "Domino's", website: "https://dominos.example/" });
+    const withSite = { ...chain, category: "catering", area: "Oakland, CA", website_evidence: { url: chain.website!, fetched_at: "2026-11-05T00:00:00Z", status: "ok" as const, emails: ["privacy@dominos.example"], phones: [], price_claims: [] } };
+    const r = await findForDeal(opts({ listing: listing([withSite as FoundBusiness]) }));
+    expect(r.candidates).toEqual([]);
+    expect(r.not_emailable?.map((b) => b.name)).toEqual(["Domino's"]);
+  });
+
+  it("does email a chain store that publishes its own address on the listing", async () => {
+    const r = await findForDeal(opts({ listing: listing([biz("Pizza Hut Oakland", { chain: "Pizza Hut", listing_emails: ["store4471@pizzahut.example"] })]) }));
+    expect(r.candidates.map((c) => c.email)).toEqual(["store4471@pizzahut.example"]);
+  });
+
   it("records who confirmed: the web user, else the MCP client on the user's yes", () => {
     expect(confirmedBy("ana@example.com (u1)", "haggle-web")).toBe("web:ana@example.com (u1)");
     expect(confirmedBy(null, "claude-ai")).toBe("agent:claude-ai on the user's yes");

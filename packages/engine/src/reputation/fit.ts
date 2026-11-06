@@ -13,7 +13,7 @@ const KINDS: Record<string, string[]> = {
   catering: [
     "cater", "restaurant", "food", "baker", "cafe", "coffee", "deli$", "delicatessen", "eatery", "meal", "chef", "bistro", "diner", "grill",
     "bbq", "barbecue", "pizza", "taco", "taqueria", "burrito", "sushi", "sandwich", "bagel", "donut", "dessert", "cake", "pastry", "juice", "tea_house",
-    "lunch", "dinner", "breakfast", "brunch", "buffet", "snack", "bento",
+    "lunch", "dinner", "breakfast", "brunch", "buffet", "snack", "bento", "dining", "take_out", // fine_dining, casual_dining, take_out_and_delivery_only
   ],
   plumbing: ["plumb", "rooter", "drain", "sewer", "water_heater"],
   electrical: ["electric"],

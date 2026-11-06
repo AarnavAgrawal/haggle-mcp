@@ -112,8 +112,9 @@ export async function getRuntime(env = process.env): Promise<Runtime> {
     config: { ...mockDemoConfig(env), ...(allow ? { recipientAllowlist: allow } : {}), outOfBandApprovalsOnly: outOfBandApprovals(env), webApprovals: !/^(false|0|off|no)$/i.test(env.HAGGLE_WEB_APPROVALS?.trim() ?? ""), ...(env.HAGGLE_PAYMENTS === "manual" ? { manualPaymentHandoff: true } : {}) },
   });
   // Mock: the simulated fleet plays all six demo vendors; every one is reachable (DEMO).
-  // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board).
-  const roster = env.HAGGLE_MOCK_VENDORS === "none" ? buildRoster({}, { email: true, imessage: false, sms: false, phone: false, a2a: false, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false }) : fleet.map((b): RosterEntry => ({
+  // HAGGLE_MOCK_VENDORS=none rehearses a server with no vendor set up (the "Setup needed" board);
+  // =empty, one with no demo roster at all, like a real customer server (deal finds caterers itself).
+  const roster = env.HAGGLE_MOCK_VENDORS === "empty" ? [] : env.HAGGLE_MOCK_VENDORS === "none" ? buildRoster({}, { email: true, imessage: false, sms: false, phone: false, a2a: false, connectCommand: "connect @haggle", connected: null, callsViaSharedLine: false }) : fleet.map((b): RosterEntry => ({
     key: b.slug, name: b.name, category: "catering", channel: b.a2a_card_url && m.engine.a2aEnabled ? "a2a" : b.email ? "email" : "phone", played_by: "simulated seller (DEMO)", simulated: true, ready: true,
     ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}),
   }));

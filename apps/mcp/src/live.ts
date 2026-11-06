@@ -257,7 +257,7 @@ registerLiveFactory(async (env): Promise<Runtime> => {
   // Anything that arrived while this server was down or restarting.
   setTimeout(() => void sweep(), 5_000).unref();
   // Public-listing discovery: Amazon Location Service (AWS_LOCATION_API_KEY), else Google Places, else off.
-  const listing = listingProviderFromEnv(env);
+  const listing = listingProviderFromEnv(env, { log: (event, data) => logger.warn(event, data) });
   logger.info("live_ready", { buyer: buyerMailbox, ai_limits: ai.snapshot().limits, alerts: alerts.enabled, stall_check_s: stallEveryS > 0 ? stallEveryS : false, demo_speed: timings.demoSpeed, tick_s: TICK_MS / 1000, calls: callsEnabled, call_origin: callsEnabled ? callOrigin : null, a2a: a2aPort !== null, imessage: imessagePort !== null, sms: smsPort !== null, notify: Boolean(notifyPhone), email_approval: emailApprovalByCode(env) ? "code" : "verified-senders-only", payments: env.HAGGLE_PAYMENTS === "manual" ? "manual-handoff" : stripe ? "stripe-test" : "disabled", external_senders: env.HAGGLE_EXTERNAL_SENDERS === "reply_token" ? "reply_token" : "off", payment_ceiling_cents: Number.isInteger(cap) && cap > 0 && cap <= capMax ? cap : 500_000, reputation: env.GOOGLE_PLACES_API_KEY ? "google-places" : "off", allowed_recipients: allowAny ? "any" : allowlist.length, sender_trust: senderTrust.policy, mailbox_per_workspace: mailboxes !== null, discovery: listing?.kind ?? "off", reconcile: reconcileOn ? { every_s: (sweepEvery * TICK_MS) / 1000, mail: true, texts: smsPort !== null, calls: phonePort !== null } : false });
   // Readiness is re-checked at most every 20 s (one read-only Inkbox call); a failed check is "unknown", not "ready".
   let connected: { at: number; set: Set<string> | null } = { at: 0, set: null };

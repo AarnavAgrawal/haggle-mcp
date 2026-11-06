@@ -83,8 +83,9 @@ describe("deal finds the businesses itself (no vendors yet)", () => {
       ["Bolt Plumbing", "email", "will_authorize_on_start"],
     ]);
     expect(d.would_contact[0]).toMatchObject({ business_ref: ACE, found_via: { listing: "Google Places", ref: ACE, email_from: "website" } });
-    // Phone-only and contactless listings never appear; published contacts stay server-side.
-    expect(JSON.stringify(d)).not.toMatch(/FiveStar|Quiet Drains|Bay Pizza|510-555|5105550|@/);
+    // Phone-only and contactless listings are never contacted: named as unreachable at most, and published contacts stay server-side.
+    expect(JSON.stringify(d.would_contact)).not.toMatch(/FiveStar|Quiet Drains|Bay Pizza/);
+    expect(JSON.stringify(d)).not.toMatch(/510-555|5105550|@/);
     expect(d.next).toMatch(/confirm_discovered: \['place:ChIJAcePlumbingOakland01', 'place:ChIJBoltPlumbingOakland02'\]/);
     expect(r.content[0]!.text).toMatch(/^\[DEMO\] DRY RUN \(nothing sent\)/);
     expect((await svc("/internal/vendors", { ws })).vendors).toEqual([]);

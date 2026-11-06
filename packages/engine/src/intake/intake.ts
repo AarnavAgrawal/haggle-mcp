@@ -6,6 +6,8 @@
 // Uses only the existing Request fields (what, quantity, date, time, area, venue, details[], ask[],
 // requirements): an answer the Request has no field for goes in details[] under the suggested label.
 
+import { cuisineOf, priceRangeOf } from "../reputation/vendorSearch.ts";
+
 /** A request as intake reads it: the engine's Request, or deal's input before it is normalized. */
 export interface IntakeInput {
   what: string;
@@ -121,8 +123,9 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       WHERE("Where should it be delivered (address or venue, or at least the city)?"),
     ],
     helpful: [
+      { key: "food", question: "Any cuisine you'd like (e.g. pizza, Mexican, Indian)? If you're open, Haggle shows a mix.", field: "details: Cuisine", has: (r) => !!cuisineOf(r.what) || detail(r, /\b(menu|cuisine|food|dish)\w*/i) },
+      { key: "price_range", question: "What price point: as cheap as possible, mid-range, or something fancy? If you don't mind, Haggle shows a range.", field: "details: Price range", has: (r) => !!priceRangeOf(r.what) || detail(r, /\bprice\b/i) },
       TIME("What time should the food arrive or be served?"),
-      { key: "food", question: "What kind of food or cuisine (e.g. a taco bar, sandwiches, Indian)?", field: "what", has: (r) => whatWords(r) >= 2 || detail(r, /\b(menu|cuisine|food|dish)\w*/i) },
       { key: "dietary", question: "Any dietary needs or allergies, and how many people each (e.g. 12 vegetarian, 2 gluten-free)?", field: "requirements", has: (r) => (r.requirements ?? []).some((q) => q.kind === "dietary") || detail(r, /\b(diet|allerg|vegetarian|vegan|gluten|halal|kosher)\w*/i) || /\b(vegetarian|vegan|gluten|halal|kosher|allerg\w*|nut-free)\b/i.test(words(r)) },
       { key: "service", question: "Drop-off, buffet set-up, or staffed service? Do you need plates and utensils?", field: "details: Service", has: (r) => detail(r, /\b(service|style|setup|set-up|staff\w*|plates?|utensils?)\b/i) || /\b(drop[- ]?off|buffet|plated|family[- ]style|boxed|staffed)\b/i.test(words(r)) },
     ],
@@ -298,7 +301,7 @@ export interface IntakeGaps {
   missing: IntakeQuestion[];
   /** The missing essentials no "go ahead anyway" can skip (what the job is, and where): nothing is sent without them. */
   floor: IntakeQuestion[];
-  /** Optional details that change the price and aren't given yet (at most 4). */
+  /** Optional details that change the price and aren't given yet (at most 5). */
   helpful: IntakeQuestion[];
   /** One line: the brief as it stands. */
   brief: string;
@@ -318,7 +321,7 @@ export const FLOOR_KEYS: ReadonlySet<string> = new Set(["where", "problem", "sco
 export function intakeGaps(r: IntakeInput): IntakeGaps {
   const p = profileFor(r);
   const missing = p.essentials.filter((e) => !e.has(r)).map(strip);
-  const helpful = p.helpful.filter((e) => !e.has(r)).slice(0, 4).map(strip);
+  const helpful = p.helpful.filter((e) => !e.has(r)).slice(0, 5).map(strip);
   const floor = missing.filter((q) => FLOOR_KEYS.has(q.key));
   return { category: p.id, label: p.label, missing, floor, helpful, brief: briefLine(r), complete: missing.length === 0 };
 }

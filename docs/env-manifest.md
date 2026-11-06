@@ -145,7 +145,7 @@ npx tsx apps/mcp/scripts/launch-gate.ts --target staging --env-file <staging env
 | `HAGGLE_DIRECTORY_FILE` | Business directory override file (brain) |  | brain | optional | optional | optional | optional | free text; warning |  |
 | `HAGGLE_DIRECTORY_JSON` | Inline business directory JSON (brain) |  | brain | optional | optional | optional | optional | JSON; warning |  |
 | `HAGGLE_SIM_DELAY_SCALE` | Simulated seller reply delay multiplier (0 = instant) |  | server | optional | optional | optional | **refused** | free text; warning |  |
-| `HAGGLE_MOCK_VENDORS` | none: rehearse a server with no vendor set up |  | server | optional | optional | optional | **refused** | free text; warning |  |
+| `HAGGLE_MOCK_VENDORS` | none: rehearse a server with no vendor set up; empty: no demo roster at all, like a real customer server |  | server | optional | optional | optional | **refused** | free text; warning |  |
 | `HAGGLE_MOCK_PERSONAS_FILE` | Scripted simulated vendors (JSON file) |  | server | optional | optional | optional | **refused** | free text; warning |  |
 | `HAGGLE_PLACES_FIXTURE` | Recorded listing (Google Places or Amazon Location) and website responses for discovery rehearsals |  | server | optional | optional | optional | **refused** | free text; warning |  |
 | `HAGGLE_MOCK_DATABASE_URL` | Throwaway Postgres for mock restart rehearsals (never a real database) | yes | server | optional | optional | optional | **refused** | `postgres://` URL (conditional); **error** |  |

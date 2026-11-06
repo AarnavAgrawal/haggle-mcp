@@ -4,6 +4,8 @@
 //   Google Places: { "searches": [{ "match": "plumb", "places": [<Places API place>, …] }], "websites": { "<url>": "<html>" } }
 //   Amazon Location: { "provider": "amazon", "geocode": [{ "match": "oakland", "position": [lng, lat] }],
 //                      "searches": [{ "match": "plumb", "items": [<SearchText result item>, …] }], "websites": { … } }
+//     Text search answers from entries whose "match" is in the query; search-nearby answers from every item
+//     by its Categories and FoodTypes, as the live filter does (an entry no query matches is nearby-only).
 import { readFileSync } from "node:fs";
 import { amazonLocationProvider, googlePlacesProvider, type AwsPlace, type ListingProvider, type PlaceResult } from "@haggle/engine";
 
@@ -30,13 +32,13 @@ function googleFetch(fx: GoogleFixture): PlacesFetch {
   };
 }
 
-/** Amazon Location Places v2 wire format: /v2/geocode, /v2/search-text and /v2/place/{PlaceId}. */
+/** Amazon Location Places v2 wire format: /v2/geocode, /v2/search-text, /v2/search-nearby and /v2/place/{PlaceId}. */
 function amazonFetch(fx: AmazonFixture): PlacesFetch {
   const all = fx.searches.flatMap((s) => s.items);
   return async (url, init) => {
     const u = new URL(url);
     if (!u.searchParams.get("key")) return json(403, { message: "Missing key" });
-    const body = (JSON.parse(init.body ?? "{}") ?? {}) as { QueryText?: string };
+    const body = (JSON.parse(init.body ?? "{}") ?? {}) as { QueryText?: string; Filter?: { IncludeCategories?: string[]; IncludeFoodTypes?: string[] } };
     const q = String(body.QueryText ?? "").toLowerCase();
     if (u.pathname === "/v2/geocode") {
       const hit = (fx.geocode ?? []).find((g) => q.includes(g.match.toLowerCase()));
@@ -45,6 +47,10 @@ function amazonFetch(fx: AmazonFixture): PlacesFetch {
     if (u.pathname === "/v2/search-text") {
       if (q.includes("ratelimit")) return json(429, { message: "Rate exceeded" });
       return json(200, { ResultItems: fx.searches.filter((s) => q.includes(s.match.toLowerCase())).flatMap((s) => s.items) });
+    }
+    if (u.pathname === "/v2/search-nearby") {
+      const listed = (list: { Id?: string }[] | undefined, ids: string[] | undefined) => (list ?? []).some((x) => !!x.Id && !!ids?.includes(x.Id));
+      return json(200, { ResultItems: all.filter((p) => listed(p.Categories, body.Filter?.IncludeCategories) || listed(p.FoodTypes, body.Filter?.IncludeFoodTypes)) });
     }
     const id = decodeURIComponent(u.pathname.split("/v2/place/")[1] ?? "");
     const p = all.find((x) => x.PlaceId === id);

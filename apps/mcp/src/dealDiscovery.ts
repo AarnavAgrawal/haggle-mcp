@@ -8,13 +8,15 @@
 // Every step fails closed: no area, discovery off, email off or listings down means no candidates and a
 // reason the deal can show; suppressed contacts, existing vendors, the approver's own contacts and (live)
 // simulated contacts never appear.
-import { DEFAULT_CONTACT_TIMEZONE, PlacesError, simulatedContact, type ListingProvider } from "@haggle/engine";
+import { DEFAULT_CONTACT_TIMEZONE, PlacesError, simulatedContact, type ListingProvider, type SearchPreferences } from "@haggle/engine";
 import { hoursLine, publishedEmails, withWebsite, type Discovered, type DiscoveryRegistry } from "./businesses.ts";
 import { DEMO_WORKSPACE_REASON } from "./demoWorkspace.ts";
 import type { Runtime } from "./runtime.ts";
 
-/** How many listings deal asks for (more than it keeps: many publish no email). */
-export const DISCOVER_COUNT = 12;
+/** How many listings deal asks for (more than it keeps: many, restaurants above all, publish no email). */
+export const DISCOVER_COUNT = 20;
+/** How many businesses a deal names as found but not emailable. */
+const MAX_NOT_EMAILABLE = 6;
 /** At most this many found businesses on one deal. */
 export const MAX_DISCOVERED_PER_DEAL = 6;
 /** With fewer workspace vendors than this for the request's kind of work, deal also finds businesses. */
@@ -42,14 +44,19 @@ export interface DiscoveryOutcome {
   reason?: string;
   /** How many results were left out, and why. */
   skipped: { no_email: number; suppressed: number; existing: number };
+  /** Found, but with no address Haggle may use (found businesses are only ever emailed): named so they aren't dropped silently. */
+  not_emailable?: NotEmailable[];
 }
+
+/** A found business Haggle can't email. Its published phone stays server-side. */
+export interface NotEmailable { name: string; business_ref: string; phone_published: boolean }
 
 /**
  * Public-listing search plus each business's website, within a time budget (a slow site just has no
  * emails), remembered in this workspace's registry so names and refs resolve later. Throws PlacesError.
  */
-export async function searchListings(rt: Runtime & { listing: ListingProvider }, registry: DiscoveryRegistry, category: string, area: string, count: number, budgetMs = WEBSITE_BUDGET_MS): Promise<Discovered[]> {
-  const found = (await rt.listing.discover(category, area, count)).map((b) => ({ ...b, category, area }));
+export async function searchListings(rt: Runtime & { listing: ListingProvider }, registry: DiscoveryRegistry, category: string, area: string, count: number, budgetMs = WEBSITE_BUDGET_MS, prefs?: SearchPreferences): Promise<Discovered[]> {
+  const found = (await rt.listing.discover(category, area, count, prefs)).map((b) => ({ ...b, category, area }));
   registry.remember(found);
   const budget = (b: Discovered) => new Promise<Discovered>((done) => { const t = setTimeout(() => done(b), budgetMs); t.unref?.(); });
   return Promise.all(found.map((b) => Promise.race([withWebsite(b, rt, registry), budget(b)])));
@@ -72,9 +79,14 @@ export interface FindOptions {
   timezone?: string;
   /** A demo workspace (HAGGLE_DEMO_WORKSPACES): never finds businesses. */
   demoWorkspace?: boolean;
+  /** What the user would like (cuisine, price): steers the search, never narrows it. */
+  preferences?: SearchPreferences;
 }
 
-const none = (status: Exclude<DiscoveryStatus, "ok">, reason: string, skipped = { no_email: 0, suppressed: 0, existing: 0 }): DiscoveryOutcome => ({ status, candidates: [], reason, skipped });
+const none = (status: Exclude<DiscoveryStatus, "ok">, reason: string, skipped = { no_email: 0, suppressed: 0, existing: 0 }, notEmailable: NotEmailable[] = []): DiscoveryOutcome => ({ status, candidates: [], reason, skipped, ...(notEmailable.length ? { not_emailable: notEmailable } : {}) });
+
+/** The addresses that reach this business. A chain's website speaks for the chain: its inbox isn't the local store's, so a chain counts only with an address on its own listing. */
+const reachableEmails = (b: Discovered) => (b.chain ? (b.listing_emails ?? []).map((e) => e.toLowerCase()) : publishedEmails(b));
 
 /** The businesses deal would email for this request, best first, or why there are none. Never contacts anyone. */
 export async function findForDeal(o: FindOptions): Promise<DiscoveryOutcome> {
@@ -85,19 +97,25 @@ export async function findForDeal(o: FindOptions): Promise<DiscoveryOutcome> {
   if (o.limit <= 0) return none("nothing_found", "this deal already has as many businesses as it may contact");
   let found: Discovered[];
   try {
-    found = await searchListings(o.rt as Runtime & { listing: ListingProvider }, o.registry, o.category, o.area, DISCOVER_COUNT);
+    found = await searchListings(o.rt as Runtime & { listing: ListingProvider }, o.registry, o.category, o.area, DISCOVER_COUNT, WEBSITE_BUDGET_MS, o.preferences);
   } catch (e) {
     if (!(e instanceof PlacesError)) throw e;
     return none(e.code === "area_not_found" ? "no_area" : "listings_down", e.code === "area_not_found" ? `the listings don't know the area "${o.area}"` : `the business listings are unavailable right now (${e.code.replace(/_/g, " ")})`);
   }
   const skipped = { no_email: 0, suppressed: 0, existing: 0 };
-  const withEmail = found.map((b) => ({ b, emails: publishedEmails(b).filter((e) => !o.reserved.has(e) && !(o.rt.mode === "live" && simulatedContact(e))) }));
+  const withEmail = found.map((b) => ({ b, emails: reachableEmails(b).filter((e) => !o.reserved.has(e) && !(o.rt.mode === "live" && simulatedContact(e))) }));
   const all = withEmail.flatMap((x) => x.emails);
   const sup = all.length ? await o.suppressed(all) : new Set<string>();
   const out: FoundCandidate[] = [];
   const seen = new Set<string>();
+  const notEmailable: NotEmailable[] = [];
   for (const { b, emails } of withEmail) {
-    if (!emails.length) { skipped.no_email++; continue; }
+    if (!emails.length) {
+      skipped.no_email++;
+      const saved = !!b.phone && o.existing.has(b.phone);
+      if (!reachableEmails(b).length && !saved && notEmailable.length < MAX_NOT_EMAILABLE) notEmailable.push({ name: b.name, business_ref: b.business_ref, phone_published: !!b.phone });
+      continue;
+    }
     // A business with any suppressed published address opted out (or bounced): it is left out entirely.
     if (emails.some((e) => sup.has(e))) { skipped.suppressed++; continue; }
     if (emails.some((e) => o.existing.has(e)) || (b.phone && o.existing.has(b.phone))) { skipped.existing++; continue; }
@@ -106,16 +124,15 @@ export async function findForDeal(o: FindOptions): Promise<DiscoveryOutcome> {
     seen.add(email);
     const fromListing = (b.listing_emails ?? []).some((e) => e.toLowerCase() === email);
     const today = hoursLine(b, o.timezone ?? DEFAULT_CONTACT_TIMEZONE, o.now);
-    out.push({ name: b.name, business_ref: b.business_ref, email, email_from: fromListing ? "listing" : "website", source: b.source, ...(today ? { hours_today: today } : {}), found: b });
-    if (out.length >= o.limit) break;
+    if (out.length < o.limit) out.push({ name: b.name, business_ref: b.business_ref, email, email_from: fromListing ? "listing" : "website", source: b.source, ...(today ? { hours_today: today } : {}), found: b });
   }
   if (!out.length) {
     const why = found.length
       ? `none of the ${found.length} ${o.category} businesses found near ${o.area} publish an email Haggle may use${skipped.suppressed ? ` (${skipped.suppressed} opted out or bounced)` : ""}${skipped.existing ? ` (${skipped.existing} already saved)` : ""}`
       : `no ${o.category} businesses were found near ${o.area}`;
-    return none("nothing_found", why, skipped);
+    return none("nothing_found", why, skipped, notEmailable);
   }
-  return { status: "ok", candidates: out, skipped };
+  return { status: "ok", candidates: out, skipped, ...(notEmailable.length ? { not_emailable: notEmailable } : {}) };
 }
 
 /** The preview entry for a found business (deal dry run and the unconfirmed real deal). */

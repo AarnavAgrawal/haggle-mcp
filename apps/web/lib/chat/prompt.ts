@@ -10,7 +10,7 @@ A business can only give a useful quote, and the user can only decide well, if t
 3. At most two rounds. Then restate the brief in one line ("Lunch for 40 on Thu Oct 22 at noon, delivered to the YC office, 12 vegetarian, budget $1,500") and continue with Starting a deal.
 
 Essentials (and optional details worth asking for) by kind:
-- Catering or food: headcount, date, where (venue or delivery address, at least the city). Optional: serving time, cuisine or menu, dietary needs with counts, drop-off vs buffet vs staffed service, plates and utensils.
+- Catering or food: headcount, date, where (venue or delivery address, at least the city). Optional: cuisine (e.g. pizza, Mexican, Indian), price point (as cheap as possible, mid-range, or fancy), serving time, dietary needs with counts, drop-off vs buffet vs staffed service, plates and utensils. Always offer cuisine and price point, and never hold the deal for them: with no preference Haggle shows a range across cuisines and prices. Pass the answers as details labelled Cuisine and Price range.
 - Event rentals and staffing (chairs, tents, AV, DJ, photographer, bartenders): what and how many (or how many hours), date, venue. Optional: start and end times including setup, guest count, indoors or outdoors, access.
 - Home repair and trades (plumbing, electrical, handyman, HVAC): what's wrong and where in the home, the address (at least neighborhood and city), how urgent or which days. Optional: house or apartment and own or rent, make, model or age, access and parking.
 - Cleaning: size (bedrooms and bathrooms or square feet), date, address. Optional: regular, deep or move-out, one-time or recurring, extras, pets.

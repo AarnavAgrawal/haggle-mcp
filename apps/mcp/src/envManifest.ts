@@ -163,7 +163,7 @@ export const ENV_MANIFEST: readonly EnvVarSpec[] = [
 
   // --- mock / rehearsal only (production refuses them) ----------------------------------------
   { name: "HAGGLE_SIM_DELAY_SCALE", purpose: "Simulated seller reply delay multiplier (0 = instant)", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
-  { name: "HAGGLE_MOCK_VENDORS", purpose: "none: rehearse a server with no vendor set up", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
+  { name: "HAGGLE_MOCK_VENDORS", purpose: "none: rehearse a server with no vendor set up; empty: no demo roster at all, like a real customer server", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_MOCK_PERSONAS_FILE", purpose: "Scripted simulated vendors (JSON file)", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_PLACES_FIXTURE", purpose: "Recorded listing (Google Places or Amazon Location) and website responses for discovery rehearsals", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_MOCK_DATABASE_URL", purpose: "Throwaway Postgres for mock restart rehearsals (never a real database)", secret: true, readBy: ["server"], need: MOCK_ONLY, rule: { kind: "postgresUrl" }, invalid: "error", conditional: true, dbUrl: true },
