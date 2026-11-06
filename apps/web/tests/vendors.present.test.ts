@@ -15,7 +15,7 @@ describe("words", () => {
     expect(channelLabel("imessage")).toBe("Text");
     expect(channelLabel("phone")).toBe("Phone call");
     expect(channelLabel("carrier_pigeon")).toBe("Other");
-    expect(basisLabel("public_listing_email")).toBe("Public listing, email only");
+    expect(basisLabel("public_listing_email")).toBe("Public listing");
     expect(basisLabel("operator_recorded")).toBe("Recorded by your admin");
     expect(basisLabel("unknown_basis")).toBe("Recorded");
   });

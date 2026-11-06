@@ -148,7 +148,7 @@ function PreviewCard({ card, active, onStart, onChange, onChangeLimit }: { card:
           {card.contact.length ? <Contacts list={card.contact} /> : null}
           {card.found.length ? (
             <>
-              <p className="cc-soft cc-small">Found by Haggle. Starting saves each one to your businesses and emails it (email only).</p>
+              <p className="cc-soft cc-small">Found by Haggle. Starting saves each one to your businesses and contacts it.</p>
               <FoundList list={card.found} removed={removed} active={active} onToggle={toggle} />
             </>
           ) : null}

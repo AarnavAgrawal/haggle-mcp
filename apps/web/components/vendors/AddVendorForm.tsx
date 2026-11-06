@@ -99,13 +99,13 @@ export function AddVendorForm({ open, prefill, left, onAdded, onCancel }: Props)
   return (
     <form ref={formRef} className="vf" onSubmit={submit} noValidate aria-busy={pending || undefined}>
       <div className="vf-body">
-        <p className="vf-lede">Haggle contacts only the businesses you add, only the way you record here, and never again once one asks it to stop.</p>
+        <p className="vf-lede">Haggle contacts this business the way you record here, and stops if it asks.</p>
 
         <Field label="Business name" error={errorFor("name")}>
           <input ref={nameRef} value={name} maxLength={120} autoComplete="organization" onBlur={touch("name")} onChange={(e) => (setName(e.target.value), edited("name"))} />
         </Field>
 
-        <Field label="What they do" hint="Haggle asks them only about this kind of work, e.g. plumbing or catering." error={errorFor("category")}>
+        <Field label="What they do" hint="Haggle asks them about this kind of work, e.g. plumbing or catering." error={errorFor("category")}>
           <input value={category} maxLength={40} list="vf-categories" autoComplete="off" onBlur={touch("category")} onChange={(e) => (setCategory(e.target.value), edited("category"))} />
         </Field>
         <datalist id="vf-categories">

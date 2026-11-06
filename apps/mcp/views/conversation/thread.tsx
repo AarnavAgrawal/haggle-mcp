@@ -127,7 +127,7 @@ export function Reply({ convo, onSent, compact }: { convo: Conversation; onSent:
         maxLength={MAX_REPLY}
         value={draft}
         onChange={(ev) => setDraft(ev.target.value)}
-        placeholder="Plain text. Real amounts only; Haggle won't name other businesses or commit to an order."
+        placeholder="Write a message to this business"
       />
       <div className="cv-reply-bar">
         <span className={`cv-count${draft.length > MAX_REPLY * 0.9 ? " is-near" : ""}`}>

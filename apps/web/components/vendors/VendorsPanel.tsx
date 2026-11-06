@@ -106,7 +106,7 @@ export function VendorsPanel({ list, canAdd, cantAddReason }: { list: VendorList
           </Button>
         )}
       </header>
-        <p className="vend-intro">Optional. Haggle finds businesses for each request itself. Save your favorites here, and businesses that agreed to calls or texts.</p>
+        <p className="vend-intro">Optional. Haggle finds businesses for each request itself. Save your favorites here.</p>
 
       <FindBusinesses inputRef={searchRef} isVendor={(name) => known.has(canonName(name))} canAdd={!addBlocked} onAdd={openFor} onAddBlank={openBlank} />
 
@@ -138,7 +138,7 @@ export function VendorsPanel({ list, canAdd, cantAddReason }: { list: VendorList
               </>
             }
           >
-            Haggle asks only the businesses you add here for quotes.
+            Haggle finds businesses for each request. Save your favorites and it asks them too.
           </EmptyState>
         )}
       </section>

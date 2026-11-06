@@ -219,8 +219,8 @@ export function contactStatus(routes: Route[], learning: ContactLearning | null)
   const summary =
     state === "discovered" ? "Found in a public listing, but no phone or email is published: Haggle has no way to reach it."
     : state === "contact_found" ? `Contact details found, not usable: ${routes[0]!.blocker}`
-    : state === "authorized" ? `Haggle may contact it by ${ready!.channel === "phone" ? "Voice AI call" : ready!.channel}; it hasn't replied to Haggle before.`
-    : `Haggle may contact it by ${ready!.channel === "phone" ? "Voice AI call" : ready!.channel}, and it has replied to Haggle before.`;
+    : state === "authorized" ? `Haggle can contact it by ${ready!.channel === "phone" ? "Voice AI call" : ready!.channel}; it hasn't replied to Haggle before.`
+    : `Haggle can contact it by ${ready!.channel === "phone" ? "Voice AI call" : ready!.channel}, and it has replied to Haggle before.`;
   return { state, routes, responded_before: responded, summary };
 }
 
