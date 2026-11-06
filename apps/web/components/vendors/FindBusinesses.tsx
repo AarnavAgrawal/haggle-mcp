@@ -136,7 +136,7 @@ export function FindBusinesses({ inputRef, isVendor, canAdd, onAdd, onAddBlank }
                 ))}
               </ul>
               <p className="vr-foot">
-                Listings from {result.attribution ?? "public listings"}. Haggle contacts none of these until you add them.
+                Listings from {result.attribution ?? "public listings"}. Save the ones you like.
               </p>
             </div>
           ) : (

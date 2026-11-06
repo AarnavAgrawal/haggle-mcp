@@ -29,7 +29,7 @@ describe("contact state badge", () => {
   it("says plainly whether Haggle may contact the business", () => {
     expect(contactBadge("discovered").label).toBe("Not contactable");
     expect(contactBadge("contact_found").label).toBe("Contact found · not authorized");
-    expect(contactBadge("authorized").label).toBe("Haggle may contact");
+    expect(contactBadge("authorized").label).toBe("Ready to contact");
     expect(contactBadge("verified_responsive").label).toBe("Has replied before");
   });
   it("never reads an unknown state as contactable", () => {

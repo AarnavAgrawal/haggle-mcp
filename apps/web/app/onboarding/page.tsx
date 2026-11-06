@@ -53,7 +53,7 @@ export default function OnboardingPage() {
         </Link>
         <div className="ui-sheet auth-sheet auth-wide">
           <h1>Set up your workspace</h1>
-          <p className="auth-sub">Haggle contacts businesses for you and never pays anything without your approval.</p>
+          <p className="auth-sub">Haggle finds and contacts businesses for you and never pays anything without your approval.</p>
           <form className="onb-form" action={action} onSubmit={onSubmit}>
             <fieldset className="onb-group">
               <legend>Your workspace</legend>

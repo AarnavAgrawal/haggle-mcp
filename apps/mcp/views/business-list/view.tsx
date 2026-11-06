@@ -79,7 +79,7 @@ function BusinessList({ data, category, area }: { data: DiscoverOut; category?: 
           </h1>
           <p className="hg-muted">
             {found.length
-              ? `${found.length} found in public listings · ${found.filter((f) => f.contact_state === "authorized" || f.contact_state === "verified_responsive").length} Haggle may contact`
+              ? `${found.length} found in public listings · ${found.filter((f) => f.contact_state === "authorized" || f.contact_state === "verified_responsive").length} ready to contact`
               : "No public listings in this result"}
           </p>
         </div>

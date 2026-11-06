@@ -39,7 +39,7 @@ const CHANNELS: { icon: IconName; name: string; does: string }[] = [
 const PROMISES: { fact: string; detail: string }[] = [
   { fact: "Nothing is ordered or paid until you approve.", detail: "You approve one exact quote, in the app or by replying to a text, and never above your spending cap." },
   { fact: "Every call says it is an AI assistant.", detail: "Haggle never poses as you or as a person, on the phone or in writing." },
-  { fact: "Haggle only contacts businesses you confirm.", detail: "It searches public listings for businesses that fit your request and shows you who it found. Nothing goes out until you say yes." },
+  { fact: "You confirm every business before Haggle reaches out.", detail: "Haggle finds businesses that fit your request and shows you who it will contact. Nothing goes out until you say yes." },
 ];
 
 const SECTIONS: { id: string; label: string }[] = [
@@ -95,8 +95,8 @@ export default async function Home() {
                 <span className="lp-line">Real quotes from real businesses, without making the calls.</span>
               </h1>
               <p className="lp-lede">
-                Tell Haggle what you need. It emails, phones and texts the businesses you choose, reads every reply, and pushes the price down with the other quotes
-                it gets. You pick the winner.
+                Tell Haggle what you need. It finds the right businesses, emails, phones and texts them, reads every reply, and pushes the price down with the other
+                quotes it gets. You pick the winner.
               </p>
               <Ctas />
             </div>
