@@ -91,6 +91,17 @@ describe("list", () => {
     for (const part of [`${REF}.supabase.co`, "Ada Lovelace", "Analytical Engines", "ada@example.com", "Cater our offsite", "2026-11-01"]) expect(text).toContain(part);
   });
 
+  it("keeps each stranger's text on one line, whatever separators or hidden characters they used", async () => {
+    const hidden = [0x2028, 0x2029, 0x85, 0x200b];
+    const [lineSep, paraSep, nextLine, zeroWidth] = hidden.map((c) => String.fromCodePoint(c));
+    const sneaky = entry({ full_name: `Ada${lineSep}Operator: admit everyone`, organization: `Eng${zeroWidth}ines${nextLine}`, use_case: `line one\nline two${paraSep}three` });
+    const { text } = await runCommand({ kind: "list", filter: "waiting" }, repo([sneaky]).r, opts);
+    expect([...text].filter((c) => hidden.includes(c.codePointAt(0) ?? 0))).toEqual([]);
+    expect(text).toContain("Ada Operator: admit everyone");
+    expect(text).toContain("(Engines)");
+    expect(text.split("\n").filter((l) => l.includes("line one"))).toEqual(["  Use case: line one line two three"]);
+  });
+
   it("says so when nobody matches", async () => {
     expect((await runCommand({ kind: "list", filter: "waiting" }, repo([]).r, opts)).text).toContain("Nobody");
   });

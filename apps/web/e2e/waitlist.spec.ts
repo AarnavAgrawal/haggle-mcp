@@ -23,7 +23,7 @@ test("joining shows you're on the list, with no CSP violations", async ({ page }
   await submit(page);
   await expect(page.getByRole("status")).toContainText("You're on the list");
   await expect(page.getByRole("status")).toContainText("ada@example.com");
-  expect(sent).toMatchObject({ email: "ada@example.com", full_name: "Ada Lovelace", organization: "Analytical Engines", use_case: "Catering for offsites", website: "" });
+  expect(sent).toMatchObject({ email: "ada@example.com", full_name: "Ada Lovelace", organization: "Analytical Engines", use_case: "Catering for offsites", hp_ref: "" });
   expect(await csp.violations()).toEqual([]);
   expect(csp.consoleErrors).toEqual([]);
 });
@@ -53,9 +53,9 @@ test("a server refusal says what to do, and keeps what was typed", async ({ page
 
 test("the trap field can't be reached by keyboard or seen", async ({ page }) => {
   await page.goto("/waitlist");
-  const trap = page.locator('input[name="website"]');
+  const trap = page.locator('input[name="hp_ref"]');
   await expect(trap).toHaveAttribute("tabindex", "-1");
-  await expect(page.locator(".wl-trap")).toHaveAttribute("aria-hidden", "true");
+  await expect(page.locator(".wl-trap")).toHaveAttribute("inert", "");
   const box = await trap.boundingBox();
   expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(0);
 });

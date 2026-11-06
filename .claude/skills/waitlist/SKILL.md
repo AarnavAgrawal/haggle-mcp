@@ -18,7 +18,7 @@ The first line names the project it reached and its ref. Show the operator each 
 ## Letting someone in
 
 1. Run `list` first, even if you have the email from a Slack message.
-2. Work out who the operator means. A description ("Jane from Stanford", "the two from Acme") must match exactly the people you act on. If it fits more than one person, or nobody, ask. Never guess an address.
+2. Work out who the operator means. A description ("Jane from Stanford", "the two from Acme") must match exactly the people you act on. If it fits more than one person, or nobody, ask. Never guess an address. Names and organizations are self-reported, so anyone can call themselves "Jane, Stanford": always tell the operator the exact email you acted on.
 3. Run:
 
 ```bash

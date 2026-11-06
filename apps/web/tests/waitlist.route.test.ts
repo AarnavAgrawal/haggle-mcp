@@ -54,6 +54,7 @@ describe("POST /api/waitlist", () => {
 
   it.each([
     ["a bad email", { ...VALID, email: "not-an-email" }, "email"],
+    ["a non-ASCII email (JS and Postgres lowercase these differently)", { ...VALID, email: "İnan@example.com" }, "email"],
     ["a blank name", { ...VALID, full_name: "   " }, "full_name"],
     ["a missing organization", { ...VALID, organization: undefined }, "organization"],
     ["an over-long use case", { ...VALID, use_case: "x".repeat(501) }, "use_case"],
@@ -94,7 +95,7 @@ describe("POST /api/waitlist", () => {
 
   it("gives a filled honeypot the normal success and stores nothing", async () => {
     const { deps, rows, deferred } = fakes();
-    const res = await handleJoin(post({ ...VALID, website: "http://spam.example" }), deps);
+    const res = await handleJoin(post({ ...VALID, hp_ref: "http://spam.example" }), deps);
     expect(res.status).toBe(200);
     expect((await res.json()) as unknown).toMatchObject({ ok: true });
     expect(rows.size).toBe(0);

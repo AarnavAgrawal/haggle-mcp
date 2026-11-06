@@ -9,9 +9,9 @@
 
 create table if not exists public.web_waitlist (
   id           uuid primary key default gen_random_uuid(),
-  email        text not null unique check (email = lower(email) and length(email) between 3 and 254),
-  full_name    text not null check (length(full_name) between 1 and 120),
-  organization text not null check (length(organization) between 1 and 160),
+  email        text not null unique check (email = lower(btrim(email)) and length(email) between 3 and 254),
+  full_name    text not null check (length(btrim(full_name)) between 1 and 120),
+  organization text not null check (length(btrim(organization)) between 1 and 160),
   use_case     text check (use_case is null or length(use_case) <= 500),
   created_at   timestamptz not null default now(),
   admitted_at  timestamptz,

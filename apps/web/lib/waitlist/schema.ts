@@ -11,7 +11,8 @@ export interface WaitlistRow {
 export type WaitlistField = keyof WaitlistRow;
 export type WaitlistErrors = Partial<Record<WaitlistField, string>>;
 
-const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Printable ASCII only: JS and Postgres lowercase some other letters differently, and the table checks email = lower(email).
+const EMAIL = /^[!-?A-~]+@[!-?A-~]+\.[!-?A-~]+$/;
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
 /** The row to store, or what's wrong with each field (in the form's order). */

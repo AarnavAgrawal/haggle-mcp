@@ -349,6 +349,7 @@ The criteria for rolling back are in [runbook-incidents.md](runbook-incidents.md
 | `WEB_CHAT_DAILY_CAP` | web | Chat turns per UTC day, site-wide (e.g. `2000`). Past it, the chat answers 429 until tomorrow |
 | Per-user chat limit | web (code) | 20 turns per 10 minutes per user |
 | Approval route limit | web (code) | 30 actions per minute per user |
+| Waitlist limits | web (code) | 5 joins an hour per address; 2,000 a day across the site. Past the daily limit, joins answer 429 until tomorrow |
 | `HAGGLE_AI_DAILY_TOKEN_BUDGET`, `HAGGLE_AI_MAX_CALLS_PER_JOB` | server | Claude tokens per day and calls per job. Past them, replies wait for the human and nothing fails open |
 | Anthropic spend limits | Anthropic console | A monthly limit on **both** keys, with email alerts |
 | Per-workspace vendor limits | server (code) | At most 100 vendors per workspace and 25 additions per day |

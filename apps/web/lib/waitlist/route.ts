@@ -15,9 +15,9 @@ export type { WaitlistRow };
 export interface WaitlistDeps {
   /** Adds the entry unless the email is already there; true when a row was really added. */
   insert(row: WaitlistRow): Promise<boolean>;
-  /** Per client address: 5 joins per 10 minutes. */
+  /** Per client address: 5 joins an hour, so one address can't use up the day's cap on its own. */
   ipLimiter: Limiter;
-  /** Across the site: 500 joins per UTC day (key "site"). */
+  /** Across the site: 2,000 joins per UTC day (key "site"). */
   dailyLimiter: Limiter;
   /** Tells the operator (Slack). Never throws. */
   announce(row: WaitlistRow): Promise<void>;
@@ -41,7 +41,7 @@ export async function handleJoin(req: Request, deps: WaitlistDeps): Promise<Resp
 
   const raw = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   if (raw === null || typeof raw !== "object") return accountError(400, "bad_body", "The request body isn't JSON.", "Send a JSON body.");
-  if (raw.website) return accountJson(200, JOINED); // the hidden field only a bot fills in
+  if (raw.hp_ref) return accountJson(200, JOINED); // the hidden field only a bot fills in
 
   const parsed = parseJoin(raw);
   if (!parsed.ok) {

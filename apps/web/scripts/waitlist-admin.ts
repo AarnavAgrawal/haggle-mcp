@@ -119,8 +119,8 @@ export function planCommand(argv: string[]): Command {
 /** The project ref in a Supabase URL (https://<ref>.supabase.co). */
 export const projectRefOf = (url: string) => new URL(url).hostname.split(".")[0]!;
 
-/** Strangers typed this: one line each, no control characters reaching the terminal. */
-const oneLine = (s: string) => s.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+/** Strangers typed this: one line each, nothing invisible, so what is shown is what is there. */
+const oneLine = (s: string) => s.replace(/\p{Cf}+/gu, "").replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim();
 const day = (iso: string) => iso.slice(0, 10);
 const who = (e: Pick<WaitlistEntry, "full_name" | "organization" | "email">) => `${oneLine(e.full_name)} (${oneLine(e.organization)}) <${e.email}>`;
 
@@ -179,6 +179,15 @@ function supabaseRepo(url: string, serviceKey: string): WaitlistRepo {
   const check = ({ error }: { error: { message: string } | null }) => {
     if (error) throw new Error(error.message);
   };
+  /** The Auth admin API has no lookup by email, so this pages through users. */
+  const findUser = async (email: string) => {
+    for (let page = 1; ; page++) {
+      const { data, error } = await db.auth.admin.listUsers({ page, perPage: 1000 });
+      if (error) throw new Error(error.message);
+      const found = data.users.find((u) => u.email?.toLowerCase() === email);
+      if (found || data.users.length < 1000) return found ?? null;
+    }
+  };
   return {
     async list(filter) {
       const q = table().select(COLUMNS).order("created_at");
@@ -196,8 +205,17 @@ function supabaseRepo(url: string, serviceKey: string): WaitlistRepo {
     markNotified: async (email, at) => check(await table().update({ notified_at: at }).eq("email", email)),
     remove: async (email) => check(await table().delete().eq("email", email)),
     async ensureUser(email) {
-      const { error } = await db.auth.admin.createUser({ email, email_confirm: true });
-      if (error && error.code !== "email_exists") throw new Error(error.message);
+      const create = () => db.auth.admin.createUser({ email, email_confirm: true });
+      const { error } = await create();
+      if (!error) return;
+      if (error.code !== "email_exists") throw new Error(error.message);
+      // Anyone can start a sign-up for any address with a password of their own. If that account were
+      // kept, this person's link would confirm it and whoever started it could sign in as them. A real
+      // user's account is confirmed, and an unconfirmed one can't hold anything, so replace it.
+      const existing = await findUser(email);
+      if (!existing || existing.email_confirmed_at) return;
+      check(await db.auth.admin.deleteUser(existing.id));
+      check(await create());
     },
     async sendLink(email) {
       check(await db.auth.signInWithOtp({ email, options: { shouldCreateUser: false } }));

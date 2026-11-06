@@ -1,24 +1,23 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState, type ChangeEvent, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { parseJoin, type WaitlistErrors, type WaitlistField } from "@/lib/waitlist/schema";
 import "./waitlist.css";
 
-type Values = Record<WaitlistField | "website", string>;
+type Values = Record<WaitlistField | "hp_ref", string>;
 
 const FIELD_ORDER: WaitlistField[] = ["email", "full_name", "organization", "use_case"];
 
 /**
  * The waitlist form: self-contained, with its own styles, so it can sit on any page. `email` fixes the
  * address for someone already signed in. The server checks everything again (lib/waitlist/route.ts).
- * `website` is a trap: people never see it, so only a bot fills it in.
+ * `hp_ref` is a trap: people never see it, so only a bot fills it in. Its name means nothing, so browser
+ * autofill leaves it alone and a real person is never taken for a bot.
  */
 export function WaitlistForm({ email: fixedEmail }: { email?: string }) {
-  const router = useRouter();
-  const [values, setValues] = useState<Values>({ email: fixedEmail ?? "", full_name: "", organization: "", use_case: "", website: "" });
+  const [values, setValues] = useState<Values>({ email: fixedEmail ?? "", full_name: "", organization: "", use_case: "", hp_ref: "" });
   const [errors, setErrors] = useState<WaitlistErrors>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [state, setState] = useState<"idle" | "sending" | "joined">("idle");
@@ -44,11 +43,10 @@ export function WaitlistForm({ email: fixedEmail }: { email?: string }) {
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: { field?: WaitlistField; message?: string; fix?: string } };
       if (res.ok && body.ok) {
         setState("joined");
-        if (fixedEmail) router.refresh(); // the page now shows their place on the list
         return;
       }
       setState("idle");
-      if (body.error?.field && body.error.message) showErrors({ [body.error.field]: body.error.message });
+      if (body.error?.field && body.error.message && FIELD_ORDER.includes(body.error.field)) showErrors({ [body.error.field]: body.error.message });
       else setFailure([body.error?.message ?? "We couldn't add you to the list.", body.error?.fix].filter(Boolean).join(" "));
     } catch {
       setState("idle");
@@ -81,10 +79,10 @@ export function WaitlistForm({ email: fixedEmail }: { email?: string }) {
       <Field label="What would you use Haggle for?" optional error={errors.use_case}>
         <textarea id="wl-use_case" rows={3} maxLength={500} placeholder="Catering for our team offsites" value={values.use_case} onChange={set("use_case")} />
       </Field>
-      <div className="wl-trap" aria-hidden="true">
+      <div className="wl-trap" inert>
         <label>
           Leave this empty
-          <input type="text" name="website" tabIndex={-1} autoComplete="off" value={values.website} onChange={set("website")} />
+          <input type="text" name="hp_ref" tabIndex={-1} autoComplete="off" value={values.hp_ref} onChange={set("hp_ref")} />
         </label>
       </div>
       {failure && (

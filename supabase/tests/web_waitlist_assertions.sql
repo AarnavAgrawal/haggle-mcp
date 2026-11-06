@@ -18,6 +18,9 @@ insert into public.web_waitlist (email, full_name, organization) values ('assert
 select pg_temp.expect_fail('duplicate email', $q$insert into public.web_waitlist (email, full_name, organization) values ('assert@example.com', 'Other', 'Org')$q$);
 select pg_temp.expect_fail('uppercase email', $q$insert into public.web_waitlist (email, full_name, organization) values ('Assert2@example.com', 'Ada', 'Engines')$q$);
 select pg_temp.expect_fail('empty name', $q$insert into public.web_waitlist (email, full_name, organization) values ('a3@example.com', '', 'Engines')$q$);
+select pg_temp.expect_fail('blank name', $q$insert into public.web_waitlist (email, full_name, organization) values ('a7@example.com', '   ', 'Engines')$q$);
+select pg_temp.expect_fail('blank organization', $q$insert into public.web_waitlist (email, full_name, organization) values ('a8@example.com', 'Ada', '   ')$q$);
+select pg_temp.expect_fail('padded email', $q$insert into public.web_waitlist (email, full_name, organization) values (' a9@example.com', 'Ada', 'Engines')$q$);
 select pg_temp.expect_fail('missing organization', $q$insert into public.web_waitlist (email, full_name) values ('a4@example.com', 'Ada')$q$);
 select pg_temp.expect_fail('over-long use case', $q$insert into public.web_waitlist (email, full_name, organization, use_case) values ('a5@example.com', 'Ada', 'Engines', repeat('x', 501))$q$);
 select pg_temp.expect_fail('admitted with nobody recorded', $q$update public.web_waitlist set admitted_at = now() where email = 'assert@example.com'$q$);
