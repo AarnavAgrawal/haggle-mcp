@@ -16,6 +16,7 @@ import { haggleClient, provisionWorkspace } from "@/lib/haggle";
 import { GUEST_REFUSED_PATH, isAllowedUser } from "@/lib/account/gate";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { supabaseServer } from "@/lib/supabase/server";
+import { admissionState, mayProvision, NotAdmittedError, type Admission } from "@/lib/waitlist/gate";
 
 export { isAllowedUser };
 
@@ -62,7 +63,22 @@ export const membership = cache(async (userId: string): Promise<{ workspace_id: 
 });
 
 /**
- * The signed-in user's Haggle client; sends them to /login or /onboarding when there is none yet.
+ * Where this person stands with the waitlist (lib/waitlist/gate.ts), by the email on their verified
+ * session. Throws when it can't tell, so a database problem never reads as admitted. One lookup per request.
+ */
+export const admission = cache(async (user: SessionUser): Promise<Admission> =>
+  admissionState(user, {
+    isMember: async (id) => !!(await membership(id)),
+    lookup: async (email) => {
+      const { data, error } = await supabaseAdmin().from("web_waitlist").select("admitted_at").eq("email", email).maybeSingle();
+      if (error) throw new Error(`waitlist lookup failed: ${error.message}`);
+      return data ? { admitted: data.admitted_at !== null } : null;
+    },
+  }),
+);
+
+/**
+ * The signed-in user's Haggle client; sends them to /login, /onboarding or /waitlist when there is none yet.
  * Cached per request: the (app) layout and the page share one result (and one auto-onboarding).
  */
 export const requireHaggle = cache(async () => {
@@ -72,15 +88,19 @@ export const requireHaggle = cache(async () => {
   const m = await membership(user.id);
   if (!m) {
     // Guests, and everyone on a demo site, get their workspace without the onboarding form.
-    if (!autoOnboard(user)) redirect("/onboarding");
+    if (!autoOnboard(user)) redirect(mayProvision(await admission(user)) ? "/onboarding" : "/waitlist");
     const workspaceId = await onboard(user, { name: user.is_anonymous ? "Guest workspace" : "Demo workspace" });
     return { user, workspaceId, haggle: haggleClient(haggleConfig(), workspaceId) };
   }
   return { user, workspaceId: m.workspace_id, haggle: haggleClient(haggleConfig(), m.workspace_id) };
 });
 
-/** Onboarding: the MCP server creates the workspace (once per user); this app records the membership. */
+/**
+ * Onboarding: the MCP server creates the workspace (once per user); this app records the membership.
+ * The waitlist's real gate: this is the only self-serve way to a workspace, so it refuses anyone not admitted.
+ */
 export async function onboard(user: SessionUser, input: { name: string; approverPhone?: string; capUsd?: number; area?: string }): Promise<string> {
+  if (!mayProvision(await admission(user))) throw new NotAdmittedError();
   const r = await provisionWorkspace(haggleConfig(), {
     owner_ref: user.id, name: input.name, ...(user.email ? { approver_email: user.email } : {}),
     ...(input.approverPhone ? { approver_phone: input.approverPhone } : {}), ...(input.capUsd ? { cap_usd: input.capUsd } : {}), ...(input.area ? { area: input.area } : {}),

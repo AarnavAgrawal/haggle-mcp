@@ -26,4 +26,7 @@ export const limiters = {
   /** Account deletion: 3 attempts per user per 10 minutes; data export: 5. */
   accountDelete: shared("web_account_delete", 3, 600),
   accountExport: shared("web_account_export", 5, 600),
+  /** Waitlist joins (public, keyed by a hash of the address): 5 per 10 minutes; 500 per UTC day across the site (key "site"). */
+  waitlistJoin: shared("web_waitlist_join", 5, 600),
+  waitlistDaily: shared("web_waitlist_daily", 500, DAY_S),
 };

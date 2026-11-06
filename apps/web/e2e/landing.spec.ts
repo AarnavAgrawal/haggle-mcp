@@ -21,7 +21,8 @@ test("Haggle is the first and largest thing on the page", async ({ page }) => {
   expect(box.width).toBeGreaterThan(1440 * 0.5);
   expect(box.y + box.height).toBeLessThan(900);
   await expect(page.getByRole("heading", { level: 1, name: /haggle.*real quotes from real businesses/i })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Get started" }).first()).toHaveAttribute("href", "/login");
+  await expect(page.getByRole("link", { name: "Join the waitlist" }).first()).toHaveAttribute("href", "/waitlist");
+  await expect(page.getByRole("link", { name: "Sign in" }).first()).toHaveAttribute("href", "/login");
 });
 
 test("the top bar links to each section and marks where you are", async ({ page }) => {

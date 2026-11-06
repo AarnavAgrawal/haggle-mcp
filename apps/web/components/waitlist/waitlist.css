@@ -1,0 +1,52 @@
+/* The waitlist form and its page. The form brings its own styles so it can sit on any page. Tokens: globals.css. */
+.wl-form {
+  display: grid;
+  gap: var(--s-4);
+  margin-top: var(--s-6);
+}
+.wl-form textarea {
+  resize: vertical;
+}
+/* The bot trap: off screen rather than display:none, which bots skip. */
+.wl-trap {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+.wl-joined {
+  margin-top: var(--s-6);
+  padding: 14px 16px;
+  border-radius: var(--r-control);
+  background: var(--pen-wash);
+  font-size: var(--t-15);
+}
+.wl-joined-title {
+  margin-bottom: 2px;
+  font-weight: 650;
+}
+.wl-joined strong {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.wl-data {
+  margin-top: var(--s-6);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--rule);
+  font-size: var(--t-15);
+}
+.wl-data summary {
+  color: var(--pen);
+  font-weight: 600;
+  cursor: pointer;
+}
+.wl-data-body {
+  display: grid;
+  gap: var(--s-4);
+  margin-top: var(--s-3);
+  color: var(--ink-2);
+}
+.wl-data-body .btn {
+  justify-self: start;
+}

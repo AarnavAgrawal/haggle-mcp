@@ -48,6 +48,9 @@ const SECTIONS: { id: string; label: string }[] = [
   { id: "your-control", label: "Your control" },
 ];
 
+/** Haggle is by invitation, so visitors join the waitlist. A demo site has no waitlist: anyone can sign in. */
+const JOIN = DEMO ? { href: "/login", label: "Get started" } : { href: "/waitlist", label: "Join the waitlist" };
+
 /** Public landing page; a signed-in visitor goes straight to a new request. */
 export default async function Home() {
   if (await sessionUser()) redirect("/chat");
@@ -72,8 +75,8 @@ export default async function Home() {
             <Link className={buttonClass("quiet")} href="/login">
               Sign in
             </Link>
-            <Link className={buttonClass("primary")} href="/login">
-              Get started
+            <Link className={buttonClass("primary")} href={JOIN.href}>
+              {JOIN.label}
             </Link>
           </div>
         </div>
@@ -182,13 +185,13 @@ export default async function Home() {
   );
 }
 
-/** Get started (sign in) and, on a demo site, a one-click guest demo. */
+/** Join the waitlist, or on a demo site, sign in and a one-click guest demo. */
 function Ctas() {
   return (
     <div className="lp-ctas">
       {DEMO ? <GuestButton label="Try the demo" /> : null}
-      <Link className={buttonClass(DEMO ? "default" : "primary")} href="/login">
-        Get started
+      <Link className={buttonClass(DEMO ? "default" : "primary")} href={JOIN.href}>
+        {JOIN.label}
       </Link>
     </div>
   );

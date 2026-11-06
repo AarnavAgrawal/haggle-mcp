@@ -121,6 +121,11 @@ export function checkWebEnv(env: Env, site: Site): EnvReport {
   else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(support)) add("NEXT_PUBLIC_SUPPORT_EMAIL", "fail", "not an email address");
   else add("NEXT_PUBLIC_SUPPORT_EMAIL", "pass", "an email address");
 
+  const slack = val(env, "WAITLIST_SLACK_WEBHOOK_URL");
+  if (!slack) add("WAITLIST_SLACK_WEBHOOK_URL", "pass", "not set: no Slack message on a new waitlist entry (optional)");
+  else if (parseUrl(slack)?.protocol !== "https:") add("WAITLIST_SLACK_WEBHOOK_URL", "fail", "must be an https:// URL (the URL is itself a secret)");
+  else add("WAITLIST_SLACK_WEBHOOK_URL", "pass", "https URL");
+
   const output = val(env, "NEXT_OUTPUT");
   if (output && output !== "standalone") add("NEXT_OUTPUT", "fail", "only standalone is supported (the container image)");
 

@@ -87,3 +87,13 @@ describe("proxy CSP nonce", () => {
     expect(csp).toMatch(/script-src [^;]*'strict-dynamic' https:\/\/challenges\.cloudflare\.com/);
   });
 });
+
+describe("proxy public pages", () => {
+  it("lets a signed-out visitor reach the waitlist", async () => {
+    expect((await proxy(req("/waitlist"))).headers.get("location")).toBeNull();
+  });
+
+  it("still sends a signed-out visitor away from the app", async () => {
+    expect((await proxy(req("/waitlisted"))).headers.get("location")).toContain("/login");
+  });
+});

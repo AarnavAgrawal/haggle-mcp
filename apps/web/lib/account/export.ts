@@ -10,6 +10,8 @@ export interface ExportDeps {
   loadMessages(threadIds: string[]): Promise<{ thread_id: string; role: string; content: unknown; created_at: string }[]>;
   listDeals(): Promise<{ job_id: string; [k: string]: unknown }[]>;
   getQuotes(jobId: string): Promise<Record<string, unknown>>;
+  /** What this person gave the waitlist, if they joined it. */
+  loadWaitlist(): Promise<{ email: string; full_name: string; organization: string; use_case: string | null; created_at: string; admitted_at: string | null } | null>;
   now?: () => Date;
 }
 
@@ -36,6 +38,7 @@ export async function buildExport(d: ExportDeps) {
     format: "haggle-export/1",
     generated_at: (d.now?.() ?? new Date()).toISOString(),
     account: { user_id: d.user.id, email: d.user.email, ...(d.user.created_at ? { created_at: d.user.created_at } : {}), workspace_id: d.workspaceId },
+    waitlist: await d.loadWaitlist(),
     chat: threads.map((t) => ({ ...t, messages: messages.filter((m) => m.thread_id === t.id).map(({ role, content, created_at }) => ({ role, content, created_at })) })),
     deals,
     ...(dealsError ? { deals_error: dealsError } : {}),

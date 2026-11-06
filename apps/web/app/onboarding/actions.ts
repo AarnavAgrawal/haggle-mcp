@@ -2,8 +2,9 @@
 
 import { redirect } from "next/navigation";
 import { recordTermsAcceptance } from "@/lib/account/profile";
-import { membership, onboard, sessionUser } from "@/lib/workspace";
+import { admission, membership, onboard, sessionUser } from "@/lib/workspace";
 import { HaggleError } from "@/lib/haggle";
+import { mayProvision } from "@/lib/waitlist/gate";
 
 export type OnboardState = { error: string | null };
 
@@ -17,6 +18,14 @@ export async function createWorkspace(_prev: OnboardState, form: FormData): Prom
   const user = await sessionUser();
   if (!user) redirect("/login");
   if (!(await membership(user.id))) {
+    // Before anything is stored. onboard() refuses too; this sends them to /waitlist instead of showing an error.
+    let admitted: boolean;
+    try {
+      admitted = mayProvision(await admission(user));
+    } catch {
+      return { error: "Couldn't check your place on the waitlist. Try again in a moment." };
+    }
+    if (!admitted) redirect("/waitlist");
     const name = String(form.get("name") ?? "").trim() || "My workspace";
     const phone = String(form.get("approver_phone") ?? "").replace(/[\s().-]/g, "");
     const cap = Number(String(form.get("cap_usd") ?? "").replace(/[$,]/g, ""));

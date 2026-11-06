@@ -8,6 +8,7 @@ import { NONCE_RE, watchCsp } from "./csp";
 const PAGES: { path: string; heading: RegExp }[] = [
   { path: "/", heading: /real quotes from real businesses/i },
   { path: "/login", heading: /sign in/i },
+  { path: "/waitlist", heading: /waitlist/i },
   { path: "/terms", heading: /terms/i },
   { path: "/privacy", heading: /privacy/i },
   { path: "/acceptable-use", heading: /acceptable use/i },

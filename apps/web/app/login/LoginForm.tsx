@@ -106,7 +106,7 @@ export function LoginForm({ notice }: { notice: string | null }) {
   return (
     <div className="ui-sheet auth-sheet">
       <h1>Sign in to Haggle</h1>
-      <p className="auth-sub">New here? Signing in creates your account.</p>
+      <p className="auth-sub">{DEMO ? "New here? Signing in creates your account." : <>New here? <Link href="/waitlist">Join the waitlist</Link>.</>}</p>
       {notice && (
         <p className="note auth-notice" role="status">
           {notice}

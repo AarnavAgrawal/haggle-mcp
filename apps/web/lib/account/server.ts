@@ -39,6 +39,12 @@ export function exportDeps(user: User, m: Member): ExportDeps {
       if (!haggle) throw new Error("No workspace.");
       return (await haggle.callTool<Record<string, unknown>>("get_quotes", { job_id: jobId })).data; // data only: never meta
     },
+    async loadWaitlist() {
+      if (!user.email) return null;
+      const { data, error } = await db.from("web_waitlist").select("email, full_name, organization, use_case, created_at, admitted_at").eq("email", user.email.toLowerCase()).maybeSingle();
+      if (error) throw new Error(`couldn't read your waitlist entry: ${error.message}`);
+      return data;
+    },
   };
 }
 
@@ -53,6 +59,9 @@ export function deleteDeps(user: User, m: Member): DeleteDeps {
     deleteThreads: async () => check("couldn't delete your chats")(await db.from("chat_threads").delete().eq("user_id", user.id)),
     deleteMemberships: async () => check("couldn't remove your workspace membership")(await db.from("workspace_members").delete().eq("user_id", user.id)),
     deleteProfile: async () => check("couldn't delete your profile")(await db.from("web_profiles").delete().eq("user_id", user.id)),
+    deleteWaitlistEntry: async () => {
+      if (user.email) check("couldn't delete your waitlist entry")(await db.from("web_waitlist").delete().eq("email", user.email.toLowerCase()));
+    },
     deleteAuthUser: async () => check("couldn't delete your sign-in")(await db.auth.admin.deleteUser(user.id)),
     signOut: async () => {
       await (await supabaseServer()).auth.signOut();

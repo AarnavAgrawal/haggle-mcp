@@ -4,7 +4,7 @@
 /** Without these the app can't sign anyone in or reach Haggle. */
 export const REQUIRED_ENV = ["HAGGLE_SERVICE_TOKEN", "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"] as const;
 /** Features degrade without these (chat, bot protection, support contact, MCP URL defaults to localhost). */
-export const OPTIONAL_ENV = ["HAGGLE_MCP_URL", "ANTHROPIC_API_KEY", "NEXT_PUBLIC_TURNSTILE_SITE_KEY", "NEXT_PUBLIC_SUPPORT_EMAIL", "WEB_CHAT_DAILY_CAP"] as const;
+export const OPTIONAL_ENV = ["HAGGLE_MCP_URL", "ANTHROPIC_API_KEY", "NEXT_PUBLIC_TURNSTILE_SITE_KEY", "NEXT_PUBLIC_SUPPORT_EMAIL", "WEB_CHAT_DAILY_CAP", "WAITLIST_SLACK_WEBHOOK_URL"] as const;
 
 export interface HealthReport {
   ok: boolean;

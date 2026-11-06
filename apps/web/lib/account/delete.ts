@@ -1,11 +1,11 @@
 // "Delete my account", in a fixed order so a failure never leaves a live workspace behind a deleted
 // user: (1) the MCP server cancels open deals and revokes the workspace (POST /internal/account/revoke),
 // (2) chat threads (their messages cascade), (3) the membership, (4) the terms acceptance, (5) the
-// Supabase Auth user, (6) the session cookie. If the revoke fails nothing else is touched; it is
+// waitlist entry, (6) the Supabase Auth user, (7) the session cookie. If the revoke fails nothing else is touched; it is
 // idempotent on the server, so a retry after a later failure completes the rest. Deps are injected
 // (lib/account/server.ts wires the real ones) so the order is testable without Supabase or a server.
 
-export type DeleteStep = "revoke" | "threads" | "memberships" | "profile" | "auth_user" | "sign_out";
+export type DeleteStep = "revoke" | "threads" | "memberships" | "profile" | "waitlist" | "auth_user" | "sign_out";
 
 export interface RevokeResult {
   cancelled: string[];
@@ -19,6 +19,8 @@ export interface DeleteDeps {
   deleteThreads(): Promise<void>;
   deleteMemberships(): Promise<void>;
   deleteProfile(): Promise<void>;
+  /** Not tied to the sign-in (most entries have none), so nothing cascades: it goes before the user does. */
+  deleteWaitlistEntry(): Promise<void>;
   deleteAuthUser(): Promise<void>;
   signOut(): Promise<void>;
 }
@@ -36,7 +38,7 @@ export async function deleteAccount(d: DeleteDeps): Promise<DeleteOutcome> {
   };
   const order: [DeleteStep, () => Promise<unknown>][] = [];
   if (d.role === "owner") order.push(["revoke", async () => { revoked = await d.revoke(); }]);
-  order.push(["threads", d.deleteThreads], ["memberships", d.deleteMemberships], ["profile", d.deleteProfile], ["auth_user", d.deleteAuthUser]);
+  order.push(["threads", d.deleteThreads], ["memberships", d.deleteMemberships], ["profile", d.deleteProfile], ["waitlist", d.deleteWaitlistEntry], ["auth_user", d.deleteAuthUser]);
   for (const [step, f] of order) {
     try {
       await run(step, f);

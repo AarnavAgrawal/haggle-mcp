@@ -9,7 +9,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { buildCsp, newNonce } from "./lib/csp";
 
 // /api/* answers for itself (401/403 JSON from each route), never with a redirect to a page.
-const PUBLIC = [/^\/$/, /^\/login(?:\/|$)/, /^\/auth\//, /^\/api\//, /^\/(?:terms|privacy|acceptable-use)(?:\/|$)/];
+const PUBLIC = [/^\/$/, /^\/login(?:\/|$)/, /^\/auth\//, /^\/api\//, /^\/(?:terms|privacy|acceptable-use|waitlist)(?:\/|$)/];
 
 /** Continue to the app with the policy and nonce on the request; reads the request's current cookies. */
 function forward(request: NextRequest, csp: string, nonce: string): NextResponse {

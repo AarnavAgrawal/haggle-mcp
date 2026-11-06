@@ -13,17 +13,17 @@ function fakes(over: Partial<DeleteDeps> = {}, failAt?: string) {
   const deps: DeleteDeps = {
     role: "owner",
     revoke: step("revoke", { cancelled: ["job_1"], not_cancelled: [{ job_id: "job_2", reason: "vendor confirmed" }] }),
-    deleteThreads: step("threads"), deleteMemberships: step("memberships"), deleteProfile: step("profile"), deleteAuthUser: step("auth_user"), signOut: step("sign_out"),
+    deleteThreads: step("threads"), deleteMemberships: step("memberships"), deleteProfile: step("profile"), deleteWaitlistEntry: step("waitlist"), deleteAuthUser: step("auth_user"), signOut: step("sign_out"),
     ...over,
   };
   return { deps, calls };
 }
 
 describe("deleteAccount", () => {
-  it("revokes the workspace first, then chats, membership, profile, the sign-in, and signs out", async () => {
+  it("revokes the workspace first, then chats, membership, profile, the waitlist entry, the sign-in, and signs out", async () => {
     const { deps, calls } = fakes();
     const r = await deleteAccount(deps);
-    expect(calls).toEqual(["revoke", "threads", "memberships", "profile", "auth_user", "sign_out"]);
+    expect(calls).toEqual(["revoke", "threads", "memberships", "profile", "waitlist", "auth_user", "sign_out"]);
     expect(r).toMatchObject({ ok: true, cancelled: ["job_1"], not_cancelled: [{ job_id: "job_2" }] });
   });
 
@@ -56,12 +56,28 @@ describe("deleteAccount", () => {
   });
 });
 
+describe("buildExport: the waitlist entry", () => {
+  const deps = (loadWaitlist: ExportDeps["loadWaitlist"]): ExportDeps => ({
+    user: { id: "u1", email: "ada@example.com" }, workspaceId: null, loadThreads: async () => [], loadMessages: async () => [], listDeals: async () => [], getQuotes: async () => ({}), loadWaitlist,
+  });
+
+  it("includes what the person gave the waitlist", async () => {
+    const entry = { email: "ada@example.com", full_name: "Ada Lovelace", organization: "Analytical Engines", use_case: "Lunch", created_at: "2026-09-01", admitted_at: null };
+    expect((await buildExport(deps(async () => entry))).waitlist).toEqual(entry);
+  });
+
+  it("is null for someone who never joined", async () => {
+    expect((await buildExport(deps(async () => null))).waitlist).toBeNull();
+  });
+});
+
 describe("buildExport", () => {
   const base = (over: Partial<ExportDeps> = {}): ExportDeps => ({
     user: { id: "u1", email: "ada@example.com" }, workspaceId: "ws_u_1",
     loadThreads: async () => [{ id: "t1", title: "Lunch", job_id: "job_1", created_at: "2026-10-01", updated_at: "2026-10-02" }],
     loadMessages: async () => [{ thread_id: "t1", role: "user", content: "Lunch for 40", created_at: "2026-10-01" }, { thread_id: "other", role: "user", content: "x", created_at: "" }],
     listDeals: async () => [{ job_id: "job_1", what: "lunch", state: "collecting" }, { job_id: "job_2", what: "dinner", state: "paid" }],
+    loadWaitlist: async () => null,
     getQuotes: async (id) => {
       if (id === "job_2") throw new Error("gone");
       return { job: { id }, quotes: [] };

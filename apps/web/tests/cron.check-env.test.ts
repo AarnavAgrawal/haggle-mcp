@@ -21,6 +21,14 @@ const LIVE = {
 
 const status = (r: ReturnType<typeof checkWebEnv>, name: string) => r.checks.find((c) => c.name === name)?.status;
 
+describe("check-env: the waitlist Slack webhook", () => {
+  it("is optional, but must be https when set", () => {
+    expect(status(checkWebEnv({ ...LIVE }, "live"), "WAITLIST_SLACK_WEBHOOK_URL")).toBe("pass");
+    expect(status(checkWebEnv({ ...LIVE, WAITLIST_SLACK_WEBHOOK_URL: "https://hooks.slack.test/T/B/x" }, "live"), "WAITLIST_SLACK_WEBHOOK_URL")).toBe("pass");
+    expect(status(checkWebEnv({ ...LIVE, WAITLIST_SLACK_WEBHOOK_URL: "http://hooks.slack.test/T/B/x" }, "live"), "WAITLIST_SLACK_WEBHOOK_URL")).toBe("fail");
+  });
+});
+
 describe("check-env: live site", () => {
   it("a complete live configuration passes with no warnings", () => {
     const r = checkWebEnv({ ...LIVE }, "live");
