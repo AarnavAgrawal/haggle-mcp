@@ -315,7 +315,7 @@ function Welcome({ mode, setup }: { mode?: "mock" | "live"; setup?: Extras["setu
       <header className="db-head">
         <div className="db-title">
           <h1>Haggle</h1>
-          <p className="hg-muted">No deals yet. Tell your agent what to buy: Haggle contacts businesses by email, phone, text or A2A, compares real quotes, and pays only after you approve.</p>
+          <p className="hg-muted">No deals yet. Tell your agent what to buy: Haggle finds businesses, contacts them by email, phone, text or A2A, compares real quotes, and pays only after you approve.</p>
         </div>
         <ModeBadge mode={mode} />
       </header>

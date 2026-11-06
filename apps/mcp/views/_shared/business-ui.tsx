@@ -2,7 +2,7 @@
 import { useOpenExternal } from "mcp-use/react";
 import { contactBadge, evidenceGroups, ratingValue, reviewsText, safeUrl, shortDate, sourceText, starPercent, type EvidenceItem } from "./business.ts";
 
-/** "Not contactable" / "Contact found · not authorized" / "Haggle may contact" / "Has replied before". */
+/** "Not contactable" / "Contact found · not authorized" / "Ready to contact" / "Has replied before". */
 export function ContactBadge({ state, summary }: { state: string | undefined; summary?: string }) {
   const b = contactBadge(state);
   return (

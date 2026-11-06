@@ -191,6 +191,15 @@ describe("Haggle MCP over HTTP (mock mode)", () => {
     // Duplicate request: same job, nothing re-sent.
     const again = await call("deal", { request: REQUEST, businesses, budget_usd: 1200, client_request_id: "e2e-1" });
     expect(again.structuredContent.job_id).toBe(job);
+    // A replay never reads as a new deal: it says so, and how to start a new one.
+    expect(again.content[0].text).toMatch(/already started/i);
+    expect(again.content[0].text).not.toMatch(/Deal \S+ started:/);
+    expect(again.structuredContent.next).toMatch(/new client_request_id/);
+    // The brain informs a new request: what earlier quotes suggest, labelled as estimates, on the preview.
+    const preview = await call("deal", { request: REQUEST, budget_usd: 1200, dry_run: true });
+    expect(preview.structuredContent.price_context.estimates.length).toBeGreaterThan(0);
+    expect(preview.structuredContent.price_context.note).toMatch(/not quotes/);
+    expect(preview.content[0].text).toMatch(/estimates, not quotes/);
 
     let cursor = "0";
     let board;

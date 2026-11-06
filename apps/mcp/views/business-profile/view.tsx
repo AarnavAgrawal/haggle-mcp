@@ -65,7 +65,7 @@ function Profile({ p }: { p: ProfileOut }) {
   const category = p.category && p.category !== "unknown" ? capitalize(p.category.replace(/_/g, " ")) : "Business";
   const prompt = contactable
     ? `Get me a real quote from ${p.name} (Haggle business ${p.business_ref ?? p.business_id}).`
-    : `Check whether Haggle may contact ${p.name}: run deal with businesses=['${p.name.replace(/'/g, "’")}'] and dry_run=true, and tell me before anything is sent.`;
+    : `Check whether Haggle can contact ${p.name}: run deal with businesses=['${p.name.replace(/'/g, "’")}'] and dry_run=true, and tell me before anything is sent.`;
 
   return (
     <div className="bp">

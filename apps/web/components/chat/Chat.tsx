@@ -217,7 +217,7 @@ export function Chat({ threadId, initial, title, recent }: { threadId: string | 
         {empty ? (
           <div className="chat-intro chat-col">
             <h1>What do you need quotes for?</h1>
-            <p>Haggle emails, calls and texts businesses for you, and sends nothing until you confirm.</p>
+            <p>Haggle finds businesses for you, emails, calls and texts them, and sends nothing until you confirm.</p>
           </div>
         ) : (
           <header className="chat-head">

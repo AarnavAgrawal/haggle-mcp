@@ -5,7 +5,8 @@ import { inputRequired, inputResponse, MCPServer } from "mcp-use";
 import { z } from "zod";
 import { asWeeklyHours, budgetFrom, businessIdForContact, classify, complianceSummary, DEFAULT_WORKSPACE_ID, EngineError, eventWhen, intakeGaps, localDate, MAX_ROUNDS, normalizeBusinessName, normalizePlainRequest, normalizeRequirements, DEFAULT_CONTACT_TIMEZONE, LISTING_KEYS_HINT, PlacesError, type DealBoardData, type DealInput, type PlacesFailure, type WeeklyHours, type WorkspaceEngine } from "@haggle/engine";
 import { getRuntime, missingLiveConfig, type Runtime } from "./src/runtime.ts";
-import { toBusinessProfileView, toEstimatesView } from "@haggle/brain";
+import { toBusinessProfileView } from "@haggle/brain";
+import { learnedEstimates, priceContext, priceContextLine } from "./src/priceContext.ts";
 import { honestBasis, isSeedJob, quoteCounts, seedRows } from "./src/seedLabel.ts";
 import { historyOnly } from "./src/brain.ts";
 import { ApprovalOut, BusinessProfile, Conversation, dealStartedBoard, DealBoardPlus, emptyBoard, Estimates, Identity, pendingByTextNext, requestDetails, spendingLimitLine, spendingLimitPreview, toApproval, toDealBoardPlus, waitOutput } from "./src/views.ts";
@@ -356,7 +357,7 @@ export const deal = server.tool(
       "Don't use it for a rough price only (ask), or to check on an earlier purchase (list_deals, then get_quotes). " +
       "Before calling, ask the user in ONE message for the essentials a business needs to quote this kind of purchase (catering: headcount, date, where; a repair: what's wrong, the address, how urgent; moving: from/to, size, date; cleaning: size, date, address; printing: specs, quantity, needed-by) plus optional details that change the price; never re-ask what they said. If essentials are still missing, deal returns needs_info (nothing sent) with the exact questions: ask them in one message, then call deal again (proceed_anyway: true only if the user says to go ahead without them). " +
       "A detail Haggle can't read comes back as UNREADABLE_REQUEST naming it; an unknown vendor name comes back listing this workspace's vendors. Nothing is sent in either case. " +
-      "Haggle already asks every business for an itemized all-in total, what's included, deposit and payment terms, availability, cancellation policy and quote validity, plus the category's own asks (a plumber's call-out fee and warranty, a mover's crew and minimum hours, ...). For specific answers to compare on (any kind of request) pass request.ask[], compare_by and payable_field. If nobody can be contacted it starts nothing and says why (setup blockers, or why Haggle found nobody: no area, nothing nearby, listings down). Idempotent with client_request_id. Next: wait_for_update(job_id).",
+      "Haggle already asks every business for an itemized all-in total, what's included, deposit and payment terms, availability, cancellation policy and quote validity, plus the category's own asks (a plumber's call-out fee and warranty, a mover's crew and minimum hours, ...). For specific answers to compare on (any kind of request) pass request.ask[], compare_by and payable_field. If nobody can be contacted it starts nothing and says why (setup blockers, or why Haggle found nobody: no area, nothing nearby, listings down). Every new request is a new deal, even one identical to an earlier deal: never answer it with an earlier deal. When Haggle has learned prices for this kind of work, the result carries price_context: estimates from earlier quotes, for the user only. Next: wait_for_update(job_id).",
     inputSchema: z.object({
       request: dealRequest,
       businesses: z.array(businessChoice).min(1).max(12).optional().describe("Only these businesses are contacted. Name a known business by name or business_ref (e.g. 'Mission Eats'); its contact details and channel are already on the server. Give email/phone/a2a_card_url only for a business Haggle doesn't know. Omit to use the saved businesses for this kind of work (plus businesses Haggle finds when there are fewer than 3)."),
@@ -374,7 +375,7 @@ export const deal = server.tool(
       approver_email: z.string().email().optional().describe("Ignored: the approver is the workspace's human, set by the operator (an agent can't name its own approver)"),
       approver_phone: z.string().regex(/^\+[1-9]\d{6,14}$/).optional().describe("Ignored: the text approver is the human set in settings (an agent can't name its own approver)"),
       max_rounds: z.number().int().min(1).max(2).optional().describe("Quote rounds: 1 = first quotes only, 2 = plus one negotiation round (the default and the maximum)"),
-      client_request_id: z.string().max(64).optional().describe("Reuse to get the same job back instead of contacting businesses again"),
+      client_request_id: z.string().max(64).optional().describe("A random id you generate once per call (e.g. a UUID), only so a retry of this exact call within 10 minutes never contacts anyone twice. Never derive it from the request, and never reuse it for a new request: a new request is a new deal"),
       dry_run: z.boolean().optional().describe("Preview only: resolve who would be contacted and on which channel, send nothing and start no job. Use only if the user asks for a preview."),
       proceed_anyway: z.boolean().optional().describe("Only when the user explicitly said to go ahead without the details a needs_info result asked for: contact businesses with what is known. Never skips what the job is and where"),
       confirm_discovered: z.array(z.string().min(3).max(520)).max(MAX_DISCOVERED_PER_DEAL).optional().describe("Only after the user said yes to the businesses Haggle found (would_contact entries with contact_state 'will_authorize_on_start'): their business_refs, minus any the user removed. Each is saved as a vendor (email only) and emailed. [] = none of them. Never invent refs: any ref the preview didn't list is refused"),
@@ -385,7 +386,7 @@ export const deal = server.tool(
     ...viewIf({ name: "deal-live", description: "Haggle live deal board: who is being emailed, called or texted right now, replies and quotes as they arrive, and choose / approve / pay on any safe option", prefersBorder: false }),
   },
   async (input, ctx) =>
-    run(ctx, async ({ rt, engine, mode, workspaceId }) => {
+    run(ctx, async ({ rt, engine, brain, mode, workspaceId }) => {
       // "Tomorrow", "Saturday" and "is it in the past?" are read on the workspace's own calendar (not UTC).
       const today = localDate(new Date(), (await engine.identity()).workspace.timezone);
       // The user's own words (headcount, when, where, delivery, dietary, budget) become the same structured
@@ -575,6 +576,9 @@ export const deal = server.tool(
           `next: ${next}`,
         ].join("\n"));
       }
+      // What earlier quotes suggest, for the user: an earlier deal informs this one, it never replaces it.
+      const prior = await priceContext(brain.core, { what: R.what, area, ...(R.quantity !== undefined ? { quantity: R.quantity } : {}), ...(R.date ? { date: R.date } : {}), ...(R.unit ? { unit: R.unit } : {}) }, mode);
+      const priorOut = prior ? { price_context: prior } : {};
       // Found businesses wait for the human's yes: a real deal that hasn't got it previews them and sends nothing.
       const unconfirmed = found.length > 0 && input.confirm_discovered === undefined;
       if (input.dry_run || unconfirmed) {
@@ -587,9 +591,9 @@ export const deal = server.tool(
           : found.length ? `${input.dry_run ? "Dry run" : "Not started"}: nothing was sent and no deal was started.${confirmHint}`
           : "Dry run: nothing was sent and no deal was started. Call deal again without dry_run to contact exactly these businesses.";
         const limit = spendingLimitPreview(input.spend_limit_usd, budgetUsd, engine.paymentCeilingCents, (await engine.getSettings()).spending_cap_cents);
-        const v = DealBoardPlus.parse({ ok: true, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode: mode, dry_run: true, ...(unconfirmed && !input.dry_run ? { needs_confirmation: true } : {}), would_contact: would, blocked, spending_limit: limit, ...discoveryOut, next });
+        const v = DealBoardPlus.parse({ ok: true, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode: mode, dry_run: true, ...(unconfirmed && !input.dry_run ? { needs_confirmation: true } : {}), would_contact: would, blocked, spending_limit: limit, ...discoveryOut, ...priorOut, next });
         const line = (w: (typeof would)[number]) => `${w.name} [${w.channel}]${w.found ? ` (found: ${(w.found_via as { listing: string }).listing}, ${w.business_ref}${w.hours_today ? `, ${w.hours_today}` : ""}; will email once the user confirms)` : ""}`;
-        return ok(v, [`${input.dry_run ? "DRY RUN" : "NEEDS THE USER'S YES"} (nothing sent): deal would contact exactly ${would.length}: ${would.map(line).join(", ") || "nobody"}.`, spendingLimitLine(limit), ...blocked.map((b) => `Can't contact ${b.name} (${b.contact_state.replace(/_/g, " ")}): ${b.reason}`), `next: ${next}`].join("\n"));
+        return ok(v, [`${input.dry_run ? "DRY RUN" : "NEEDS THE USER'S YES"} (nothing sent): deal would contact exactly ${would.length}: ${would.map(line).join(", ") || "nobody"}.`, spendingLimitLine(limit), ...(prior ? [priceContextLine(prior)] : []), ...blocked.map((b) => `Can't contact ${b.name} (${b.contact_state.replace(/_/g, " ")}): ${b.reason}`), `next: ${next}`].join("\n"));
       }
       // The human said yes: each found business is saved through the one vendor-add path (consent
       // public_listing_email: email only; category = this request's; who confirmed; the listing ref as
@@ -659,16 +663,17 @@ export const deal = server.tool(
       // A failed send says why (e.g. the Inkbox iMessage code) instead of a bare "send failed".
       r.not_contacted = r.not_contacted.map((c) => (c.reason === "send failed" && b ? { ...c, reason: b.businesses.find((x) => x.business_id === c.business_id)?.last_event ?? c.reason } : c));
       const v = dealStartedBoard(r, b, request, mode, {
-        ...(await boardFlags(engine)), warnings, ...(setup ? { setup } : {}),
+        ...(await boardFlags(engine)), warnings, ...(setup ? { setup } : {}), ...priorOut,
         request_details: requestDetails({ job: { request: b?.job.request ?? request, budget_usd: budgetUsd ?? null } }, budgetUsd === undefined ? undefined : "request"),
-        next: `Deal started; the board updates by itself. Call wait_for_update(job_id='${r.job_id}') to follow it; nothing is bought until the human approves a quote and pay is called.`,
+        next: r.replayed ? r.next : `Deal started; the board updates by itself. Call wait_for_update(job_id='${r.job_id}') to follow it; nothing is bought until the human approves a quote and pay is called.`,
       });
       const d = v.request_details!;
       const text = [
-        `Deal ${r.job_id} started: ${d.what}${d.headcount !== undefined ? ` for ${d.headcount}` : ""}, ${d.when}, ${d.place}; ${d.budget_usd === null ? "no budget given" : `budget ${usd(d.budget_usd)}`}${d.requirements.length ? `; requirements: ${d.requirements.join(", ")}` : ""}${request.ask?.length ? `; asking for: ${request.ask.map((f) => f.label).join(", ")}` : ""}.`,
+        `Deal ${r.job_id} ${r.replayed ? "was already started by this client_request_id, nothing was sent" : "started"}: ${d.what}${d.headcount !== undefined ? ` for ${d.headcount}` : ""}, ${d.when}, ${d.place}; ${d.budget_usd === null ? "no budget given" : `budget ${usd(d.budget_usd)}`}${d.requirements.length ? `; requirements: ${d.requirements.join(", ")}` : ""}${request.ask?.length ? `; asking for: ${request.ask.map((f) => f.label).join(", ")}` : ""}.`,
         `Contacted ${r.contacted.length}: ${r.contacted.map((c) => `${c.business} [${c.channel}]`).join(", ") || "none"}.`,
         ...(r.not_contacted.length ? [`Not contacted: ${r.not_contacted.map((c) => `${c.business} (${c.reason})`).join("; ")}.`] : []),
         ...warnings,
+        ...(prior ? [priceContextLine(prior)] : []),
         v.payments_enabled === false ? "Payments are off on this server: nothing can be paid even after approval." : `Nothing is paid until the human approves a quote and pay is called${v.job?.deal_limit_usd !== undefined ? ` (spending limit ${usd(v.job.deal_limit_usd)}${v.job.deal_limit_source === "default" ? ", the default for new deals" : v.job.deal_limit_source === "budget" ? ", from the budget" : ""}; only the human can raise it)` : ""}.`,
         `next: ${v.next}`,
       ].join("\n");
@@ -1287,15 +1292,8 @@ export const ask = server.tool(
     run(ctx, async ({ engine, brain, mode }) => {
       const area = await areaOr(engine, req.area);
       const request = { what: req.what, quantity: req.quantity, area, ...(req.date ? { date: req.date } : {}), ...(req.unit ? { unit: req.unit } : {}) };
-      const raw = toEstimatesView(request, await brain.core.estimate(request));
-      const profiles = await Promise.all(raw.estimates.map((e) => brain.core.getProfile(e.business_id).catch(() => null)));
-      // Live mode answers only from quotes Haggle actually collected; seed samples are a mock-mode convenience.
-      const counts = profiles.map((p) => quoteCounts(p?.history ?? []));
-      const keep = raw.estimates.map((_, i) => mode === "mock" || counts[i]!.real > 0);
-      const hidden = keep.filter((k) => !k).length;
-      // Freshness: the date of the latest real (non-seed) quote behind each estimate.
-      const latest = profiles.map((p) => (p?.history ?? []).filter((h) => h.kind === "quote" && !isSeedJob(h.job_id)).map((h) => h.date).sort().at(-1));
-      const base = { ...raw, estimates: raw.estimates.flatMap((e, i) => (keep[i] ? [{ ...e, basis: `${honestBasis(e.basis, counts[i]!)}${latest[i] ? `; latest real quote ${latest[i]!.slice(0, 10)}` : ""}` }] : [])), ...(hidden ? { note: `${hidden} business(es) have only seed sample data, not quotes Haggle collected; not shown.` } : {}) };
+      const { raw, estimates, hidden } = await learnedEstimates(brain.core, request, mode);
+      const base = { ...raw, estimates, ...(hidden ? { note: `${hidden} business(es) have only seed sample data, not quotes Haggle collected; not shown.` } : {}) };
       // The brain's own hint passes bare business ids to deal, which deal rejects: point at discover instead.
       const v = { ...base, mode, next: base.estimates.length
         ? `These are estimates, not quotes. For confirmed prices call deal(request={what:'${request.what}', quantity:${request.quantity}, date:'${request.date ?? "YYYY-MM-DD"}', area:'${request.area}'}, budget_usd) without businesses to contact every configured vendor, or with businesses=['<name>'] for only the vendors the user chose (names are enough).`

@@ -9,7 +9,7 @@ export type ConsentBasis = "existing_relationship" | "business_agreed" | "public
 export const CONSENT_OPTIONS: { value: ConsentBasis; label: string; explain: string; channels: VendorChannel[] }[] = [
   { value: "existing_relationship", label: "We already work with them", explain: "You have bought from or worked with this business before, and it expects to hear from you this way.", channels: ["email", "phone", "imessage"] },
   { value: "business_agreed", label: "They agreed to be contacted", explain: "Someone at the business told you Haggle (an AI assistant acting for you) may contact them this way.", channels: ["email", "phone", "imessage"] },
-  { value: "public_listing_email", label: "Public listing (email only)", explain: "You found the business's email on its website or listing. Haggle may email it, but never calls or texts a business on this basis.", channels: ["email"] },
+  { value: "public_listing_email", label: "Public listing", explain: "You found the business's email on its website or listing.", channels: ["email"] },
 ];
 
 export const CHANNEL_OPTIONS: { value: VendorChannel; label: string }[] = [

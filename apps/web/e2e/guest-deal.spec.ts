@@ -37,6 +37,16 @@ test("a demo guest starts a deal in chat, approves the recommended quote and rea
   await page.getByRole("button", { name: "Send" }).click();
   await expect(chat.getByText(/Reply yes to start/)).toBeVisible({ timeout: 30_000 });
   await expect(box).toBeEnabled();
+  await expect(page).toHaveURL(/\/chat\/[0-9a-f-]{36}$/);
+
+  // A new request is a new conversation, even before any deal started; Back returns to this one.
+  await page.getByRole("link", { name: "New request" }).first().click();
+  await expect(page).toHaveURL(/\/chat$/);
+  await expect(chat.getByRole("heading", { name: "What do you need quotes for?" })).toBeVisible();
+  await expect(chat.getByText(/Reply yes to start/)).toHaveCount(0);
+  await page.goBack();
+  await expect(chat.getByText(/Reply yes to start/)).toBeVisible({ timeout: 30_000 });
+  await expect(box).toBeEnabled();
   await box.fill("Yes, go ahead");
   await page.getByRole("button", { name: "Send" }).click();
 

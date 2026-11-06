@@ -220,7 +220,7 @@ export function NegotiateButton({ jobId }: { jobId: string }) {
         Ask for a better price
       </Button>
       <span id={hint} className="sr-only">
-        Cites only a real quote&apos;s total and never names the other business. At most one counteroffer round.
+        Cites a real quote&apos;s total and never names the other business.
       </span>
       <FeedbackLine feedback={feedback} onDismiss={clear} />
     </div>

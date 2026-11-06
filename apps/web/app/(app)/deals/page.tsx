@@ -51,7 +51,7 @@ export default async function DealsPage({ searchParams }: { searchParams: Promis
             </Link>
           }
         >
-          Say what you need, like lunch for 40 next Thursday under $1,200. Haggle gets quotes from your vendors by email, phone and text, and nothing is ordered until you approve.
+          Say what you need, like lunch for 40 next Thursday under $1,200. Haggle finds businesses and gets quotes by email, phone and text, and nothing is ordered until you approve.
         </EmptyState>
       )}
     </main>

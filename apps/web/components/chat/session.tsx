@@ -105,7 +105,7 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
       const fail = (msg: string) => push({ type: "error", message: msg });
 
       void (async () => {
-        let dealStarted = false;
+        let refresh = false;
         try {
           const res = await fetch("/api/chat", {
             method: "POST",
@@ -142,10 +142,15 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
                   threadId = id;
                   setState((s) => ({ ...s, threadId: id }));
                   // The URL now resumes this conversation (only if the person is still on the new chat).
-                  if (window.location.pathname === "/chat") window.history.replaceState(null, "", `/chat/${id}`);
+                  // replaceState moves the URL but not the router, which still holds the /chat page, so
+                  // "New request" would keep this conversation: the refresh below catches the router up.
+                  if (window.location.pathname === "/chat") {
+                    window.history.replaceState(null, "", `/chat/${id}`);
+                    refresh = true;
+                  }
                 }
               } else {
-                if (e.type === "deal") dealStarted = true;
+                if (e.type === "deal") refresh = true;
                 push(e);
               }
             }
@@ -157,8 +162,8 @@ export function ChatSessionProvider({ children }: { children: ReactNode }) {
           flush();
           if (abortRef.current === ac) abortRef.current = null;
           if (gen === genRef.current) setState((s) => ({ ...s, items: settle(s.items), sending: false, working: null }));
-          // The shell's rail lists deals: refresh it once the turn that started one is saved.
-          if (dealStarted) startTransition(() => router.refresh());
+          // Once the turn is saved: the shell's rail lists deals, and a new thread's page is now its own.
+          if (refresh) startTransition(() => router.refresh());
         }
       })();
     },

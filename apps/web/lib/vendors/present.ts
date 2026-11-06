@@ -11,7 +11,7 @@ export const channelLabel = (channel: string) => CHANNEL[channel] ?? "Other";
 const BASIS: Record<ConsentBasis | "operator_recorded", string> = {
   existing_relationship: "You already work with them",
   business_agreed: "They agreed to be contacted",
-  public_listing_email: "Public listing, email only",
+  public_listing_email: "Public listing",
   operator_recorded: "Recorded by your admin",
 };
 /** The consent a vendor rests on, in a few plain words (the table's column). */

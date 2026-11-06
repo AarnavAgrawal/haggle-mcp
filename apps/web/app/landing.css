@@ -1,50 +1,173 @@
 /* Landing page (app/page.tsx). Tokens: app/globals.css; pen marks and primitives: components/ui/ui.css.
-   A light desk, one marked-up quote sheet as the hero, and quiet, left-aligned sections below it with
-   their heading in a narrow left column (the way a printed brief reads). */
+   The page is a green desk blotter with one sheet of paper on it. The wordmark leads; the quote sheet
+   peeks out under it, rises and pins beside the log, and scrolling the log marks it up. Everything that
+   moves lives in the two blocks marked "motion" and needs script and allowed motion: anywhere else the
+   same markup reads as a finished, marked-up sheet and a plain list. */
+
+.lp-page {
+  --wrap: 1240px;
+  --bar: 68px;
+  --peek: clamp(120px, 23svh, 230px);
+  --deal-gap: clamp(48px, 6vw, 96px);
+  --deal-inner: calc(min(100vw, var(--wrap)) - 2 * var(--gutter));
+  /* Where the sheet sits while centered under the wordmark, until LandingMotion measures the real value. */
+  --shift: calc(var(--deal-inner) / 2 - (var(--deal-inner) - var(--deal-gap)) * 0.28);
+
+  /* The blotter: fixed in both schemes, because it is the page's ground, not a surface that inverts. */
+  --blotter: #0f4a2e;
+  --on-blotter: #fbfcf9;
+  --on-blotter-2: #d3e4d9;
+  --on-blotter-3: #a9cab6;
+  --blotter-rule: rgb(251 252 249 / 0.2);
+  --blotter-pen: #8fd6a8;
+  --lift: 0 40px 90px -40px rgb(4 20 12 / 0.65), 0 2px 6px rgb(4 20 12 / 0.18);
+
+  overflow-x: clip;
+}
+@media (prefers-color-scheme: dark) {
+  .lp-page {
+    --blotter: #0d3321;
+  }
+}
+/* The primitives read their colors from these, so buttons, focus rings, the footer and the pen marks
+   all sit correctly on the green. The quote sheet stays outside this scope: it is paper. */
+.on-blotter {
+  --ink: var(--on-blotter);
+  --ink-2: var(--on-blotter-2);
+  --ink-3: var(--on-blotter-3);
+  --rule: var(--blotter-rule);
+  --pen: var(--blotter-pen);
+  --pen-strong: #b4e6c5;
+  --on-pen: #0f3a25;
+  color: var(--ink);
+}
+.on-blotter .btn:not(.btn-primary, .btn-quiet) {
+  background: transparent;
+  border-color: var(--on-blotter-3);
+}
+.on-blotter .btn:not(.btn-primary, .btn-quiet):hover {
+  border-color: var(--on-blotter);
+}
 
 /* ---------- top bar ---------- */
-.lp-bar-inner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 64px;
+.lp-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--blotter);
 }
-.lp-bar .btn-quiet {
-  margin-right: -12px; /* optically align the label with the content edge */
+.lp-bar-inner {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: var(--s-6);
+  min-height: var(--bar);
+}
+.lp-bar .brand {
+  justify-self: start;
+  transition: opacity 180ms var(--ease-out), visibility 180ms;
+}
+/* The big wordmark is on screen: the small one waits until it has scrolled away. */
+@media (scripting: enabled) {
+  .lp-bar[data-top] .brand {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+.lp-nav {
+  display: flex;
+  gap: var(--s-8);
+}
+.lp-nav a {
+  position: relative;
+  padding-block: 6px;
+  color: var(--ink-2);
+  font-size: var(--t-15);
+  font-weight: 550;
+  text-decoration: none;
+  transition: color 120ms ease-out;
+}
+.lp-nav a:hover,
+.lp-nav a[aria-current] {
+  color: var(--ink);
+}
+.lp-nav .pen-underline {
+  display: none;
+}
+.lp-nav a[aria-current] .pen-underline {
+  display: block;
+}
+.lp-bar-actions {
+  display: flex;
+  justify-self: end;
+  align-items: center;
+  gap: var(--s-1);
 }
 
 /* ---------- hero ---------- */
-.lp-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-  gap: var(--s-12) clamp(40px, 6vw, 88px);
-  align-items: center;
-  padding-block: clamp(24px, 6vh, 72px) clamp(56px, 10vh, 112px);
+.lp-blotter {
+  background: var(--blotter);
 }
-.lp-copy h1 {
-  font-size: clamp(40px, 3.9vw, 54px);
+.lp-hero {
+  display: flex;
+  min-height: calc(100svh - var(--bar));
+  padding-bottom: calc(var(--peek) + var(--s-6));
+}
+.lp-hero-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.lp-wordmark {
+  display: block;
+  font-family: var(--font-display);
+  font-size: min(29vw, 37svh);
   font-weight: 760;
-  font-stretch: 94%;
-  line-height: 1.04;
-  letter-spacing: -0.03em;
-  max-width: 16ch;
+  font-stretch: 92%;
+  letter-spacing: -0.012em;
+  line-height: 0.86;
+}
+.lp-letters {
+  display: inline-block;
+  /* Room for the g's, so the mask the letters rise out of doesn't cut them off. */
+  padding: 0.02em 0.02em 0.19em;
+  clip-path: inset(0 -0.1em 0 -0.1em);
+}
+.lp-letters > span {
+  display: inline-block;
+}
+.lp-line {
+  display: block;
+  max-width: 26ch;
+  margin-inline: auto;
+  font-family: var(--font-display);
+  font-size: clamp(26px, 2.9vw, 42px);
+  font-weight: 650;
+  font-stretch: 96%;
+  letter-spacing: -0.008em;
+  line-height: 1.1;
+  text-wrap: balance;
 }
 .lp-lede {
-  margin-top: var(--s-6);
-  max-width: 44ch;
+  max-width: 74ch;
+  margin-top: var(--s-4);
   font-size: var(--t-18);
-  line-height: 1.55;
+  line-height: 1.5;
   color: var(--ink-2);
+  text-wrap: pretty;
 }
 .lp-ctas {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: var(--s-3);
-  margin-top: var(--s-8);
+  margin-top: var(--s-6);
 }
 .lp-ctas .btn {
-  min-height: 44px;
-  padding-inline: 20px;
+  min-height: 48px;
+  padding-inline: 24px;
   font-size: var(--t-16);
 }
 .guest {
@@ -53,12 +176,49 @@
   gap: var(--s-2);
 }
 
-/* ---------- the quote sheet ---------- */
+/* ---------- the deal: the sheet and its log ---------- */
+.deal {
+  position: relative;
+  z-index: 1;
+  margin-top: calc(-1 * var(--peek));
+  padding-bottom: clamp(72px, 12svh, 128px);
+}
+.deal-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr);
+  gap: var(--deal-gap);
+  align-items: start;
+}
+.deal-stage {
+  position: sticky;
+  top: max(calc(var(--bar) + 16px), calc(50svh + var(--bar) / 2 - 290px));
+  z-index: 2;
+  perspective: 1600px;
+}
+.deal-log {
+  padding-top: calc(var(--peek) + 8svh);
+}
+.deal-head h2 {
+  font-size: clamp(38px, 4.4vw, 64px);
+  font-weight: 760;
+  font-stretch: 94%;
+  letter-spacing: -0.012em;
+  line-height: 1.02;
+  text-wrap: balance;
+}
+.deal-head p {
+  max-width: 40ch;
+  margin-top: var(--s-4);
+  font-size: var(--t-18);
+  color: var(--ink-2);
+}
+
 .qs {
   margin: 0;
   background: var(--sheet);
-  border: 1px solid var(--rule);
+  color: var(--ink);
   border-radius: var(--r-sheet);
+  box-shadow: var(--lift);
   font-size: var(--t-15);
   line-height: 1.45;
 }
@@ -72,9 +232,9 @@
 }
 .qs-title {
   font-family: var(--font-display);
-  font-size: var(--t-21);
+  font-size: var(--t-24);
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   line-height: 1.2;
 }
 .qs-meta {
@@ -104,8 +264,8 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
-  gap: 6px var(--s-4);
-  padding: 16px 24px;
+  gap: 4px var(--s-4);
+  padding: 13px 24px;
 }
 .qs-row + .qs-row {
   border-top: 1px solid var(--rule);
@@ -137,6 +297,20 @@
 }
 .qs-req-miss {
   color: var(--hold);
+}
+.qs-right {
+  position: relative;
+  display: grid;
+  justify-items: end;
+}
+.qs-wait {
+  display: none;
+  position: absolute;
+  top: 2px;
+  right: 0;
+  white-space: nowrap;
+  font-size: var(--t-14);
+  color: var(--ink-2);
 }
 .qs-total {
   display: grid;
@@ -174,98 +348,58 @@
   color: var(--pen);
   font-weight: 600;
 }
-.qs-best .qs-total {
+.qs-best .qs-right {
   padding-right: 6px; /* room for the circle's overshoot */
 }
+.qs-declined {
+  font-size: var(--t-14);
+  font-weight: 600;
+  color: var(--ink-3);
+}
 .qs-foot {
-  padding: 12px 24px 14px;
+  display: grid;
+  gap: 2px;
+  min-height: 72px;
+  padding: 11px 24px 12px;
   border-top: 1px solid var(--rule);
   font-size: var(--t-14);
   color: var(--ink-3);
 }
-
-/* The orchestrated load (strike 250ms, write-in 520ms, highlight 720ms, circle 1000ms; the marks time
-   themselves through their delay prop). Only with motion allowed: otherwise the sheet is marked up. */
-@media (prefers-reduced-motion: no-preference) {
-  .qs-was del {
-    animation: qs-ink-fade 380ms var(--ease-out) 250ms both;
-  }
-  .qs-new {
-    display: inline-block;
-    animation: qs-write 340ms var(--ease-out) 520ms both;
-  }
-}
-@keyframes qs-ink-fade {
-  from {
-    color: var(--ink);
-  }
-}
-@keyframes qs-write {
-  from {
-    clip-path: inset(-4px 100% -4px -4px);
-    opacity: 0.4;
-  }
-  to {
-    clip-path: inset(-4px -4px -4px -4px);
-    opacity: 1;
-  }
+.qs-approved {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--signed);
+  font-weight: 650;
 }
 
-/* ---------- sections ---------- */
-.lp-section {
-  display: grid;
-  grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
-  gap: var(--s-6) var(--s-12);
-  padding-block: var(--s-12) var(--s-16);
-  /* A top rule across the content only, not the gutters. */
-  background: linear-gradient(var(--rule), var(--rule)) var(--gutter) 0 / calc(100% - 2 * var(--gutter)) 1px no-repeat;
-}
-.lp-section-head {
-  position: sticky;
-  top: var(--s-6);
-  align-self: start;
-}
-.lp-section-head h2 {
-  font-size: var(--t-30);
-  font-weight: 720;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-  max-width: 14ch;
-}
-.lp-section-head p {
-  margin-top: var(--s-3);
-  max-width: 34ch;
-  color: var(--ink-2);
-}
-
-/* A deal, start to finish: the log. */
+/* The log. */
 .log {
-  margin: 0;
+  position: relative;
+  margin: var(--s-12) 0 0;
   padding: 0;
   list-style: none;
-  background: var(--sheet);
-  border: 1px solid var(--rule);
-  border-radius: var(--r-sheet);
 }
 .log-row {
   display: grid;
-  grid-template-columns: 48px 104px minmax(0, 1fr);
-  gap: var(--s-1) var(--s-4);
-  align-items: baseline;
-  padding: 11px 20px;
-  font-size: var(--t-15);
-  line-height: 1.45;
+  gap: var(--s-2);
+  padding-block: var(--s-4);
 }
 .log-row + .log-row {
   border-top: 1px solid var(--rule);
 }
+.log-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+}
 .log-at {
   color: var(--ink-3);
-  font-size: var(--t-14);
-  font-weight: 500;
+  font-size: var(--t-15);
+  font-weight: 600;
 }
 .log-who {
-  font-size: var(--t-14);
+  font-size: var(--t-15);
   font-weight: 650;
   color: var(--ink-2);
 }
@@ -273,49 +407,110 @@
   color: var(--pen);
 }
 .log-text {
+  max-width: 34ch;
+  font-family: var(--font-display);
+  font-size: clamp(21px, 1.9vw, 27px);
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  line-height: 1.22;
   color: var(--ink);
+  text-wrap: pretty;
 }
 
-/* Channels: what Haggle does on each, beside what that looks like. */
+/* ---------- section heads ---------- */
+.lp-head h2 {
+  max-width: 16ch;
+  font-size: clamp(40px, 6vw, 84px);
+  font-weight: 760;
+  font-stretch: 94%;
+  letter-spacing: -0.014em;
+  line-height: 1;
+  text-wrap: balance;
+}
+.lp-head p {
+  margin-top: var(--s-4);
+  max-width: 44ch;
+  font-size: var(--t-18);
+  color: var(--ink-2);
+}
+
+/* ---------- channels: three sheets, each sliding over the last ---------- */
+.lp-channels {
+  padding-block: clamp(80px, 13svh, 144px);
+}
 .ch-list {
-  margin: 0;
+  margin: var(--s-12) 0 0;
   padding: 0;
   list-style: none;
 }
 .ch-row {
+  position: sticky;
+  top: calc(var(--bar) + 16px);
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: var(--s-4) var(--s-8);
-  align-items: start;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+  gap: var(--s-6) clamp(32px, 6vw, 88px);
+  align-items: center;
+  min-height: min(520px, calc(100svh - var(--bar) - 72px));
+  padding: clamp(24px, 4.4vw, 64px);
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sheet);
+  box-shadow: var(--shadow-float);
 }
 .ch-row + .ch-row {
   margin-top: var(--s-6);
-  padding-top: var(--s-6);
-  border-top: 1px solid var(--rule);
+}
+.ch-row:nth-child(2) {
+  top: calc(var(--bar) + 30px);
+  background: var(--blotter);
+  border-color: var(--blotter);
+  --ink: var(--on-blotter);
+  --ink-2: var(--on-blotter-2);
+  --ink-3: var(--on-blotter-3);
+  --pen: var(--blotter-pen);
+  --rule: var(--blotter-rule);
+  color: var(--ink);
+}
+.ch-row:nth-child(3) {
+  top: calc(var(--bar) + 44px);
+  background: var(--pen-wash);
 }
 .ch-copy h3 {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-size: var(--t-21);
-  font-weight: 700;
+  gap: var(--s-3);
+  font-size: clamp(30px, 3.4vw, 48px);
+  font-weight: 740;
+  font-stretch: 96%;
+  letter-spacing: -0.01em;
+  line-height: 1.05;
 }
 .ch-copy h3 .icon {
   color: var(--pen);
 }
 .ch-copy p {
-  margin-top: var(--s-2);
+  max-width: 38ch;
+  margin-top: var(--s-4);
   color: var(--ink-2);
-  font-size: var(--t-15);
+  font-size: var(--t-18);
+  line-height: 1.5;
 }
 .sample {
   margin: 0;
-  padding: 14px 18px;
-  background: var(--sheet);
-  border: 1px solid var(--rule);
+  padding: 18px 22px;
+  background: var(--desk);
   border-radius: var(--r-sheet);
-  font-size: var(--t-14);
+  font-size: var(--t-15);
   line-height: 1.5;
+}
+.sample-call {
+  background: rgb(4 20 12 / 0.28);
+}
+.sample-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  background: var(--sheet);
 }
 .mail-line {
   display: flex;
@@ -326,7 +521,7 @@
 }
 .mail-k {
   flex: none;
-  width: 56px;
+  width: 60px;
   color: var(--ink-3);
 }
 .mail-body {
@@ -340,14 +535,14 @@
   justify-content: space-between;
   margin-bottom: var(--s-2);
   color: var(--ink-3);
-  font-size: var(--t-12);
+  font-size: var(--t-14);
   font-weight: 600;
 }
 .call-line {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
+  grid-template-columns: 96px minmax(0, 1fr);
   gap: var(--s-3);
-  padding-block: 3px;
+  padding-block: 4px;
   color: var(--ink);
 }
 .call-who {
@@ -357,14 +552,9 @@
 .call-us {
   color: var(--pen);
 }
-.sample-text {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
 .bubble {
   max-width: min(36ch, 85%);
-  padding: 7px 12px;
+  padding: 8px 13px;
   border-radius: var(--r-sheet);
 }
 .bubble-in {
@@ -379,114 +569,394 @@
   font-weight: 600;
 }
 
-/* Promises. */
+/* ---------- your control ---------- */
+.lp-trust {
+  padding-block: clamp(80px, 13svh, 144px);
+  background: var(--sheet);
+}
 .trust {
-  margin: 0;
+  margin: var(--s-12) 0 0;
 }
 .trust-row {
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: var(--s-2) var(--s-8);
+  grid-template-columns: minmax(0, 7fr) minmax(0, 4fr);
+  gap: var(--s-3) var(--s-12);
   align-items: baseline;
-  padding-block: var(--s-4);
+  padding-block: clamp(24px, 4svh, 40px);
 }
-.trust-row:first-child {
-  padding-top: 0;
-}
-.trust-row + .trust-row {
-  border-top: 1px solid var(--rule);
+.trust-row::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: var(--rule-strong);
+  transform-origin: left center;
 }
 .trust dt {
   font-family: var(--font-display);
-  font-size: var(--t-21);
-  font-weight: 680;
+  font-size: clamp(30px, 3.8vw, 54px);
+  font-weight: 700;
+  font-stretch: 96%;
   letter-spacing: -0.01em;
-  line-height: 1.2;
+  line-height: 1.08;
   text-wrap: balance;
 }
 .trust dd {
   margin: 0;
+  max-width: 40ch;
+  font-size: var(--t-18);
+  line-height: 1.5;
   color: var(--ink-2);
 }
 
-/* Closing call to action. */
+/* ---------- close ---------- */
 .lp-close {
-  padding-block: var(--s-12) 0;
-  background: linear-gradient(var(--rule), var(--rule)) var(--gutter) 0 / calc(100% - 2 * var(--gutter)) 1px no-repeat;
+  padding-block: clamp(96px, 18svh, 184px) clamp(64px, 10svh, 112px);
+  background: var(--blotter);
+  text-align: center;
 }
 .lp-close h2 {
-  font-size: clamp(var(--t-30), 3.4vw, var(--t-48));
-  font-weight: 750;
-  font-stretch: 94%;
-  letter-spacing: -0.025em;
-  line-height: 1.05;
-  max-width: 18ch;
+  max-width: 13ch;
+  margin-inline: auto;
+  font-size: clamp(46px, 8.4vw, 124px);
+  font-weight: 760;
+  font-stretch: 92%;
+  letter-spacing: -0.014em;
+  line-height: 1;
+  text-wrap: balance;
 }
 .lp-close .lp-ctas {
-  margin-top: var(--s-6);
+  margin-top: var(--s-8);
+}
+.lp-end {
+  background: var(--blotter);
+}
+.lp-end .site-footer {
+  margin-top: 0;
+}
+
+/* Anchors and keyboard focus both stop clear of the sticky bar. */
+html:has(.lp-page) {
+  scroll-padding-top: 76px;
+}
+
+/* ---------- motion: the load, and the sheet driven by the scroll ---------- */
+@media (prefers-reduced-motion: no-preference) {
+  html:has(.lp-page) {
+    scroll-behavior: smooth;
+  }
+
+  /* The page's one orchestrated moment: the name rises, then everything it stands for. */
+  .lp-letters > span {
+    animation: lp-letter 900ms var(--ease-out) both;
+  }
+  .lp-letters > span:nth-child(2) { animation-delay: 45ms; }
+  .lp-letters > span:nth-child(3) { animation-delay: 90ms; }
+  .lp-letters > span:nth-child(4) { animation-delay: 135ms; }
+  .lp-letters > span:nth-child(5) { animation-delay: 180ms; }
+  .lp-letters > span:nth-child(6) { animation-delay: 225ms; }
+  .lp-line,
+  .lp-lede,
+  .lp-hero .lp-ctas {
+    animation: lp-settle 700ms var(--ease-out) 480ms both;
+  }
+  .lp-lede { animation-delay: 560ms; }
+  .lp-hero .lp-ctas { animation-delay: 640ms; }
+  .deal-stage {
+    animation: lp-peek 1000ms var(--ease-out) 620ms both;
+  }
+}
+@keyframes lp-letter {
+  from {
+    transform: translateY(112%);
+  }
+}
+@keyframes lp-settle {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+@keyframes lp-peek {
+  from {
+    opacity: 0;
+    transform: translateY(120px);
+  }
+}
+
+@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  /* The name sinks behind the rising sheet. */
+  .lp-hero-inner {
+    transform: translate3d(0, calc(var(--p, 0) * 16svh), 0);
+    opacity: calc(1 - var(--p, 0) * 1.35);
+  }
+  /* The sheet lies tilted on the blotter, centered, then lifts flat and slides into its column. */
+  .qs {
+    transform: translate3d(calc((1 - var(--p, 0)) * var(--shift)), 0, 0) rotateX(calc((1 - var(--p, 0)) * 20deg));
+    transform-origin: 50% 100%;
+    will-change: transform;
+  }
+  .deal-head {
+    opacity: calc((var(--p, 0) - 0.55) * 2.4);
+  }
+
+  /* One log entry per stretch of scrolling, so each change on the sheet gets its moment. */
+  .log {
+    margin-top: var(--s-16);
+    padding-bottom: 22svh;
+    padding-left: 28px;
+  }
+  .log::before,
+  .log::after {
+    content: "";
+    position: absolute;
+    top: 22px;
+    bottom: 22svh;
+    left: 3px;
+    width: 2px;
+  }
+  .log::before {
+    background: var(--rule);
+  }
+  .log::after {
+    background: var(--pen);
+    transform: scaleY(var(--log-p, 0));
+    transform-origin: top;
+  }
+  .log-row {
+    align-content: start;
+    min-height: 34svh;
+  }
+  .log-row + .log-row {
+    border-top: 0;
+  }
+  /* Quieter, not fainter: every row stays readable at AA, only the current one is full ink. */
+  .log-row:not(.is-now) {
+    --ink: var(--on-blotter-3);
+    --ink-2: var(--on-blotter-3);
+    --pen: var(--on-blotter-3);
+  }
+  .log-at,
+  .log-who,
+  .log-text {
+    transition: color 260ms var(--ease-out);
+  }
+
+  /* What the sheet shows at each step. */
+  .qs-row {
+    transition: opacity 260ms var(--ease-out);
+  }
+  .deal:not(.at-1) .qs-row {
+    opacity: 0.5;
+  }
+  .from-2, .from-3, .from-4, .from-5, .from-6, .from-7, .from-8 {
+    transition: opacity 240ms var(--ease-out);
+  }
+  .deal:not(.at-2) .from-2,
+  .deal:not(.at-3) .from-3,
+  .deal:not(.at-4) .from-4,
+  .deal:not(.at-5) .from-5,
+  .deal:not(.at-6) .from-6,
+  .deal:not(.at-7) .from-7,
+  .deal:not(.at-8) .from-8 {
+    opacity: 0;
+  }
+  .deal.at-1:not(.at-2) .until-2,
+  .deal.at-1:not(.at-3) .until-3,
+  .deal.at-1:not(.at-4) .until-4,
+  .deal.at-1:not(.at-5) .until-5 {
+    display: block;
+  }
+  /* A quote landing flashes its row once, as it does on the real deal board. */
+  .deal.at-2 .arrive-2,
+  .deal.at-3 .arrive-3,
+  .deal.at-4 .arrive-4,
+  .deal.at-5 .arrive-5 {
+    animation: qs-arrive 900ms var(--ease-out);
+  }
+
+  /* Golden Grill's first price stands as a normal total until Haggle gets it down. */
+  .deal:not(.at-6) .qs-was .price {
+    color: var(--ink);
+    font-size: var(--t-24);
+    font-weight: 700;
+  }
+  .deal:not(.at-6) .qs-new {
+    display: none;
+  }
+  .deal:not(.at-6) .qs-was .pen-struck-svg,
+  .deal:not(.at-6) .pen-hl-svg,
+  .deal:not(.at-7) .qs-best .pen-circled-svg {
+    opacity: 0;
+    animation: none;
+  }
+  .deal:not(.at-7) .qs-best .pen-stroke {
+    animation: none;
+  }
+  .deal.at-6 .qs-new {
+    display: inline-block;
+    animation: qs-write 340ms var(--ease-out) 200ms both;
+  }
+
+  /* Blocks that arrive as they are reached. Armed by script (.is-live), so nothing can stay hidden. */
+  .is-live .lp-head:not(.is-in) > *,
+  .is-live .lp-close > .wrap:not(.is-in) > * {
+    opacity: 0;
+    transform: translateY(36px);
+  }
+  .lp-head > *,
+  .lp-close > .wrap > * {
+    transition: opacity 700ms var(--ease-out), transform 900ms var(--ease-out);
+  }
+  .lp-head > * + *,
+  .lp-close > .wrap > * + * {
+    transition-delay: 120ms;
+  }
+
+  /* Your control: the rule draws across, then the statement comes up to it. */
+  .is-live .trust-row:not(.is-in)::before {
+    transform: scaleX(0);
+  }
+  .is-live .trust-row:not(.is-in) > * {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  .trust-row::before {
+    transition: transform 1000ms var(--ease-out);
+  }
+  .trust-row > * {
+    transition: opacity 600ms var(--ease-out) 160ms, transform 800ms var(--ease-out) 160ms;
+  }
+  .trust-row > dd {
+    transition-delay: 280ms;
+  }
+
+  /* Channels: the conversation in each sample plays out as its sheet arrives. */
+  .sample > * {
+    transition: opacity 420ms var(--ease-out), transform 520ms var(--ease-out);
+  }
+  .is-live .ch-row:not(.is-in) .sample > * {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  .sample > :nth-child(2) { transition-delay: 220ms; }
+  .sample > :nth-child(3) { transition-delay: 520ms; }
+  .sample > :nth-child(4) { transition-delay: 820ms; }
+}
+@keyframes qs-arrive {
+  from {
+    background: var(--pen-wash);
+  }
+}
+@keyframes qs-write {
+  from {
+    clip-path: inset(-4px 100% -4px -4px);
+    opacity: 0.4;
+  }
+  to {
+    clip-path: inset(-4px -4px -4px -4px);
+    opacity: 1;
+  }
 }
 
 /* ---------- responsive ---------- */
 @media (max-width: 960px) {
-  .lp-hero {
+  .lp-page {
+    --bar: 60px;
+    --shift: 0px;
+  }
+  .lp-bar-inner {
+    grid-template-columns: 1fr auto;
+  }
+  .lp-nav {
+    display: none;
+  }
+  .deal-grid {
     grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-8);
   }
-  .lp-copy h1 {
-    max-width: 16ch;
-  }
-  .qs {
-    max-width: 600px;
-  }
-  .lp-section {
-    grid-template-columns: minmax(0, 1fr);
-    padding-block: var(--s-8) var(--s-12);
-  }
-  .lp-section-head {
+  .deal-stage {
     position: static;
   }
-  .lp-section-head h2 {
-    max-width: none;
+  .deal-log {
+    padding-top: 0;
   }
-  .lp-section-head p {
-    max-width: 60ch;
+  .ch-row,
+  .trust-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ch-row {
+    position: static;
+    min-height: 0;
   }
 }
 @media (max-width: 640px) {
-  .qs-head,
-  .qs-row {
-    padding-inline: 16px;
+  .lp-lede {
+    font-size: var(--t-16);
   }
+  .lp-ctas .btn {
+    min-height: 44px;
+  }
+  .qs-head,
+  .qs-row,
   .qs-foot {
     padding-inline: 16px;
   }
   .qs-meta {
     gap: 0 var(--s-3);
   }
-  .log-row {
-    grid-template-columns: 48px minmax(0, 1fr);
-    padding: 10px 14px;
-  }
-  .log-text {
-    grid-column: 2;
-  }
-  .ch-row,
-  .trust-row {
+  .call-line {
     grid-template-columns: minmax(0, 1fr);
+    gap: 0;
   }
-  .lp-hero {
-    padding-block: var(--s-4) var(--s-12);
-    gap: var(--s-8);
+}
+
+/* On a phone the sheet pins at the top in a compact form and the log scrolls up under it. */
+@media (max-width: 960px) and (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  .deal-stage {
+    position: sticky;
+    top: calc(var(--bar) + 8px);
   }
-  .lp-copy h1 {
-    font-size: 38px;
+  .deal-head {
+    opacity: 1;
   }
-  .lp-lede {
-    font-size: var(--t-16);
+  .qs {
+    font-size: var(--t-14);
   }
-  .lp-ctas > * {
-    flex: 1 1 0;
+  .qs-head {
+    padding-block: 10px 8px;
   }
-  .lp-ctas .guest .btn {
-    width: 100%;
+  .qs-title {
+    font-size: var(--t-18);
+  }
+  .qs-meta,
+  .qs-note,
+  .qs-sub,
+  .qs-caption,
+  .qs-req {
+    display: none;
+  }
+  .qs-row {
+    padding-block: 7px;
+  }
+  .qs-row .price {
+    font-size: var(--t-18);
+  }
+  .deal:not(.at-6) .qs-was .price {
+    font-size: var(--t-18);
+  }
+  .qs-saved {
+    margin-top: 0;
+  }
+  .qs-foot {
+    min-height: 0;
+    padding-block: 6px;
+  }
+  .deal:not(.at-8) .qs-foot {
+    display: none;
+  }
+  .log-row {
+    min-height: 40svh;
   }
 }

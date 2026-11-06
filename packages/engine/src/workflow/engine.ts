@@ -334,7 +334,15 @@ const E164_RE = /^\+[1-9]\d{6,14}$/;
 export type EngineDealResult = Omit<DealResult, "contacted"> & {
   contacted: (DealResult["contacted"][number] & { channel: Channel })[];
   not_contacted: { business_id: string; business: string; channel: Channel; reason: string }[];
+  /** This call was a retry: the job already existed and nobody was contacted again. */
+  replayed?: boolean;
 };
+
+/**
+ * How long a client_request_id returns its deal. It guards a retry of one call, not a purchase: agents
+ * derive it from the request, so without a limit the same request weeks later got the old deal back.
+ */
+export const DEAL_REPLAY_WINDOW_MS = 10 * 60_000;
 
 /** Engine-side business status → the deal board's v5 status. */
 /** Quote rounds a job can have: the first quotes plus one negotiation round. The jobs table stores
@@ -627,7 +635,10 @@ export class HaggleEngine {
     const ws = input.workspace_id ?? DEFAULT_WORKSPACE_ID;
     if (input.client_request_id) {
       const existing = await this.repo.findJobByClientRequestId(input.client_request_id, ws);
-      if (existing) return this.dealResult(existing);
+      if (existing && this.now().getTime() - Date.parse(existing.created_at) <= DEAL_REPLAY_WINDOW_MS) return this.dealResult(existing, true);
+      // A stale id gives way to the new deal (the column is unique per workspace). Unconditional: a job that
+      // keeps changing must not win a compare-and-set race and answer a new request with the old deal.
+      if (existing) await this.repo.touchJob(existing.id, { client_request_id: null });
     }
     if (input.businesses.length === 0) throw new EngineError("no_businesses", "No businesses to contact.", "Pass businesses[] (name + email or phone), or call discover first.", "discover");
     validateAsk(input.request);
@@ -737,7 +748,7 @@ export class HaggleEngine {
       } catch (e) {
         if (input.client_request_id && /client_request/.test(String(e))) {
           const existing = await this.repo.findJobByClientRequestId(input.client_request_id, ws);
-          if (existing) return this.dealResult(existing);
+          if (existing) return this.dealResult(existing, true);
         }
         if (!String(e).includes("short_code")) throw e;
       }
@@ -762,7 +773,7 @@ export class HaggleEngine {
     return this.dealResult((await this.repo.getJob(job.id))!);
   }
 
-  private async dealResult(job: JobRow): Promise<EngineDealResult> {
+  private async dealResult(job: JobRow, replayed = false): Promise<EngineDealResult> {
     const businesses = await this.repo.getBusinesses(job.id);
     return {
       ok: true, mode: job.mode, job_id: job.id, inbox: job.inbox, state: job.state,
@@ -772,7 +783,10 @@ export class HaggleEngine {
         reason: b.status === "unavailable" ? this.route(b).reason : b.status === "bounced" ? "send failed" : b.next_attempt_at ? (b.channel === "phone" ? `call scheduled for ${b.next_attempt_at} (call hours)` : `retrying at ${b.next_attempt_at}`) : "pending",
       })),
       eta: `replies usually within minutes; collecting until ${job.collect_until}`,
-      next: "Call wait_for_update with this job_id (timeout_s up to 60). Don't email the businesses yourself.",
+      next: replayed
+        ? `Nothing was sent: deal ${job.id} was already started by this client_request_id. If this is a retry, follow that deal with wait_for_update. If the user is asking again, that is a new deal: call deal with a new client_request_id.`
+        : "Call wait_for_update with this job_id (timeout_s up to 60). Don't email the businesses yourself.",
+      ...(replayed ? { replayed } : {}),
     };
   }
 

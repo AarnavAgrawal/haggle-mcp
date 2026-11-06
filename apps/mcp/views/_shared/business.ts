@@ -13,7 +13,7 @@ export type BadgeTone = "muted" | "warn" | "win" | "info";
 const CONTACT_STATE: Record<ContactState, { label: string; tone: BadgeTone; hint: string }> = {
   discovered: { label: "Not contactable", tone: "muted", hint: "Haggle found this business but has no way to reach it." },
   contact_found: { label: "Contact found · not authorized", tone: "warn", hint: "A published phone or email isn't permission: the operator hasn't authorized contacting it." },
-  authorized: { label: "Haggle may contact", tone: "win", hint: "Authorized on this server and the channel can send." },
+  authorized: { label: "Ready to contact", tone: "win", hint: "Authorized on this server and the channel can send." },
   verified_responsive: { label: "Has replied before", tone: "info", hint: "Authorized, and it has replied to Haggle before." },
 };
 
@@ -133,7 +133,7 @@ export function quotesPrompt(found: FoundRow[], vendors: VendorRow[], category?:
   if (found.length) {
     const names = found.map((f) => f.name);
     const list = names.map((n) => `'${n.replace(/'/g, "’")}'`).join(", ");
-    return `Get ${what}quotes from these businesses with Haggle: ${names.join(", ")}. First run deal with businesses=[${list}] and dry_run=true to check which ones Haggle may contact, and tell me before anything is sent.`;
+    return `Get ${what}quotes from these businesses with Haggle: ${names.join(", ")}. First run deal with businesses=[${list}] and dry_run=true to check which ones Haggle can contact, and tell me before anything is sent.`;
   }
   const ready = vendors.filter((v) => v.ready).map((v) => v.name);
   return ready.length
