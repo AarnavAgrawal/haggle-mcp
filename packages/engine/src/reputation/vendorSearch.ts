@@ -1,16 +1,17 @@
 // PURE: how wide a listing search looks, and how its results are labelled and ordered.
 //
-// A business that can do the job often isn't tagged for it: Domino's and Pizza Hut aren't caterers, but
-// they take bulk orders. A catering search that only asks for "catering" never sees them, so it also
-// asks for restaurants (the providers run the queries; fit.ts still drops what isn't food).
+// A business that can do the job often isn't tagged for it: Domino's and Pizza Hut aren't caterers but
+// take bulk orders, and a handyman fixes a leak without being a plumber. A search that only asks for the
+// kind of work never sees them, so each kind also asks for its related trades (the providers run the
+// queries; fit.ts still drops what doesn't do the work). Work with no vocabulary is searched as asked.
 //
 // Honesty rules:
-// - A restaurant is "adjacent", never called a caterer: it may take a large order, and the quote request
-//   is what finds out.
+// - A related business is "adjacent", never called a specialist: it may do the work, and the quote
+//   request is what finds out.
 // - A price tier comes from a listing signal or is absent. Amazon listings carry no price, so its tier is
 //   read from the kind of place (fast food, fine dining). It is a rough guide, never a quote.
 // - Preferences steer the order and never remove a business; with none, the list spans the range.
-import { fitsCategory, kindOf, searchPhrase } from "./fit.ts";
+import { fitsCategory, isSpecialist, kindOf, searchPhrase } from "./fit.ts";
 import type { FoundBusiness } from "./places.ts";
 
 export type PriceRange = "budget" | "mid" | "upscale";
@@ -76,10 +77,15 @@ export function preferencesFrom(r: { what: string; details?: { label: string; va
 const FOOD_TEXT = ["restaurants", "pizza delivery", "fine dining restaurants"];
 /** Related trades to search as well (fit.ts keeps only the ones that do the work). */
 const ALSO_SEARCH: Record<string, string[]> = {
-  cleaning: ["janitorial service"],
-  printing: ["copy shop", "sign shop"],
-  photography: ["videographer"],
-  repairs: ["handyman"],
+  plumbing: ["handyman", "drain cleaning"],
+  electrical: ["handyman", "electrical contractor"],
+  repairs: ["handyman", "general contractor"],
+  cleaning: ["janitorial service", "carpet cleaning"],
+  moving: ["moving company", "truck rental"],
+  printing: ["copy shop", "sign shop", "office supply store"],
+  rentals: ["party supply store", "equipment rental"],
+  photography: ["videographer", "photo studio"],
+  entertainment: ["dj service", "live band"],
 };
 
 /** The text searches for a request, the main one first. A provider that also searches by category (Amazon) needn't ask for food by text. */
@@ -106,17 +112,16 @@ const ADJACENT_REASON = "restaurant, not listed as a caterer: may take large ord
 const spaced = (t: string) => ` ${t.toLowerCase().replace(/[^a-z]+/g, " ").trim()} `;
 /** Whole words: a "bar" preference isn't met by "Barbecue Barn". */
 const matchesCuisine = (b: FoundBusiness, want: string) => b.cuisine === want || [b.name, b.primary_type, ...b.types].some((t) => spaced(t ?? "").includes(spaced(want)));
-/** Does this label say catering? A whole word: "Caterina's Trattoria" is a restaurant. */
-const saysCatering = (t: string) => /\b(catering|caterers?)\b/.test(spaced(t));
 
-/** One food listing with its fit, cuisine and rough price tier, and the reasons rewritten to say so. */
-function labelled(b: FoundBusiness, prefs: SearchPreferences): FoundBusiness {
-  const specialist = [b.name, b.primary_type, ...b.types].some((t) => saysCatering(t ?? ""));
-  const cuisine = [...(b.food_types ?? []), b.primary_type, ...b.types, b.name].map((t) => cuisineOf(t ?? "")).find(Boolean);
+/** One listing with its fit, rough price tier and (food) cuisine, and the reasons rewritten to say so. */
+function labelled(b: FoundBusiness, category: string, prefs: SearchPreferences): FoundBusiness {
+  const kind = kindOf(category);
+  const specialist = isSpecialist(category, b);
+  const cuisine = kind === "catering" ? [...(b.food_types ?? []), b.primary_type, ...b.types, b.name].map((t) => cuisineOf(t ?? "")).find(Boolean) : undefined;
   const tier = priceTier(b);
   const next: FoundBusiness = { ...b, fit: specialist ? "specialist" : "adjacent", ...(cuisine ? { cuisine } : {}), ...(tier ? { price_tier: tier } : {}) };
   next.rank_reasons = [
-    ...(specialist ? [] : [ADJACENT_REASON]),
+    ...(specialist ? [] : [kind === "catering" ? ADJACENT_REASON : `related business, not listed for ${kind ?? category}: may do this work (Haggle asks first)`]),
     ...b.rank_reasons.filter((r) => specialist || !/^(weak match|matches "cater)/.test(r)),
     ...(tier ? [`rough price: ${tier} (from the listing, not a quote)`] : []),
     ...(prefs.cuisine && matchesCuisine(next, prefs.cuisine) ? [`matches your ${prefs.cuisine} preference`] : []),
@@ -125,10 +130,10 @@ function labelled(b: FoundBusiness, prefs: SearchPreferences): FoundBusiness {
   return next;
 }
 
-/** A preference beats anything else about a listing, so matches lead whatever their score. */
-const PREFERRED = 1;
-/** What repeating a fit, cuisine or price tier costs a listing: enough to bring in the next kind of option. */
-const REPEAT = { fit: 0.12, cuisine: 0.12, price: 0.08 };
+/** A preference beats anything else about a listing, so matches lead whatever their score. A named cuisine beats a price point: asking for cheap Mexican isn't asking for cheap pizza. */
+const PREFERRED = { cuisine: 1.5, price: 1 };
+/** What repeating a fit, a variety (cuisine, else listing category) or a price tier costs a listing: enough to bring in the next kind of option. */
+const REPEAT = { fit: 0.12, variety: 0.12, price: 0.08 };
 
 /** Best first, but each pick counts against more of the same; a dimension the user chose isn't spread. Deterministic: deal's confirm step re-runs the search. */
 function spread(found: FoundBusiness[], prefs: SearchPreferences, count: number): FoundBusiness[] {
@@ -136,11 +141,11 @@ function spread(found: FoundBusiness[], prefs: SearchPreferences, count: number)
   const out: FoundBusiness[] = [];
   const used = new Map<string, number>();
   const seen = (k: string) => used.get(k) ?? 0;
-  const keys = (b: FoundBusiness) => [`fit:${b.fit}`, `cuisine:${b.cuisine ?? "?"}`, `price:${b.price_tier ?? "?"}`];
+  const keys = (b: FoundBusiness) => [`fit:${b.fit}`, `variety:${b.cuisine ?? b.primary_type ?? "?"}`, `price:${b.price_tier ?? "?"}`];
   const value = (b: FoundBusiness) => {
-    const [fit, cuisine, price] = keys(b) as [string, string, string];
-    const wanted = (prefs.cuisine && matchesCuisine(b, prefs.cuisine) ? PREFERRED : 0) + (prefs.price && b.price_tier === prefs.price ? PREFERRED : 0);
-    return b.score + wanted - REPEAT.fit * seen(fit) - (prefs.cuisine ? 0 : REPEAT.cuisine * seen(cuisine)) - (prefs.price ? 0 : REPEAT.price * seen(price));
+    const [fit, variety, price] = keys(b) as [string, string, string];
+    const wanted = (prefs.cuisine && matchesCuisine(b, prefs.cuisine) ? PREFERRED.cuisine : 0) + (prefs.price && b.price_tier === prefs.price ? PREFERRED.price : 0);
+    return b.score + wanted - REPEAT.fit * seen(fit) - (prefs.cuisine ? 0 : REPEAT.variety * seen(variety)) - (prefs.price ? 0 : REPEAT.price * seen(price));
   };
   while (out.length < count && left.length) {
     let best = 0;
@@ -152,22 +157,22 @@ function spread(found: FoundBusiness[], prefs: SearchPreferences, count: number)
   return out;
 }
 
-/** Ranked listings -> the ones that do the work, at most `count`. Food searches are labelled and spread; every other kind keeps its ranking. */
+/** Ranked listings -> the ones that do the work, labelled and spread across the range, at most `count`. A cuisine only means something for food. */
 export function shapeResults(found: FoundBusiness[], category: string, count: number, prefs: SearchPreferences = {}): FoundBusiness[] {
-  const fitting = found.filter((b) => fitsCategory(category, b));
-  if (kindOf(category) !== "catering") return fitting.slice(0, count);
-  return spread(fitting.map((b) => labelled(b, prefs)), prefs, count);
+  const steer = kindOf(category) === "catering" ? prefs : prefs.price ? { price: prefs.price } : {};
+  return spread(found.filter((b) => fitsCategory(category, b)).map((b) => labelled(b, category, steer)), steer, count);
 }
 
-/** One line on what a food search returned, for the agent and the user: "2 caterers, 4 restaurants · pizza, indian · budget to upscale". */
-export function resultMix(found: Pick<FoundBusiness, "fit" | "cuisine" | "price_tier">[]): string | null {
+/** One line on what a search returned, for the agent and the user: "2 caterers, 4 restaurants · pizza, indian · budget to upscale". */
+export function resultMix(found: Pick<FoundBusiness, "fit" | "cuisine" | "price_tier">[], category: string): string | null {
   if (!found.some((b) => b.fit)) return null;
+  const food = kindOf(category) === "catering";
   const n = (fit: string) => found.filter((b) => b.fit === fit).length;
   const plural = (c: number, one: string, many: string) => `${c} ${c === 1 ? one : many}`;
   const cuisines = [...new Set(found.map((b) => b.cuisine).filter(Boolean))];
   const tiers = (["budget", "mid", "upscale"] as const).filter((t) => found.some((b) => b.price_tier === t));
   return [
-    [n("specialist") ? plural(n("specialist"), "caterer", "caterers") : "", n("adjacent") ? plural(n("adjacent"), "restaurant", "restaurants") : ""].filter(Boolean).join(", "),
+    [n("specialist") ? plural(n("specialist"), food ? "caterer" : "specialist", food ? "caterers" : "specialists") : "", n("adjacent") ? plural(n("adjacent"), food ? "restaurant" : "related business", food ? "restaurants" : "related businesses") : ""].filter(Boolean).join(", "),
     cuisines.join(", "),
     tiers.length > 1 ? `${tiers[0]} to ${tiers.at(-1)}` : tiers[0] ?? "",
   ].filter(Boolean).join(" · ");

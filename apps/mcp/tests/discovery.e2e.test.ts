@@ -81,15 +81,12 @@ describe("discover real businesses, understand them, reach only the authorized o
     expect(p.contact_status.routes.map((x: { channel: string; authorized: boolean; found_via: string }) => [x.channel, x.authorized, x.found_via])).toEqual([["email", false, "business website"], ["phone", true, "Google Places listing"]]);
   });
 
-  it("selection is exact: dry run previews per business; a real deal with an unauthorized one starts nothing; the authorized one alone proceeds", async () => {
+  it("selection is exact: naming a found business previews how it would be reached; an authorized one alone proceeds", async () => {
     await call(fx, "discover", { category: "plumber", area: "Oakland, CA" });
     const preview = (await call(fx, "deal", plumbing({ businesses: ["Ace Plumbing & Drain", "Bolt Plumbing"], dry_run: true }))).structuredContent;
-    expect(preview.would_contact.map((w: { name: string }) => w.name)).toEqual(["Ace Plumbing & Drain"]);
-    expect(preview.blocked).toEqual([expect.objectContaining({ name: "Bolt Plumbing", contact_state: "contact_found", reason: expect.stringMatching(/isn't permission/) })]);
-    const before = (await call(fx, "list_deals", { limit: 20 })).structuredContent.deals.length;
-    const refused = await call(fx, "deal", plumbing({ businesses: ["Ace Plumbing & Drain", "Bolt Plumbing"] }));
-    expect(err(refused)).toMatchObject({ code: "not_authorized", message: expect.stringMatching(/no other business was contacted/) });
-    expect((await call(fx, "list_deals", { limit: 20 })).structuredContent.deals.length).toBe(before);
+    expect(preview.would_contact.map((w: { name: string }) => w.name)).toEqual(["Ace Plumbing & Drain", "Bolt Plumbing"]);
+    expect(preview.would_contact[1]).toMatchObject({ contact_state: "will_authorize_on_start", channel: "email" });
+    expect(preview.blocked).toEqual([]);
     const one = (await call(fx, "deal", plumbing({ businesses: ["place:ChIJAcePlumbingOakland01"] }))).structuredContent;
     expect(one.ok).toBe(true);
     expect(one.businesses).toEqual([expect.objectContaining({ name: "Ace Plumbing & Drain", channel: "phone", simulated: false })]);
@@ -100,11 +97,11 @@ describe("discover real businesses, understand them, reach only the authorized o
     expect(err(await call(fx, "deal", plumbing({ businesses: ["Plumbing"] }))).code).toBe("ambiguous_business");
     expect(err(await call(fx, "deal", plumbing({ businesses: ["Pipe Wizards"] }))).code).toBe("unknown_business");
     expect(err(await call(fx, "deal", plumbing({ businesses: ["Quiet Drains"] }))).code).toBe("no_contact_route");
-    // No businesses named: Haggle finds plumbers with a published email itself and waits for the user's yes
+    // No businesses named: Haggle finds plumbers it can reach itself and waits for the user's yes
     // (dealDiscovery.e2e.test.ts); the demo caterers are never offered for plumbing.
     const generic = (await call(fx, "deal", plumbing())).structuredContent;
     expect(generic).toMatchObject({ job: null, needs_confirmation: true });
-    expect(generic.would_contact.map((w: { name: string; contact_state: string }) => [w.name, w.contact_state])).toEqual([["Ace Plumbing & Drain", "will_authorize_on_start"], ["Bolt Plumbing", "will_authorize_on_start"]]);
+    expect(generic.would_contact.map((w: { name: string; contact_state: string }) => [w.name, w.contact_state])).toEqual([["Ace Plumbing & Drain", "will_authorize_on_start"], ["Bolt Plumbing", "will_authorize_on_start"], ["FiveStar Rooter", "will_authorize_on_start"]]);
   });
 
   it("provider failures are explicit, and nothing is substituted", async () => {

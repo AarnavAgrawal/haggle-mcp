@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { amazonHours, disabledPayer, HaggleEngine, InMemoryRepository, StubBrain, type ListingProvider } from "@haggle/engine";
 import type { ServiceApp, ServiceContext, ServiceHandler } from "../src/service/http.ts";
-import { consentBasisOf, consentProblem, consentText, DailyAdds, MAX_VENDORS, registerVendorRoutes } from "../src/service/vendors.ts";
+import { consentBasisOf, consentText, DailyAdds, MAX_VENDORS, registerVendorRoutes } from "../src/service/vendors.ts";
 
 /** `slots`: the store's shared rate slots ("shared", migration 124), none (an older store), or failing (the table missing). */
 async function setup(mode: "mock" | "live" = "live", now = () => new Date("2026-10-22T18:00:00Z"), slots: "shared" | "none" | "failing" = "shared", listing?: ListingProvider) {
@@ -47,11 +47,7 @@ async function setup(mode: "mock" | "live" = "live", now = () => new Date("2026-
 }
 
 describe("consent helpers", () => {
-  it("a public listing allows email only; the recorded text names the basis, note, actor and time", () => {
-    expect(consentProblem("public_listing_email", "email")).toBeNull();
-    expect(consentProblem("public_listing_email", "phone")).toMatch(/email only/);
-    expect(consentProblem("public_listing_email", "imessage")).toMatch(/email only/);
-    expect(consentProblem("business_agreed", "phone")).toBeNull();
+  it("the recorded text names the basis, note, actor and time", () => {
     const t = consentText("business_agreed", "Owner said yes by phone", "user-1", new Date("2026-10-22T18:00:00Z"));
     expect(t).toBe("business_agreed: Owner said yes by phone (attested by web:user-1 at 2026-10-22T18:00:00.000Z)");
     expect(consentBasisOf(t)).toBe("business_agreed");
@@ -104,12 +100,14 @@ describe("/internal/vendors (in process)", () => {
     expect(await engine.mayContact({ email: "orders@casalunch.com" }, "ws_alpha")).toBe(false);
   });
 
-  it("refuses a call or text on a public listing, a channel that doesn't fit, bad input and a missing actor", async () => {
+  it("takes a number from a public listing for a call or a text", async () => {
     const { add } = await setup();
-    const weak = await add({ name: "Pipes", contact: "+14155552000", consent_basis: "public_listing_email" });
-    expect(weak.status).toBe(422);
-    expect(weak.body.error.code).toBe("CONSENT_TOO_WEAK");
-    expect((await add({ name: "Pipes", contact: "+14155552000", channel: "imessage", consent_basis: "public_listing_email" })).body.error.code).toBe("CONSENT_TOO_WEAK");
+    expect((await add({ name: "Pipes", contact: "+14155552000", consent_basis: "public_listing" })).status).toBe(201);
+    expect((await add({ name: "Drains", contact: "+14155552001", channel: "imessage", consent_basis: "public_listing" })).status).toBe(201);
+  });
+
+  it("refuses a channel that doesn't fit, bad input and a missing actor", async () => {
+    const { add } = await setup();
     expect((await add({ name: "Pipes", contact: "a@pipes.com", channel: "phone", consent_basis: "business_agreed" })).body.error.code).toBe("BAD_CHANNEL");
     expect((await add({ name: "Pipes", contact: "4155552000", consent_basis: "business_agreed" })).body.error.code).toBe("INVALID_INPUT");
     expect((await add({ name: "Pipes", contact: "a@pipes.com", consent_basis: "they_said_ok" })).body.error.code).toBe("INVALID_INPUT");

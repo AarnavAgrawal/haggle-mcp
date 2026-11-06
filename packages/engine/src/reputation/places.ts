@@ -141,11 +141,11 @@ export interface FoundBusiness {
   food_types?: string[];
   /** The chain this location belongs to (Amazon `BusinessChains`). Its website speaks for the chain, not the store. */
   chain?: string;
-  /** Food searches only: "specialist" lists catering; "adjacent" is a restaurant that may take a large order. */
+  /** "specialist" is listed for the work; "adjacent" is a related business that may do it. Never claim an adjacent one does. */
   fit?: "specialist" | "adjacent";
   /** Food searches only: the cuisine the listing shows, when it shows one. */
   cuisine?: string;
-  /** Food searches only: a rough tier read from the listing, absent when it gives no signal. Never a quote. */
+  /** A rough tier read from the listing, absent when it gives no signal. Never a quote. */
   price_tier?: PriceRange;
   /** 0..1: how well the listing matches the requested service and area. */
   relevance: number;

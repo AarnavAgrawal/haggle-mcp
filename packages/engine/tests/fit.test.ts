@@ -125,10 +125,9 @@ describe("fitsCategory", () => {
     expect(fitsCategory("plumbing", { name: "Joe's", types: ["architect"] })).toBe(false);
   });
 
-  it("an unknown kind of work needs a matching word (primary or name); an empty category is a lookup and accepts all", () => {
+  it("an unknown kind of work has no vocabulary to judge by: the listing search's results stand; an empty category is a lookup", () => {
     expect(fitsCategory("florist", { name: "Petals", primary_type: "florist" })).toBe(true);
-    expect(fitsCategory("florist", { name: "Bloom Florist SF", primary_type: "retail" })).toBe(true);
-    expect(fitsCategory("florist", { name: "Bay of Burma", primary_type: "restaurant" })).toBe(false);
+    expect(fitsCategory("wedding flowers", { name: "Petals", primary_type: "florist" })).toBe(true);
     expect(fitsCategory("", { name: "Anything", primary_type: "architect" })).toBe(true);
   });
 });

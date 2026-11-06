@@ -47,7 +47,7 @@ describe("public discovery: evidence-ranked, deduplicated, explicit about failur
     expect(calls[0]!.headers["X-Goog-FieldMask"]).toContain("places.id");
     const one = await placeDetails({ apiKey: "k", fetch: fetch as never }, "ChIJace000000001", "plumber", "Oakland, CA");
     expect(one).toMatchObject({ business_ref: "place:ChIJace000000001", name: "Ace Plumbing & Drain" });
-    expect(calls[1]!.url).toBe("https://places.googleapis.com/v1/places/ChIJace000000001");
+    expect(calls.at(-1)!.url).toBe("https://places.googleapis.com/v1/places/ChIJace000000001");
     expect(await placeDetails({ apiKey: "k", fetch: fetch as never }, "../../etc/passwd")).toBeNull(); // ids are validated
   });
 });

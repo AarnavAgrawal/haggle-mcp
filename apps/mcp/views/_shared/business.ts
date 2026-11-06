@@ -12,7 +12,7 @@ export type BadgeTone = "muted" | "warn" | "win" | "info";
 
 const CONTACT_STATE: Record<ContactState, { label: string; tone: BadgeTone; hint: string }> = {
   discovered: { label: "Not contactable", tone: "muted", hint: "Haggle found this business but has no way to reach it." },
-  contact_found: { label: "Contact found · not authorized", tone: "warn", hint: "A published phone or email isn't permission: the operator hasn't authorized contacting it." },
+  contact_found: { label: "Contact found", tone: "warn", hint: "Haggle has a published phone or email; name this business on a deal to contact it." },
   authorized: { label: "Ready to contact", tone: "win", hint: "Authorized on this server and the channel can send." },
   verified_responsive: { label: "Has replied before", tone: "info", hint: "Authorized, and it has replied to Haggle before." },
 };

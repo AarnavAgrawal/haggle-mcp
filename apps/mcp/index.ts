@@ -15,7 +15,7 @@ import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, 
 import { handleInkboxWebhook } from "./src/webhook.ts";
 import { isDemoWorkspace } from "./src/demoWorkspace.ts";
 import { hostedSellersFromEnv, SELLER_WEBHOOK_MAX_BYTES } from "./src/sellers.ts";
-import { confirmedBy, findForDeal, MAX_DISCOVERED_PER_DEAL, MIN_OWN_VENDORS, previewEntry, searchListings, type DiscoveryOutcome, type FoundCandidate } from "./src/dealDiscovery.ts";
+import { candidateFor, confirmedBy, findForDeal, MAX_DISCOVERED_PER_DEAL, MIN_OWN_VENDORS, previewEntry, reachFor, searchListings, type DiscoveryOutcome, type FoundCandidate } from "./src/dealDiscovery.ts";
 import { addsLeftToday, addVendorChecked } from "./src/service/vendors.ts";
 import { limitsMiddleware } from "./src/limits.ts";
 import { ConfigError } from "./src/config.ts";
@@ -44,7 +44,7 @@ const server = new MCPServer<never, AppEnv>({
   description: "Lets AI agents buy from businesses the way businesses work: email, phone and agent-to-agent. Quotes, honest negotiation and human approval; payment is a manual handoff to the vendor on pilot servers (Stripe test mode on demo servers).",
   instructions: [
     "Haggle turns businesses' email, phone calls and texts into an API: it contacts each business on its own channel, collects and compares quotes, negotiates honestly and gets a human's approval; on pilot servers the customer pays the vendor directly and Haggle records the vendor's confirmation (demo servers use Stripe test mode).",
-    "When the user wants to buy, cater, book, hire or get quotes (e.g. 'cater a hackathon for 200 next Saturday, budget under 5k'), first make sure a business could quote it, as a good human assistant would: work out what kind of purchase it is and, in ONE short message, ask the user for the essentials that are missing (catering: headcount, date, where; a repair: what's wrong, the address, how urgent; moving: from/to, size, date; cleaning: size, date, address; printing: specs, quantity, needed-by), plus the optional details that change the price (for food: a cuisine, and a price point from as cheap as possible to fancy; with no preference Haggle shows a range, so never hold the deal for them); never re-ask what they already said, at most two rounds. Then call deal with the request and budget_usd (omit budget_usd if the user gave none): it contacts the workspace's saved businesses for that kind of work and, when there are fewer than 3, finds more itself near the request's area (public listings, businesses that publish an email), then opens one live deal board in the chat. Found businesses wait for the user's yes: deal lists them (contact_state will_authorize_on_start, nothing sent); show the user the list, then call deal again with confirm_discovered (their business_refs, minus any the user removed). They are saved to the workspace and emailed, never called or texted. If deal returns needs_info, nothing was sent: ask the user exactly those questions in one message, then call deal again (proceed_anyway: true only if the user explicitly says to go ahead without them). Don't call ask, discover or business_profile first.",
+    "When the user wants to buy, cater, book, hire or get quotes (e.g. 'cater a hackathon for 200 next Saturday, budget under 5k'), first make sure a business could quote it, as a good human assistant would: work out what kind of purchase it is and, in ONE short message, ask the user for the essentials that are missing (catering: headcount, date, where; a repair: what's wrong, the address, how urgent; moving: from/to, size, date; cleaning: size, date, address; printing: specs, quantity, needed-by), plus the optional details that change the price (a price point from as cheap as possible to premium, and for food a cuisine; with no preference Haggle shows a range, so never hold the deal for them); never re-ask what they already said, at most two rounds. Then call deal with the request and budget_usd (omit budget_usd if the user gave none): it contacts the workspace's saved businesses for that kind of work and, when there are fewer than 3, finds more itself near the request's area (public listings), then opens one live deal board in the chat. Found businesses wait for the user's yes: deal lists them (contact_state will_authorize_on_start, nothing sent); show the user the list, then call deal again with confirm_discovered (their business_refs, minus any the user removed). They are saved to the workspace and contacted on what they publish: email first, else a call, else a text. If deal returns needs_info, nothing was sent: ask the user exactly those questions in one message, then call deal again (proceed_anyway: true only if the user explicitly says to go ahead without them). Don't call ask, discover or business_profile first.",
     "If the user names vendors ('use Mission Eats only'), pass just their names: deal(businesses=['Mission Eats']); exactly those are contacted. Haggle holds its saved businesses' contact details and finds new ones itself; never ask the user for a business's phone number or email. Haggle asks every business for an itemized all-in total, the terms and the category's own asks; when the user wants specific answers compared (a repair's earliest date, a rental's hourly rate), pass request.ask[], compare_by and payable_field.",
     "Then: wait_for_update (repeat, pass the cursor) until quotes are final -> get_quotes to read them -> approve(job_id, quote_id) to ask the human -> pay(job_id, quote_id) once they approved. The board updates itself and the human can choose any safe option on it, so get_quotes and wait_for_update return data only and draw nothing; call open_haggle only when the user asks to see the board again.",
     "Approval always comes from a human, never from this model: on live servers only the workspace approver's coded reply to Haggle's text (YES <code>) counts; demo servers also take the approval card or the client's form. Never ask for the code, and never try to change the approver or raise a deal's spending limit or the workspace default (only the human or the operator can). Approving charges nothing; pay charges the approved amount (the deposit, or the full total when none was stated; with manual payments, pay starts the booking-and-payment handoff and charges nothing). After a texted YES the human may also reply PAY <code> to charge it from their phone; one charge either way. approve(action='confirm') only confirms the order and pays nothing.",
@@ -352,9 +352,9 @@ export const deal = server.tool(
       "START HERE for any purchase or procurement request: catering, food for an event or hackathon, rentals, print, repairs, services ('cater lunch for 60 next Saturday, 12 vegetarian, under $2,500'). " +
       "Pass the request in the user's own words or structured: what, quantity (headcount), date or when, area/where or venue, delivery, dietary, and budget (words) or budget_usd ('under 5k' = 5000; omit if the user gave none, never guess). Every fact is kept through the RFQ, the comparison, the approval and the booking. " +
       "Haggle contacts this workspace's saved businesses for the request's kind of work, or exactly the ones the user names (businesses: ['Harbor Table']; Haggle has their contact details, so never ask the user for a business's phone or email), each on its own channel; opens a live deal board; collects quotes; follows up once; negotiates only with real competing quotes. Nothing is bought or paid here: the human approves later. " +
-      "With fewer than 3 saved businesses for the work and none named, Haggle also finds businesses near the area that publish an email (at most 6). They are never contacted without the user's yes: deal (or deal dry_run) lists them in would_contact with contact_state 'will_authorize_on_start' and sends nothing; after the user agrees, call deal again with confirm_discovered: [their business_refs, minus any the user removed]. Each is saved as an email-only business and emailed. " +
+      "With fewer than 3 saved businesses for the work and none named, Haggle also finds businesses near the area (at most 6), reached by email if they publish one, else a call or a text. They are never contacted without the user's yes: deal (or deal dry_run) lists them in would_contact with contact_state 'will_authorize_on_start' and sends nothing; after the user agrees, call deal again with confirm_discovered: [their business_refs, minus any the user removed]. Each is saved and contacted. Naming a business from discover in businesses counts as the user's yes for it. " +
       "Don't use it for a rough price only (ask), or to check on an earlier purchase (list_deals, then get_quotes). " +
-      "Before calling, ask the user in ONE message for the essentials a business needs to quote this kind of purchase (catering: headcount, date, where; a repair: what's wrong, the address, how urgent; moving: from/to, size, date; cleaning: size, date, address; printing: specs, quantity, needed-by) plus optional details that change the price (for food: cuisine and price point, passed as details 'Cuisine' and 'Price range'; they steer the businesses found, and without them Haggle offers a range across cuisines and prices); never re-ask what they said. If essentials are still missing, deal returns needs_info (nothing sent) with the exact questions: ask them in one message, then call deal again (proceed_anyway: true only if the user says to go ahead without them). " +
+      "Before calling, ask the user in ONE message for the essentials a business needs to quote this kind of purchase (catering: headcount, date, where; a repair: what's wrong, the address, how urgent; moving: from/to, size, date; cleaning: size, date, address; printing: specs, quantity, needed-by) plus optional details that change the price (price point, and for food cuisine, passed as details 'Price range' and 'Cuisine'; they steer the businesses found, and without them Haggle offers a range); never re-ask what they said. If essentials are still missing, deal returns needs_info (nothing sent) with the exact questions: ask them in one message, then call deal again (proceed_anyway: true only if the user says to go ahead without them). " +
       "A detail Haggle can't read comes back as UNREADABLE_REQUEST naming it; an unknown vendor name comes back listing this workspace's vendors. Nothing is sent in either case. " +
       "Haggle already asks every business for an itemized all-in total, what's included, deposit and payment terms, availability, cancellation policy and quote validity, plus the category's own asks (a plumber's call-out fee and warranty, a mover's crew and minimum hours, ...). For specific answers to compare on (any kind of request) pass request.ask[], compare_by and payable_field. If nobody can be contacted it starts nothing and says why (setup blockers, or why Haggle found nobody: no area, nothing nearby, listings down). Idempotent with client_request_id. Next: wait_for_update(job_id).",
     inputSchema: z.object({
@@ -377,7 +377,7 @@ export const deal = server.tool(
       client_request_id: z.string().max(64).optional().describe("Reuse to get the same job back instead of contacting businesses again"),
       dry_run: z.boolean().optional().describe("Preview only: resolve who would be contacted and on which channel, send nothing and start no job. Use only if the user asks for a preview."),
       proceed_anyway: z.boolean().optional().describe("Only when the user explicitly said to go ahead without the details a needs_info result asked for: contact businesses with what is known. Never skips what the job is and where"),
-      confirm_discovered: z.array(z.string().min(3).max(520)).max(MAX_DISCOVERED_PER_DEAL).optional().describe("Only after the user said yes to the businesses Haggle found (would_contact entries with contact_state 'will_authorize_on_start'): their business_refs, minus any the user removed. Each is saved as a vendor (email only) and emailed. [] = none of them. Never invent refs: any ref the preview didn't list is refused"),
+      confirm_discovered: z.array(z.string().min(3).max(520)).max(MAX_DISCOVERED_PER_DEAL).optional().describe("Only after the user said yes to the businesses Haggle found (would_contact entries with contact_state 'will_authorize_on_start'): their business_refs, minus any the user removed. Each is saved as a vendor and contacted. [] = none of them. Never invent refs: any ref the preview didn't list is refused"),
     }),
     outputSchema: DealBoardPlus,
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: true },
@@ -478,8 +478,8 @@ export const deal = server.tool(
       let businesses: (z.infer<typeof businessInput> & { simulated?: boolean; source?: "web" | "agent"; opening_hours?: WeeklyHours; timezone?: string })[];
       let preview: ({ name: string; business_ref?: string; channel?: string; contact_state: string; ready: boolean; reason?: string } & Record<string, unknown>)[] = [];
       // Haggle finds the businesses itself (src/dealDiscovery.ts): with no businesses named and fewer than
-      // MIN_OWN_VENDORS of the workspace's vendors for this kind of work, it searches public listings for
-      // businesses that publish an email. The server's demo roster, where it serves the request, stays the demo.
+      // MIN_OWN_VENDORS of the workspace's vendors for this kind of work, it searches public listings. The
+      // server's demo roster, where it serves the request, stays the demo.
       let discovery: DiscoveryOutcome | null = null;
       if (fromRoster && mine.length < MIN_OWN_VENDORS && !(mine.length === 0 && roster.length > 0)) {
         const s = await engine.getSettings();
@@ -492,13 +492,16 @@ export const deal = server.tool(
           timezone: (await engine.identity()).workspace.timezone,
           preferences: preferencesFrom({ what: R.what, details: R.details }),
           ...(input.confirm_discovered ? { confirming: input.confirm_discovered } : {}),
+          ...(knownCategory(R.what) ? {} : { searchFor: R.what }),
         });
       }
       const found: FoundCandidate[] = discovery?.candidates ?? [];
-      // Found businesses are only ever emailed, so a restaurant with no address can't be on this deal: say who, so the user can decide.
-      const noEmail = discovery?.not_emailable ?? [];
-      const noEmailHint = noEmail.length ? ` Also found, but Haggle can't reach them: ${noEmail.map((b) => b.name).join(", ")} publish no email Haggle may use, and found businesses are never called cold. Tell the user; a business that agrees to be contacted can be added on the Saved businesses page (/vendors).` : "";
-      const foundWhy = discovery && !found.length ? ` Haggle also looked for ${category} businesses itself and found none it may email: ${discovery.reason}.${noEmailHint}` : "";
+      // Say who couldn't be reached, so the user can decide (no published contact, or this server's calls and texts can't reach a new number).
+      const noReach = discovery?.not_reachable ?? [];
+      const noReachHint = noReach.length ? ` Also found, but Haggle can't reach them from this server: ${noReach.map((b) => b.name).join(", ")}. Tell the user.` : "";
+      const foundWhy = discovery && !found.length ? ` Haggle also looked for ${category} businesses itself and found none it can reach: ${discovery.reason}.${noReachHint}` : "";
+      // Named found businesses: naming one is the user's yes, so it is saved and contacted like a confirmed one.
+      const namedFound = new Map<string, FoundCandidate>();
       if (input.confirm_discovered && !fromRoster) {
         return fail(mode, "confirm_without_discovery", "confirm_discovered is only for businesses Haggle found for this request; with businesses named, Haggle contacts exactly those. Nothing was sent.", "Call deal again without confirm_discovered, or without businesses to let Haggle find them.", "deal");
       }
@@ -546,7 +549,13 @@ export const deal = server.tool(
           return fail(mode, "vendor_unrelated", `${unrelated.map((x) => `${x.name} is listed as ${kindOf(x)}`).join("; ")}, not ${wanted}. Nothing was sent.`,
             `Contact only businesses that do ${wanted}: name others, or omit businesses to use this workspace's ${wanted} vendors. If one of these really does ${wanted}, the user can change what it does on the Saved businesses page (/vendors).`, "none");
         }
-        const unreachable = sel.selected.filter((x) => !x.send);
+        const ch = await rt.channels();
+        for (const x of sel.selected) {
+          if (x.kind !== "discovered" || x.send) continue;
+          const reach = reachFor(x.found, ch);
+          if (reach) namedFound.set(x.business_ref, candidateFor(x.found, reach));
+        }
+        const unreachable = sel.selected.filter((x) => !x.send && !namedFound.has(x.business_ref));
         if (unreachable.length && !input.dry_run) {
           const u = unreachable[0]!;
           const code = u.kind === "vendor" ? "vendor_not_ready" : u.status.state === "discovered" ? "no_contact_route" : u.status.routes.some((r) => r.authorized) ? "vendor_not_ready" : "not_authorized";
@@ -559,12 +568,12 @@ export const deal = server.tool(
         // One business named twice ("Mission Eats", "mission_eats") is contacted once.
         businesses = businesses.filter((b, j) => businesses.findIndex((x) => x.name === b.name && x.email === b.email && x.phone === b.phone && x.a2a_card_url === b.a2a_card_url) === j);
         preview = [
-          ...sel.selected.filter((x, j) => sel.selected.findIndex((y) => y.business_ref === x.business_ref) === j).map((x) => ({ name: x.name, business_ref: x.business_ref, ...(x.send ? { channel: x.send.channel } : {}), contact_state: x.status.state, ready: !!x.send, ...(x.send ? {} : { reason: x.status.summary }) })),
+          ...sel.selected.filter((x, j) => sel.selected.findIndex((y) => y.business_ref === x.business_ref) === j).map((x) => { const c = namedFound.get(x.business_ref); return c ? previewEntry(c) : { name: x.name, business_ref: x.business_ref, ...(x.send ? { channel: x.send.channel } : {}), contact_state: x.status.state, ready: !!x.send, ...(x.send ? {} : { reason: x.status.summary }) }; }),
           ...(await Promise.all(given.filter(hasContact).map(async (b) => ({ b, allowed: await engine.mayContact({ ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}) }) })))).map(({ b, allowed }) => { return { name: b.name, channel: b.channel ?? (b.a2a_card_url ? "a2a" : b.email ? "email" : "phone"), contact_state: allowed ? "authorized" : "contact_found", ready: allowed, ...(allowed ? {} : { reason: "this contact isn't authorized for this workspace (ask the operator: workspace-admin add-vendor), or it opted out or bounced" }) }; }),
         ];
       }
       preview.push(...found.map(previewEntry));
-      const discoveryOut = discovery ? { discovery: { status: discovery.status, found: found.length, ...(discovery.reason ? { reason: discovery.reason } : {}), ...(noEmail.length ? { not_emailable: noEmail } : {}) } } : {};
+      const discoveryOut = discovery ? { discovery: { status: discovery.status, found: found.length, ...(discovery.reason ? { reason: discovery.reason } : {}), ...(noReach.length ? { not_reachable: noReach } : {}) } } : {};
       // Live, with no vendor to fall back on and nothing found: say exactly what to do and why Haggle found
       // nobody (no area, nothing nearby, listings down, discovery off), even on a dry run.
       if (fromRoster && !ownDefault && roster.length === 0 && !found.length && mode === "live") {
@@ -586,24 +595,25 @@ export const deal = server.tool(
         const would = preview.filter((p) => p.ready);
         const blocked = preview.filter((p) => !p.ready);
         const refs = found.map((c) => c.business_ref);
-        const confirmHint = found.length ? ` Haggle found ${found.length} ${category} business(es) that publish an email (contact_state will_authorize_on_start): starting saves each to the workspace's businesses (email only) and emails it. Show the user the list; once they say yes, call deal again with the same arguments, without dry_run, and confirm_discovered: [${refs.map((r) => `'${r}'`).join(", ")}] minus any they removed ([] for none of them).` : "";
+        const confirmHint = found.length ? ` Haggle found ${found.length} ${category} business(es) (contact_state will_authorize_on_start; each entry's channel says how): starting saves each to the workspace's businesses and contacts it. Show the user the list; once they say yes, call deal again with the same arguments, without dry_run, and confirm_discovered: [${refs.map((r) => `'${r}'`).join(", ")}] minus any they removed ([] for none of them).` : "";
         // Asked once here, because a complete request never reaches needs_info. Not a gate: the list already spans the range.
         const prefQuestions = found.length ? gaps.helpful.filter((q) => q.key === "food" || q.key === "price_range").map((q) => q.question) : [];
         const prefHint = prefQuestions.length ? ` Optional, ask once with the list and don't wait on it: ${prefQuestions.join(" ")} If they answer, preview again with the answers in request.details.` : "";
-        const foundHint = `${confirmHint}${prefHint}${noEmailHint}`;
+        const foundHint = `${confirmHint}${prefHint}${noReachHint}`;
         const next = blocked.length
           ? `${input.dry_run ? "Dry run" : "Not started"}: nothing was sent. ${blocked.length} selected business(es) can't be contacted (see blocked); a real deal with them selected starts nothing. Ask the user whether to proceed with only: ${would.map((w) => w.name).join(", ") || "nobody"}.${foundHint}`
           : found.length ? `${input.dry_run ? "Dry run" : "Not started"}: nothing was sent and no deal was started.${foundHint}`
           : "Dry run: nothing was sent and no deal was started. Call deal again without dry_run to contact exactly these businesses.";
         const limit = spendingLimitPreview(input.spend_limit_usd, budgetUsd, engine.paymentCeilingCents, (await engine.getSettings()).spending_cap_cents);
         const v = DealBoardPlus.parse({ ok: true, job: null, empty: true, businesses: [], quotes: [], open_questions: [], mode: mode, dry_run: true, ...(unconfirmed && !input.dry_run ? { needs_confirmation: true } : {}), would_contact: would, blocked, spending_limit: limit, ...discoveryOut, next });
-        const line = (w: (typeof would)[number]) => `${w.name} [${w.channel}]${w.found ? ` (found: ${(w.found_via as { listing: string }).listing}, ${w.business_ref}${w.hours_today ? `, ${w.hours_today}` : ""}; will email once the user confirms)` : ""}`;
+        const line = (w: (typeof would)[number]) => `${w.name} [${w.channel}]${w.found ? ` (found: ${(w.found_via as { listing: string }).listing}, ${w.business_ref}${w.hours_today ? `, ${w.hours_today}` : ""}; will contact once the user confirms)` : ""}`;
         return ok(v, [`${input.dry_run ? "DRY RUN" : "NEEDS THE USER'S YES"} (nothing sent): deal would contact exactly ${would.length}: ${would.map(line).join(", ") || "nobody"}.`, spendingLimitLine(limit), ...blocked.map((b) => `Can't contact ${b.name} (${b.contact_state.replace(/_/g, " ")}): ${b.reason}`), `next: ${next}`].join("\n"));
       }
       // The human said yes: each found business is saved through the one vendor-add path (consent
-      // public_listing_email: email only; category = this request's; who confirmed; the listing ref as
-      // evidence; the daily add limit), then emailed with the hours stored for it.
+      // public_listing_email or public_listing; category = this request's; who confirmed; the listing ref as
+      // evidence; the daily add limit), then contacted with the hours stored for it.
       const notSaved: string[] = [];
+      toAuthorize.push(...namedFound.values());
       if (toAuthorize.length) {
         const left = await addsLeftToday(rt.engine, workspaceId);
         if (left < toAuthorize.length) {
@@ -612,16 +622,16 @@ export const deal = server.tool(
         const by = confirmedBy(actorOf(ctx), (ctx as { client?: { info?: () => { name?: string } | undefined } }).client?.info?.()?.name);
         for (const c of toAuthorize) {
           const r = await addVendorChecked(rt, workspaceId, {
-            name: c.name, contact: c.email, channel: "email", consent_basis: "public_listing_email", business_ref: c.business_ref, category,
-            note: `email published on its ${c.email_from === "listing" ? "" : "website, found via its "}${c.source} listing ${c.business_ref}; confirmed on the deal preview`,
+            name: c.name, contact: c.email ?? c.phone!, channel: c.channel, consent_basis: c.email ? "public_listing_email" : "public_listing", business_ref: c.business_ref, category,
+            note: c.email ? `email published on its ${c.email_from === "listing" ? "" : "website, found via its "}${c.source} listing ${c.business_ref}; confirmed on the deal preview` : `phone published on its ${c.source} listing ${c.business_ref}; confirmed on the deal preview`,
           }, { attestedBy: by, now: new Date() }).catch((e: unknown) => ({ ok: false as const, status: 400, code: "INVALID", message: (e as Error).message, fix: "" }));
           if (!r.ok) { notSaved.push(`${c.name}: ${r.message}`); continue; }
           const h = asWeeklyHours(r.row.opening_hours);
-          businesses.push({ name: c.name, channel: "email", email: c.email, simulated: false, source: "web", ...(h ? { opening_hours: h } : {}), ...(r.row.timezone ? { timezone: r.row.timezone } : {}) });
+          businesses.push({ name: c.name, channel: c.channel, ...(c.email ? { email: c.email } : { phone: c.phone! }), simulated: false, source: "web", ...(h ? { opening_hours: h } : {}), ...(r.row.timezone ? { timezone: r.row.timezone } : {}) });
         }
         if (notSaved.length) warnings.push(`Not contacted (couldn't be saved): ${notSaved.join("; ")}.`);
       }
-      if (fromRoster && input.confirm_discovered && businesses.length === 0) {
+      if (businesses.length === 0 && ((fromRoster && input.confirm_discovered) || namedFound.size)) {
         return fail(mode, "nothing_to_contact", `There is nobody left to contact for this ${category} request${notSaved.length ? ` (${notSaved.join("; ")})` : ": the user removed every business Haggle found and the workspace has no other ready businesses for it"}. Nothing was sent.`,
           "Ask the user which businesses to contact, or to save some on the Saved businesses page (/vendors).", "none");
       }
@@ -1352,10 +1362,10 @@ export const discover = server.tool(
     title: "Find businesses",
     description:
       "Find businesses for a request: real businesses from public listings (Amazon Location Service or Google Places, whichever this server has configured) ranked by relevance, being in the area, published contacts and, where the listing has them, credible reviews, plus this server's configured demo vendors, each on its channel (email, a text, a Voice AI call, A2A). " +
-      "Each comes with how Haggle can reach it: discovered (no contact), contact found (published, but NOT authorized: finding a phone or email is not permission), authorized, or verified responsive. " +
+      "Each comes with how Haggle can reach it: discovered (no contact), contact found (published, and contacted once the user names it on a deal), authorized, or verified responsive. " +
       "Use it when the user wants options or a kind of business Haggle has no vendors for (a plumber, a print shop, a repair), or asks who Haggle would contact. Then business_profile(name) for the evidence, and deal(businesses=['<name>', …], dry_run=true) to check who can actually be contacted. " +
-      "A food search also returns ordinary restaurants that aren't tagged catering (fit 'adjacent': they may take large orders, and the quote request finds out; never call one a caterer), spread across cuisines and rough price tiers. cuisine and price_range steer the order and never remove a business, so ask the user for them but don't wait on them. A price_tier is a rough guide from the listing, never a quote. " +
-      "If public discovery isn't configured it says so; it never substitutes demo vendors for real results. Read-only; contacts nobody. Not needed before a deal: deal finds businesses that publish an email itself and emails them once the user says yes. " +
+      "A search also returns related businesses that aren't listed for the work, such as restaurants for catering or handymen for plumbing (fit 'adjacent': they may do it, and the quote request finds out; never claim one does), spread across the range. cuisine (food) and price_range steer the order and never remove a business, so ask the user for them but don't wait on them. A price_tier is a rough guide from the listing, never a quote. " +
+      "If public discovery isn't configured it says so; it never substitutes demo vendors for real results. Read-only; contacts nobody. Not needed before a deal: deal finds businesses itself and contacts them once the user says yes. " +
       "Each found business also carries the emails it publishes (its listing's, then its website's) and today's opening hours when known; Haggle calls and texts a business only while it is open. " +
       "Draws one results card listing every business found (address, hours, website, rating and Maps link where the listing has them, contact state) and the demo vendors, so there is no need to call business_profile for each one just to show the list.",
     inputSchema: z.object({
@@ -1390,7 +1400,7 @@ export const discover = server.tool(
           // Each business's own website, in parallel and within a few seconds: the addresses it publishes
           // let the user add it by email without copying one. A slow site just has none (src/dealDiscovery.ts).
           found = await searchListings(rt as Runtime & { listing: NonNullable<Runtime["listing"]> }, discoveredFor(workspaceId), category, where, count, DISCOVER_WEBSITE_BUDGET_MS, prefs);
-          const mix = resultMix(found);
+          const mix = resultMix(found, category);
           pub = { status: "ok", message: `${found.length} ${category} business(es) found near ${where} in ${rt.listing.source} listings.${mix ? ` Mix: ${mix}.` : ""}` };
         } catch (e) {
           if (!(e instanceof PlacesError)) throw e;
@@ -1424,7 +1434,7 @@ export const discover = server.tool(
       const ready = roster.filter((r) => r.ready).length;
       const rosterFits = !wanted || roster.some((r) => r.category === wanted);
       const next = found.length
-        ? `Show the user these options. For the evidence on one, call business_profile('<name>'); to see which chosen businesses Haggle may actually contact, call deal(request, businesses=['<name>', ...], dry_run=true). Found businesses are contacted only if the operator authorized them.`
+        ? `Show the user these options. For the evidence on one, call business_profile('<name>'); to see which chosen businesses Haggle may actually contact, call deal(request, businesses=['<name>', ...], dry_run=true). Naming a found business on a deal saves it and contacts it.`
         : !rosterFits ? `None of the configured vendors offer ${wanted}, and ${pub.message} Tell the user; don't start a deal with other vendors.`
         : ready ? "Call deal(request, budget_usd) without businesses to contact every ready vendor, or with businesses=['<name>', ...] to contact only the vendors the user chose (names are enough: Haggle has their contact details)."
         : "No vendor is ready: show the user the blockers; nothing can be sent until one is fixed.";

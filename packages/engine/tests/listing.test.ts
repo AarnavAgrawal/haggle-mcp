@@ -65,10 +65,10 @@ describe("Amazon Location provider (API key, plain HTTPS)", () => {
     const p = amazonLocationProvider({ apiKey: "k/ey", region: "us-west-2", fetch: f.fetch, now: NOW });
     const list = await p.discover("plumber", "Oakland, CA", 3);
     expect(list.map((b) => b.name)).toEqual(["Ace Plumbing & Drain", "Night Owl Rooter", "Bolt Plumbing"]);
-    // A known kind of work (plumber -> plumbing) also searches that category near the area; the fake
-    // answers 404 there, and the text results stand.
-    expect(f.calls.map((c) => `${c.method} ${c.url.host}${c.url.pathname}`)).toEqual(["POST places.geo.us-west-2.amazonaws.com/v2/geocode", "POST places.geo.us-west-2.amazonaws.com/v2/search-text", "POST places.geo.us-west-2.amazonaws.com/v2/search-nearby"]);
-    expect(f.calls[2]!.body).toMatchObject({ QueryPosition: [-122.2711, 37.8044], Filter: { IncludeCategories: ["plumbing"] }, AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" });
+    // A known kind of work (plumber -> plumbing) also searches its related trades by text and that
+    // category near the area; the fake answers 404 there, and the text results stand.
+    expect(f.calls.map((c) => `${c.method} ${c.url.host}${c.url.pathname}`)).toEqual(["POST places.geo.us-west-2.amazonaws.com/v2/geocode", "POST places.geo.us-west-2.amazonaws.com/v2/search-text", "POST places.geo.us-west-2.amazonaws.com/v2/search-text", "POST places.geo.us-west-2.amazonaws.com/v2/search-text", "POST places.geo.us-west-2.amazonaws.com/v2/search-nearby"]);
+    expect(f.calls[4]!.body).toMatchObject({ QueryPosition: [-122.2711, 37.8044], Filter: { IncludeCategories: ["plumbing"] }, AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" });
     expect(f.calls[0]!.url.searchParams.get("key")).toBe("k/ey");
     expect(f.calls[1]!.body).toMatchObject({ QueryText: "plumber", BiasPosition: [-122.2711, 37.8044], AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse", MaxResults: 6 });
     // The area's position is cached briefly: a second search geocodes nothing.

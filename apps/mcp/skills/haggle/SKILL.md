@@ -10,7 +10,7 @@ also when email gets no reply; iMessage for businesses that asked to be texted),
 transcripts (text, PDF, images, quote.json), follows up once for missing answers, negotiates honestly, and
 confirms or pays (Stripe test mode) only after a human approves. You never email, call or text businesses
 yourself. Haggle contacts the workspace's saved businesses and, with the user's yes, businesses it finds
-itself (by email only).
+itself (by email if it publishes one, else a call or a text).
 
 ## Cold deal (real quotes)
 
@@ -38,12 +38,12 @@ itself (by email only).
    email, phone or `a2a_card_url`. `dry_run: true` previews who would be contacted. Returns at once with a
    `job_id` and opens one live deal board in the chat.
    - Haggle finds businesses itself. With fewer than 3 saved businesses for the work and none named, it
-     searches public listings near the area for businesses that publish an email (at most 6). It never
+     searches public listings near the area (at most 6). It never
      contacts them without the user's yes: `deal` lists them in `would_contact` with `contact_state:
      "will_authorize_on_start"` and `found_via` (listing and ref), and sends nothing. Show the user the list.
      Once they agree, call `deal` again with `confirm_discovered`: their `business_ref`s minus any the user
-     removed (`[]` for none). Each is saved to the workspace as an email-only business in the request's
-     category, then emailed. Never pass a ref the preview didn't list: it is refused.
+     removed (`[]` for none). Each is saved to the workspace in the request's category, then contacted on
+     what it publishes (email, else a call, else a text). Never pass a ref the preview didn't list: it is refused.
    - Where: the request's `area`, else the workspace's default area; with neither, `deal` returns
      `needs_info` asking for it.
    - Catering: `request.what`, `quantity`, `date` (and `date_until` for a range, `time`, `venue`), `area` and

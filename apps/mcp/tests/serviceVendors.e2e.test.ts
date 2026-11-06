@@ -121,12 +121,11 @@ describe("/internal/vendors over HTTP (mock, service token)", () => {
     expect((await svc("/internal/vendors/category", { ws, body: { contact: "acme@acme.test", category: "plumbing" } })).status).toBe(400);
   });
 
-  it("refuses a call or text to a business found only in a public listing", async () => {
+  it("takes a call to a business found in a public listing", async () => {
     const ws = await provision("vendors-user-2");
-    const r = await svc("/internal/vendors", { ws, actor: "user-2", body: { name: "Listed Co", contact: "+14155552300", channel: "phone", consent_basis: "public_listing_email" } });
-    expect(r.status).toBe(422);
-    expect(r.body.error).toMatchObject({ code: "CONSENT_TOO_WEAK", fix: expect.any(String) });
-    expect((await svc("/internal/vendors", { ws })).body.vendors).toEqual([]);
+    const r = await svc("/internal/vendors", { ws, actor: "user-2", body: { name: "Listed Co", contact: "+14155552300", channel: "phone", consent_basis: "public_listing" } });
+    expect(r.status).toBe(201);
+    expect((await svc("/internal/vendors", { ws })).body.vendors).toEqual([expect.objectContaining({ name: "Listed Co", channel: "phone", consent: expect.objectContaining({ basis: "public_listing" }) })]);
   });
 
   it("another workspace can't see or remove them; credentials and the actor are required", async () => {

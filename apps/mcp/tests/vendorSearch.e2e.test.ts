@@ -89,11 +89,30 @@ describe("deal: preferences are asked for and never required", () => {
     expect(d.would_contact[0].name).toBe("Taqueria El Paso");
   });
 
-  it("names the restaurants it can't email, and keeps their contacts server-side", async () => {
+  it("previews a phone-only restaurant as a call, keeping its number server-side", async () => {
     const d = (await call("deal", catering({ dry_run: true }))).structuredContent;
-    expect(names(d.would_contact)).not.toContain("Domino's");
-    expect(names(d.discovery.not_emailable)).toEqual(expect.arrayContaining(["Domino's", "Pizza Hut"]));
-    expect(d.next).toMatch(/Domino's/);
-    expect(JSON.stringify(d.discovery)).not.toMatch(/510555/);
+    expect(d.would_contact.find((w: { name: string }) => w.name === "Domino's")).toMatchObject({ channel: "phone", contact_state: "will_authorize_on_start" });
+    expect(JSON.stringify(d)).not.toMatch(/510555/);
+  });
+
+  it("the user's yes calls a phone-only restaurant", async () => {
+    const preview = (await call("deal", catering({ dry_run: true }))).structuredContent;
+    const ref = preview.would_contact.find((w: { name: string }) => w.name === "Domino's").business_ref;
+    const d = (await call("deal", catering({ confirm_discovered: [ref] }))).structuredContent;
+    expect(d.businesses).toEqual([expect.objectContaining({ name: "Domino's", channel: "phone", simulated: false })]);
+  });
+
+  it("naming a found business is the yes: it is saved and contacted", async () => {
+    await call("discover", { category: "catering", area: "Oakland, CA", count: 12 });
+    const d = (await call("deal", catering({ businesses: ["Pizza Hut"] }))).structuredContent;
+    expect(d.ok).toBe(true);
+    expect(d.businesses).toEqual([expect.objectContaining({ name: "Pizza Hut", channel: "phone", simulated: false })]);
+  });
+
+  it("a dry run with a named found business says how it would be reached, and sends nothing", async () => {
+    await call("discover", { category: "catering", area: "Oakland, CA", count: 12 });
+    const d = (await call("deal", catering({ businesses: ["Taqueria El Paso"], dry_run: true }))).structuredContent;
+    expect(d.would_contact).toEqual([expect.objectContaining({ name: "Taqueria El Paso", channel: "email", contact_state: "will_authorize_on_start" })]);
+    expect(d.blocked).toEqual([]);
   });
 });

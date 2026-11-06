@@ -33,7 +33,7 @@ purchases.
 | `HAGGLE_PAYMENTS` | `manual` | no money moves through Haggle |
 | `HAGGLE_ENABLE_SMS` | `true` | approval texts to the approver; vendors on the text channel |
 | `HAGGLE_EXTERNAL_SENDERS` | `reply_token` | vendors on Gmail or Outlook (outside Inkbox) |
-| `HAGGLE_ENABLE_CALLS` | only for vendors who agreed to Voice AI calls | |
+| `HAGGLE_ENABLE_CALLS` | to reach businesses by Voice AI call | |
 | `PUBLIC_BASE_URL` | the server's public URL | goes into the connection details below |
 
 The scripts read `SUPABASE_DB_URL` (and `HAGGLE_DB_SCHEMA` if set). They refuse a production database
@@ -143,8 +143,7 @@ node --env-file=<env> scripts/workspace-admin.ts add-vendor --id ws_bay_events \
   configured in `HAGGLE_DEMO_VENDORS` or `HAGGLE_DEMO_FLEET`. The examples in this guide use
   `.example` addresses for that reason: replace them with the vendors' real contacts.
 - `--channel` is `email` (the default for an address), `text` (SMS from Haggle's number, or iMessage
-  when enabled), or `phone` (a Voice AI call; only vendors who agreed to AI calls, and only with
-  `HAGGLE_ENABLE_CALLS=true`).
+  when enabled), or `phone` (a Voice AI call, with `HAGGLE_ENABLE_CALLS=true`).
 - One vendor can have an email row and a phone row under the same name. They are treated as one vendor.
 - The agent can name a vendor (`deal(businesses=['Harbor Table'])`). It can also name none, and then
   every vendor of the workspace is contacted. Workspace vendors count as catering vendors (the

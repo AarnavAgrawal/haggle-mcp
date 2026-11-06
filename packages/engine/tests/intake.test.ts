@@ -52,6 +52,13 @@ describe("intakeGaps", () => {
     expect(g.helpful.find((q) => q.key === "price_range")).toMatchObject({ field: "details: Price range", question: expect.stringMatching(/cheap.*fancy/i) });
   });
 
+  it("every kind of purchase asks for a price point, as an optional question", () => {
+    for (const what of ["fix a leaking pipe", "deep clean my apartment", "move my 2 bedroom", "print 100 posters", "rent 50 chairs", "wedding flowers"]) {
+      const q = intakeGaps({ what }).helpful.find((x) => x.key === "price_range");
+      expect(q, what).toMatchObject({ field: "details: Price range", question: expect.stringMatching(/cheap.*premium/i) });
+    }
+  });
+
   it("a food allergy doesn't count as a cuisine answer", () => {
     expect(intakeGaps({ what: "catering", details: [{ label: "Food allergies", value: "peanuts" }] }).helpful.map((q) => q.key)).toContain("food");
   });

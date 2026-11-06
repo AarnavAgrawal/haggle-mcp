@@ -32,9 +32,9 @@ function listing(result: FoundBusiness[] | PlacesError): ListingProvider {
   };
 }
 
-function opts(over: Partial<FindOptions> & { listing?: ListingProvider | null; email?: boolean } = {}): FindOptions {
-  const { listing: l = listing(LISTED), email = true, ...rest } = over;
-  const rt = { mode: "mock", ...(l ? { listing: l } : {}), channels: async () => ({ email }) } as unknown as Runtime;
+function opts(over: Partial<FindOptions> & { listing?: ListingProvider | null; email?: boolean; ch?: Record<string, unknown> } = {}): FindOptions {
+  const { listing: l = listing(LISTED), email = true, ch = {}, ...rest } = over;
+  const rt = { mode: "mock", ...(l ? { listing: l } : {}), channels: async () => ({ email, ...ch }) } as unknown as Runtime;
   return {
     rt, registry: new DiscoveryRegistry(), category: "plumbing", area: "Oakland, CA",
     existing: new Set(["hello@saved.example"]), reserved: new Set(["boss@approver.example"]),
@@ -64,10 +64,10 @@ describe("findForDeal", () => {
   it("says why it found nobody: off, no area, email off, listings down, nothing with an email", async () => {
     expect(await findForDeal(opts({ listing: null }))).toMatchObject({ status: "off", candidates: [], reason: expect.stringMatching(/finding businesses is off/) });
     expect(await findForDeal(opts({ area: null }))).toMatchObject({ status: "no_area", reason: expect.stringMatching(/no area/) });
-    expect(await findForDeal(opts({ email: false }))).toMatchObject({ status: "email_off", reason: expect.stringMatching(/only ever emailed/) });
+    expect(await findForDeal(opts({ email: false }))).toMatchObject({ status: "channels_off", reason: expect.stringMatching(/email, calls and texts are all off/) });
     expect(await findForDeal(opts({ listing: listing(new PlacesError("unavailable", "down")) }))).toMatchObject({ status: "listings_down", reason: expect.stringMatching(/unavailable/) });
     expect(await findForDeal(opts({ listing: listing(new PlacesError("area_not_found", "?")) }))).toMatchObject({ status: "no_area", reason: expect.stringMatching(/don't know the area/) });
-    expect(await findForDeal(opts({ listing: listing([biz("Phone Only", { phone: "+15105550100" })]) }))).toMatchObject({ status: "nothing_found", reason: expect.stringMatching(/none of the 1 plumbing businesses found near Oakland, CA publish an email/) });
+    expect(await findForDeal(opts({ listing: listing([biz("Phone Only", { phone: "+15105550100" })]) }))).toMatchObject({ status: "nothing_found", reason: expect.stringMatching(/none of the 1 plumbing businesses found near Oakland, CA can be reached/) });
     expect(await findForDeal(opts({ listing: listing([]) }))).toMatchObject({ status: "nothing_found", reason: "no plumbing businesses were found near Oakland, CA" });
   });
 
@@ -92,24 +92,73 @@ describe("findForDeal", () => {
     expect(asked).toBe(20);
   });
 
-  it("names the businesses it can't email, so a phone-only restaurant isn't dropped silently", async () => {
-    const r = await findForDeal(opts({ listing: listing([biz("Ace Plumbing", { listing_emails: ["jobs@ace.example"] }), biz("Domino's", { phone: "+15105550199" })]) }));
-    expect(r.not_emailable).toEqual([{ name: "Domino's", business_ref: "place:Dominos", phone_published: true }]);
-    expect(JSON.stringify(r.not_emailable)).not.toMatch(/5105550199/); // published numbers stay server-side
+  describe("reaches a found business on whatever it publishes", () => {
+    const CALLS = { phone: true, callsViaSharedLine: false };
+    const DOMINOS = biz("Domino's", { phone: "(510) 555-0199" });
+
+    it("calls a business that publishes only a phone number", async () => {
+      const r = await findForDeal(opts({ ch: CALLS, listing: listing([DOMINOS]) }));
+      expect(r.candidates.map((c) => [c.name, c.channel, c.phone])).toEqual([["Domino's", "phone", "+15105550199"]]);
+    });
+
+    it("texts it when calls are off and SMS is on", async () => {
+      const r = await findForDeal(opts({ ch: { sms: true }, listing: listing([DOMINOS]) }));
+      expect(r.candidates.map((c) => c.channel)).toEqual(["imessage"]);
+    });
+
+    it("emails first when a business publishes both", async () => {
+      const r = await findForDeal(opts({ ch: CALLS, listing: listing([biz("Ace Plumbing", { listing_emails: ["jobs@ace.example"], phone: "+15105550100" })]) }));
+      expect(r.candidates.map((c) => [c.channel, c.email])).toEqual([["email", "jobs@ace.example"]]);
+    });
+
+    it("still reaches people by phone when email is off", async () => {
+      expect((await findForDeal(opts({ email: false, ch: CALLS, listing: listing([DOMINOS]) }))).candidates.map((c) => c.channel)).toEqual(["phone"]);
+    });
+
+    it("calls a chain location: its number is the store's, unlike its website's inbox", async () => {
+      const chain = biz("Domino's", { chain: "Domino's", phone: "+15105550199", website: "https://dominos.example/" });
+      const withSite = { ...chain, category: "catering", area: "Oakland, CA", website_evidence: { url: chain.website!, fetched_at: "2026-11-05T00:00:00Z", status: "ok" as const, emails: ["privacy@dominos.example"], phones: [], price_claims: [] } };
+      const r = await findForDeal(opts({ ch: CALLS, listing: listing([withSite as FoundBusiness]) }));
+      expect(r.candidates.map((c) => [c.channel, c.email])).toEqual([["phone", undefined]]);
+    });
+
+    it("never contacts a number that opted out", async () => {
+      const r = await findForDeal(opts({ ch: CALLS, listing: listing([DOMINOS]), suppressed: async (cs) => new Set(cs.filter((c) => c === "+15105550199")) }));
+      expect(r.candidates).toEqual([]);
+      expect(r.skipped.suppressed).toBe(1);
+    });
+
+    it("never calls the approver's own number, or one already saved", async () => {
+      expect((await findForDeal(opts({ ch: CALLS, listing: listing([DOMINOS]), reserved: new Set(["+15105550199"]) }))).candidates).toEqual([]);
+      const saved = await findForDeal(opts({ ch: CALLS, listing: listing([DOMINOS]), existing: new Set(["+15105550199"]) }));
+      expect(saved.candidates).toEqual([]);
+      expect(saved.skipped.existing).toBe(1);
+    });
+
+    it("keeps the number out of the preview", async () => {
+      const [c] = (await findForDeal(opts({ ch: CALLS, listing: listing([DOMINOS]) }))).candidates;
+      expect(previewEntry(c!)).toMatchObject({ name: "Domino's", channel: "phone", contact_state: "will_authorize_on_start", ready: true });
+      expect(JSON.stringify(previewEntry(c!))).not.toMatch(/5550199/);
+    });
+
+    it("can't cold-call over the shared iMessage line: the business is named as unreachable", async () => {
+      const r = await findForDeal(opts({ ch: { phone: true, callsViaSharedLine: true, connected: new Set() }, listing: listing([DOMINOS]) }));
+      expect(r.candidates).toEqual([]);
+      expect(r.not_reachable).toEqual([{ name: "Domino's", business_ref: "place:Dominos", phone_published: true }]);
+      expect(JSON.stringify(r.not_reachable)).not.toMatch(/5550199/);
+    });
+
+    it("names a business with no way to reach it even when it found nobody else", async () => {
+      const r = await findForDeal(opts({ listing: listing([biz("Quiet Drains")]) }));
+      expect(r.status).toBe("nothing_found");
+      expect(r.not_reachable?.map((b) => b.name)).toEqual(["Quiet Drains"]);
+    });
   });
 
-  it("lists the businesses it can't email even when it found nobody it can", async () => {
-    const r = await findForDeal(opts({ listing: listing([biz("Domino's", { phone: "+15105550199" })]) }));
-    expect(r.status).toBe("nothing_found");
-    expect(r.not_emailable?.map((b) => b.name)).toEqual(["Domino's"]);
-  });
-
-  it("never emails a chain's corporate inbox: its website's address isn't the local store's", async () => {
-    const chain = biz("Domino's", { chain: "Domino's", website: "https://dominos.example/" });
-    const withSite = { ...chain, category: "catering", area: "Oakland, CA", website_evidence: { url: chain.website!, fetched_at: "2026-11-05T00:00:00Z", status: "ok" as const, emails: ["privacy@dominos.example"], phones: [], price_claims: [] } };
-    const r = await findForDeal(opts({ listing: listing([withSite as FoundBusiness]) }));
-    expect(r.candidates).toEqual([]);
-    expect(r.not_emailable?.map((b) => b.name)).toEqual(["Domino's"]);
+  it("searches the whole request for work Haggle has no category for", async () => {
+    let searched = "";
+    await findForDeal(opts({ category: "walking", searchFor: "dog walking for two dogs", listing: { ...listing(LISTED), discover: async (c) => { searched = c; return LISTED; } } }));
+    expect(searched).toBe("dog walking for two dogs");
   });
 
   it("does email a chain store that publishes its own address on the listing", async () => {

@@ -291,7 +291,7 @@ export function workspaceVendorReadiness(v: WorkspaceVendor, ch: ChannelStatus):
       if (!ch.imessage) return off("texting businesses is off on this server", "Operator: set HAGGLE_ENABLE_SMS=true or HAGGLE_ENABLE_IMESSAGE=true.");
       return ch.connected?.has(v.phone!) ? { ready: true } : off("this number hasn't connected over iMessage yet", `Vendor: text "${ch.connectCommand}" to the Inkbox iMessage line.`);
     case "phone":
-      if (!ch.phone) return off("Voice AI calls are off on this server", "Operator: set HAGGLE_ENABLE_CALLS=true (only vendors who agreed to calls).");
+      if (!ch.phone) return off("Voice AI calls are off on this server", "Operator: set HAGGLE_ENABLE_CALLS=true.");
       if (ch.callsViaSharedLine && !ch.connected?.has(v.phone!)) return off("calls go over the shared iMessage line and this number hasn't connected", `Vendor: text "${ch.connectCommand}" from that phone first.`);
       return { ready: true };
     default:

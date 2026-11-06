@@ -157,7 +157,7 @@ A workspace with no vendors for a request can't run a deal. You have to go to Ve
 - **Live workspace with no matching vendors:** `deal` stops with "NOT STARTED: none of this workspace's vendors do <category>" or "no vendors yet" (`apps/mcp/index.ts`, search for `NOT STARTED`). It points at the Vendors page.
 - **`discover`** (`apps/mcp/index.ts`, `export const discover`) already finds real businesses, with published emails and opening hours (Amazon Location is on in production).
   - Every result comes back `contact_found`, meaning not authorized: `discoveredRoutes` in `apps/mcp/src/businesses.ts` asks `engine.canContact`, which is false until the business is a workspace vendor.
-- **The permission already exists:** consent basis `public_listing_email` (`apps/mcp/src/service/vendors.ts`). It means the business published this email, so Haggle may email it but never call or text it. The Vendors page's one-click add from search uses it.
+- **The permission already exists:** consent basis `public_listing_email` (`apps/mcp/src/service/vendors.ts`). It means the business published this email; `public_listing` is the same for a published phone number, which Haggle calls or texts. The Vendors page's one-click add from search uses it.
 
 ### Target flow
 
@@ -167,7 +167,7 @@ you: "Fix a leaking pipe under my kitchen sink, Oakland, this week"
  → Haggle uses your plumbers, and if you have fewer than 3, finds more near Oakland with a published business email
  → the preview card lists them: name, where the email came from, today's hours, "will email"
  → you press "Start the deal" (or remove some first)
- → each found business is saved to your vendors as public-listing (email only), category plumbing, with who confirmed and when
+ → each found business is saved to your vendors as public-listing, category plumbing, with who confirmed and when
  → the quote requests go out
 ```
 
@@ -191,7 +191,7 @@ The human's confirmation of the preview is the authorization. It's the same act 
 5. **Area:** use the request's area, else the workspace's default area (§4), else intake asks.
 6. **Vendors page** becomes **Saved businesses**: optional, for favorites and for businesses that agreed to calls or texts.
 7. **Safety (CLAUDE.md §7):**
-   - discovered businesses get **email only**;
+   - discovered businesses are reached by email, else a call, else a text;
    - at most 6 per deal;
    - the daily add limit (25 per workspace) applies;
    - opening hours gate follow-ups;
@@ -204,7 +204,7 @@ The human's confirmation of the preview is the authorization. It's the same act 
 - **`apps/mcp/tests`:** with a listing fixture (`HAGGLE_PLACES_FIXTURE`):
   - a workspace with no vendors previews found businesses and sends nothing;
   - `confirm_discovered` saves them as `public_listing_email` + category and emails only them;
-  - phone-only results are never called;
+  - phone-only results are called once the user says yes;
   - suppressed addresses never appear.
 - **Web:** the preview card lists found businesses and can remove one.
 - **e2e:** a guest with no vendors starts a plumbing deal.

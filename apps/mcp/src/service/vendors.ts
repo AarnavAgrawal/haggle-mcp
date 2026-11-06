@@ -6,8 +6,8 @@
 //   POST /internal/vendors/remove   { contact } (x-haggle-actor required)
 //   POST /internal/vendors/category { contact, category | null } what it does (x-haggle-actor required); a deal
 //                                   contacts a workspace's vendors only for requests of their kind (migration 127)
-// Consent rules: a public listing allows email only (no calls or texts to a business that only has a
-// public listing); a call or text needs an existing relationship or the business's agreement.
+// Consent bases record why Haggle holds a contact: an existing relationship, the business's agreement, or
+// a public listing (public_listing_email for a published email, public_listing for a published number).
 // business_ref (optional): the listing the vendor was found in ("aws:<PlaceId>" / "place:<id>"); its
 // opening hours and timezone are looked up (Amazon Location IntendedUse=Storage, else its website's
 // hours) and stored with the vendor, so calls and texts reach it only while it is open.
@@ -23,7 +23,7 @@ import { engineError, fail, serviceGuard, type ServiceApp, type ServiceContext }
 
 export const MAX_VENDORS = 100;
 export const MAX_ADDS_PER_DAY = 25;
-export const CONSENT_BASES = ["existing_relationship", "business_agreed", "public_listing_email"] as const;
+export const CONSENT_BASES = ["existing_relationship", "business_agreed", "public_listing_email", "public_listing"] as const;
 export type ConsentBasis = (typeof CONSENT_BASES)[number];
 type VendorChannel = "email" | "phone" | "imessage";
 /** The shared limit's bucket and window (the UTC day). */
@@ -117,12 +117,6 @@ async function listedHours(ws: string, ref: string, rt: { listing?: ListingProvi
 const RemoveBody = z.object({ contact: z.string().min(3).max(254).transform(normalizeContact) });
 const issues = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
 
-/** Why this basis can't support this channel, or null. A published listing never authorizes a call or a text. */
-export function consentProblem(basis: ConsentBasis, channel: VendorChannel): string | null {
-  if (basis === "public_listing_email" && channel !== "email") return "A business found only through a public listing may be contacted by email only; calls and texts need an existing relationship or the business's agreement.";
-  return null;
-}
-
 /**
  * The consent recorded on the row: `<basis>: <note> (attested by web:<actor> at <ISO time>)`. With
  * `asIs`, `actor` is already the full attestor ("web:<user>" or "agent:<client> on the user's yes").
@@ -159,7 +153,7 @@ export async function addsLeftToday(engine: VendorEngine, ws: string, daily = sh
 
 /**
  * The one vendor-add path (the Vendors page, and deal when the user confirms businesses Haggle found):
- * the consent rule for the channel, no simulated contact in live mode, never the approver's contact,
+ * no simulated contact in live mode, never the approver's contact,
  * never a suppressed contact, the vendor cap and the daily add limit; then stores it with the listing's
  * hours. `attestedBy` is who confirmed it ("web:<user>", or "agent:<client> on the user's yes").
  * Engine errors (a bad contact) are thrown for the caller to report.
@@ -176,8 +170,6 @@ export async function addVendorChecked(
   const isEmail = b.contact.includes("@");
   const channel: VendorChannel = b.channel ?? (isEmail ? "email" : "phone");
   if ((channel === "email") !== isEmail) return no(400, "BAD_CHANNEL", `Channel ${channel} doesn't fit ${isEmail ? "an email address" : "a phone number"}.`, "Use email for an address; phone (a call) or imessage (a text) for a number.");
-  const weak = consentProblem(b.consent_basis, channel);
-  if (weak) return no(422, "CONSENT_TOO_WEAK", weak, "Add the business's email instead, or choose 'existing relationship' or 'the business agreed' if that is true.");
   if (rt.mode === "live") {
     const sim = simulatedContact(b.contact);
     if (sim) return no(422, "SIMULATED_CONTACT", `${b.contact} is ${sim}, not a real business.`, "Add the business's real email or phone number.");

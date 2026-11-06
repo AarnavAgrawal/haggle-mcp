@@ -47,7 +47,7 @@ describe("/api/vendors", () => {
     const bad = deps();
     const r = await handleAdd(req({ ...add, contact: "+14155550199" }), bad.d);
     expect(r.status).toBe(400);
-    expect(await r.json()).toMatchObject({ error: { code: "invalid_form" }, fields: { consent_basis: expect.stringMatching(/never called or texted/) } });
+    expect(await r.json()).toMatchObject({ error: { code: "invalid_form" }, fields: { consent_basis: expect.stringMatching(/for an email address/) } });
     expect((await handleAdd(req({ ...add, attested: false }), bad.d)).status).toBe(400);
     expect((await handleAdd(req("not json"), bad.d)).status).toBe(400);
     expect(bad.calls).toEqual([]);

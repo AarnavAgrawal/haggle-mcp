@@ -175,14 +175,66 @@ describe("failures stay visible", () => {
   });
 });
 
-describe("other kinds of work keep their order", () => {
-  it("a plumbing search asks for no restaurants and sets no cuisine or fit", async () => {
-    const plumber = aws("Bayshore Plumbing", { cats: ["plumbing"] });
-    const p = amazon([plumber], [plumber]);
+describe("every kind of work gets the same breadth, not just food", () => {
+  const PLUMBER = aws("Bayshore Plumbing", { cats: ["plumbing"] });
+  const HANDYMAN = aws("Mr Fix Handyman", { cats: ["handyman"] });
+  const CONTRACTOR = aws("Bay General Contractors", { cats: ["general_contractor"] });
+  const SUPPLY = aws("A-1 Pipe Supply", { cats: ["b2b_sales_and_services", "plumbing"] });
+
+  it("a plumbing search also reaches handymen and contractors, labelled as related", async () => {
+    const p = amazon([PLUMBER, HANDYMAN, CONTRACTOR], [PLUMBER]);
     const list = await p.discover("plumbing", "San Francisco, CA", 6);
-    expect(p.nearby.flatMap((n) => n.Filter?.IncludeCategories ?? [])).toEqual(["plumbing"]);
-    expect(list[0]).not.toHaveProperty("fit");
+    expect(p.texts).toContain("handyman");
+    expect(by(list, "Bayshore Plumbing").fit).toBe("specialist");
+    expect(by(list, "Mr Fix Handyman").fit).toBe("adjacent");
+    expect(by(list, "Mr Fix Handyman").rank_reasons.join(" ")).toMatch(/not listed for plumbing.*may do this work/i);
+    expect(by(list, "Bay General Contractors").fit).toBe("adjacent");
+  });
+
+  it("still leaves out what doesn't do the work: a supply store isn't a plumber", async () => {
+    expect((await amazon([PLUMBER, SUPPLY], []).discover("plumbing", "San Francisco, CA", 6)).map((b) => b.name)).toEqual(["Bayshore Plumbing"]);
+  });
+
+  it("a printing search also reaches copy shops and office supply stores", async () => {
+    const shop = aws("Bay Office Supply", { cats: ["office_supply_store"] });
+    const p = amazon([shop], []);
+    const list = await p.discover("printing", "San Francisco, CA", 6);
+    expect(p.texts).toEqual(expect.arrayContaining(["copy shop", "office supply store"]));
+    expect(list[0]).toMatchObject({ name: "Bay Office Supply", fit: "adjacent" });
+  });
+
+  it("a short list mixes specialists and related businesses", async () => {
+    const plumbers = ["Ace", "Bolt", "Cora", "Dell"].map((n) => aws(`${n} Plumbing`, { cats: ["plumbing"] }));
+    const fits = (await amazon([...plumbers, HANDYMAN, CONTRACTOR], []).discover("plumbing", "San Francisco, CA", 4)).map((b) => b.fit);
+    expect(new Set(fits)).toEqual(new Set(["specialist", "adjacent"]));
+  });
+
+  it("a price preference steers any kind of work", async () => {
+    const place = (name: string, priceLevel: string): PlaceResult => ({ id: `id-${name}`, displayName: { text: name }, formattedAddress: `${name}, San Francisco, CA`, businessStatus: "OPERATIONAL", types: ["cleaning_service"], primaryType: "cleaning_service", priceLevel });
+    const fetch: ListingFetch = async () => res(200, { places: [place("Luxe Cleaning", "PRICE_LEVEL_VERY_EXPENSIVE"), place("Thrifty Cleaning", "PRICE_LEVEL_INEXPENSIVE")] });
+    const list = await googlePlacesProvider({ apiKey: "k", fetch }).discover("cleaning", "San Francisco, CA", 6, { price: "budget" });
+    expect(list[0]).toMatchObject({ name: "Thrifty Cleaning", price_tier: "budget" });
+    expect(list[0]!.rank_reasons.join(" ")).toMatch(/matches your budget price preference/);
+  });
+
+  it("a cuisine means nothing outside food: no cuisine label, no cuisine search", async () => {
+    const p = amazon([PLUMBER], [PLUMBER]);
+    const list = await p.discover("plumbing", "San Francisco, CA", 6, { cuisine: "pizza" });
+    expect(p.texts.join(" ")).not.toMatch(/pizza/);
     expect(list[0]).not.toHaveProperty("cuisine");
+  });
+
+  it("a plumbing search asks for no restaurants", async () => {
+    const p = amazon([PLUMBER], [PLUMBER]);
+    await p.discover("plumbing", "San Francisco, CA", 6);
+    expect(p.nearby.flatMap((n) => n.Filter?.IncludeCategories ?? [])).toEqual(["plumbing"]);
+  });
+
+  it("work Haggle has no vocabulary for keeps what the listing search found, as a possible match", async () => {
+    const florist = aws("Petal Pushers", { cats: ["florist"] });
+    const list = await amazon([florist], []).discover("wedding flowers", "San Francisco, CA", 6);
+    expect(list[0]).toMatchObject({ name: "Petal Pushers", fit: "adjacent" });
+    expect(list[0]!.rank_reasons.join(" ")).toMatch(/may do this work/);
   });
 });
 
