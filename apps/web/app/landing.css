@@ -68,9 +68,11 @@
   transition: opacity 180ms var(--ease-out), visibility 180ms;
 }
 /* The big wordmark is on screen: the small one waits until it has scrolled away. */
-.lp-bar[data-top] .brand {
-  opacity: 0;
-  visibility: hidden;
+@media (scripting: enabled) {
+  .lp-bar[data-top] .brand {
+    opacity: 0;
+    visibility: hidden;
+  }
 }
 .lp-nav {
   display: flex;
@@ -647,8 +649,9 @@
   user-select: none;
 }
 
-[id] {
-  scroll-margin-top: var(--bar);
+/* Anchors and keyboard focus both stop clear of the sticky bar. */
+html:has(.lp-page) {
+  scroll-padding-top: 76px;
 }
 
 /* ---------- motion: the load, and the sheet driven by the scroll ---------- */
@@ -737,17 +740,20 @@
   .log-row {
     align-content: start;
     min-height: 34svh;
-    opacity: 0.42;
-    transition: opacity 260ms var(--ease-out);
   }
   .log-row + .log-row {
     border-top: 0;
   }
-  .log-row.is-past {
-    opacity: 0.62;
+  /* Quieter, not fainter: every row stays readable at AA, only the current one is full ink. */
+  .log-row:not(.is-now) {
+    --ink: var(--on-blotter-3);
+    --ink-2: var(--on-blotter-3);
+    --pen: var(--on-blotter-3);
   }
-  .log-row.is-now {
-    opacity: 1;
+  .log-at,
+  .log-who,
+  .log-text {
+    transition: color 260ms var(--ease-out);
   }
 
   /* What the sheet shows at each step. */

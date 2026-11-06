@@ -106,9 +106,13 @@ export function LandingMotion() {
     window.addEventListener("scroll", schedule, { passive: true });
     window.addEventListener("resize", resize);
     // Webfonts change the hero's height, and with it how far the sheet has to travel.
-    void document.fonts?.ready.then(resize);
+    let mounted = true;
+    void document.fonts?.ready.then(() => {
+      if (mounted) resize();
+    });
 
     return () => {
+      mounted = false;
       cancelAnimationFrame(frame);
       window.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", resize);
