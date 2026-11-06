@@ -12,6 +12,7 @@ const BASIS: Record<ConsentBasis | "operator_recorded", string> = {
   existing_relationship: "You already work with them",
   business_agreed: "They agreed to be contacted",
   public_listing_email: "Public listing",
+  public_listing: "Public listing",
   operator_recorded: "Recorded by your admin",
 };
 /** The consent a vendor rests on, in a few plain words (the table's column). */
@@ -72,7 +73,7 @@ export function hoursToday(lines: string[] | undefined, now: Date = new Date()):
   return readable === lines.length ? "Closed today" : null;
 }
 
-const CONSENT = /^(existing_relationship|business_agreed|public_listing_email)(?::\s*([\s\S]*?))?\s*\(attested by \S+ at (\d{4}-\d{2}-\d{2}T[\d:.]+Z)\)\s*$/;
+const CONSENT = /^(existing_relationship|business_agreed|public_listing_email|public_listing)(?::\s*([\s\S]*?))?\s*\(attested by \S+ at (\d{4}-\d{2}-\d{2}T[\d:.]+Z)\)\s*$/;
 
 /**
  * The recorded consent in readable parts. Consent added here is stored as

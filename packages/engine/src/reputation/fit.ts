@@ -5,15 +5,16 @@
 //
 // Rule: a listing fits when its PRIMARY category (Amazon Categories[Primary], Google primaryType)
 // fits the request's kind of work. Secondary tags never qualify a business on their own. A listing
-// with no primary category falls back to its other categories and its name. For a kind of work with
-// no vocabulary here, a category or name word matching the request is enough (no "weak match" filler).
+// with no primary category falls back to its other categories and its name. A related trade also fits
+// (a handyman for plumbing, a copy shop for printing), labelled as such by isSpecialist. A kind of work
+// with no vocabulary here can't be judged, so the listing search's own results stand.
 
 /** Words a primary category may contain for each kind of work: prefix match on its words; "x$" = the exact word; "a_b" = substring. */
 const KINDS: Record<string, string[]> = {
   catering: [
     "cater", "restaurant", "food", "baker", "cafe", "coffee", "deli$", "delicatessen", "eatery", "meal", "chef", "bistro", "diner", "grill",
     "bbq", "barbecue", "pizza", "taco", "taqueria", "burrito", "sushi", "sandwich", "bagel", "donut", "dessert", "cake", "pastry", "juice", "tea_house",
-    "lunch", "dinner", "breakfast", "brunch", "buffet", "snack", "bento",
+    "lunch", "dinner", "breakfast", "brunch", "buffet", "snack", "bento", "dining", "take_out", // fine_dining, casual_dining, take_out_and_delivery_only
   ],
   plumbing: ["plumb", "rooter", "drain", "sewer", "water_heater"],
   electrical: ["electric"],
@@ -24,6 +25,20 @@ const KINDS: Record<string, string[]> = {
   rentals: ["rental", "party", "event", "tent"],
   photography: ["photo", "video"],
   entertainment: ["entertain", "dj", "music", "band", "event", "perform"],
+};
+
+/**
+ * Related trades that may do the work without being listed for it: they fit, but never count as
+ * specialists. Same match rules as KINDS. Named narrowly, since whatever fits can be called: "studio"
+ * would take in a yoga studio, "contractor" a roofer.
+ */
+const RELATED: Record<string, string[]> = {
+  plumbing: ["handyman", "general_contractor", "trade_contractor", "hvac"],
+  electrical: ["handyman", "general_contractor", "trade_contractor"],
+  repairs: ["hvac"],
+  moving: ["truck_rental", "junk_removal", "freight"],
+  printing: ["office_supply", "stationery", "shipping_center", "graphic_design"],
+  rentals: ["equipment_rental", "furniture_rental", "audio_visual"],
 };
 
 /**
@@ -87,9 +102,18 @@ export interface ListingKind {
 export function fitsCategory(category: string, b: ListingKind): boolean {
   if (!category.trim()) return true;
   const kind = kindOf(category);
-  const terms = kind ? KINDS[kind]! : wordsOf(category).map(stem);
-  if (!terms.length) return true;
-  const excluded = (label: string) => !!kind && !!NOT[kind] && wordsOf(label).some((w) => NOT[kind]!.includes(w));
-  if (b.primary_type) return !excluded(b.primary_type) && (matches(b.primary_type, terms) || (!kind && matches(b.name, terms)));
+  if (!kind) return true;
+  const terms = [...KINDS[kind]!, ...(RELATED[kind] ?? [])];
+  const excluded = (label: string) => !!NOT[kind] && wordsOf(label).some((w) => NOT[kind]!.includes(w));
+  if (b.primary_type) return !excluded(b.primary_type) && matches(b.primary_type, terms);
   return !excluded(b.name) && ((b.types ?? []).some((t) => !excluded(t) && matches(t, terms)) || matches(b.name, terms));
+}
+
+/** Does the listing show this work itself, rather than a related trade? Catering takes the whole word: "Caterina's Trattoria" is a restaurant. */
+export function isSpecialist(category: string, b: ListingKind): boolean {
+  const kind = kindOf(category);
+  const labels = [b.name, b.primary_type ?? "", ...(b.types ?? [])];
+  if (kind === "catering") return labels.some((t) => /\b(catering|caterers?)\b/.test(t.toLowerCase().replace(/[^a-z]+/g, " ")));
+  const terms = kind ? KINDS[kind]! : wordsOf(category).map(stem);
+  return labels.some((t) => matches(t, terms));
 }

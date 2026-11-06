@@ -44,5 +44,5 @@ export async function createWorkspace(_prev: OnboardState, form: FormData): Prom
       return { error: err instanceof HaggleError ? `${err.message} ${err.fix}`.trim() : "Couldn't create your workspace. Try again in a moment." };
     }
   }
-  redirect("/deals");
+  redirect("/dashboard");
 }

@@ -1,9 +1,9 @@
 // Haggle finds the businesses itself, over HTTP against the production build (`mcp-use start`) in MOCK
 // mode with a recorded listing fixture (HAGGLE_PLACES_FIXTURE), auth required and a service token. A
-// workspace with no vendors asks for a plumber: the preview lists the businesses found that publish an
-// email (never the phone-only ones) and sends nothing; a real deal without the user's yes sends nothing;
-// a ref the preview never listed is refused; the user's yes (confirm_discovered) saves exactly those as
-// public_listing_email vendors in the request's category, recording who confirmed, and emails only them.
+// workspace with no vendors asks for a plumber: the preview lists the businesses found, each on the
+// channel that reaches it, and sends nothing; a real deal without the user's yes sends nothing; a ref the
+// preview never listed is refused; the user's yes (confirm_discovered) saves exactly those as vendors in
+// the request's category, recording who confirmed, and contacts only them.
 // Run `mcp-use build` first.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -26,10 +26,10 @@ const SERVICE = "svc-e2e-found-0123456789abcdef0123456789ab";
 let proc: ChildProcess;
 let id = 0;
 
-async function svc(path: string, opts: { ws?: string; body?: unknown } = {}) {
+async function svc(path: string, opts: { ws?: string; body?: unknown; actor?: string } = {}) {
   const res = await fetch(`${BASE}${path}`, {
     method: opts.body === undefined ? "GET" : "POST",
-    headers: { ...(opts.body === undefined ? {} : { "content-type": "application/json" }), "x-haggle-service-token": SERVICE, ...(opts.ws ? { "x-haggle-workspace": opts.ws } : {}) },
+    headers: { ...(opts.body === undefined ? {} : { "content-type": "application/json" }), "x-haggle-service-token": SERVICE, ...(opts.ws ? { "x-haggle-workspace": opts.ws } : {}), ...(opts.actor ? { "x-haggle-actor": opts.actor } : {}) },
     ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
   });
   return (await res.json()) as any;
@@ -54,6 +54,7 @@ const date = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10);
 const plumbing = (over: Record<string, unknown> = {}) => ({ request: { what: "fix a leaking pipe under the kitchen sink", date, area: "Oakland, CA" }, budget_usd: 400, ...over });
 const ACE = "place:ChIJAcePlumbingOakland01";
 const BOLT = "place:ChIJBoltPlumbingOakland02";
+const FIVESTAR = "place:ChIJFiveStarRooterOak03";
 
 beforeAll(async () => {
   const env = { ...process.env, PORT: String(PORT), HAGGLE_MODE: "mock", HAGGLE_AUTH: "required", HAGGLE_SIM_DELAY_SCALE: "0", HAGGLE_SERVICE_TOKEN: SERVICE, HAGGLE_PLACES_FIXTURE: FIXTURE };
@@ -72,20 +73,22 @@ afterAll(() => {
 });
 
 describe("deal finds the businesses itself (no vendors yet)", () => {
-  it("a dry run previews the found businesses that publish an email, phone-only ones never, and sends nothing", async () => {
+  it("a dry run previews the found businesses on the channel that reaches each, and sends nothing", async () => {
     const ws = await provision("found-user-1");
     const r = await tool(ws, "deal", plumbing({ dry_run: true }));
     expect(r.isError).toBeFalsy();
     const d = r.structuredContent;
-    expect(d).toMatchObject({ ok: true, job: null, dry_run: true, discovery: { status: "ok", found: 2 } });
+    expect(d).toMatchObject({ ok: true, job: null, dry_run: true, discovery: { status: "ok", found: 3 } });
     expect(d.would_contact.map((w: any) => [w.name, w.channel, w.contact_state])).toEqual([
       ["Ace Plumbing & Drain", "email", "will_authorize_on_start"],
       ["Bolt Plumbing", "email", "will_authorize_on_start"],
+      ["FiveStar Rooter", "phone", "will_authorize_on_start"],
     ]);
     expect(d.would_contact[0]).toMatchObject({ business_ref: ACE, found_via: { listing: "Google Places", ref: ACE, email_from: "website" } });
-    // Phone-only and contactless listings never appear; published contacts stay server-side.
-    expect(JSON.stringify(d)).not.toMatch(/FiveStar|Quiet Drains|Bay Pizza|510-555|5105550|@/);
-    expect(d.next).toMatch(/confirm_discovered: \['place:ChIJAcePlumbingOakland01', 'place:ChIJBoltPlumbingOakland02'\]/);
+    // A listing with no contact can't be reached, and published contacts stay server-side.
+    expect(JSON.stringify(d.would_contact)).not.toMatch(/Quiet Drains|Bay Pizza/);
+    expect(JSON.stringify(d)).not.toMatch(/510-555|5105550|@/);
+    expect(d.next).toMatch(/confirm_discovered: \['place:ChIJAcePlumbingOakland01', 'place:ChIJBoltPlumbingOakland02', 'place:ChIJFiveStarRooterOak03'\]/);
     expect(r.content[0]!.text).toMatch(/^\[DEMO\] DRY RUN \(nothing sent\)/);
     expect((await svc("/internal/vendors", { ws })).vendors).toEqual([]);
     expect((await tool(ws, "list_deals", {})).structuredContent.deals).toEqual([]);
@@ -95,7 +98,7 @@ describe("deal finds the businesses itself (no vendors yet)", () => {
     const ws = await provision("found-user-2");
     const r = await tool(ws, "deal", plumbing());
     expect(r.isError).toBeFalsy();
-    expect(r.structuredContent).toMatchObject({ job: null, needs_confirmation: true, would_contact: [{ business_ref: ACE }, { business_ref: BOLT }] });
+    expect(r.structuredContent).toMatchObject({ job: null, needs_confirmation: true, would_contact: [{ business_ref: ACE }, { business_ref: BOLT }, { business_ref: FIVESTAR }] });
     expect(r.content[0]!.text).toMatch(/NEEDS THE USER'S YES \(nothing sent\)/);
     expect((await svc("/internal/vendors", { ws })).vendors).toEqual([]);
     expect((await tool(ws, "list_deals", {})).structuredContent.deals).toEqual([]);
@@ -103,9 +106,9 @@ describe("deal finds the businesses itself (no vendors yet)", () => {
 
   it("refuses a ref the preview never listed, and confirm_discovered with named businesses", async () => {
     const ws = await provision("found-user-3");
-    const bad = await tool(ws, "deal", plumbing({ confirm_discovered: [ACE, "place:ChIJFiveStarRooterOak03"] }), "user-3");
+    const bad = await tool(ws, "deal", plumbing({ confirm_discovered: [ACE, "place:ChIJNoContactDrains0007"] }), "user-3");
     expect(bad.isError).toBe(true);
-    expect(err(bad)).toMatchObject({ code: "unconfirmed_business", message: expect.stringMatching(/ChIJFiveStarRooterOak03.*Nothing was sent/) });
+    expect(err(bad)).toMatchObject({ code: "unconfirmed_business", message: expect.stringMatching(/ChIJNoContactDrains0007.*Nothing was sent/) });
     const named = await tool(ws, "deal", plumbing({ businesses: ["Bolt Plumbing"], confirm_discovered: [BOLT] }), "user-3");
     expect(err(named).code).toBe("confirm_without_discovery");
     expect((await svc("/internal/vendors", { ws })).vendors).toEqual([]);
@@ -124,15 +127,35 @@ describe("deal finds the businesses itself (no vendors yet)", () => {
     expect(vendors).toHaveLength(1);
     expect(vendors[0]).toMatchObject({ name: "Ace Plumbing & Drain", contact: "jobs@aceplumbing.example", channel: "email", category: "plumbing", category_set: true, consent: { basis: "public_listing_email" }, added_by: "web:ana@example.com (u4)" });
     expect(vendors[0].consent.text).toMatch(/^public_listing_email: email published on its website, found via its Google Places listing place:ChIJAcePlumbingOakland01; confirmed on the deal preview \(attested by web:ana@example\.com \(u4\) at /);
-    // Phone-only results are never called; nothing but email went out.
+    // The user kept only Ace: nobody else was contacted.
     const board = (await tool(ws, "get_quotes", { job_id: d.job_id })).structuredContent;
     expect(board.businesses.map((b: any) => [b.name, b.channel])).toEqual([["Ace Plumbing & Drain", "email"]]);
 
     // The next plumbing deal uses the saved business and looks for more (fewer than 3 saved); a retry of the same yes is fine.
     const again = await tool(ws, "deal", plumbing({ dry_run: true }));
-    expect(again.structuredContent.would_contact.map((w: any) => [w.name, w.contact_state])).toEqual([["Ace Plumbing & Drain", "authorized"], ["Bolt Plumbing", "will_authorize_on_start"]]);
+    expect(again.structuredContent.would_contact.map((w: any) => [w.name, w.contact_state])).toEqual([["Ace Plumbing & Drain", "authorized"], ["Bolt Plumbing", "will_authorize_on_start"], ["FiveStar Rooter", "will_authorize_on_start"]]);
     const retry = await tool(ws, "deal", plumbing({ dry_run: true, confirm_discovered: [ACE] }));
     expect(retry.isError).toBeFalsy();
+  });
+
+  it("the user's yes calls a business that publishes only a phone number, recording where the number came from", async () => {
+    const ws = await provision("found-user-9");
+    const r = await tool(ws, "deal", plumbing({ confirm_discovered: [FIVESTAR] }), "ana@example.com (u9)");
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent.contacted.map((c: any) => [c.business, c.channel])).toEqual([["FiveStar Rooter", "phone"]]);
+    const [v] = (await svc("/internal/vendors", { ws })).vendors;
+    expect(v).toMatchObject({ name: "FiveStar Rooter", channel: "phone", category: "plumbing", consent: { basis: "public_listing" } });
+    expect(v.consent.text).toMatch(/^public_listing: phone published on its Google Places listing place:ChIJFiveStarRooterOak03/);
+  });
+
+  it("naming a found business that is already saved contacts it without touching the saved record", async () => {
+    const ws = await provision("found-user-10");
+    await svc("/internal/vendors", { ws, actor: "u10", body: { name: "My Plumber", contact: "jobs@aceplumbing.example", consent_basis: "business_agreed", note: "Owner said yes", category: "plumbing" } });
+    await tool(ws, "discover", { category: "plumber", area: "Oakland, CA" });
+    const r = await tool(ws, "deal", plumbing({ businesses: ["Ace Plumbing & Drain"] }), "u10");
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent.contacted.map((c: any) => [c.business, c.channel])).toEqual([["My Plumber", "email"]]);
+    expect((await svc("/internal/vendors", { ws })).vendors).toEqual([expect.objectContaining({ name: "My Plumber", consent: expect.objectContaining({ basis: "business_agreed" }) })]);
   });
 
   it("an MCP client's yes is recorded as the agent acting on the user's yes", async () => {
@@ -149,13 +172,13 @@ describe("deal finds the businesses itself (no vendors yet)", () => {
     expect(noArea.structuredContent).toMatchObject({ ok: false, job: null, needs_info: { missing: [{ key: "where", field: "area" }] } });
     const ws2 = await provision("found-user-7", "Oakland, CA");
     const withDefault = await tool(ws2, "deal", { request: { what: "fix a leaking pipe under the kitchen sink", date, details: [{ label: "Address", value: "my apartment" }] }, dry_run: true });
-    expect(withDefault.structuredContent.would_contact.map((w: any) => w.business_ref)).toEqual([ACE, BOLT]);
+    expect(withDefault.structuredContent.would_contact.map((w: any) => w.business_ref)).toEqual([ACE, BOLT, FIVESTAR]);
   });
 
   it("when nothing can be found it says why and keeps the dead end (nothing nearby)", async () => {
     const ws = await provision("found-user-8");
     const r = await tool(ws, "deal", { request: { what: "an electrician to fix the wiring in my kitchen", date, area: "Oakland, CA" }, dry_run: true });
     expect(r.isError).toBe(true);
-    expect(err(r)).toMatchObject({ code: "no_vendors_for_category", message: expect.stringMatching(/found none it may email: no electrical businesses were found near Oakland, CA\. Nothing was sent/) });
+    expect(err(r)).toMatchObject({ code: "no_vendors_for_category", message: expect.stringMatching(/found none it can reach: no electrical businesses were found near Oakland, CA\. Nothing was sent/) });
   });
 });

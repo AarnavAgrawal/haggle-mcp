@@ -204,7 +204,7 @@ export function e164(p?: string | null): string | null {
 export function routeFor(channel: "email" | "phone", contact: string, found_via: Route["found_via"], canContact: (c: { email?: string; phone?: string }) => boolean, ch: ChannelStatus): Route {
   const base = { channel, contact: mask(contact), found_via };
   if (!canContact(channel === "email" ? { email: contact } : { phone: contact })) {
-    return { ...base, authorized: false, ready: false, blocker: `${channel === "email" ? "email" : "phone number"} found (${found_via}), but this server isn't authorized to contact it: finding a contact isn't permission. The operator adds it to HAGGLE_ALLOWED_RECIPIENTS once the business agrees.` };
+    return { ...base, authorized: false, ready: false, blocker: `${channel === "email" ? "email" : "phone number"} found (${found_via}). Name this business on a deal to save it and contact it.` };
   }
   if (channel === "email") return ch.email ? { ...base, authorized: true, ready: true } : { ...base, authorized: true, ready: false, blocker: "email outreach is off on this server" };
   if (!ch.phone) return { ...base, authorized: true, ready: false, blocker: "Voice AI calls are off on this server" };

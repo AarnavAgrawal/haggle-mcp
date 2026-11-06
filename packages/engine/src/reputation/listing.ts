@@ -9,14 +9,18 @@
 // - Amazon listings carry no ratings or reviews: ranking uses relevance, being in the area and having
 //   a published contact; nothing is invented.
 // - Listing text is untrusted data: only fixed fields are read; nothing in it is followed.
-import { fitsCategory, kindOf, searchPhrase } from "./fit.ts";
+import { kindOf } from "./fit.ts";
 import { amazonHours, validTimezone, type AmazonOpeningHours } from "./hours.ts";
 import { nameSimilarity, placeDetails, PlacesError, placesDiscover, type FoundBusiness, type PlacesFailure } from "./places.ts";
+import { foodTypeId, shapeResults, textQueries, type SearchPreferences } from "./vendorSearch.ts";
 
 export type ListingFailure = PlacesFailure;
 export { PlacesError as ListingError };
 
 export type ListingFetch = (url: string, init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+
+/** Told when a search that only widens the results fails: the results still stand, so nothing else would show it. */
+export type ListingLog = (event: string, data: Record<string, unknown>) => void;
 
 /** SingleUse: browsing (discover, a profile). Storage: the result is stored (a vendor, a deal). */
 export type IntendedUse = "SingleUse" | "Storage";
@@ -27,20 +31,20 @@ export interface ListingProvider {
   attribution: string;
   /** Does this provider issue (and can it look up) this business_ref? */
   owns(ref: string): boolean;
-  /** Ranked businesses for a service in an area. Throws ListingError with a code an agent can act on. */
-  discover(category: string, area: string, count: number): Promise<FoundBusiness[]>;
+  /** Ranked businesses for a service in an area; preferences steer the order and never remove any. Throws ListingError with a code an agent can act on. */
+  discover(category: string, area: string, count: number, prefs?: SearchPreferences): Promise<FoundBusiness[]>;
   /** One business, fresh, by its business_ref; null when unknown. */
   details(ref: string, opts?: { intendedUse?: IntendedUse; category?: string; area?: string }): Promise<FoundBusiness | null>;
 }
 
 // ───────────────────────────── Google Places (kept as a provider) ─────────────────────────────
 
-export function googlePlacesProvider(o: { apiKey: string; fetch?: ListingFetch; now?: () => Date }): ListingProvider {
-  const opts = { apiKey: o.apiKey, ...(o.fetch ? { fetch: o.fetch as never } : {}), ...(o.now ? { now: o.now } : {}) };
+export function googlePlacesProvider(o: { apiKey: string; fetch?: ListingFetch; now?: () => Date; log?: ListingLog }): ListingProvider {
+  const opts = { apiKey: o.apiKey, ...(o.fetch ? { fetch: o.fetch as never } : {}), ...(o.now ? { now: o.now } : {}), ...(o.log ? { log: o.log } : {}) };
   return {
     kind: "google", source: "Google Places", attribution: "Google Maps",
     owns: (ref) => /^place:/.test(ref),
-    discover: async (category, area, count) => (await placesDiscover(opts, category, area, count)) ?? [],
+    discover: async (category, area, count, prefs) => (await placesDiscover(opts, category, area, count, prefs)) ?? [],
     details: (ref, d = {}) => placeDetails(opts, ref.replace(/^place:/, ""), d.category ?? "", d.area ?? ""),
   };
 }
@@ -58,6 +62,8 @@ export interface AwsPlace {
   Position?: number[];
   Distance?: number;
   Categories?: AwsCategory[];
+  FoodTypes?: { Id?: string; LocalizedName?: string; Primary?: boolean }[];
+  BusinessChains?: { Id?: string; Name?: string }[];
   Contacts?: { Phones?: AwsContact[]; Emails?: AwsContact[]; Websites?: AwsContact[] };
   OpeningHours?: AmazonOpeningHours[];
   TimeZone?: { Name?: string; Offset?: string; OffsetSeconds?: number };
@@ -111,6 +117,8 @@ export function resolveAmazonPlaces(places: AwsPlace[], category: string, area: 
     const reach = phone || emails.length || site ? 1 : 0;
     const tz = validTimezone(p.TimeZone?.Name) ? p.TimeZone!.Name! : undefined;
     const hours = amazonHours(p.OpeningHours, tz ?? null, primary?.Id) ?? undefined;
+    const foods = [...(p.FoodTypes ?? [])].sort((a, b) => Number(!!b.Primary) - Number(!!a.Primary)).map((f) => f.Id ?? f.LocalizedName ?? "").filter(Boolean);
+    const chain = p.BusinessChains?.[0]?.Name?.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 100);
     const score = Math.round((0.75 * relevance + 0.2 * reach + 0.05 * (hours ? 1 : 0)) * 100) / 100;
     const reasons = [
       hits ? `matches "${category}" (${hits}/${want.length || 1} terms in its listing)` : `weak match for "${category}"`,
@@ -123,7 +131,7 @@ export function resolveAmazonPlaces(places: AwsPlace[], category: string, area: 
       source: AMAZON_SOURCE, attribution: AMAZON_ATTRIBUTION, fetched_at: now.toISOString(), merged_listings: 1, in_area: inArea, relevance, score, rank_reasons: reasons,
       ...(p.Address?.Label ? { address: p.Address.Label } : {}), ...(phone ? { phone } : {}), ...(site ? { website: site } : {}),
       ...(primary?.Id ? { primary_type: primary.Id } : {}), ...(emails.length ? { listing_emails: emails } : {}),
-      ...(hours ? { hours } : {}), ...(tz ? { timezone: tz } : {}),
+      ...(hours ? { hours } : {}), ...(tz ? { timezone: tz } : {}), ...(foods.length ? { food_types: foods } : {}), ...(chain ? { chain } : {}),
     });
   }
   const dist = (b: FoundBusiness) => places.find((p) => p.PlaceId === b.place_id)?.Distance ?? Number.MAX_SAFE_INTEGER;
@@ -132,7 +140,7 @@ export function resolveAmazonPlaces(places: AwsPlace[], category: string, area: 
 
 function awsFailure(status: number): PlacesError {
   if (status === 429) return new PlacesError("rate_limited", "Amazon Location rate limit reached; retry in a minute.");
-  if (status === 401 || status === 403) return new PlacesError("key_rejected", `Amazon Location rejected the API key (HTTP ${status}); the operator must check AWS_LOCATION_API_KEY, its region (AWS_LOCATION_REGION) and that it allows geo-places:SearchText, GetPlace and Geocode.`);
+  if (status === 401 || status === 403) return new PlacesError("key_rejected", `Amazon Location rejected the API key (HTTP ${status}); the operator must check AWS_LOCATION_API_KEY, its region (AWS_LOCATION_REGION) and that it allows geo-places:SearchText, SearchNearby, GetPlace and Geocode.`);
   if (status === 400) return new PlacesError("unavailable", "Amazon Location refused the search (HTTP 400); try a shorter category or area.");
   return new PlacesError("unavailable", `Amazon Location is unavailable (HTTP ${status}); retry later.`);
 }
@@ -155,9 +163,33 @@ export const AMAZON_KIND_CATEGORIES: Record<string, string[]> = {
 };
 /** How far from the area's center the category search looks (meters). */
 export const AMAZON_NEARBY_RADIUS_M = 10_000;
+/**
+ * Places that aren't tagged catering but take large orders. Ids from Amazon's published list (the
+ * developer guide's place filtering page, 2026-11-05). Pizza and sandwich shops have no category of
+ * their own, only a food type. At most 10 ids per filter.
+ */
+export const AMAZON_RESTAURANT_CATEGORIES = ["restaurant", "fast_food", "casual_dining", "family_restaurant", "bistro", "take_out_and_delivery_only", "deli", "taqueria"];
+/** Food types searched when the user named no cuisine: the kinds of place that sell food by the tray. */
+export const AMAZON_BULK_FOOD_TYPES = ["pizza", "sandwich"];
+
+interface NearbySearch { Filter: { IncludeCategories?: string[]; IncludeFoodTypes?: string[] }; MaxResults: number }
+
+/** The category searches for a kind of work. Food also looks wide: restaurants, then the user's cuisine or bulk-friendly food, then fine dining so the list can reach the top of the range. */
+function nearbySearches(kind: string | null, prefs: SearchPreferences): NearbySearch[] {
+  const cats = kind ? AMAZON_KIND_CATEGORIES[kind] : undefined;
+  const own: NearbySearch[] = cats ? [{ Filter: { IncludeCategories: cats }, MaxResults: 20 }] : [];
+  if (kind !== "catering") return own;
+  const food = prefs.cuisine ? foodTypeId(prefs.cuisine) : undefined;
+  return [
+    ...own,
+    { Filter: { IncludeCategories: AMAZON_RESTAURANT_CATEGORIES }, MaxResults: 50 },
+    { Filter: { IncludeFoodTypes: food ? [food] : AMAZON_BULK_FOOD_TYPES }, MaxResults: 20 },
+    { Filter: { IncludeCategories: ["fine_dining"] }, MaxResults: 10 },
+  ];
+}
 
 /** Amazon Location Places v2 with an API key (plain HTTPS; no AWS SDK, no request signing). */
-export function amazonLocationProvider(o: { apiKey: string; region?: string; fetch?: ListingFetch; now?: () => Date }): ListingProvider {
+export function amazonLocationProvider(o: { apiKey: string; region?: string; fetch?: ListingFetch; now?: () => Date; log?: ListingLog }): ListingProvider {
   const region = /^[a-z]{2}(-[a-z]+)+-\d$/.test(o.region ?? "") ? o.region! : "us-east-1";
   const base = `https://places.geo.${region}.amazonaws.com/v2`;
   const key = encodeURIComponent(o.apiKey);
@@ -192,31 +224,33 @@ export function amazonLocationProvider(o: { apiKey: string; region?: string; fet
   return {
     kind: "amazon", source: AMAZON_SOURCE, attribution: AMAZON_ATTRIBUTION,
     owns: (ref) => /^aws:/.test(ref),
-    async discover(category, area, count) {
+    async discover(category, area, count, prefs = {}) {
       const pos = await position(area);
       if (!pos) throw new PlacesError("area_not_found", `Amazon Location couldn't find "${area.slice(0, 80)}"; pass a city and state (e.g. "Oakland, CA") or a street address.`);
       const max = Math.min(Math.max(count * 2, 5), 20);
-      const kind = kindOf(category);
-      const cats = kind ? AMAZON_KIND_CATEGORIES[kind] : undefined;
-      // Text search, plus (for a known kind of work) businesses of that category near the area. The
-      // category search only adds: if it fails, the text results stand.
-      const [text, nearby] = await Promise.all([
-        call("/search-text", {
-          method: "POST",
-          body: { QueryText: searchPhrase(category).slice(0, 200), BiasPosition: pos, MaxResults: max, AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" },
-        }) as Promise<{ ResultItems?: AwsPlace[] }>,
-        cats
-          ? (call("/search-nearby", {
-            method: "POST",
-            body: { QueryPosition: pos, QueryRadius: AMAZON_NEARBY_RADIUS_M, MaxResults: 20, Filter: { IncludeCategories: cats }, AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" },
-          }) as Promise<{ ResultItems?: AwsPlace[] }>).catch(() => ({ ResultItems: [] as AwsPlace[] }))
-          : Promise.resolve({ ResultItems: [] as AwsPlace[] }),
-      ]);
+      type Found = { ResultItems?: AwsPlace[] };
+      const text = (q: string) => call("/search-text", {
+        method: "POST",
+        body: { QueryText: q.slice(0, 200), BiasPosition: pos, MaxResults: max, AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" },
+      }) as Promise<Found>;
+      const nearby = (s: NearbySearch) => call("/search-nearby", {
+        method: "POST",
+        body: { QueryPosition: pos, QueryRadius: AMAZON_NEARBY_RADIUS_M, MaxResults: s.MaxResults, Filter: s.Filter, AdditionalFeatures: ["Contact", "TimeZone"], IntendedUse: "SingleUse" },
+      }) as Promise<Found>;
+      // The main text search must work. Every other search only adds, so one failing leaves the rest
+      // standing; it is logged, because an id Amazon refuses (HTTP 400) would otherwise look like no results.
+      const widen = (search: Promise<Found>, what: unknown) => search.catch((e: unknown): Found => {
+        if (!(e instanceof PlacesError)) throw e;
+        o.log?.("listing_search_failed", { provider: "amazon", search: what, code: e.code, reason: e.message });
+        return { ResultItems: [] };
+      });
+      const [main, ...more] = textQueries(category, prefs, { categorySearch: true });
+      const results = await Promise.all([text(main!), ...more.map((q) => widen(text(q), q)), ...nearbySearches(kindOf(category), prefs).map((s) => widen(nearby(s), s.Filter))]);
+      const seen = new Set<string>();
+      const items = results.flatMap((r) => r.ResultItems ?? []).filter((p) => !p.PlaceId || (!seen.has(p.PlaceId) && !!seen.add(p.PlaceId)));
       // Only businesses whose main line of work is the request's: a catering search near SoMa returned an
       // architecture firm with a stray secondary catering tag; a plumbing search, a plumbing supply store.
-      const seen = new Set<string>();
-      const items = [...(text.ResultItems ?? []), ...(nearby.ResultItems ?? [])].filter((p) => !p.PlaceId || (!seen.has(p.PlaceId) && !!seen.add(p.PlaceId)));
-      return resolveAmazonPlaces(items, category, area, now()).filter((b) => fitsCategory(category, b)).slice(0, count);
+      return shapeResults(resolveAmazonPlaces(items, category, area, now()), category, count, prefs);
     },
     async details(ref, d = {}) {
       const id = ref.replace(/^aws:/, "");
@@ -237,7 +271,7 @@ export function amazonLocationProvider(o: { apiKey: string; region?: string; fet
 // ───────────────────────────── selection ─────────────────────────────
 
 /** Amazon Location when AWS_LOCATION_API_KEY is set, else Google Places when GOOGLE_PLACES_API_KEY is, else null (off). */
-export function listingProviderFromEnv(env: { AWS_LOCATION_API_KEY?: string; AWS_LOCATION_REGION?: string; GOOGLE_PLACES_API_KEY?: string }, o: { fetch?: ListingFetch; now?: () => Date } = {}): ListingProvider | null {
+export function listingProviderFromEnv(env: { AWS_LOCATION_API_KEY?: string; AWS_LOCATION_REGION?: string; GOOGLE_PLACES_API_KEY?: string }, o: { fetch?: ListingFetch; now?: () => Date; log?: ListingLog } = {}): ListingProvider | null {
   const aws = env.AWS_LOCATION_API_KEY?.trim();
   if (aws) return amazonLocationProvider({ apiKey: aws, ...(env.AWS_LOCATION_REGION?.trim() ? { region: env.AWS_LOCATION_REGION.trim() } : {}), ...o });
   const google = env.GOOGLE_PLACES_API_KEY?.trim();

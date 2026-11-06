@@ -6,6 +6,8 @@
 // Uses only the existing Request fields (what, quantity, date, time, area, venue, details[], ask[],
 // requirements): an answer the Request has no field for goes in details[] under the suggested label.
 
+import { cuisineOf, priceRangeOf } from "../reputation/vendorSearch.ts";
+
 /** A request as intake reads it: the engine's Request, or deal's input before it is normalized. */
 export interface IntakeInput {
   what: string;
@@ -74,6 +76,8 @@ export interface CategoryProfile {
 const filled = (v: unknown) => v !== undefined && v !== null && String(v).trim() !== "";
 /** A detail whose label (or value) matches. */
 const detail = (r: IntakeInput, label: RegExp, value?: RegExp) => (r.details ?? []).some((d) => label.test(d.label) || (value ? value.test(d.value) : false));
+/** Every kind of purchase can state one: it steers the businesses found, and without it Haggle shows a range. */
+const PRICE_POINT: Essential = { key: "price_range", question: "What price point: as cheap as possible, mid-range, or premium? If you don't mind, Haggle shows a range.", field: "details: Price range", has: (r) => !!priceRangeOf(r.what) || detail(r, /\bprice\b/i) };
 /** The request's own words: what, details and requirements. */
 const words = (r: IntakeInput) => [r.what, ...(r.details ?? []).map((d) => `${d.label} ${d.value}`), ...(r.requirements ?? []).map((q) => q.text)].join(" \n ");
 const whereGiven = (r: IntakeInput) => filled(r.area) || filled(r.venue) || detail(r, /\b(address|location|where|venue|site|neighbou?rhood|zip)\b/i);
@@ -121,8 +125,9 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       WHERE("Where should it be delivered (address or venue, or at least the city)?"),
     ],
     helpful: [
+      { key: "food", question: "Any cuisine you'd like (e.g. pizza, Mexican, Indian)? If you're open, Haggle shows a mix.", field: "details: Cuisine", has: (r) => !!cuisineOf(r.what) || detail(r, /\b(menu|cuisine|dish)\w*/i) },
+      { key: "price_range", question: "What price point: as cheap as possible, mid-range, or something fancy? If you don't mind, Haggle shows a range.", field: "details: Price range", has: (r) => !!priceRangeOf(r.what) || detail(r, /\bprice\b/i) },
       TIME("What time should the food arrive or be served?"),
-      { key: "food", question: "What kind of food or cuisine (e.g. a taco bar, sandwiches, Indian)?", field: "what", has: (r) => whatWords(r) >= 2 || detail(r, /\b(menu|cuisine|food|dish)\w*/i) },
       { key: "dietary", question: "Any dietary needs or allergies, and how many people each (e.g. 12 vegetarian, 2 gluten-free)?", field: "requirements", has: (r) => (r.requirements ?? []).some((q) => q.kind === "dietary") || detail(r, /\b(diet|allerg|vegetarian|vegan|gluten|halal|kosher)\w*/i) || /\b(vegetarian|vegan|gluten|halal|kosher|allerg\w*|nut-free)\b/i.test(words(r)) },
       { key: "service", question: "Drop-off, buffet set-up, or staffed service? Do you need plates and utensils?", field: "details: Service", has: (r) => detail(r, /\b(service|style|setup|set-up|staff\w*|plates?|utensils?)\b/i) || /\b(drop[- ]?off|buffet|plated|family[- ]style|boxed|staffed)\b/i.test(words(r)) },
     ],
@@ -145,6 +150,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       TIME("What are the start and end times (including setup and teardown)?"),
       { key: "guests", question: "How many guests?", field: "details: Guests", has: (r) => detail(r, /\bguests?|attendees|headcount\b/i) || /\b\d+\s*(guests?|people|attendees)\b/i.test(words(r)) },
       { key: "setting", question: "Indoors or outdoors? Any venue access limits (stairs, loading dock, parking)?", field: "details: Venue notes", has: (r) => detail(r, /\b(indoor|outdoor|access|setting|venue notes?)\b/i) || /\b(indoors?|outdoors?)\b/i.test(words(r)) },
+      PRICE_POINT,
     ],
     vendorAsks: [
       ask("logistics_fees", "Delivery, setup and pickup fees, and the times they'd arrive and pick up", "delivery, setup and pickup fees and times", "delivery/setup fees"),
@@ -165,6 +171,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       { key: "property", question: "House, apartment or condo, and do you own or rent?", field: "details: Property", has: (r) => detail(r, /\b(property|home type|house|apartment|condo|own|rent)\b/i) || /\b(house|apartment|condo|townhouse)\b/i.test(words(r)) },
       { key: "equipment", question: "Make, model or age of what needs fixing, if you know it?", field: "details: Equipment", has: (r) => detail(r, /\b(make|model|brand|age|equipment)\b/i) },
       { key: "access", question: "Anything about access or parking the tech should know?", field: "details: Access", has: (r) => detail(r, /\b(access|parking|gate|entry)\b/i) },
+      PRICE_POINT,
     ],
     vendorAsks: [
       ask("callout_fee", "Any call-out, trip or diagnostic fee", "any call-out, trip or diagnostic fee", "call-out fee"),
@@ -189,6 +196,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       { key: "kind", question: "Regular, deep or move-out clean?", field: "details: Type of clean", has: (r) => detail(r, /\b(type|kind)\b/i) || /\b(deep|move[- ]?(out|in)|regular|standard|post[- ]construction|turnover)\b/i.test(words(r)) },
       { key: "frequency", question: "One time, or recurring (weekly, every two weeks)?", field: "details: Frequency", has: (r) => detail(r, /\bfrequen\w*|recurr\w*\b/i) || /\b(one[- ]time|once|weekly|biweekly|monthly|every (other|two) weeks?)\b/i.test(words(r)) },
       { key: "extras", question: "Any extras (inside the oven or fridge, windows, laundry) or pets?", field: "details: Extras", has: (r) => detail(r, /\b(extras?|pets?|oven|fridge|windows?|laundry)\b/i) },
+      PRICE_POINT,
     ],
     vendorAsks: [
       ask("hours_crew", "How many hours and cleaners it will take", "how many hours and cleaners it will take", "hours + crew"),
@@ -210,6 +218,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       { key: "stairs", question: "Stairs or an elevator at either end, and how far is the truck from the door?", field: "details: Access", has: (r) => detail(r, /\b(stairs?|elevator|floor|access|carry)\b/i) || /\b(stairs?|elevator|walk-?up)\b/i.test(words(r)) },
       { key: "packing", question: "Do you need packing help or boxes?", field: "details: Packing", has: (r) => detail(r, /\bpack\w*|boxes\b/i) || /\bpack\w*\b/i.test(words(r)) },
       { key: "special", question: "Any heavy or fragile items (piano, safe, art)?", field: "details: Special items", has: (r) => detail(r, /\b(special|heavy|fragile|piano|safe)\b/i) },
+      PRICE_POINT,
     ],
     vendorAsks: [
       ask("crew_truck", "Crew size and truck size", "the crew size and truck size", "crew + truck"),
@@ -233,6 +242,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
     helpful: [
       { key: "artwork", question: "Is the artwork print-ready, or do you need design help?", field: "details: Artwork", has: (r) => detail(r, /\b(artwork|design|file|logo|art)\b/i) },
       { key: "delivery", question: "Delivered (to what address) or picked up?", field: "venue or details: Delivery", has: (r) => filled(r.venue) || detail(r, /\b(deliver\w*|ship\w*|pick[- ]?up)\b/i) },
+      PRICE_POINT,
     ],
     vendorAsks: [
       ask("unit_setup", "The unit price at this quantity, and any setup, plate or screen fees", "the unit price at this quantity and any setup, plate or screen fees", "unit price + setup"),
@@ -255,6 +265,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
     ],
     helpful: [
       { key: "quantity", question: "How many, if it's a counted order?", field: "quantity", has: (r) => filled(r.quantity) },
+      PRICE_POINT,
     ],
     vendorAsks: [],
     critical: ["deposit"],
@@ -298,7 +309,7 @@ export interface IntakeGaps {
   missing: IntakeQuestion[];
   /** The missing essentials no "go ahead anyway" can skip (what the job is, and where): nothing is sent without them. */
   floor: IntakeQuestion[];
-  /** Optional details that change the price and aren't given yet (at most 4). */
+  /** Optional details that change the price and aren't given yet (at most 5). */
   helpful: IntakeQuestion[];
   /** One line: the brief as it stands. */
   brief: string;
@@ -318,7 +329,7 @@ export const FLOOR_KEYS: ReadonlySet<string> = new Set(["where", "problem", "sco
 export function intakeGaps(r: IntakeInput): IntakeGaps {
   const p = profileFor(r);
   const missing = p.essentials.filter((e) => !e.has(r)).map(strip);
-  const helpful = p.helpful.filter((e) => !e.has(r)).slice(0, 4).map(strip);
+  const helpful = p.helpful.filter((e) => !e.has(r)).slice(0, 5).map(strip);
   const floor = missing.filter((q) => FLOOR_KEYS.has(q.key));
   return { category: p.id, label: p.label, missing, floor, helpful, brief: briefLine(r), complete: missing.length === 0 };
 }

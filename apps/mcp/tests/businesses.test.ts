@@ -39,12 +39,12 @@ describe("discovered businesses are selectable for a while, by name or ref", () 
 
 describe("contact states: discovered → contact found → authorized → verified responsive", () => {
   const allow = (list: string[]) => (c: { email?: string; phone?: string }) => list.includes((c.email ?? c.phone)!);
-  it("a published contact is never permission; authorization needs the allowlist and a channel that can send", () => {
+  it("a published contact waits for the user: naming the business on a deal saves and contacts it", () => {
     expect(e164("+1 510-555-0141")).toBe("+15105550141");
     expect(e164("(510) 555-0177")).toBe("+15105550177");
     expect(e164("call us")).toBeNull();
     const unauth = routeFor("phone", "+15105550177", "Google Places listing", allow([]), CH);
-    expect(unauth).toMatchObject({ authorized: false, ready: false, contact: "+1•••77", blocker: expect.stringMatching(/finding a contact isn't permission/) });
+    expect(unauth).toMatchObject({ authorized: false, ready: false, contact: "+1•••77", blocker: expect.stringMatching(/Name this business on a deal/) });
     const notConnected = routeFor("phone", "+15105550177", "Google Places listing", allow(["+15105550177"]), CH);
     expect(notConnected).toMatchObject({ authorized: true, ready: false, blocker: expect.stringMatching(/shared iMessage line/) });
     const ok = routeFor("phone", "+15105550141", "Google Places listing", allow(["+15105550141"]), CH);

@@ -5,7 +5,7 @@ compares the quotes, then books the one you approve. You talk to it through your
 Claude, ChatGPT or Claude Code.
 
 During the pilot:
-- Haggle contacts only the vendors your operator set up with you, each of whom agreed to hear from Haggle.
+- Haggle contacts your saved businesses and, once you say yes, businesses it finds near you, by email, call or text.
 - Nothing is booked until you approve it from your own phone.
 - You pay the vendor directly. No money moves through Haggle.
 

@@ -147,7 +147,7 @@ export const ENV_MANIFEST: readonly EnvVarSpec[] = [
   { name: "HAGGLE_ALLOWED_RECIPIENTS", purpose: "Extra contacts outreach may reach (comma-separated); discovery is not permission", secret: false, pii: true, readBy: ["server"], need: OPT, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_DEMO_FLEET", purpose: "Simulated fleet offered by discover in live mode", secret: false, pii: true, readBy: ["server"], need: LIVE_OPT, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_DEMO_VENDORS", purpose: "Operator-configured demo vendor contacts", secret: false, pii: true, readBy: ["server"], need: LIVE_OPT, rule: TEXT, invalid: "warn" },
-  { name: "AWS_LOCATION_API_KEY", purpose: "Amazon Location Service API key (geo-places:SearchText, GetPlace, Geocode) for public discovery and opening hours; wins over Google Places (absent = Google, else off)", secret: true, readBy: ["server"], need: LIVE_OPT, rule: TEXT, invalid: "warn" },
+  { name: "AWS_LOCATION_API_KEY", purpose: "Amazon Location Service API key (geo-places:SearchText, SearchNearby, GetPlace, Geocode) for public discovery and opening hours; wins over Google Places (absent = Google, else off)", secret: true, readBy: ["server"], need: LIVE_OPT, rule: TEXT, invalid: "warn" },
   { name: "AWS_LOCATION_REGION", purpose: "AWS region of the Amazon Location API key", secret: false, readBy: ["server"], need: LIVE_OPT, rule: { kind: "pattern", re: /^[a-z]{2}(-[a-z]+)+-\d$/, describe: "an AWS region such as us-east-1" }, invalid: "warn", default: "us-east-1" },
   { name: "GOOGLE_PLACES_API_KEY", purpose: "Google Places key for public reputation, and discovery when AWS_LOCATION_API_KEY is unset (absent = off)", secret: true, readBy: ["server"], need: LIVE_OPT, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_MIGRATIONS_DIR", purpose: "Where /ready finds supabase/migrations when not found by walking up", secret: false, readBy: ["server"], need: OPT, rule: TEXT, invalid: "warn" },
@@ -163,7 +163,7 @@ export const ENV_MANIFEST: readonly EnvVarSpec[] = [
 
   // --- mock / rehearsal only (production refuses them) ----------------------------------------
   { name: "HAGGLE_SIM_DELAY_SCALE", purpose: "Simulated seller reply delay multiplier (0 = instant)", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
-  { name: "HAGGLE_MOCK_VENDORS", purpose: "none: rehearse a server with no vendor set up", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
+  { name: "HAGGLE_MOCK_VENDORS", purpose: "none: rehearse a server with no vendor set up; empty: no demo roster at all, like a real customer server", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_MOCK_PERSONAS_FILE", purpose: "Scripted simulated vendors (JSON file)", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_PLACES_FIXTURE", purpose: "Recorded listing (Google Places or Amazon Location) and website responses for discovery rehearsals", secret: false, readBy: ["server"], need: MOCK_ONLY, rule: TEXT, invalid: "warn" },
   { name: "HAGGLE_MOCK_DATABASE_URL", purpose: "Throwaway Postgres for mock restart rehearsals (never a real database)", secret: true, readBy: ["server"], need: MOCK_ONLY, rule: { kind: "postgresUrl" }, invalid: "error", conditional: true, dbUrl: true },

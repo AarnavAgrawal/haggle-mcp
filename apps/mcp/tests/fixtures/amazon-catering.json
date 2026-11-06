@@ -1,0 +1,59 @@
+{
+  "provider": "amazon",
+  "geocode": [{ "match": "oakland", "position": [-122.2711, 37.8044] }],
+  "searches": [
+    {
+      "match": "catering",
+      "items": [
+        {
+          "PlaceId": "AQAAAE9ha2xhbmRDYXRlcmluZ0NvMDE", "PlaceType": "PointOfInterest", "Title": "Oakland Catering Co",
+          "Address": { "Label": "12 Broadway, Oakland, CA 94607, United States", "Locality": "Oakland" }, "Distance": 900,
+          "Categories": [{ "Id": "catering_and_other_food_services", "Name": "Catering and Other Food Services", "Primary": true }],
+          "Contacts": { "Phones": [{ "Value": "+15105550201" }], "Emails": [{ "Value": "events@oaklandcatering.example" }] }
+        },
+        {
+          "PlaceId": "AQAAAExha2VzaWRlRXZlbnRGb29kczAy", "PlaceType": "PointOfInterest", "Title": "Lakeside Event Catering",
+          "Address": { "Label": "88 Grand Ave, Oakland, CA 94610, United States", "Locality": "Oakland" }, "Distance": 1500,
+          "Categories": [{ "Id": "catering_and_other_food_services", "Name": "Catering and Other Food Services", "Primary": true }],
+          "Contacts": { "Phones": [{ "Value": "+15105550202" }], "Emails": [{ "Value": "hello@lakesidecatering.example" }] }
+        }
+      ]
+    },
+    {
+      "match": "nearby-only",
+      "items": [
+        {
+          "PlaceId": "AQAAAERvbWlub3NPYWtsYW5kMDM", "PlaceType": "PointOfInterest", "Title": "Domino's",
+          "Address": { "Label": "300 Telegraph Ave, Oakland, CA 94612, United States", "Locality": "Oakland" }, "Distance": 700,
+          "Categories": [{ "Id": "fast_food", "Name": "Fast Food", "Primary": true }],
+          "FoodTypes": [{ "Id": "pizza", "LocalizedName": "Pizza", "Primary": true }],
+          "BusinessChains": [{ "Id": "Dominos", "Name": "Domino's" }],
+          "Contacts": { "Phones": [{ "Value": "+15105550203" }], "Websites": [{ "Value": "https://dominos.example/" }] }
+        },
+        {
+          "PlaceId": "AQAAAFBpenphSHV0T2FrbGFuZDA0", "PlaceType": "PointOfInterest", "Title": "Pizza Hut",
+          "Address": { "Label": "410 Webster St, Oakland, CA 94607, United States", "Locality": "Oakland" }, "Distance": 1100,
+          "Categories": [{ "Id": "fast_food", "Name": "Fast Food", "Primary": true }],
+          "FoodTypes": [{ "Id": "pizza", "LocalizedName": "Pizza", "Primary": true }],
+          "BusinessChains": [{ "Id": "Pizza_Hut", "Name": "Pizza Hut" }],
+          "Contacts": { "Phones": [{ "Value": "+15105550204" }] }
+        },
+        {
+          "PlaceId": "AQAAAFRhcXVlcmlhRWxQYXNvMDU", "PlaceType": "PointOfInterest", "Title": "Taqueria El Paso",
+          "Address": { "Label": "2200 International Blvd, Oakland, CA 94606, United States", "Locality": "Oakland" }, "Distance": 2100,
+          "Categories": [{ "Id": "taqueria", "Name": "Taqueria", "Primary": true }],
+          "FoodTypes": [{ "Id": "mexican", "LocalizedName": "Mexican", "Primary": true }],
+          "Contacts": { "Phones": [{ "Value": "+15105550205" }], "Emails": [{ "Value": "hola@elpaso.example" }] }
+        },
+        {
+          "PlaceId": "AQAAAENvbW1pc09ha2xhbmREaW5pbmcwNg", "PlaceType": "PointOfInterest", "Title": "Piedmont Table",
+          "Address": { "Label": "3859 Piedmont Ave, Oakland, CA 94611, United States", "Locality": "Oakland" }, "Distance": 3200,
+          "Categories": [{ "Id": "fine_dining", "Name": "Fine Dining", "Primary": true }],
+          "FoodTypes": [{ "Id": "italian", "LocalizedName": "Italian", "Primary": true }],
+          "Contacts": { "Phones": [{ "Value": "+15105550206" }], "Emails": [{ "Value": "reservations@piedmonttable.example" }] }
+        }
+      ]
+    }
+  ],
+  "websites": {}
+}

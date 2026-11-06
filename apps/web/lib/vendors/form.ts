@@ -1,15 +1,15 @@
 // The "Add vendor" form's rules, shared by the browser (inline errors) and /api/vendors (the check
-// that counts). The MCP server enforces the same consent rules again (apps/mcp/src/service/vendors.ts):
-// a business found only in a public listing may be emailed, never called or texted.
+// that counts). The MCP server checks the vendor again (apps/mcp/src/service/vendors.ts).
 
 export type VendorChannel = "email" | "phone" | "imessage";
-export type ConsentBasis = "existing_relationship" | "business_agreed" | "public_listing_email";
+export type ConsentBasis = "existing_relationship" | "business_agreed" | "public_listing_email" | "public_listing";
 
 /** The consent choices, in plain words, strongest first. */
 export const CONSENT_OPTIONS: { value: ConsentBasis; label: string; explain: string; channels: VendorChannel[] }[] = [
   { value: "existing_relationship", label: "We already work with them", explain: "You have bought from or worked with this business before, and it expects to hear from you this way.", channels: ["email", "phone", "imessage"] },
   { value: "business_agreed", label: "They agreed to be contacted", explain: "Someone at the business told you Haggle (an AI assistant acting for you) may contact them this way.", channels: ["email", "phone", "imessage"] },
   { value: "public_listing_email", label: "Public listing", explain: "You found the business's email on its website or listing.", channels: ["email"] },
+  { value: "public_listing", label: "Public listing", explain: "You found the business's phone number on its website or listing.", channels: ["phone", "imessage"] },
 ];
 
 export const CHANNEL_OPTIONS: { value: VendorChannel; label: string }[] = [
@@ -90,7 +90,7 @@ export function validateVendorForm(i: VendorFormInput): FormResult {
   const basis = CONSENT_OPTIONS.find((o) => o.value === i.consent_basis)?.value ?? null;
   if (!basis) errors.consent_basis = "Choose how this business agreed to be contacted.";
   else if (channel && !errors.channel && !basisAllows(basis, channel)) {
-    errors.consent_basis = "A business found only in a public listing can be emailed, never called or texted. Add its email, or choose a stronger basis if it is true.";
+    errors.consent_basis = "This option is for an email address. For a phone number, choose the public listing option for phone numbers.";
   }
 
   const note = plain(str(i.note));

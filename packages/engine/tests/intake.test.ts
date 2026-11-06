@@ -33,7 +33,7 @@ describe("intakeGaps", () => {
     expect(g.category).toBe("catering");
     expect(g.missing.map((q) => q.key)).toEqual(["headcount", "date", "where"]);
     expect(g.complete).toBe(false);
-    expect(g.helpful.map((q) => q.key)).toEqual(["time", "food", "dietary", "service"]);
+    expect(g.helpful.map((q) => q.key)).toEqual(["food", "price_range", "time", "dietary", "service"]);
     expect(g.missing[0]).toMatchObject({ question: "How many people?", field: "quantity" });
   });
 
@@ -41,8 +41,34 @@ describe("intakeGaps", () => {
     const g = intakeGaps({ what: "lunch catering", quantity: 40, date: "2026-10-22", time: "12:00", area: "San Francisco, CA", venue: "YC office", requirements: [{ kind: "dietary", text: "12 vegetarian meals" }] });
     expect(g.complete).toBe(true);
     expect(g.missing).toEqual([]);
-    expect(g.helpful.map((q) => q.key)).toEqual(["service"]);
+    expect(g.helpful.map((q) => q.key)).toEqual(["food", "price_range", "service"]);
     expect(g.brief).toBe("lunch catering · 40 people · 2026-10-22 12:00 · YC office, San Francisco, CA · 12 vegetarian meals");
+  });
+
+  it("catering asks for a cuisine and a price point, as optional questions that land in details", () => {
+    const g = intakeGaps({ what: "catering", quantity: 40, date: "2026-10-22", area: "San Francisco, CA" });
+    expect(g.complete).toBe(true); // optional: the deal moves on without them
+    expect(g.helpful.find((q) => q.key === "food")).toMatchObject({ field: "details: Cuisine" });
+    expect(g.helpful.find((q) => q.key === "price_range")).toMatchObject({ field: "details: Price range", question: expect.stringMatching(/cheap.*fancy/i) });
+  });
+
+  it("every kind of purchase asks for a price point, as an optional question", () => {
+    for (const what of ["fix a leaking pipe", "deep clean my apartment", "move my 2 bedroom", "print 100 posters", "rent 50 chairs", "wedding flowers"]) {
+      const q = intakeGaps({ what }).helpful.find((x) => x.key === "price_range");
+      expect(q, what).toMatchObject({ field: "details: Price range", question: expect.stringMatching(/cheap.*premium/i) });
+    }
+  });
+
+  it("a food allergy doesn't count as a cuisine answer", () => {
+    expect(intakeGaps({ what: "catering", details: [{ label: "Food allergies", value: "peanuts" }] }).helpful.map((q) => q.key)).toContain("food");
+  });
+
+  it("doesn't re-ask a cuisine or price point the user already gave", () => {
+    const keys = (r: Parameters<typeof intakeGaps>[0]) => intakeGaps(r).helpful.map((q) => q.key);
+    expect(keys({ what: "taco bar for 40" })).not.toContain("food");
+    expect(keys({ what: "catering", details: [{ label: "Cuisine", value: "Thai" }] })).not.toContain("food");
+    expect(keys({ what: "catering", details: [{ label: "Price range", value: "fancy" }] })).not.toContain("price_range");
+    expect(keys({ what: "cheap lunch for the team" })).not.toContain("price_range");
   });
 
   it("home repair asks what's wrong, where and how urgent", () => {

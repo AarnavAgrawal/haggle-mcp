@@ -26,8 +26,8 @@ export interface Brief {
 }
 
 /**
- * A business Haggle found in a public listing for this request: emailed only once the user starts the
- * deal (which saves it to their businesses, email only). Never its email address.
+ * A business Haggle found in a public listing for this request: contacted only once the user starts the
+ * deal (which saves it to their businesses). Never its contact details.
  */
 export interface FoundBusiness {
   name: string;

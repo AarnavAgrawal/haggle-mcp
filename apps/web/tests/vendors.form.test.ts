@@ -42,9 +42,13 @@ describe("validateVendorForm", () => {
     expect(basisAllows("business_agreed", "imessage")).toBe(true);
     const r = validateVendorForm({ ...good, contact: "+14155550199" });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.errors.consent_basis).toMatch(/never called or texted/);
+    if (!r.ok) expect(r.errors.consent_basis).toMatch(/for an email address/);
     const t = validateVendorForm({ ...good, contact: "+14155550199", channel: "imessage" });
     expect(t.ok).toBe(false);
+  });
+
+  it("takes a phone number found on a public listing, for a call or a text", () => {
+    for (const channel of ["phone", "imessage"]) expect(validateVendorForm({ ...good, contact: "+14155550199", channel, consent_basis: "public_listing" })).toMatchObject({ ok: true, value: { channel, consent_basis: "public_listing" } });
   });
 
   it("requires the attestation, a name, a contact and a basis; a channel must fit the contact", () => {

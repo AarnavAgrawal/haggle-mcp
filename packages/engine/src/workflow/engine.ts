@@ -334,7 +334,15 @@ const E164_RE = /^\+[1-9]\d{6,14}$/;
 export type EngineDealResult = Omit<DealResult, "contacted"> & {
   contacted: (DealResult["contacted"][number] & { channel: Channel })[];
   not_contacted: { business_id: string; business: string; channel: Channel; reason: string }[];
+  /** This call was a retry: the job already existed and nobody was contacted again. */
+  replayed?: boolean;
 };
+
+/**
+ * How long a client_request_id returns its deal. It guards a retry of one call, not a purchase: agents
+ * derive it from the request, so without a limit the same request weeks later got the old deal back.
+ */
+export const DEAL_REPLAY_WINDOW_MS = 10 * 60_000;
 
 /** Engine-side business status → the deal board's v5 status. */
 /** Quote rounds a job can have: the first quotes plus one negotiation round. The jobs table stores
@@ -627,7 +635,10 @@ export class HaggleEngine {
     const ws = input.workspace_id ?? DEFAULT_WORKSPACE_ID;
     if (input.client_request_id) {
       const existing = await this.repo.findJobByClientRequestId(input.client_request_id, ws);
-      if (existing) return this.dealResult(existing);
+      if (existing && this.now().getTime() - Date.parse(existing.created_at) <= DEAL_REPLAY_WINDOW_MS) return this.dealResult(existing, true);
+      // A stale id gives way to the new deal (the column is unique per workspace). Unconditional: a job that
+      // keeps changing must not win a compare-and-set race and answer a new request with the old deal.
+      if (existing) await this.repo.touchJob(existing.id, { client_request_id: null });
     }
     if (input.businesses.length === 0) throw new EngineError("no_businesses", "No businesses to contact.", "Pass businesses[] (name + email or phone), or call discover first.", "discover");
     validateAsk(input.request);
@@ -737,7 +748,7 @@ export class HaggleEngine {
       } catch (e) {
         if (input.client_request_id && /client_request/.test(String(e))) {
           const existing = await this.repo.findJobByClientRequestId(input.client_request_id, ws);
-          if (existing) return this.dealResult(existing);
+          if (existing) return this.dealResult(existing, true);
         }
         if (!String(e).includes("short_code")) throw e;
       }
@@ -762,7 +773,7 @@ export class HaggleEngine {
     return this.dealResult((await this.repo.getJob(job.id))!);
   }
 
-  private async dealResult(job: JobRow): Promise<EngineDealResult> {
+  private async dealResult(job: JobRow, replayed = false): Promise<EngineDealResult> {
     const businesses = await this.repo.getBusinesses(job.id);
     return {
       ok: true, mode: job.mode, job_id: job.id, inbox: job.inbox, state: job.state,
@@ -772,7 +783,10 @@ export class HaggleEngine {
         reason: b.status === "unavailable" ? this.route(b).reason : b.status === "bounced" ? "send failed" : b.next_attempt_at ? (b.channel === "phone" ? `call scheduled for ${b.next_attempt_at} (call hours)` : `retrying at ${b.next_attempt_at}`) : "pending",
       })),
       eta: `replies usually within minutes; collecting until ${job.collect_until}`,
-      next: "Call wait_for_update with this job_id (timeout_s up to 60). Don't email the businesses yourself.",
+      next: replayed
+        ? `Nothing was sent: deal ${job.id} was already started by this client_request_id. If this is a retry, follow that deal with wait_for_update. If the user is asking again, that is a new deal: call deal with a new client_request_id.`
+        : "Call wait_for_update with this job_id (timeout_s up to 60). Don't email the businesses yourself.",
+      ...(replayed ? { replayed } : {}),
     };
   }
 
@@ -7585,6 +7599,32 @@ export class HaggleEngine {
     }));
   }
 
+  /**
+   * Every deal of a workspace as rows, for the web dashboard's one-call ledger (apps/mcp/src/service/ledger.ts
+   * picks the fields and writes the words). Read-only like recentDeals: never advances a job, builds a
+   * board, calls a model or contacts anyone. One row past `limit` says whether more exist; eight deals
+   * are read at a time.
+   */
+  async workspaceLedger(limit: number, workspaceId: string) {
+    const rows = await this.repo.listRecentJobs(limit + 1, workspaceId);
+    const jobs = rows.slice(0, limit).sort((a, b) => Number(TERMINAL.has(a.state)) - Number(TERMINAL.has(b.state)) || b.created_at.localeCompare(a.created_at));
+    const read = async (job: JobRow) => {
+      const [businesses, quotes, questions, approval, payment, events] = await Promise.all([
+        this.repo.getBusinesses(job.id), this.repo.listQuotes(job.id), this.repo.listQuestions(job.id), this.repo.getLatestApproval(job.id), this.repo.getPaymentForJob(job.id), this.repo.listEvents(job.id),
+      ]);
+      const stopped = job.state === "cancelled" || job.state === "failed";
+      const priced = quotes.some((q) => q.status === "current" && q.total_cents !== null);
+      const recommended = priced && !stopped ? await this.recommendedQuote(job, { all: quotes, businesses }).catch(() => null) : null;
+      const purchase = ["paying", "paid", "confirmed"].includes(job.state) ? await this.dealSummary(job.id).catch(() => null) : null;
+      const answered = answeredByQuote(quotes);
+      const won = job.state === "paid" && payment ? payment.business_id : null;
+      return { job, businesses: businesses.map((b) => ({ ...b, board_status: this.boardStatus(b, job, won, quotes, answered) })), quotes, questions, approval, payment, events, recommended_quote_id: recommended?.id ?? null, purchase };
+    };
+    const deals: Awaited<ReturnType<typeof read>>[] = [];
+    for (let i = 0; i < jobs.length; i += 8) deals.push(...(await Promise.all(jobs.slice(i, i + 8).map(read))));
+    return { deals, truncated: rows.length > limit };
+  }
+
   /** Business names on a deal (wait_for_update names whose quote is whose without building the board). */
   /**
    * Where a deal stands after quotes, for list_deals (resume in a new conversation without a board
@@ -8250,7 +8290,7 @@ function priceConfirmKey(jobId: string, businessId: string): string {
   return `pricecheck:${jobId}:${businessId}`;
 }
 
-function isApproximate(r: QuoteRecord | undefined | null): boolean {
+export function isApproximate(r: QuoteRecord | undefined | null): boolean {
   return !!r && r.flags.includes(APPROXIMATE_FLAG);
 }
 

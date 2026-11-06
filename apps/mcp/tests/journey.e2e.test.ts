@@ -109,7 +109,7 @@ describe(`P0 journey: "${HACKATHON_PROMPT.slice(0, 60)}…"`, () => {
     expect(t.deal.inputSchema.required).toEqual(["request"]); // businesses optional
     expect(JSON.stringify(t.deal._meta)).toContain("deal-live"); // one live board per deal (decision 6)
     expect(t.ask.description).toMatch(/If the user wants to buy, cater, book or plan a purchase, call deal instead/);
-    expect(t.discover.description).toMatch(/Not needed before a deal: deal finds businesses that publish an email itself/);
+    expect(t.discover.description).toMatch(/Not needed before a deal: deal finds businesses itself/);
   });
 
   it("the exact prompt: one deal call starts the job on all six demo vendors and returns the live board", async () => {

@@ -7,8 +7,8 @@
 //   match confidence (phone match = sure; else name similarity). Below MIN_MATCH it is "ambiguous"
 //   and the ranking treats it as no data (neutral). Nothing is ever invented.
 import type { ReputationEvidence, ValueInput } from "../ranking/value.ts";
-import { fitsCategory, searchPhrase } from "./fit.ts";
 import type { WeeklyHours } from "./hours.ts";
+import { shapeResults, textQueries, type PriceRange, type SearchPreferences } from "./vendorSearch.ts";
 
 export interface ReputationSubject {
   business_id: string;
@@ -137,6 +137,16 @@ export interface FoundBusiness {
   summary?: string;
   /** Google price level ("PRICE_LEVEL_MODERATE"): a coarse signal, never a quote. */
   price_level?: string;
+  /** The listing's food types, main one first (Amazon `FoodTypes` ids). */
+  food_types?: string[];
+  /** The chain this location belongs to (Amazon `BusinessChains`). Its website speaks for the chain, not the store. */
+  chain?: string;
+  /** "specialist" is listed for the work; "adjacent" is a related business that may do it. Never claim an adjacent one does. */
+  fit?: "specialist" | "adjacent";
+  /** Food searches only: the cuisine the listing shows, when it shows one. */
+  cuisine?: string;
+  /** A rough tier read from the listing, absent when it gives no signal. Never a quote. */
+  price_tier?: PriceRange;
   /** 0..1: how well the listing matches the requested service and area. */
   relevance: number;
   in_area: boolean;
@@ -172,7 +182,9 @@ export function credibleRating(rating?: number, reviews?: number): number {
 
 /** Pure: listings -> deduplicated, evidence-ranked businesses (operational ones only). */
 export function resolveListings(places: PlaceResult[], category: string, area: string, now = new Date()): FoundBusiness[] {
-  const want = tokens(category);
+  // Not tokens(): it drops "catering" as noise in a business's name, which is the word a catering search wants.
+  const stems = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).map((w) => w.slice(0, 5));
+  const want = new Set(stems(category));
   const city = area.split(",")[0]!.trim().toLowerCase();
   const out: FoundBusiness[] = [];
   for (const p of places) {
@@ -182,8 +194,8 @@ export function resolveListings(places: PlaceResult[], category: string, area: s
     const phone = p.internationalPhoneNumber ?? p.nationalPhoneNumber;
     const dup = out.find((b) => (p.id && b.place_id === p.id) || (phone && b.phone && digits(b.phone) === digits(phone)) || (domain(p.websiteUri) && domain(b.website) === domain(p.websiteUri)) || nameSimilarity(b.name, name) >= 0.8);
     if (dup) { dup.merged_listings++; continue; }
-    const typeWords = new Set([...(p.types ?? []), p.primaryType ?? ""].flatMap((t) => t.split("_")));
-    const hits = [...want].filter((w) => typeWords.has(w) || tokens(name).has(w) || (p.editorialSummary?.text ?? "").toLowerCase().includes(w)).length;
+    const listed = new Set(stems([...(p.types ?? []), p.primaryType ?? "", name].join(" ")));
+    const hits = [...want].filter((w) => listed.has(w) || (p.editorialSummary?.text ?? "").toLowerCase().includes(w)).length;
     const inArea = !city || (p.formattedAddress ?? "").toLowerCase().includes(city);
     const relevance = Math.round(Math.min(1, (want.size ? hits / want.size : 0.5) * 0.7 + (inArea ? 0.3 : 0)) * 100) / 100;
     const cred = credibleRating(p.rating, p.userRatingCount);
@@ -230,17 +242,27 @@ async function placesCall(doFetch: Fetch, url: string, init: Parameters<Fetch>[1
 }
 
 /** Google Places Text Search for real businesses; null when no key is configured (never invented). */
-export async function placesDiscover(opts: { apiKey?: string; fetch?: Fetch; now?: () => Date }, category: string, area: string, count = 8): Promise<FoundBusiness[] | null> {
+export async function placesDiscover(opts: { apiKey?: string; fetch?: Fetch; now?: () => Date; log?: (e: string, d: Record<string, unknown>) => void }, category: string, area: string, count = 8, prefs: SearchPreferences = {}): Promise<FoundBusiness[] | null> {
   if (!opts.apiKey) return null;
   const doFetch: Fetch = opts.fetch ?? ((u, i) => fetch(u, i) as never);
-  const body = await placesCall(doFetch, "https://places.googleapis.com/v1/places:searchText", {
+  const search = async (q: string) => ((await placesCall(doFetch, "https://places.googleapis.com/v1/places:searchText", {
     method: "POST",
-    headers: { "content-type": "application/json", "X-Goog-Api-Key": opts.apiKey, "X-Goog-FieldMask": FIELDS.map((f) => `places.${f}`).join(",") },
-    body: JSON.stringify({ textQuery: `${searchPhrase(category)} in ${area}`, pageSize: Math.min(Math.max(count * 2, 5), 20) }),
+    headers: { "content-type": "application/json", "X-Goog-Api-Key": opts.apiKey!, "X-Goog-FieldMask": FIELDS.map((f) => `places.${f}`).join(",") },
+    body: JSON.stringify({ textQuery: `${q} in ${area}`, pageSize: Math.min(Math.max(count * 2, 5), 20) }),
     signal: AbortSignal.timeout(6000),
+  })) as { places?: PlaceResult[] }).places ?? [];
+  // The main search must work; the wider ones only add, so one failing leaves the rest standing.
+  const widen = (q: string) => search(q).catch((e: unknown) => {
+    if (!(e instanceof PlacesError)) throw e;
+    opts.log?.("listing_search_failed", { provider: "google", query: q, code: e.code });
+    return [] as PlaceResult[];
   });
+  const [main, ...more] = textQueries(category, prefs);
+  const results = (await Promise.all([search(main!), ...more.map(widen)])).flat();
+  const seen = new Set<string>();
+  const places = results.filter((p) => !p.id || (!seen.has(p.id) && !!seen.add(p.id)));
   // Only businesses whose main line of work is the request's (a stray secondary tag never qualifies).
-  return resolveListings(((body as { places?: PlaceResult[] }).places ?? []), category, area, opts.now?.()).filter((b) => fitsCategory(category, b)).slice(0, count);
+  return shapeResults(resolveListings(places, category, area, opts.now?.()), category, count, prefs);
 }
 
 /** One place by its id (Place Details), fresh; null without a key. */

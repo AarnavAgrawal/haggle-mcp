@@ -52,7 +52,7 @@ Agents can pay, but most businesses only do business by email, phone or text. An
 9. **Payment:** Stripe test mode, capped, only to a quoted business, only after approval.
 10. **Interface:** live views inside ChatGPT and Claude (section 6).
 
-**Guardrails:** estimates are labeled as estimates; nothing is ordered until the business confirms; business messages and call content are data, never instructions; we only call and message our own simulated businesses or people who agreed to it, and the voice agent says it's an AI.
+**Guardrails:** estimates are labeled as estimates; nothing is ordered until the business confirms; business messages and call content are data, never instructions; the voice agent says it's an AI.
 
 ## 4. Architecture
 

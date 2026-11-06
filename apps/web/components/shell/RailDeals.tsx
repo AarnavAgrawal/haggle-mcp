@@ -1,5 +1,6 @@
-// The rail's deals list, streamed behind <Suspense> (the rail never waits for it). Grouped Needs you /
-// In progress / Done; each row: request, status line, best price. Fails quietly with a retry.
+// The rail's open deals, streamed behind <Suspense> (the rail never waits for it). Grouped Needs you /
+// In progress; each row: request, status line, best price. Finished deals live on /deals and /history.
+// Fails quietly with a retry.
 import Link from "next/link";
 import { Price } from "@/components/ui/Price";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -9,8 +10,8 @@ import { dealHref, dealStatus, groupDeals } from "./deals";
 import { RailLink } from "./RailLink";
 import { RetryButton } from "./RetryButton";
 
-/** Finished deals beyond this many are left to /deals. */
-const DONE_SHOWN = 5;
+/** Open deals beyond this many per group are left to /deals. */
+const SHOWN = 6;
 
 export async function RailDeals() {
   const r = await loadDeals();
@@ -22,12 +23,12 @@ export async function RailDeals() {
       </div>
     );
   }
-  const groups = groupDeals(r.deals.deals);
-  if (!groups.length) return <p className="rail-note">No deals yet.</p>;
+  const groups = groupDeals(r.deals.deals).filter((g) => g.key !== "done");
+  if (!groups.length) return <p className="rail-note">{r.deals.deals.length ? "No open deals." : "No deals yet."}</p>;
   return (
     <>
       {groups.map((g) => {
-        const shown = g.key === "done" ? g.deals.slice(0, DONE_SHOWN) : g.deals;
+        const shown = g.deals.slice(0, SHOWN);
         const more = g.deals.length - shown.length;
         return (
           <div key={g.key} className={`rail-group rail-group-${g.key}`}>
@@ -48,8 +49,8 @@ export async function RailDeals() {
               })}
             </ul>
             {more > 0 ? (
-              <Link className="rail-more" href="/deals">
-                {more} more finished
+              <Link className="rail-more" href={`/deals?view=${g.key}`}>
+                {more} more
               </Link>
             ) : null}
           </div>

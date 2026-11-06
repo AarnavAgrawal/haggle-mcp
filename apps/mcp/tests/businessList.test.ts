@@ -28,7 +28,7 @@ const evidence: EvidenceItem[] = [
 describe("contact state badge", () => {
   it("says plainly whether Haggle may contact the business", () => {
     expect(contactBadge("discovered").label).toBe("Not contactable");
-    expect(contactBadge("contact_found").label).toBe("Contact found · not authorized");
+    expect(contactBadge("contact_found").label).toBe("Contact found");
     expect(contactBadge("authorized").label).toBe("Ready to contact");
     expect(contactBadge("verified_responsive").label).toBe("Has replied before");
   });
@@ -42,7 +42,7 @@ describe("contact state badge", () => {
   });
   it("renders the label with the summary as its tooltip", () => {
     const html = renderToStaticMarkup(createElement(ContactBadge, { state: "contact_found", summary: "Published phone found; not on this server's allowlist." }));
-    expect(html).toContain("Contact found · not authorized");
+    expect(html).toContain("Contact found");
     expect(html).toContain('title="Published phone found; not on this server&#x27;s allowlist."');
     expect(html).toContain("hg-contact-warn");
   });
