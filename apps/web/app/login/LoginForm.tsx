@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition, type FormEvent } from "react";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
+import { NO_ACCOUNT_PATH, refusedSignup } from "@/lib/auth/callback";
 import { DEMO } from "@/lib/demo";
 import { loginEmail } from "@/lib/loginEmail";
 import { supabaseBrowser } from "@/lib/supabase/browser";
@@ -38,13 +39,13 @@ export function LoginForm({ notice }: { notice: string | null }) {
     if (needsCaptcha) return setError("Complete the check below first.");
     setError(null);
     setState("sending");
-    const { error } = await supabaseBrowser().auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: redirectTo(), ...captchaOpts } });
+    // A live site never makes an account here: only someone let in from the waitlist has one.
+    const { error } = await supabaseBrowser().auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: redirectTo(), shouldCreateUser: DEMO, ...captchaOpts } });
     used();
-    if (error) {
-      // Sign-ups are closed on a live site: only someone let in from the waitlist has an account.
-      setError(/signups? not allowed/i.test(error.message) ? "There's no Haggle account for that email yet. Join the waitlist and we'll email you when you're in." : error.message);
-      setState("idle");
-    } else setState("sent");
+    if (!error) return setState("sent");
+    if (!DEMO && refusedSignup(error.message)) return startTransition(() => router.push(NO_ACCOUNT_PATH)); // the button stays pending until it lands
+    setError(error.message);
+    setState("idle");
   };
   const google = async () => {
     setError(null);

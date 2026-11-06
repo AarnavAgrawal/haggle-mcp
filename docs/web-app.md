@@ -44,8 +44,8 @@ The web app owns only four things: sign-in, the waitlist, which workspace a user
 | `/` | The landing page when signed out; signed in → `/chat`. | none |
 | `/waitlist` | Public. Sign-up is by invitation: visitors join here, and someone signed in but not let in sees where they stand. Admitted → `/onboarding`; member → `/chat`. Operators admit people with `npm run waitlist` ([production-deploy.md](production-deploy.md) §3.4). | none |
 | `POST /api/waitlist` | Public, same-origin. Adds an entry, and answers the same whether or not the email is known. | none |
-| `/login` | Email magic link (`signInWithOtp`) or Google OAuth. Both return to `/auth/callback`. | none |
-| `GET /auth/callback` | Exchanges the auth code for a session, then redirects to `/` (or to `/login?error=sign_in_failed`; someone new when sign-ups are closed goes to `/waitlist`). | none |
+| `/login` | Email magic link (`signInWithOtp`) or Google OAuth. Both return to `/auth/callback`. On a live site it never creates an account: an unknown email goes to `/waitlist?from=sign-in`. | none |
+| `GET /auth/callback` | Exchanges the auth code for a session, then redirects to `/` (or to `/login?error=sign_in_failed`; someone new when sign-ups are closed goes to `/waitlist?from=sign-in`). | none |
 | `/auth/confirm` | Where an emailed sign-in link lands (`token_hash`). A button finishes the sign-in, so opening the link does nothing by itself. | none |
 | `POST /auth/sign-out` | Signs out and redirects to `/login`. It is POST only, so a link prefetch can't sign anyone out. | none |
 | `/onboarding` | Only for someone admitted from the waitlist; anyone else goes to `/waitlist`. Creates the workspace: name, approver phone (E.164), default limit for new deals (default $1,500; a deal with a budget uses its budget) and usual area. The approver email is the user's sign-in email. | `POST /internal/workspaces` |

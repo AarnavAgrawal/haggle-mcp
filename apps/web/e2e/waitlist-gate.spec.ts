@@ -14,7 +14,12 @@
 // Run it twice: with sign-ups on, then with enable_signup = false in [auth] and WAITLIST_E2E_SIGNUPS=off, which is
 // how production runs (docs/production-deploy.md §3.4). Leave it true in [auth.email]: that one is the whole email
 // provider, and turning it off stops email sign-in for everyone.
+//
+// To prove the Google path too: Supabase can't point Google at a fake, so stand in its Keycloak provider, which takes
+// the same route back. In config.toml set [auth.external.keycloak] enabled = true, any client_id and secret, and
+// url = "http://host.docker.internal:<port>/realms/haggle"; then set WAITLIST_E2E_OIDC_PORT=<port>.
 import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Browser, type Page } from "@playwright/test";
@@ -26,11 +31,13 @@ const MAIL = process.env.WAITLIST_E2E_MAIL_URL ?? "";
 const DB = process.env.WAITLIST_E2E_DB_CONTAINER ?? "";
 const BASE = process.env.E2E_BASE_URL ?? "";
 const SIGNUPS_OFF = process.env.WAITLIST_E2E_SIGNUPS === "off";
+const OIDC_PORT = Number(process.env.WAITLIST_E2E_OIDC_PORT ?? 0);
 const AUTH_HEADERS = { apikey: ANON, "content-type": "application/json" };
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "waitlist-admin.ts");
 
 test.skip(!SB, "needs a local Supabase stack: see the top of this file");
 test.describe.configure({ mode: "serial" });
+test.use({ launchOptions: { args: ["--host-resolver-rules=MAP host.docker.internal 127.0.0.1"] } }); // the stand-in provider, from the browser's side
 
 const sql = (query: string) => {
   const r = spawnSync("docker", ["exec", "-i", DB, "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-q", "-tA"], { input: query, encoding: "utf8" });
@@ -77,6 +84,12 @@ const follow = async (page: Page, link: string) => {
 };
 const inFreshBrowser = async (browser: Browser) => (await browser.newContext({ baseURL: BASE })).newPage();
 const joinBody = (email: string) => ({ email, full_name: "Grace Hopper", organization: "Navy", use_case: null });
+const accounts = (email: string) => sql(`select count(*) from auth.users where email = '${email}';`);
+/** An account from before the waitlist: the login form can't make one any more. */
+const existingAccount = async (email: string) => {
+  const r = await fetch(`${SB}/auth/v1/admin/users`, { method: "POST", headers: { apikey: SERVICE, authorization: `Bearer ${SERVICE}`, "content-type": "application/json" }, body: JSON.stringify({ email, email_confirm: true }) });
+  expect(r.ok).toBe(true);
+};
 
 const person = `ada-${Date.now()}@example.com`;
 const victim = `victim-${Date.now()}@example.com`;
@@ -85,8 +98,50 @@ test.beforeAll(() => {
   sql("delete from public.rate_limit_slots where bucket like 'web_waitlist%';");
 });
 
-test("someone signed in but not let in is held at the waitlist, and can join from there", async ({ page }) => {
-  test.skip(SIGNUPS_OFF, "needs an account made by signing in");
+test("signing in with no account fails, makes none, and lands on the waitlist, where joining works", async ({ page }) => {
+  const email = `new-${Date.now()}@example.com`;
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
+  await expect(page).toHaveURL(/\/waitlist\?from=sign-in$/);
+  await expect(page.getByRole("status")).toContainText("You don't have a Haggle account yet");
+  expect(accounts(email), "the attempt must not make an account").toBe("0");
+  expect(await mailCount(email), "and must not send a link").toBe(0);
+
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Full name").fill("Katherine Johnson");
+  await page.getByLabel("Company, organization or school").fill("NASA");
+  await page.getByRole("button", { name: "Join the waitlist" }).click();
+  await expect(page.locator(".wl-joined")).toContainText("You're on the list");
+  expect(sql(`select full_name, organization, admitted_at is null from public.web_waitlist where email = '${email}';`)).toBe("Katherine Johnson|NASA|t");
+  expect(accounts(email), "joining doesn't make an account either").toBe("0");
+});
+
+test("a new person refused at the end of a Google-style sign-in lands on the waitlist with no account", async ({ page }) => {
+  test.skip(!SIGNUPS_OFF || !OIDC_PORT, "needs sign-ups off and the stand-in provider: see the top of this file");
+  const email = `oauth-${Date.now()}@example.com`;
+  const provider = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://provider");
+    if (url.pathname.endsWith("/auth")) {
+      res.writeHead(302, { location: `${url.searchParams.get("redirect_uri")}?code=stand-in&state=${url.searchParams.get("state")}` }).end();
+      return;
+    }
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(url.pathname.endsWith("/token") ? { access_token: "stand-in", token_type: "bearer", expires_in: 3600 } : { sub: `stand-in-${email}`, name: "New Person", email, email_verified: true }));
+  }).listen(OIDC_PORT);
+  try {
+    const pkce = `code_challenge=${"a".repeat(43)}&code_challenge_method=s256`; // as the browser client signs in
+    await page.goto(`${SB}/auth/v1/authorize?provider=keycloak&redirect_to=${encodeURIComponent(`${BASE}/auth/callback`)}&${pkce}`);
+    await expect(page).toHaveURL(/\/waitlist\?from=sign-in/);
+    await expect(page.getByRole("status")).toContainText("You don't have a Haggle account yet");
+    expect(accounts(email)).toBe("0");
+  } finally {
+    provider.close();
+  }
+});
+
+test("someone with an account but not let in is held at the waitlist, and can join from there", async ({ page }) => {
+  await existingAccount(person);
   await askForLink(page, person);
   await follow(page, linkIn(await mail(person)));
   await expect(page).toHaveURL(/\/waitlist$/);
@@ -110,7 +165,6 @@ test("someone signed in but not let in is held at the waitlist, and can join fro
 });
 
 test("the admit email finishes sign-in in a browser that never started one", async ({ browser }) => {
-  test.skip(SIGNUPS_OFF);
   const before = await mailCount(person);
   admit(person);
   const m = await mail(person, before);
@@ -136,7 +190,6 @@ test("the admit email finishes sign-in in a browser that never started one", asy
 });
 
 test("an ordinary sign-in link still works with the same template", async ({ browser }) => {
-  test.skip(SIGNUPS_OFF);
   const page = await inFreshBrowser(browser);
   const before = await mailCount(person);
   await askForLink(page, person);
@@ -145,7 +198,6 @@ test("an ordinary sign-in link still works with the same template", async ({ bro
 });
 
 test("the server refuses a workspace to someone whose admission is gone, even from the open form", async ({ browser }) => {
-  test.skip(SIGNUPS_OFF);
   const page = await inFreshBrowser(browser);
   const before = await mailCount(person);
   await askForLink(page, person);
@@ -166,12 +218,7 @@ test("with sign-ups closed, only someone let in can get an account", async ({ pa
   const email = `closed-${Date.now()}@example.com`;
   const signup = await request.post(`${SB}/auth/v1/signup`, { headers: AUTH_HEADERS, data: { email, password: "attacker-chose-this-1" } });
   expect(signup.ok(), "nobody can pre-register an address").toBe(false);
-  expect(sql(`select count(*) from auth.users where email = '${email}';`)).toBe("0");
-
-  await page.goto("/login");
-  await page.getByLabel("Email").fill(email);
-  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
-  await expect(page.locator(".auth-error")).toContainText("Join the waitlist");
+  expect(accounts(email)).toBe("0");
 
   expect((await request.post("/api/waitlist", { headers: { origin: BASE }, data: joinBody(email) })).status()).toBe(200);
   const before = await mailCount(email);

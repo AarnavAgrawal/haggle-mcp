@@ -15,8 +15,9 @@ import "../auth.css";
 
 export const metadata: Metadata = { title: "Join the waitlist · Haggle" };
 
-export default async function WaitlistPage() {
+export default async function WaitlistPage({ searchParams }: { searchParams: Promise<{ from?: string | string[] }> }) {
   if (DEMO) redirect("/login");
+  const refusedSignIn = (await searchParams).from === "sign-in"; // sent here by /login or /auth/callback (NO_ACCOUNT_PATH)
   const user = await sessionUser();
   let state: Admission | "unknown" | null = null;
   if (user) {
@@ -48,6 +49,11 @@ export default async function WaitlistPage() {
             <>
               <h1>Join the Haggle waitlist</h1>
               <p className="auth-sub">We&apos;re letting people in a few at a time. Tell us who you are and we&apos;ll email you a sign-in link when you&apos;re in.</p>
+              {refusedSignIn && !user ? (
+                <p className="note auth-notice" role="status">
+                  You don&apos;t have a Haggle account yet. Join below. If you&apos;ve already joined, there&apos;s nothing else to do: we&apos;ll email you when you&apos;re in.
+                </p>
+              ) : null}
               {state === "unknown" ? (
                 <p className="note note-risk auth-notice" role="alert">
                   Couldn&apos;t check your place on the list. Reload this page in a moment.

@@ -1,7 +1,7 @@
 // Finishing an emailed sign-in link (lib/auth/callback.ts). The operator's admit email is requested by a
 // script, so it has no PKCE verifier in the person's browser and can only finish through a token_hash.
 import { describe, expect, it } from "vitest";
-import { confirmEmailLink, refusedNewAccount, type EmailLinkAuth } from "../lib/auth/callback.ts";
+import { confirmEmailLink, refusedNewAccount, refusedSignup, type EmailLinkAuth } from "../lib/auth/callback.ts";
 
 function fake(over: Partial<EmailLinkAuth> = {}) {
   const calls: unknown[] = [];
@@ -40,5 +40,20 @@ describe("refusedNewAccount", () => {
     expect(refusedNewAccount(new URLSearchParams("error=access_denied&error_code=signup_disabled"))).toBe(true);
     expect(refusedNewAccount(new URLSearchParams("error=server_error"))).toBe(false);
     expect(refusedNewAccount(new URLSearchParams("code=abc"))).toBe(false);
+  });
+
+  it("goes by Supabase's wording too, in case its error code changes", () => {
+    expect(refusedNewAccount(new URLSearchParams("error=server_error&error_description=Signups+not+allowed+for+this+instance"))).toBe(true);
+    expect(refusedNewAccount(new URLSearchParams("error=server_error&error_description=Something+else"))).toBe(false);
+  });
+});
+
+describe("refusedSignup", () => {
+  it.each(["Signups not allowed for otp", "Signup not allowed", "Signups not allowed for this instance"])("reads %j as no account for that email", (message) => {
+    expect(refusedSignup(message)).toBe(true);
+  });
+
+  it.each(["Email rate limit exceeded", "captcha verification process failed", ""])("leaves %j as an ordinary error", (message) => {
+    expect(refusedSignup(message)).toBe(false);
   });
 });

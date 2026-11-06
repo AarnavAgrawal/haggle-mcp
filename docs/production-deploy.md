@@ -180,7 +180,7 @@ node apps/mcp/scripts/migrations.ts status      # no drift, nothing pending
 
 Only someone admitted gets a workspace, and everyone else lands on `/waitlist`. Existing members are never affected. A demo site has no waitlist. Nobody is admitted automatically.
 
-Close sign-ups in Supabase too (step 7 below). While they're open, anyone can register a stranger's address with a password of their own through the public API; if that person later signs in with a magic link, the link confirms the account and the stranger's password opens it. The app's gate can't see that. With sign-ups closed, `admit` is the only way an account is created. People without one get a message at `/login` pointing them to the waitlist, and Google sends them to `/waitlist`.
+Nobody can make their own account. On a live site `/login` never asks Supabase to create one, so an unknown email fails and goes to `/waitlist`. That form is all the app controls: Google sign-in and Supabase's public sign-up API create accounts until sign-ups are closed in Supabase (step 6 below), so closing them is required. While they're open, anyone can also register a stranger's address with a password of their own through the public API; if that person later signs in with a magic link, the link confirms the account and the stranger's password opens it. With sign-ups closed, `admit` is the only way an account is created, and Google sends someone new to `/waitlist` too.
 
 Day to day, in Claude Code from the main checkout (`.claude/skills/waitlist`): ask "who's waiting?", then say "let in Jane from Stanford". That runs `npm run waitlist -- list` and `admit`, which reads `.env.vercel`. Each join posts to Slack when `WAITLIST_SLACK_WEBHOOK_URL` is set.
 
@@ -190,9 +190,8 @@ Turning it on for the first time, in this order:
 3. Find accounts the gate would lock out: auth users with no `workspace_members` row. Admit each with `npm run waitlist -- admit <email> --by <you> --target <ref> --no-email --name "<name>" --org "<org>"`. Password accounts (`<name>@users.tryhaggle.tech`) are never emailed.
 4. Deploy the web app. The MCP server doesn't change.
 5. Change the Magic Link template (§3.3 step 7).
-6. Run one real `admit` on an address you own and finish the sign-in from the email, then check that an ordinary `/login` magic link still works: the template serves both.
-
-7. Turn off "Allow new users to sign up" (Auth → Sign In / Providers). Only that one: leave the Email provider itself enabled, or nobody can sign in by email and `admit` can't send its link. Then check that `/login` with an unknown address shows the waitlist message and that `admit` still works.
+6. Turn off "Allow new users to sign up" (Auth → Sign In / Providers). Only that one: leave the Email provider itself enabled, or nobody can sign in by email and `admit` can't send its link.
+7. Run one real `admit` on an address you own and finish the sign-in from the email, then check that an ordinary `/login` magic link still works (the template serves both), and that `/login` with an unknown address and Google with an unknown account both land on `/waitlist`.
 
 To roll back: turn sign-ups back on, restore the template, then promote the previous deployment (§9). The table can stay.
 
