@@ -26,10 +26,10 @@ const SERVICE = "svc-e2e-found-0123456789abcdef0123456789ab";
 let proc: ChildProcess;
 let id = 0;
 
-async function svc(path: string, opts: { ws?: string; body?: unknown } = {}) {
+async function svc(path: string, opts: { ws?: string; body?: unknown; actor?: string } = {}) {
   const res = await fetch(`${BASE}${path}`, {
     method: opts.body === undefined ? "GET" : "POST",
-    headers: { ...(opts.body === undefined ? {} : { "content-type": "application/json" }), "x-haggle-service-token": SERVICE, ...(opts.ws ? { "x-haggle-workspace": opts.ws } : {}) },
+    headers: { ...(opts.body === undefined ? {} : { "content-type": "application/json" }), "x-haggle-service-token": SERVICE, ...(opts.ws ? { "x-haggle-workspace": opts.ws } : {}), ...(opts.actor ? { "x-haggle-actor": opts.actor } : {}) },
     ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
   });
   return (await res.json()) as any;
@@ -146,6 +146,16 @@ describe("deal finds the businesses itself (no vendors yet)", () => {
     const [v] = (await svc("/internal/vendors", { ws })).vendors;
     expect(v).toMatchObject({ name: "FiveStar Rooter", channel: "phone", category: "plumbing", consent: { basis: "public_listing" } });
     expect(v.consent.text).toMatch(/^public_listing: phone published on its Google Places listing place:ChIJFiveStarRooterOak03/);
+  });
+
+  it("naming a found business that is already saved contacts it without touching the saved record", async () => {
+    const ws = await provision("found-user-10");
+    await svc("/internal/vendors", { ws, actor: "u10", body: { name: "My Plumber", contact: "jobs@aceplumbing.example", consent_basis: "business_agreed", note: "Owner said yes", category: "plumbing" } });
+    await tool(ws, "discover", { category: "plumber", area: "Oakland, CA" });
+    const r = await tool(ws, "deal", plumbing({ businesses: ["Ace Plumbing & Drain"] }), "u10");
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent.contacted.map((c: any) => [c.business, c.channel])).toEqual([["My Plumber", "email"]]);
+    expect((await svc("/internal/vendors", { ws })).vendors).toEqual([expect.objectContaining({ name: "My Plumber", consent: expect.objectContaining({ basis: "business_agreed" }) })]);
   });
 
   it("an MCP client's yes is recorded as the agent acting on the user's yes", async () => {

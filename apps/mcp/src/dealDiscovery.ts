@@ -118,6 +118,15 @@ export function reachFor(b: Discovered, ch: ChannelStatus, emails = reachableEma
   return by ? { channel: by, phone: phone! } : null;
 }
 
+/** A message for the user, with the contact it mentions taken out: a published number stays server-side. */
+export const withoutContact = (message: string, contact: string) => message.split(contact).join("its contact");
+
+/** Each contact once, and none already on the deal: two listings can carry one number, and the engine refuses a duplicate after they are saved. */
+export function uniqueContacts(found: FoundCandidate[], taken: { email?: string | null | undefined; phone?: string | null | undefined }[]): FoundCandidate[] {
+  const seen = new Set(taken.flatMap((b) => [b.email?.toLowerCase(), b.phone]).filter(Boolean));
+  return found.filter((c) => { const k = c.email ?? c.phone!; if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
 /** A found business as a candidate for this deal. */
 export const candidateFor = (b: Discovered, reach: Reach, today?: string): FoundCandidate => ({ name: b.name, business_ref: b.business_ref, ...reach, source: b.source, ...(today ? { hours_today: today } : {}), found: b });
 
@@ -189,6 +198,21 @@ export function previewEntry(c: FoundCandidate) {
     found_via: { listing: c.source, ref: c.business_ref, ...(c.email_from ? { email_from: c.email_from } : {}) },
     ...(c.hours_today ? { hours_today: c.hours_today } : {}),
   };
+}
+
+/**
+ * A found business the user named: the same checks as one the search found, so a preview never promises
+ * a business that won't be contacted. Refused when any contact it publishes opted out or bounced, or when
+ * the only one left is held back; null when it publishes nothing Haggle can use.
+ */
+export async function namedCandidate(b: Discovered, o: Pick<FindOptions, "reserved" | "suppressed" | "now" | "timezone"> & { ch: ChannelStatus; mode: Runtime["mode"] }): Promise<{ candidate: FoundCandidate } | { refused: string } | null> {
+  const usable = (c: string) => !o.reserved.has(c) && !(o.mode === "live" && simulatedContact(c));
+  const published = [...reachableEmails(b), ...(e164(b.phone) ? [e164(b.phone)!] : [])];
+  if (published.length && (await o.suppressed(published)).size) return { refused: "it asked not to be contacted, or Haggle's messages to it bounced." };
+  const phone = e164(b.phone);
+  const reach = reachFor(b, o.ch, reachableEmails(b).filter(usable), phone && usable(phone) ? phone : null);
+  if (reach) return { candidate: candidateFor(b, reach, hoursLine(b, o.timezone ?? DEFAULT_CONTACT_TIMEZONE, o.now)) };
+  return published.some((c) => !usable(c)) ? { refused: "its published contact is reserved for approvals." } : null;
 }
 
 /** Who confirmed found businesses: the signed-in web user, else the MCP client acting on the user's yes. */

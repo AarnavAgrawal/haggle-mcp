@@ -27,17 +27,18 @@ const KINDS: Record<string, string[]> = {
   entertainment: ["entertain", "dj", "music", "band", "event", "perform"],
 };
 
-/** Related trades that may do the work without being listed for it: they fit, but never count as specialists. Same match rules as KINDS. */
+/**
+ * Related trades that may do the work without being listed for it: they fit, but never count as
+ * specialists. Same match rules as KINDS. Named narrowly, since whatever fits can be called: "studio"
+ * would take in a yoga studio, "contractor" a roofer.
+ */
 const RELATED: Record<string, string[]> = {
-  plumbing: ["handyman", "contractor", "hvac", "heating"],
-  electrical: ["handyman", "contractor"],
-  repairs: ["hvac", "heating"],
-  cleaning: ["carpet", "window", "pressure"],
-  moving: ["truck", "haul", "junk", "storage", "freight"],
-  printing: ["office_supply", "stationer", "shipping", "graphic", "embroider"],
-  rentals: ["equipment", "furniture", "audio", "lighting", "hardware"],
-  photography: ["studio", "media"],
-  entertainment: ["karaoke", "comedy", "magic"],
+  plumbing: ["handyman", "general_contractor", "trade_contractor", "hvac"],
+  electrical: ["handyman", "general_contractor", "trade_contractor"],
+  repairs: ["hvac"],
+  moving: ["truck_rental", "junk_removal", "freight"],
+  printing: ["office_supply", "stationery", "shipping_center", "graphic_design"],
+  rentals: ["equipment_rental", "furniture_rental", "audio_visual"],
 };
 
 /**

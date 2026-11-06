@@ -125,6 +125,17 @@ describe("fitsCategory", () => {
     expect(fitsCategory("plumbing", { name: "Joe's", types: ["architect"] })).toBe(false);
   });
 
+  it("a related trade is the trade, not anything sharing a word with it", () => {
+    expect(fitsCategory("photography", { name: "Zen", primary_type: "yoga_studio" })).toBe(false);
+    expect(fitsCategory("rentals", { name: "Hear Well", primary_type: "audiologist" })).toBe(false);
+    expect(fitsCategory("rentals", { name: "MedCo", primary_type: "medical_equipment" })).toBe(false);
+    expect(fitsCategory("moving", { name: "Lock It", primary_type: "self_storage" })).toBe(false);
+    expect(fitsCategory("moving", { name: "Big Rigs", primary_type: "truck_dealership" })).toBe(false);
+    expect(fitsCategory("plumbing", { name: "Top Roof", primary_type: "roofing_contractor" })).toBe(false);
+    expect(fitsCategory("plumbing", { name: "Bay Build", primary_type: "general_contractor" })).toBe(true);
+    expect(fitsCategory("moving", { name: "U Move It", primary_type: "truck_rental" })).toBe(true);
+  });
+
   it("an unknown kind of work has no vocabulary to judge by: the listing search's results stand; an empty category is a lookup", () => {
     expect(fitsCategory("florist", { name: "Petals", primary_type: "florist" })).toBe(true);
     expect(fitsCategory("wedding flowers", { name: "Petals", primary_type: "florist" })).toBe(true);

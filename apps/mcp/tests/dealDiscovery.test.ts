@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { PlacesError, type FoundBusiness, type ListingProvider } from "@haggle/engine";
 import { DiscoveryRegistry } from "../src/businesses.ts";
-import { confirmedBy, findForDeal, previewEntry, type FindOptions } from "../src/dealDiscovery.ts";
+import { confirmedBy, findForDeal, namedCandidate, previewEntry, uniqueContacts, withoutContact, type FindOptions, type FoundCandidate } from "../src/dealDiscovery.ts";
 import type { Runtime } from "../src/runtime.ts";
 
 const biz = (name: string, over: Partial<FoundBusiness> = {}): FoundBusiness => ({
@@ -153,6 +153,46 @@ describe("findForDeal", () => {
       expect(r.status).toBe("nothing_found");
       expect(r.not_reachable?.map((b) => b.name)).toEqual(["Quiet Drains"]);
     });
+  });
+
+  describe("a business the user named gets the same checks as one the search found", () => {
+    const CALLS = { email: true, phone: true, callsViaSharedLine: false } as never;
+    const found = (over: Partial<FoundBusiness>) => ({ ...biz("Domino's", over), category: "catering", area: "Oakland, CA" });
+    const check = (over: Record<string, unknown> = {}) => ({ ch: CALLS, mode: "mock" as const, reserved: new Set<string>(), suppressed: async () => new Set<string>(), ...over });
+
+    it("reaches it on what it publishes", async () => {
+      expect(await namedCandidate(found({ phone: "+15105550199" }), check())).toMatchObject({ candidate: { channel: "phone", phone: "+15105550199" } });
+    });
+
+    it("refuses it when any contact it publishes opted out, even if another would work", async () => {
+      const r = await namedCandidate(found({ listing_emails: ["hi@dominos.example"], phone: "+15105550199" }), check({ suppressed: async () => new Set(["+15105550199"]) }));
+      expect(r).toMatchObject({ refused: expect.stringMatching(/asked not to be contacted/) });
+      expect(JSON.stringify(r)).not.toMatch(/5550199/);
+    });
+
+    it("refuses it when its only contact is the approver's own", async () => {
+      expect(await namedCandidate(found({ phone: "+15105550199" }), check({ reserved: new Set(["+15105550199"]) }))).toMatchObject({ refused: expect.stringMatching(/reserved/) });
+    });
+
+    it("has nothing to say about a business with no contact at all", async () => {
+      expect(await namedCandidate(found({}), check())).toBeNull();
+    });
+
+    it("shows today's hours in the preview, as the search does", async () => {
+      const hours = { timezone: "America/Los_Angeles", source: "Amazon Location Service", display: ["Daily 08:00-18:00"], intervals: [0, 1, 2, 3, 4, 5, 6].map((day) => ({ day, startMinute: 480, endMinute: 1080 })) };
+      const r = await namedCandidate(found({ phone: "+15105550199", hours } as never), check({ now: new Date("2026-10-31T19:00:00Z"), timezone: "America/Los_Angeles" }));
+      expect(r).toMatchObject({ candidate: { hours_today: "Open today 8am–6pm" } });
+    });
+  });
+
+  it("keeps a published number out of a message the user sees", () => {
+    expect(withoutContact("+15105550199 asked not to be contacted by Haggle.", "+15105550199")).toBe("its contact asked not to be contacted by Haggle.");
+  });
+
+  it("contacts one number once, however many listings carry it", () => {
+    const c = (name: string, phone: string) => ({ name, business_ref: `place:${name}`, channel: "phone", phone }) as FoundCandidate;
+    expect(uniqueContacts([c("A", "+15105550199"), c("B", "+15105550199"), c("C", "+15105550100")], []).map((x) => x.name)).toEqual(["A", "C"]);
+    expect(uniqueContacts([c("A", "+15105550199")], [{ phone: "+15105550199" }])).toEqual([]);
   });
 
   it("searches the whole request for work Haggle has no category for", async () => {

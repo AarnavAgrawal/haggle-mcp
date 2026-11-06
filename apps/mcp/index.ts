@@ -15,7 +15,7 @@ import { contactEvidence, contactStatus, discoveredFor, discoveredRoutes, e164, 
 import { handleInkboxWebhook } from "./src/webhook.ts";
 import { isDemoWorkspace } from "./src/demoWorkspace.ts";
 import { hostedSellersFromEnv, SELLER_WEBHOOK_MAX_BYTES } from "./src/sellers.ts";
-import { candidateFor, confirmedBy, findForDeal, MAX_DISCOVERED_PER_DEAL, MIN_OWN_VENDORS, previewEntry, reachFor, searchListings, type DiscoveryOutcome, type FoundCandidate } from "./src/dealDiscovery.ts";
+import { confirmedBy, findForDeal, MAX_DISCOVERED_PER_DEAL, MIN_OWN_VENDORS, namedCandidate, previewEntry, searchListings, uniqueContacts, withoutContact, type DiscoveryOutcome, type FoundCandidate } from "./src/dealDiscovery.ts";
 import { addsLeftToday, addVendorChecked } from "./src/service/vendors.ts";
 import { limitsMiddleware } from "./src/limits.ts";
 import { ConfigError } from "./src/config.ts";
@@ -502,6 +502,7 @@ export const deal = server.tool(
       const foundWhy = discovery && !found.length ? ` Haggle also looked for ${category} businesses itself and found none it can reach: ${discovery.reason}.${noReachHint}` : "";
       // Named found businesses: naming one is the user's yes, so it is saved and contacted like a confirmed one.
       const namedFound = new Map<string, FoundCandidate>();
+      const namedRefused = new Map<string, string>();
       if (input.confirm_discovered && !fromRoster) {
         return fail(mode, "confirm_without_discovery", "confirm_discovered is only for businesses Haggle found for this request; with businesses named, Haggle contacts exactly those. Nothing was sent.", "Call deal again without confirm_discovered, or without businesses to let Haggle find them.", "deal");
       }
@@ -549,17 +550,26 @@ export const deal = server.tool(
           return fail(mode, "vendor_unrelated", `${unrelated.map((x) => `${x.name} is listed as ${kindOf(x)}`).join("; ")}, not ${wanted}. Nothing was sent.`,
             `Contact only businesses that do ${wanted}: name others, or omit businesses to use this workspace's ${wanted} vendors. If one of these really does ${wanted}, the user can change what it does on the Saved businesses page (/vendors).`, "none");
         }
-        const ch = await rt.channels();
-        for (const x of sel.selected) {
-          if (x.kind !== "discovered" || x.send) continue;
-          const reach = reachFor(x.found, ch);
-          if (reach) namedFound.set(x.business_ref, candidateFor(x.found, reach));
+        const unsent = sel.selected.filter((x): x is Extract<Selected, { kind: "discovered" }> => x.kind === "discovered" && !x.send);
+        if (unsent.length) {
+          const s = await engine.getSettings();
+          const check = {
+            ch: await rt.channels(), mode, timezone: (await engine.identity()).workspace.timezone,
+            reserved: new Set([s.approver_email?.toLowerCase(), s.approver_phone].filter((x): x is string => !!x)),
+            suppressed: async (cs: string[]) => new Set((await rt.engine.contactSuppressions(cs)).map((x) => x.contact.toLowerCase())),
+          };
+          for (const x of unsent) {
+            const r = await namedCandidate(x.found, check);
+            if (r && "refused" in r) namedRefused.set(x.business_ref, r.refused);
+            else if (r) namedFound.set(x.business_ref, r.candidate);
+          }
         }
+        const whyNot = (x: Selected) => namedRefused.get(x.business_ref) ?? x.status.summary;
         const unreachable = sel.selected.filter((x) => !x.send && !namedFound.has(x.business_ref));
         if (unreachable.length && !input.dry_run) {
           const u = unreachable[0]!;
           const code = u.kind === "vendor" ? "vendor_not_ready" : u.status.state === "discovered" ? "no_contact_route" : u.status.routes.some((r) => r.authorized) ? "vendor_not_ready" : "not_authorized";
-          return fail(mode, code, `${unreachable.map((x) => `${x.name}: ${x.status.summary}`).join(" ")} Nothing was sent (no other business was contacted instead).`,
+          return fail(mode, code, `${unreachable.map((x) => `${x.name}: ${whyNot(x)}`).join(" ")} Nothing was sent (no other business was contacted instead).`,
             "Tell the user which business can't be reached and why; contact others only if the user says so. Use deal(dry_run=true) to preview who can be reached.", "none");
         }
         if (!input.dry_run) for (const x of sel.selected) if (x.kind === "discovered" && x.send) stored.set(x.business_ref, await storedListing(x.found, rt));
@@ -568,7 +578,7 @@ export const deal = server.tool(
         // One business named twice ("Mission Eats", "mission_eats") is contacted once.
         businesses = businesses.filter((b, j) => businesses.findIndex((x) => x.name === b.name && x.email === b.email && x.phone === b.phone && x.a2a_card_url === b.a2a_card_url) === j);
         preview = [
-          ...sel.selected.filter((x, j) => sel.selected.findIndex((y) => y.business_ref === x.business_ref) === j).map((x) => { const c = namedFound.get(x.business_ref); return c ? previewEntry(c) : { name: x.name, business_ref: x.business_ref, ...(x.send ? { channel: x.send.channel } : {}), contact_state: x.status.state, ready: !!x.send, ...(x.send ? {} : { reason: x.status.summary }) }; }),
+          ...sel.selected.filter((x, j) => sel.selected.findIndex((y) => y.business_ref === x.business_ref) === j).map((x) => { const c = namedFound.get(x.business_ref); return c ? previewEntry(c) : { name: x.name, business_ref: x.business_ref, ...(x.send ? { channel: x.send.channel } : {}), contact_state: x.status.state, ready: !!x.send, ...(x.send ? {} : { reason: whyNot(x) }) }; }),
           ...(await Promise.all(given.filter(hasContact).map(async (b) => ({ b, allowed: await engine.mayContact({ ...(b.email ? { email: b.email } : {}), ...(b.phone ? { phone: b.phone } : {}), ...(b.a2a_card_url ? { a2a_card_url: b.a2a_card_url } : {}) }) })))).map(({ b, allowed }) => { return { name: b.name, channel: b.channel ?? (b.a2a_card_url ? "a2a" : b.email ? "email" : "phone"), contact_state: allowed ? "authorized" : "contact_found", ready: allowed, ...(allowed ? {} : { reason: "this contact isn't authorized for this workspace (ask the operator: workspace-admin add-vendor), or it opted out or bounced" }) }; }),
         ];
       }
@@ -615,19 +625,40 @@ export const deal = server.tool(
       const notSaved: string[] = [];
       toAuthorize.push(...namedFound.values());
       if (toAuthorize.length) {
+        // One already saved under any name is contacted as that vendor: its record and consent aren't overwritten.
+        const savedVendors = new Map((await engine.workspaceVendors()).map((v) => [v.contact.toLowerCase(), v]));
+        const toContact = uniqueContacts(toAuthorize, businesses);
+        const toSave = toContact.filter((c) => !savedVendors.has(c.email ?? c.phone!));
         const left = await addsLeftToday(rt.engine, workspaceId);
-        if (left < toAuthorize.length) {
-          return fail(mode, "DAILY_LIMIT", `Starting this deal would save ${toAuthorize.length} found businesses, but this workspace can save only ${left} more today (the daily limit). Nothing was sent.`, `Ask the user to keep at most ${left} of them (or try again tomorrow, UTC), then call deal again with those refs in confirm_discovered.`, "deal");
+        if (left < toSave.length) {
+          return fail(mode, "DAILY_LIMIT", `Starting this deal would save ${toSave.length} found businesses, but this workspace can save only ${left} more today (the daily limit). Nothing was sent.`, `Ask the user to keep at most ${left} of them (or try again tomorrow, UTC), then call deal again with those refs in confirm_discovered.`, "deal");
         }
         const by = confirmedBy(actorOf(ctx), (ctx as { client?: { info?: () => { name?: string } | undefined } }).client?.info?.()?.name);
-        for (const c of toAuthorize) {
+        const namedNotSaved: string[] = [];
+        for (const c of toContact) {
+          const contact = c.email ?? c.phone!;
+          const mine = savedVendors.get(contact);
+          if (mine) {
+            const h = asWeeklyHours(mine.opening_hours);
+            businesses.push({ name: mine.name, channel: c.channel, ...(c.email ? { email: c.email } : { phone: c.phone! }), simulated: false, source: "web", ...(h ? { opening_hours: h } : {}), ...(mine.timezone ? { timezone: mine.timezone } : {}) });
+            continue;
+          }
           const r = await addVendorChecked(rt, workspaceId, {
-            name: c.name, contact: c.email ?? c.phone!, channel: c.channel, consent_basis: c.email ? "public_listing_email" : "public_listing", business_ref: c.business_ref, category,
+            name: c.name, contact, channel: c.channel, consent_basis: c.email ? "public_listing_email" : "public_listing", business_ref: c.business_ref, category,
             note: c.email ? `email published on its ${c.email_from === "listing" ? "" : "website, found via its "}${c.source} listing ${c.business_ref}; confirmed on the deal preview` : `phone published on its ${c.source} listing ${c.business_ref}; confirmed on the deal preview`,
           }, { attestedBy: by, now: new Date() }).catch((e: unknown) => ({ ok: false as const, status: 400, code: "INVALID", message: (e as Error).message, fix: "" }));
-          if (!r.ok) { notSaved.push(`${c.name}: ${r.message}`); continue; }
+          if (!r.ok) {
+            const why = `${c.name}: ${withoutContact(r.message, contact)}`;
+            notSaved.push(why);
+            if (namedFound.has(c.business_ref)) namedNotSaved.push(why);
+            continue;
+          }
           const h = asWeeklyHours(r.row.opening_hours);
           businesses.push({ name: c.name, channel: c.channel, ...(c.email ? { email: c.email } : { phone: c.phone! }), simulated: false, source: "web", ...(h ? { opening_hours: h } : {}), ...(r.row.timezone ? { timezone: r.row.timezone } : {}) });
+        }
+        // A business the user named can't be swapped out: as with any named business, the deal stops.
+        if (namedNotSaved.length) {
+          return fail(mode, "vendor_not_saved", `${namedNotSaved.join(" ")} Nothing was sent (no other business was contacted instead).`, "Tell the user which business can't be reached and why; contact others only if the user says so.", "none");
         }
         if (notSaved.length) warnings.push(`Not contacted (couldn't be saved): ${notSaved.join("; ")}.`);
       }
