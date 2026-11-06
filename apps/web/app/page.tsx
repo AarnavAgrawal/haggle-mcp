@@ -39,7 +39,7 @@ const CHANNELS: { icon: IconName; name: string; does: string }[] = [
 const PROMISES: { fact: string; detail: string }[] = [
   { fact: "Nothing is ordered or paid until you approve.", detail: "You approve one exact quote, in the app or by replying to a text, and never above your spending cap." },
   { fact: "Every call says it is an AI assistant.", detail: "Haggle never poses as you or as a person, on the phone or in writing." },
-  { fact: "Haggle only contacts businesses you add.", detail: "Your vendors list is the whole list. No cold lists, no surprise outreach." },
+  { fact: "Haggle only contacts businesses you confirm.", detail: "It searches public listings for businesses that fit your request and shows you who it found. Nothing goes out until you say yes." },
 ];
 
 const SECTIONS: { id: string; label: string }[] = [
@@ -177,9 +177,6 @@ export default async function Home() {
 
       <div className="lp-end on-blotter">
         <Footer />
-        <p className="lp-sign" aria-hidden="true">
-          Haggle
-        </p>
       </div>
     </div>
   );

@@ -610,7 +610,7 @@
   color: var(--ink-2);
 }
 
-/* ---------- close and sign-off ---------- */
+/* ---------- close ---------- */
 .lp-close {
   padding-block: clamp(96px, 18svh, 184px) clamp(64px, 10svh, 112px);
   background: var(--blotter);
@@ -630,23 +630,10 @@
   margin-top: var(--s-8);
 }
 .lp-end {
-  overflow: clip;
   background: var(--blotter);
 }
 .lp-end .site-footer {
   margin-top: 0;
-}
-.lp-sign {
-  margin: 0 0 -0.32em;
-  font-family: var(--font-display);
-  font-size: 32vw;
-  font-weight: 760;
-  font-stretch: 92%;
-  letter-spacing: -0.012em;
-  line-height: 0.9;
-  text-align: center;
-  color: color-mix(in srgb, var(--on-blotter) 10%, var(--blotter));
-  user-select: none;
 }
 
 /* Anchors and keyboard focus both stop clear of the sticky bar. */

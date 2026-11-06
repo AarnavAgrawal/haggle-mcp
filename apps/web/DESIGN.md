@@ -135,7 +135,7 @@ Badges are allowed in exactly one case: the **Demo** marker, a 4px-radius tag (n
   to $1,240, −$140 is highlighted, Bay Catering is circled, the deposit is approved). Marks still only
   ever mark something true at that point in the story. Then the three channels as sheets that slide over
   one another (a stack on phones is just a list), the promises as large statements, and a closing call to
-  action with the wordmark again as the sign-off. Scroll state lives in `components/LandingMotion.tsx`,
+  action. Scroll state lives in `components/LandingMotion.tsx`,
   which renders nothing; the page stays a server component and the markup is the finished sheet, so with
   reduced motion or no script it is simply marked up and everything is visible.
 - **Sign in / onboarding**: one sheet centered on the desk, wordmark above; onboarding is a short
