@@ -181,7 +181,7 @@ The human's confirmation of the preview is the authorization. It's the same act 
    - add the rest as kind `discovered`, with `send = { channel: "email" }`, marked as needing confirmation.
 2. **Dry run shows them:** `deal(dry_run: true)` returns them in `preview` with `contact_state: "will_authorize_on_start"` and `found_via`. The chat preview card (`apps/web/lib/chat/cards.ts`, `components/chat/`) lists them, each with a remove control.
 3. **Starting authorizes them:** a real `deal` with `confirm_discovered: [business_ref…]` (only refs from the dry run) saves each one through the existing vendor-add path with:
-   - consent `public_listing_email`;
+   - consent `public_listing_email` or `public_listing`;
    - category = the request's category;
    - `added_by` = the confirming user (web) or `"agent:<client> on the user's yes"` (MCP clients);
    - the listing ref as evidence.
@@ -203,7 +203,7 @@ The human's confirmation of the preview is the authorization. It's the same act 
 
 - **`apps/mcp/tests`:** with a listing fixture (`HAGGLE_PLACES_FIXTURE`):
   - a workspace with no vendors previews found businesses and sends nothing;
-  - `confirm_discovered` saves them as `public_listing_email` + category and emails only them;
+  - `confirm_discovered` saves them as `public_listing_email` or `public_listing` + category and contacts only them;
   - phone-only results are called once the user says yes;
   - suppressed addresses never appear.
 - **Web:** the preview card lists found businesses and can remove one.
