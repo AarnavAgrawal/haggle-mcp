@@ -28,7 +28,7 @@ test("the top bar links to each section and marks where you are", async ({ page 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/", { waitUntil: "networkidle" });
   const nav = page.getByRole("navigation", { name: "Sections" });
-  for (const name of ["How it works", "Channels", "Promises"]) {
+  for (const name of ["How it works", "Channels", "Your control"]) {
     const link = nav.getByRole("link", { name });
     await link.click();
     await expect(link).toHaveAttribute("aria-current", "true");

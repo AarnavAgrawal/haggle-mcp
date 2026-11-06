@@ -36,7 +36,7 @@ const CHANNELS: { icon: IconName; name: string; does: string }[] = [
   { icon: "message", name: "Text", does: "Texts businesses that run on their phones, and texts you when a quote is ready for your approval." },
 ];
 
-const PROMISES: { fact: string; detail: string }[] = [
+const CONTROLS: { fact: string; detail: string }[] = [
   { fact: "Nothing is ordered or paid until you approve.", detail: "You approve one exact quote, in the app or by replying to a text, and never above your spending cap." },
   { fact: "Every call says it is an AI assistant.", detail: "Haggle never poses as you or as a person, on the phone or in writing." },
   { fact: "You confirm every business before Haggle reaches out.", detail: "Haggle finds businesses that fit your request and shows you who it will contact. Nothing goes out until you say yes." },
@@ -45,7 +45,7 @@ const PROMISES: { fact: string; detail: string }[] = [
 const SECTIONS: { id: string; label: string }[] = [
   { id: "how-it-works", label: "How it works" },
   { id: "channels", label: "Channels" },
-  { id: "promises", label: "Promises" },
+  { id: "your-control", label: "Your control" },
 ];
 
 /** Public landing page; a signed-in visitor goes straight to a new request. */
@@ -151,13 +151,13 @@ export default async function Home() {
           </div>
         </section>
 
-        <section id="promises" className="lp-trust" aria-labelledby="trust-title">
+        <section id="your-control" className="lp-trust" aria-labelledby="trust-title">
           <div className="wrap">
             <div className="lp-head" data-reveal>
-              <h2 id="trust-title">What Haggle promises</h2>
+              <h2 id="trust-title">You stay in control</h2>
             </div>
             <dl className="trust">
-              {PROMISES.map((p) => (
+              {CONTROLS.map((p) => (
                 <div key={p.fact} className="trust-row" data-reveal>
                   <dt>{p.fact}</dt>
                   <dd>{p.detail}</dd>

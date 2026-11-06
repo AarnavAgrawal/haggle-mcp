@@ -569,7 +569,7 @@
   font-weight: 600;
 }
 
-/* ---------- promises ---------- */
+/* ---------- your control ---------- */
 .lp-trust {
   padding-block: clamp(80px, 13svh, 144px);
   background: var(--sheet);
@@ -814,7 +814,7 @@ html:has(.lp-page) {
     transition-delay: 120ms;
   }
 
-  /* Promises: the rule draws across, then the statement comes up to it. */
+  /* Your control: the rule draws across, then the statement comes up to it. */
   .is-live .trust-row:not(.is-in)::before {
     transform: scaleX(0);
   }
