@@ -1,6 +1,6 @@
 # Production deploy: the public live launch
 
-The complete runbook for putting Haggle in front of the public, live: any visitor can sign up on the web app, add the businesses they work with, and have Haggle contact them for real by email, Voice AI call and text through Inkbox. Payment is the **manual handoff** (`HAGGLE_PAYMENTS=manual`): the human pays the vendor directly, and Haggle never holds or moves money. Live Stripe keys are refused.
+The complete runbook for putting Haggle in front of the public, live: visitors join the waitlist, and each person the operator lets in (§3.4) can use the web app, add the businesses they work with, and have Haggle contact them for real by email, Voice AI call and text through Inkbox. Payment is the **manual handoff** (`HAGGLE_PAYMENTS=manual`): the human pays the vendor directly, and Haggle never holds or moves money. Live Stripe keys are refused.
 
 This document builds on the existing ones. It links to them for detail and doesn't repeat them:
 
@@ -127,6 +127,7 @@ Set in the Manufact dashboard (or `mcp-use servers env set <server-id> KEY=VALUE
 | `ANTHROPIC_API_KEY` | the web chat's key | yes | run |
 | `WEB_CHAT_DAILY_CAP` | chat turns per day across the site, e.g. `2000` | no | run |
 | `WEB_CHAT_MODEL` | optional (default `claude-opus-5-5`) | no | run |
+| `WAITLIST_SLACK_WEBHOOK_URL` | optional: a Slack incoming webhook (`https://`) for a message on each new waitlist entry; the URL is itself a secret | yes | run |
 
 `NEXT_PUBLIC_*` values are **inlined into the browser bundle at build time**. Changing one needs a rebuild, and anything in them is public. The pre-deploy check (§7.1) fails if a secret-shaped `NEXT_PUBLIC_*` variable exists or if the anon key is really a service-role key.
 
@@ -149,7 +150,7 @@ Set in the Manufact dashboard (or `mcp-use servers env set <server-id> KEY=VALUE
 3. Settings → API: copy the Project URL, the `anon` key (web, public) and the `service_role` key (web server and brain, secret).
 
 ### 3.2 Migrations, through the ledger, in order [SCRIPT]
-Production starts empty, so apply **every** file in `supabase/migrations/` in filename order: engine `1xx`, then brain `2xx`, then web `300`, `301`, `302`. Use one transaction per file, and take a logical dump before each later release ([backup-restore.md](backup-restore.md) §2). `302_web_profiles.sql` stores Terms acceptance. Web migrations reference `public.workspaces` (from `103`), so they always come after the engine files.
+Production starts empty, so apply **every** file in `supabase/migrations/` in filename order: engine `1xx`, then brain `2xx`, then web `300`, `301`, `302`, `303`. Use one transaction per file, and take a logical dump before each later release ([backup-restore.md](backup-restore.md) §2). `302_web_profiles.sql` stores Terms acceptance. Web migrations reference `public.workspaces` (from `103`), so they always come after the engine files.
 
 With the production env file outside the repo (`HAGGLE_ENV=production`, `SUPABASE_DB_URL=…`):
 
@@ -172,7 +173,24 @@ node apps/mcp/scripts/migrations.ts status      # no drift, nothing pending
 3. **Anonymous sign-ins: OFF** on production. Guests exist only on the demo, and the live web app refuses anonymous sessions anyway.
 4. **URL configuration.** Site URL `https://app.<domain>`. Redirect URLs: `https://app.<domain>/auth/callback` only. No localhost and no preview wildcards on production.
 5. **Google (optional).** Create an OAuth client in Google Cloud. Use the authorized redirect URI that Supabase shows (`https://<ref>.supabase.co/auth/v1/callback`), and put the client id and secret under Auth → Providers → Google. Publish the OAuth consent screen with the Privacy and Terms URLs (§10).
-6. Email templates: brand the magic-link email. Keep `{{ .ConfirmationURL }}` intact.
+6. **Confirm email: ON** (Auth → Sign In / Providers → Email). The waitlist admits an address, so this is what proves someone owns it: with it off, anyone could register an admitted address through the API and get in.
+7. Email templates: brand the magic-link email, and point its link at `{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=email` instead of `{{ .ConfirmationURL }}`. Say that it also means they're in, for example "Your Haggle sign-in link. If you were on the waitlist, you're in." The operator's admit email is requested by a script, so the person's browser holds no PKCE verifier and only this link can finish the sign-in. Change the template **after** deploying a web app that reads `token_hash`.
+
+### 3.4 Waitlist: sign-up is by invitation [YOU + SCRIPT]
+
+Supabase sign-ups stay on: anyone can sign in, but only someone admitted gets a workspace, and everyone else lands on `/waitlist`. Existing members are never affected. A demo site has no waitlist. Nobody is admitted automatically.
+
+Day to day, in Claude Code from the main checkout (`.claude/skills/waitlist`): ask "who's waiting?", then say "let in Jane from Stanford". That runs `npm run waitlist -- list` and `admit`, which reads `.env.vercel`. Each join posts to Slack when `WAITLIST_SLACK_WEBHOOK_URL` is set.
+
+Turning it on for the first time, in this order:
+1. Check §3.3 steps 1, 4 and 6 in the dashboard: SMTP, Site URL, Confirm email. Don't go on with Confirm email off.
+2. Apply `303_web_waitlist.sql` (§3.2) before deploying. `/ready` and the launch gate don't check `3xx` files, and without the table nobody new can onboard.
+3. Find accounts the gate would lock out: auth users with no `workspace_members` row. Admit each with `npm run waitlist -- admit <email> --by <you> --target <ref> --no-email --name "<name>" --org "<org>"`. Password accounts (`<name>@users.tryhaggle.tech`) are never emailed.
+4. Deploy the web app. The MCP server doesn't change.
+5. Change the Magic Link template (§3.3 step 7).
+6. Run one real `admit` on an address you own and finish the sign-in from the email, then check that an ordinary `/login` magic link still works: the template serves both.
+
+To roll back: restore the template, then promote the previous deployment (§9). The table can stay.
 
 ---
 
@@ -286,14 +304,14 @@ curl -sI https://app.<domain>/login | grep -i -E 'content-security-policy|strict
 curl -sI https://app.<domain>/login | grep -i -o "'nonce-[^']*'"   # run twice: a different nonce each time
 ```
 
-In a private window: the landing page shows **no** DEMO banner and no guest button. Email sign-in sends a mail from your SES domain, the captcha appears, and onboarding requires accepting the Terms.
+In a private window: the landing page shows **no** DEMO banner and no guest button. The landing page's main button joins the waitlist. Email sign-in sends a mail from your SES domain and the captcha appears. A fresh account lands on `/waitlist`; once admitted (§3.4), it reaches onboarding, which requires accepting the Terms.
 
 ---
 
 ## 8. Manual end-to-end test, with a real vendor who agreed [YOU]
 
 The first real contact. Use one business that has agreed in writing to be contacted (a friend's shop, or a vendor you already buy from), and your own phone as the approver.
-1. Sign up on `https://app.<domain>` with a fresh account and finish onboarding.
+1. Admit a fresh address (§3.4), sign in on `https://app.<domain>` and finish onboarding.
 2. **Vendors → Add vendor:** the business's email. Choose the consent basis honestly ("business agreed") and tick the attestation.
 3. **Chat:** a small, real request ("Quote for lunch for 10 next Friday"). Confirm the dry run, which must list exactly that vendor and channel, then start it.
 4. On the deal page, the vendor shows as contacted. Their real reply becomes a quote (a token-verified email reply). If calls are on and the vendor agreed to calls, the email → call escalation can be tested the same way.

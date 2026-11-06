@@ -15,6 +15,10 @@ export default function PrivacyPage() {
       <h2>What we collect from you</h2>
       <ul>
         <li>
+          <strong>Waitlist:</strong> your email address, full name, company, organization or school, and what you told us you&apos;d use Haggle for. We use these to
+          decide when to let you in and to email you when we do.
+        </li>
+        <li>
           <strong>Account:</strong> your email address (or your Google account&apos;s email if you sign in with Google), your sign-in sessions, and when you
           accepted the Terms.
         </li>
@@ -58,6 +62,9 @@ export default function PrivacyPage() {
           <strong>Supabase</strong>: our database and sign-in provider.
         </li>
         <li>
+          <strong>Slack</strong>: tells our team when someone joins the waitlist, including what they entered in the form.
+        </li>
+        <li>
           <strong>Cloudflare Turnstile</strong>, when enabled: checks that sign-ins come from a person, not a bot.
         </li>
         <li>
@@ -70,7 +77,8 @@ export default function PrivacyPage() {
       <h2>How long we keep it</h2>
       <p>
         We keep your data while your account is open. When you delete your account (Account page), we cancel your open deals, turn off your workspace, and
-        delete your chats, workspace membership, Terms record and sign-in. Records of deals and of messages and calls with businesses stay on the Haggle server
+        delete your chats, workspace membership, Terms record, waitlist entry and sign-in. If you joined the waitlist without an account, ask us to remove you.
+        Records of deals and of messages and calls with businesses stay on the Haggle server
         for [retention period to be set by counsel] for disputes, fraud prevention and legal obligations, then are deleted. Ask us to delete them sooner at{" "}
         <Contact />.
       </p>

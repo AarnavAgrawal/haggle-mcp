@@ -107,6 +107,8 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-11-05 · Aarnav · Waitlist on branch `worktree-waitlist`: sign-up by invitation (public `/waitlist`, gate at `onboard()`, `npm run waitlist` + `.claude/skills/waitlist`, Slack ping, `token_hash` sign-in links, migration 303). Not launched: `docs/production-deploy.md` §3.4 lists the operator steps, in order
+
 - 2026-11-05 · Aarnav · Product copy across web and MCP views says Haggle finds and contacts businesses; limitation wording removed (copy only, consent rules unchanged), on `landing-redesign`
 - 2026-11-05 · Aarnav · Landing page redesigned as a company front page on branch `landing-redesign` (not merged or deployed): wordmark-led hero, quote sheet marked up by scrolling the deal log, section nav; `e2e/landing.spec.ts` added
 - 2026-11-04 · Aarnav · CI fix: the deploy script is exempt from the production-database guard test (it never connects; the guarded launch gate does the read)

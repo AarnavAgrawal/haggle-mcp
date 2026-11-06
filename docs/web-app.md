@@ -7,7 +7,7 @@ The web app is a signed-in website for people who want Haggle without an AI clie
 - **An MCP client.** It calls tools over Streamable HTTP (`POST /mcp`) as the signed-in user's workspace (`lib/haggle.ts`).
 - **A trusted MCP Apps host.** For the board-button tools (`choose_in_view`, `approve_in_view`, `call_back_in_view`), it declares the MCP Apps UI extension in the request envelope, as Claude or ChatGPT would when they render a view. The server then hands it one-time codes in `_meta`. The backend keeps those codes on the server and spends them only on the human's click.
 
-The web app owns only three things: sign-in, which workspace a user belongs to, and the chat history. Supabase stores all three.
+The web app owns only four things: sign-in, the waitlist, which workspace a user belongs to, and the chat history. Supabase stores all four.
 
 ---
 
@@ -41,11 +41,13 @@ The web app owns only three things: sign-in, which workspace a user belongs to, 
 
 | Path | What it does | MCP tools used |
 |---|---|---|
-| `/` | Redirects: signed out → `/login`; no workspace → `/onboarding`; otherwise → `/deals`. | none |
+| `/` | The landing page when signed out; signed in → `/chat`. | none |
+| `/waitlist` | Public. Sign-up is by invitation: visitors join here, and someone signed in but not let in sees where they stand. Admitted → `/onboarding`; member → `/chat`. Operators admit people with `npm run waitlist` ([production-deploy.md](production-deploy.md) §3.4). | none |
+| `POST /api/waitlist` | Public, same-origin. Adds an entry, and answers the same whether or not the email is known. | none |
 | `/login` | Email magic link (`signInWithOtp`) or Google OAuth. Both return to `/auth/callback`. | none |
-| `GET /auth/callback` | Exchanges the auth code for a session, then redirects to `/` (or to `/login?error=sign_in_failed`). | none |
+| `GET /auth/callback` | Starts the session from Google's `code` or an emailed link's `token_hash`, then redirects to `/` (or to `/login?error=sign_in_failed`). | none |
 | `POST /auth/sign-out` | Signs out and redirects to `/login`. It is POST only, so a link prefetch can't sign anyone out. | none |
-| `/onboarding` | Creates the workspace: name, approver phone (E.164), default limit for new deals (default $1,500; a deal with a budget uses its budget) and usual area. The approver email is the user's sign-in email. | `POST /internal/workspaces` |
+| `/onboarding` | Only for someone admitted from the waitlist; anyone else goes to `/waitlist`. Creates the workspace: name, approver phone (E.164), default limit for new deals (default $1,500; a deal with a budget uses its budget) and usual area. The approver email is the user's sign-in email. | `POST /internal/workspaces` |
 | `/chat`, `/chat/<threadId>` | Starts a new conversation, or resumes one of your own. A sidebar lists your 30 most recent threads. | via `/api/chat` |
 | `/deals` | Lists the workspace's 20 newest deals, each linking to its live page. | `list_deals` |
 | `/deals/<jobId>` | The deal page: request, timeline, next step, setup notes, questions from businesses, ranked quotes with the approval panel, purchase status, suggested callbacks, negotiation history, businesses, and Cancel. | `get_quotes` |
