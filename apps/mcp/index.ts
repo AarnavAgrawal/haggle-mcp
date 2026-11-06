@@ -491,6 +491,7 @@ export const deal = server.tool(
           limit: MAX_DISCOVERED_PER_DEAL - mine.length,
           timezone: (await engine.identity()).workspace.timezone,
           preferences: preferencesFrom({ what: R.what, details: R.details }),
+          ...(input.confirm_discovered ? { confirming: input.confirm_discovered } : {}),
         });
       }
       const found: FoundCandidate[] = discovery?.candidates ?? [];

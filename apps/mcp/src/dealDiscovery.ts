@@ -81,6 +81,8 @@ export interface FindOptions {
   demoWorkspace?: boolean;
   /** What the user would like (cuisine, price): steers the search, never narrows it. */
   preferences?: SearchPreferences;
+  /** The refs the user said yes to (confirm_discovered). */
+  confirming?: string[];
 }
 
 const none = (status: Exclude<DiscoveryStatus, "ok">, reason: string, skipped = { no_email: 0, suppressed: 0, existing: 0 }, notEmailable: NotEmailable[] = []): DiscoveryOutcome => ({ status, candidates: [], reason, skipped, ...(notEmailable.length ? { not_emailable: notEmailable } : {}) });
@@ -101,6 +103,14 @@ export async function findForDeal(o: FindOptions): Promise<DiscoveryOutcome> {
   } catch (e) {
     if (!(e instanceof PlacesError)) throw e;
     return none(e.code === "area_not_found" ? "no_area" : "listings_down", e.code === "area_not_found" ? `the listings don't know the area "${o.area}"` : `the business listings are unavailable right now (${e.code.replace(/_/g, " ")})`);
+  }
+  // The user's yes names what the preview listed, but this run may differ: the wider searches are best
+  // effort, and the preferences may not be repeated. So confirmed businesses stay in reach and come first
+  // (the limit can't push them out); every check below still applies to them.
+  const yes = new Set(o.confirming ?? []);
+  if (yes.size) {
+    const remembered = [...yes].filter((r) => !found.some((b) => b.business_ref === r)).flatMap((r) => { const b = o.registry.get(r); return b && b.category === o.category ? [b] : []; });
+    found = [...found.filter((b) => yes.has(b.business_ref)), ...remembered, ...found.filter((b) => !yes.has(b.business_ref))];
   }
   const skipped = { no_email: 0, suppressed: 0, existing: 0 };
   const withEmail = found.map((b) => ({ b, emails: reachableEmails(b).filter((e) => !o.reserved.has(e) && !(o.rt.mode === "live" && simulatedContact(e))) }));

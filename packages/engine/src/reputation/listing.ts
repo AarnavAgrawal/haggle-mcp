@@ -140,7 +140,7 @@ export function resolveAmazonPlaces(places: AwsPlace[], category: string, area: 
 
 function awsFailure(status: number): PlacesError {
   if (status === 429) return new PlacesError("rate_limited", "Amazon Location rate limit reached; retry in a minute.");
-  if (status === 401 || status === 403) return new PlacesError("key_rejected", `Amazon Location rejected the API key (HTTP ${status}); the operator must check AWS_LOCATION_API_KEY, its region (AWS_LOCATION_REGION) and that it allows geo-places:SearchText, GetPlace and Geocode.`);
+  if (status === 401 || status === 403) return new PlacesError("key_rejected", `Amazon Location rejected the API key (HTTP ${status}); the operator must check AWS_LOCATION_API_KEY, its region (AWS_LOCATION_REGION) and that it allows geo-places:SearchText, SearchNearby, GetPlace and Geocode.`);
   if (status === 400) return new PlacesError("unavailable", "Amazon Location refused the search (HTTP 400); try a shorter category or area.");
   return new PlacesError("unavailable", `Amazon Location is unavailable (HTTP ${status}); retry later.`);
 }

@@ -101,6 +101,17 @@ describe("a catering search reaches restaurants that aren't tagged catering", ()
   });
 });
 
+describe("a name is not a claim to cater", () => {
+  const CATERINA = aws("Caterina's Trattoria", { cats: ["casual_dining"], food: ["italian"] });
+
+  it("a restaurant whose name starts like catering is a restaurant", async () => {
+    const list = await amazon([], [CATERINA]).discover("catering", "San Francisco, CA", 6);
+    expect(list[0]).toMatchObject({ name: "Caterina's Trattoria", fit: "adjacent" });
+    expect(list[0]!.rank_reasons.join(" ")).toMatch(/not listed as a caterer/);
+    expect(list[0]!.rank_reasons.join(" ")).not.toMatch(/matches "catering"/);
+  });
+});
+
 describe("with no preferences the results span the range", () => {
   it("a short list isn't all caterers: it mixes caterers and restaurants", async () => {
     const fits = new Set((await search(undefined, 6)).map((b) => b.fit));
@@ -142,6 +153,11 @@ describe("preferences steer, they never remove", () => {
   it("a budget preference puts budget places first; an upscale one, upscale places", async () => {
     expect((await search({ price: "budget" }))[0]!.price_tier).toBe("budget");
     expect((await search({ price: "upscale" }))[0]!.name).toBe("Quince Dining Room");
+  });
+
+  it("a cuisine matches whole words, not letters inside a name", async () => {
+    const list = await amazon([], [aws("Barbecue Barn", { cats: ["casual_dining"] })]).discover("catering", "San Francisco, CA", 6, { cuisine: "bar" });
+    expect(list[0]!.rank_reasons.join(" ")).not.toMatch(/matches your bar preference/);
   });
 
   it("a preference nothing matches still returns the options", async () => {
@@ -238,6 +254,13 @@ describe("preferencesFrom reads the request", () => {
 
   it("keeps a cuisine it has no id for, in the user's words", () => {
     expect(preferencesFrom({ what: "catering", details: [{ label: "Cuisine", value: "Ethiopian" }] }).cuisine).toBe("ethiopian");
+  });
+
+  it("reads a negated price word as what it is, not its opposite", () => {
+    const price = (value: string) => preferencesFrom({ what: "catering", details: [{ label: "Price range", value }] }).price;
+    expect(price("mid-range, nothing fancy")).toBe("mid");
+    expect(price("not too fancy")).toBeUndefined();
+    expect(price("not cheap")).toBeUndefined();
   });
 
   it("doesn't read a time of day as a price point", () => {

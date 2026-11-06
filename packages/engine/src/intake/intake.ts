@@ -123,7 +123,7 @@ export const CATEGORY_PROFILES: Record<IntakeCategory, CategoryProfile> = {
       WHERE("Where should it be delivered (address or venue, or at least the city)?"),
     ],
     helpful: [
-      { key: "food", question: "Any cuisine you'd like (e.g. pizza, Mexican, Indian)? If you're open, Haggle shows a mix.", field: "details: Cuisine", has: (r) => !!cuisineOf(r.what) || detail(r, /\b(menu|cuisine|food|dish)\w*/i) },
+      { key: "food", question: "Any cuisine you'd like (e.g. pizza, Mexican, Indian)? If you're open, Haggle shows a mix.", field: "details: Cuisine", has: (r) => !!cuisineOf(r.what) || detail(r, /\b(menu|cuisine|dish)\w*/i) },
       { key: "price_range", question: "What price point: as cheap as possible, mid-range, or something fancy? If you don't mind, Haggle shows a range.", field: "details: Price range", has: (r) => !!priceRangeOf(r.what) || detail(r, /\bprice\b/i) },
       TIME("What time should the food arrive or be served?"),
       { key: "dietary", question: "Any dietary needs or allergies, and how many people each (e.g. 12 vegetarian, 2 gluten-free)?", field: "requirements", has: (r) => (r.requirements ?? []).some((q) => q.kind === "dietary") || detail(r, /\b(diet|allerg|vegetarian|vegan|gluten|halal|kosher)\w*/i) || /\b(vegetarian|vegan|gluten|halal|kosher|allerg\w*|nut-free)\b/i.test(words(r)) },

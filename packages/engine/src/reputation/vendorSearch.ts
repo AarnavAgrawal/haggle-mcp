@@ -53,7 +53,8 @@ export function foodTypeId(cuisine: string): string | undefined {
 
 /** The price range a phrase names ("as cheap as possible" -> budget, "fancy" -> upscale), or undefined. */
 export function priceRangeOf(text: string): PriceRange | undefined {
-  const t = text.toLowerCase();
+  // A negated word says nothing about the range it names: "nothing fancy" isn't upscale, "not cheap" isn't budget.
+  const t = text.toLowerCase().replace(/\b(?:not|no|nothing|never|isn'?t|without)\s+(?:\w+\s+)?[\w-]+/g, " ").trim();
   if (/\b(cheap\w*|affordable|inexpensive|low[- ]?cost|bargain|economical|budget[- ]friendly)\b|^budget\b/.test(t)) return "budget";
   if (/\b(fancy|upscale|high[- ]?end|premium|luxury|fine dining|gourmet|elegant)\b/.test(t)) return "upscale";
   if (/\b(mid[- ]?range|mid[- ]?priced|moderate|moderately priced)\b|^mid$/.test(t)) return "mid"; // not "mid-day", or a "medium" pizza
@@ -102,17 +103,21 @@ function priceTier(b: FoundBusiness): PriceRange | undefined {
 }
 
 const ADJACENT_REASON = "restaurant, not listed as a caterer: may take large orders (Haggle asks first)";
-const matchesCuisine = (b: FoundBusiness, want: string) => b.cuisine === want || [b.name, b.primary_type, ...b.types].some((t) => (t ?? "").toLowerCase().includes(want));
+const spaced = (t: string) => ` ${t.toLowerCase().replace(/[^a-z]+/g, " ").trim()} `;
+/** Whole words: a "bar" preference isn't met by "Barbecue Barn". */
+const matchesCuisine = (b: FoundBusiness, want: string) => b.cuisine === want || [b.name, b.primary_type, ...b.types].some((t) => spaced(t ?? "").includes(spaced(want)));
+/** Does this label say catering? A whole word: "Caterina's Trattoria" is a restaurant. */
+const saysCatering = (t: string) => /\b(catering|caterers?)\b/.test(spaced(t));
 
 /** One food listing with its fit, cuisine and rough price tier, and the reasons rewritten to say so. */
 function labelled(b: FoundBusiness, prefs: SearchPreferences): FoundBusiness {
-  const specialist = [b.name, b.primary_type, ...b.types].some((t) => /cater/i.test(t ?? ""));
+  const specialist = [b.name, b.primary_type, ...b.types].some((t) => saysCatering(t ?? ""));
   const cuisine = [...(b.food_types ?? []), b.primary_type, ...b.types, b.name].map((t) => cuisineOf(t ?? "")).find(Boolean);
   const tier = priceTier(b);
   const next: FoundBusiness = { ...b, fit: specialist ? "specialist" : "adjacent", ...(cuisine ? { cuisine } : {}), ...(tier ? { price_tier: tier } : {}) };
   next.rank_reasons = [
     ...(specialist ? [] : [ADJACENT_REASON]),
-    ...b.rank_reasons.filter((r) => specialist || !r.startsWith("weak match")),
+    ...b.rank_reasons.filter((r) => specialist || !/^(weak match|matches "cater)/.test(r)),
     ...(tier ? [`rough price: ${tier} (from the listing, not a quote)`] : []),
     ...(prefs.cuisine && matchesCuisine(next, prefs.cuisine) ? [`matches your ${prefs.cuisine} preference`] : []),
     ...(prefs.price && tier === prefs.price ? [`matches your ${prefs.price} price preference`] : []),

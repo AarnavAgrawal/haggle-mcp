@@ -117,6 +117,35 @@ describe("findForDeal", () => {
     expect(r.candidates.map((c) => c.email)).toEqual(["store4471@pizzahut.example"]);
   });
 
+  describe("the user's yes survives a search that came back different", () => {
+    const previewed = async () => { const registry = new DiscoveryRegistry(); await findForDeal(opts({ registry })); return registry; };
+
+    it("keeps a confirmed business this run's search no longer returns", async () => {
+      const r = await findForDeal(opts({ registry: await previewed(), listing: listing([]), confirming: ["place:BoltPlumbing"] }));
+      expect(r.candidates.map((c) => c.name)).toEqual(["Bolt Plumbing"]);
+    });
+
+    it("puts confirmed businesses first, so the limit can't push them out", async () => {
+      const r = await findForDeal(opts({ registry: await previewed(), limit: 1, confirming: ["place:CoraPlumbing"] }));
+      expect(r.candidates.map((c) => c.name)).toEqual(["Cora Plumbing"]);
+    });
+
+    it("still refuses a confirmed business that has since opted out", async () => {
+      const r = await findForDeal(opts({ registry: await previewed(), listing: listing([]), confirming: ["place:OptedOutDrains"] }));
+      expect(r.candidates).toEqual([]);
+    });
+
+    it("never reaches a business found for a different kind of work", async () => {
+      const r = await findForDeal(opts({ registry: await previewed(), listing: listing([]), category: "catering", confirming: ["place:BoltPlumbing"] }));
+      expect(r.candidates).toEqual([]);
+    });
+
+    it("can't confirm an invented ref", async () => {
+      const r = await findForDeal(opts({ registry: await previewed(), listing: listing([]), confirming: ["place:NoSuchBusiness"] }));
+      expect(r.candidates).toEqual([]);
+    });
+  });
+
   it("records who confirmed: the web user, else the MCP client on the user's yes", () => {
     expect(confirmedBy("ana@example.com (u1)", "haggle-web")).toBe("web:ana@example.com (u1)");
     expect(confirmedBy(null, "claude-ai")).toBe("agent:claude-ai on the user's yes");
