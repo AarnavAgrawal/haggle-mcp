@@ -259,6 +259,7 @@ The signed-in workspace owner changes settings in the web app. Three actors chan
 | Route | Body | Returns |
 |---|---|---|
 | `GET /internal/workspaces/settings` | none | `{ ok, mode, settings, next }` |
+| `GET /internal/workspaces/ledger?limit=` (`apps/mcp/src/service/ledger.ts`; any member, read-only; `limit` 1 to 100, default 50) | none | `{ ok, mode, deals[], truncated, next }`: each deal with all its quote versions, pending questions, latest approval, payment and up to 100 events in plain words. Shape: `apps/web/lib/dashboard/ledger.ts`. Never a code, a contact or a provider id. |
 | `POST /internal/workspaces/settings` | `{ name?, default_area?, timezone?, sender_name?, approver_email?, approver_phone?, default_deal_limit_usd?, confirm_url? }`; `""` or `null` clears an optional field; unknown keys are refused | `{ ok, mode, settings, changed[], pending_verification: ("phone"\|"email")[], demo_codes?, simulated?, next }` |
 | `POST /internal/workspaces/settings/confirm` | `{ kind: "phone"\|"email", code }` or `{ token }` | `{ ok, mode, confirmed, settings, next }` |
 | `POST /internal/workspaces/settings/cancel` | `{ kind }` | `{ ok, mode, cancelled, settings, next }` |

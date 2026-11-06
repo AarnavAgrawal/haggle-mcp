@@ -107,6 +107,7 @@ Full setup steps with owners: `docs/mvp-demo.md` § Manual setup.
 
 _One line per finished task, newest first: `time · who · what changed`._
 
+- 2026-11-05 · Aarnav · Admin dashboard (branch `worktree-dashboard-admin-redesign`, not deployed): `/dashboard` overview, `/deals` table (filters, sort, bulk cancel, CSV), `/quotes`, `/history`, Compare and totals on the deal board, fed by a new read-only service route (`GET /internal/workspaces/ledger`: every deal with quotes, open questions, approval, payment and history in one call)
 - 2026-11-05 · Aarnav · Bug fix: the same request starts a new deal in a new conversation (New request always opens a fresh chat; `client_request_id` is a 10-minute retry guard, set per turn in the web chat); `deal` carries `price_context` from the brain, as estimates
 - 2026-11-05 · Aarnav · Product copy across web and MCP views says Haggle finds and contacts businesses; limitation wording removed (copy only, consent rules unchanged), on `landing-redesign`
 - 2026-11-05 · Aarnav · Landing page redesigned as a company front page on branch `landing-redesign` (not merged or deployed): wordmark-led hero, quote sheet marked up by scrolling the deal log, section nav; `e2e/landing.spec.ts` added

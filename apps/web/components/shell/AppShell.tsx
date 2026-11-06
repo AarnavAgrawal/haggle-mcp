@@ -36,7 +36,7 @@ export function AppShell({ rail, banner, children }: { rail: ReactNode; banner?:
           <Button variant="quiet" icon aria-label="Open menu" aria-haspopup="dialog" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>
             <Icon name="menu" size={20} />
           </Button>
-          <Link className="brand" href="/deals">
+          <Link className="brand" href="/dashboard">
             Haggle
           </Link>
           <Link className={buttonClass("primary", { size: "s", className: "app-topbar-new" })} href="/chat">

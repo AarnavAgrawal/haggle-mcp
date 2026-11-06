@@ -111,12 +111,13 @@ Shape and depth:
 ## Layout
 
 **App shell** (signed-in pages, a route-group layout so it persists across navigations):
-- Left rail, 256px, on `--desk`: wordmark; **New request** (primary); the deals list grouped as
-  *Needs you* (awaiting approval or a question), *In progress*, *Done* — each item one line of request
-  title + a status line (dot + words) + best price when there is one; then Vendors, Settings, Account and
-  the signed-in email + sign out pinned at the bottom. The deals list streams in (Suspense); the rail
-  never blocks a page.
-- Content on the right, max 1080px for app pages, left-aligned (not centered in a void).
+- Left rail, 256px, on `--desk`: wordmark; **New request** (primary); the workspace pages (Overview,
+  Deals, Quotes, History); the open deals as shortcuts, grouped *Needs you* and *In progress* — each item
+  one line of request title + a status line (dot + words) + best price when there is one (finished deals
+  live on Deals and History, not here); then Saved businesses, Settings, Account and the signed-in email +
+  sign out pinned at the bottom. The deals list streams in (Suspense); the rail never blocks a page.
+- Content on the right, left-aligned (not centered in a void): max 1080px for reading pages (a deal's
+  board, settings), max 1360px for the ledger pages (Overview, Deals, Quotes, History), which are tables.
 - Below 900px: a 56px top bar (wordmark, New request, menu button) and the rail as a slide-in drawer
   (`<dialog>`, focus-trapped, Esc closes).
 
@@ -146,8 +147,33 @@ Badges are allowed in exactly one case: the **Demo** marker, a 4px-radius tag (n
   what Haggle understood (what, how many, when, where, budget, must-haves) and who it will contact, with
   **Start the deal** and **Change something**; the **started** card links to the deal board by name,
   never a raw job id. Recent conversations live in the shell rail (or a compact list on `/chat`).
-- **Deals** (`/deals`): a dense table-like list grouped like the rail; each row: request, status line,
-  businesses contacted / quoted, best price, updated time. Empty state invites a new request.
+- **The ledger pages** share one idea: the workspace as an account book. Everything is a ruled row with
+  right-aligned figures; filters, search and sort live in one row above the table and are kept in the URL,
+  so a view can be shared or reloaded; each table exports what it shows as CSV. A count covers only what
+  was loaded: if the server held more deals back, the page says so. Three marks are specific to them:
+  - **Totals line**: one sheet of figures split by rules, closed by a double rule, the bookkeeper's
+    sign for a total. Every figure links to the rows behind it.
+  - **Quote spread**: the one bold element. A deal's current quotes as ticks on a thin ruled line, scaled
+    from the lowest value to the highest; the quote you approved or Haggle recommends is circled in pen
+    (never one that is merely cheapest) and the budget is a dashed stroke. It answers "how good is this?"
+    in a glance and has a sentence for screen readers. No quote, no strip: an empty row says "No quote yet".
+  - A row's **lead quote** is the chosen one, else the lowest that meets the must-haves and carries no
+    alarm. A suspicious quote is often the cheapest, so it is never shown as the lead. Red names a real
+    alarm in words ("Suspicious instructions"); over budget is a caution in `--hold`.
+  - **Tabs** are the views of a table, with counts; the pen underline marks the current one.
+- **Overview** (`/dashboard`, where signing in lands): the totals line; **Needs you**, what only the human
+  can move, most blocking first (a business's question is answered right there; an approval links to the
+  board, where the confirm step is); the open deals; then the pipeline as thin bars, each linking to its
+  deals, your controls (limits, approver, area, with a link to change them), and the latest quotes and
+  activity. An empty workspace shows one invitation to start, not a page of zeroes.
+- **Deals** (`/deals`): the table, with views All, Needs you, In progress, Done. Each row: request,
+  status line, spread, lead quote and business, budget, updated time, and a row menu. Rows can be selected
+  to stop several at once; that always asks first and reports what happened to each deal.
+- **Quotes** (`/quotes`): every quote from every deal, with views In play, Picks, Replaced, All. Each row:
+  business, deal, channel, total (with the strike when it came down), must-haves, price check, standing.
+  A row expands in place; the quote is approved on its deal's board, never from here.
+- **History** (`/history`): the audit trail, every deal's events on one timeline under day headings,
+  filtered by kind, deal or search.
 - **Deal board** (`/deals/[id]`): header = title (display), a meta row (people, date, place, budget as
   separate items), status words with a live dot, actions on the right (Cancel deal in a menu, not a big
   button at the bottom). Main column = **the quote sheet**: one row per quote sorted by total — business,
@@ -158,7 +184,9 @@ Badges are allowed in exactly one case: the **Demo** marker, a 4px-radius tag (n
   column): "Approve Bay Catering — $5 deposit now, $1,150 total" + Approve. Below the sheet, **Activity**:
   what Haggle did per business, newest first, relative times; an active call shows a small animated
   3-bar "on call" indicator (the only ambient motion in the app). Side column: the request and the
-  must-have checklist, progress as a short vertical list.
+  must-have checklist, progress as a short vertical list. Above the columns, a totals line for this deal
+  (lead quote, against budget, quoted so far, saved). Under the approval bar, **Compare**: with two or more
+  quotes, a matrix with one column per business and one row per fact, so terms read across.
 - **Business detail**: the conversation with one business as a transcript (emails, call transcript,
   texts) with channel and time per message.
 - **Vendors**: your vendors as a compact table (name, channel, contact, consent basis, hours); **Find

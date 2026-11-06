@@ -1,0 +1,1060 @@
+/* The ledger pages (DESIGN.md "The ledger pages"): /dashboard, /deals, /quotes, /history, plus the deal
+   board's totals line and Compare table. Tokens only; every rule here is a line in an account book. */
+.adm {
+  --adm-max: 1360px;
+  width: 100%;
+  max-width: calc(var(--adm-max) + 2 * var(--gutter));
+  padding: 28px var(--gutter) 64px;
+}
+.adm-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  margin-bottom: 20px;
+}
+.adm-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.adm-note {
+  margin: 0 0 16px;
+  color: var(--ink-2);
+  font-size: var(--t-14);
+}
+
+/* ---------- totals line: figures split by rules, closed by the bookkeeper's double rule ---------- */
+.adm-totals {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-bottom: 28px;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-bottom: 3px double var(--rule-strong);
+  border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+}
+.adm-figure {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 16px 20px 14px;
+  color: inherit;
+  text-decoration: none;
+  transition: background-color 120ms ease-out;
+}
+.adm-figure + .adm-figure {
+  border-left: 1px solid var(--rule);
+}
+a.adm-figure:hover {
+  background: var(--pen-wash);
+  text-decoration: none;
+}
+.adm-figure-label {
+  color: var(--ink-2);
+  font-size: var(--t-14);
+}
+.adm-figure-value {
+  justify-self: start;
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.adm-figure-value [data-hold] {
+  color: var(--hold);
+}
+
+/* ---------- two columns ---------- */
+.adm-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 28px;
+  align-items: start;
+}
+.adm-col {
+  display: grid;
+  gap: 28px;
+  min-width: 0;
+}
+.adm-section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.adm-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.adm-h {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--t-18);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.adm-all {
+  font-size: var(--t-14);
+  font-weight: 500;
+}
+.adm-quiet-link {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--rule-strong);
+  text-underline-offset: 3px;
+}
+.adm-quiet-link:hover {
+  color: var(--pen);
+  text-decoration-color: currentColor;
+}
+
+/* ---------- needs you ---------- */
+.adm-tasks,
+.adm-mini,
+.adm-feed {
+  margin: 0;
+  list-style: none;
+}
+.adm-task {
+  display: grid;
+  gap: 10px;
+  padding: 14px 20px;
+}
+.adm-task + .adm-task {
+  border-top: 1px solid var(--rule);
+}
+.adm-task-line {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+}
+.adm-task-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-size: var(--t-15);
+}
+.adm-task-head .when {
+  margin-left: auto;
+}
+.adm-task-what {
+  margin: 2px 0 0;
+  font-size: var(--t-15);
+}
+.adm-task .status-words {
+  font-weight: 600;
+}
+.adm-clear {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--t-15);
+}
+.adm-clear .icon {
+  flex: none;
+  color: var(--signed);
+}
+
+/* ---------- open deals ---------- */
+.adm-mini li + li,
+.adm-feed li + li {
+  border-top: 1px solid var(--rule);
+}
+.adm-mini-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(150px, 1fr) minmax(112px, auto);
+  align-items: center;
+  gap: 24px;
+  padding: 12px 20px;
+  color: inherit;
+  text-decoration: none;
+}
+.adm-mini-row:hover {
+  background: var(--pen-wash);
+  text-decoration: none;
+}
+.adm-mini-what {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.adm-mini-what strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.adm-mini-what .status {
+  font-size: var(--t-14);
+}
+.adm-mini-price {
+  display: grid;
+  justify-items: end;
+  text-align: right;
+}
+.adm-under {
+  display: block;
+  color: var(--ink-3);
+  font-size: var(--t-14);
+  line-height: 1.3;
+}
+
+/* ---------- pipeline: thin bars, one series ---------- */
+.adm-pipe {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 12px;
+  list-style: none;
+}
+.adm-pipe a,
+.adm-pipe-empty {
+  display: grid;
+  grid-template-columns: 136px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: var(--r-control);
+  color: var(--ink);
+  font-size: var(--t-14);
+  text-decoration: none;
+}
+.adm-pipe a:hover {
+  background: var(--pen-wash);
+  text-decoration: none;
+}
+.adm-pipe-empty {
+  color: var(--ink-3);
+}
+.adm-pipe-track {
+  height: 8px;
+}
+.adm-pipe-bar {
+  display: block;
+  height: 8px;
+  min-width: 8px;
+  border-radius: 0 4px 4px 0;
+  background: var(--pen);
+}
+.adm-pipe-bar[data-stage="approval"],
+.adm-pipe-bar[data-stage="paying"] {
+  background: var(--hold);
+}
+.adm-pipe-bar[data-stage="stopped"] {
+  background: var(--ink-3);
+}
+.adm-pipe-count {
+  font-weight: 650;
+  text-align: right;
+}
+
+/* ---------- controls ---------- */
+.adm-controls {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 14px 20px;
+  font-size: var(--t-14);
+}
+.adm-controls > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.adm-controls dt {
+  color: var(--ink-2);
+}
+.adm-controls dd {
+  margin: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* ---------- feeds ---------- */
+.adm-feed a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 20px;
+  color: inherit;
+  font-size: var(--t-15);
+  text-decoration: none;
+}
+.adm-feed a:hover {
+  background: var(--pen-wash);
+  text-decoration: none;
+}
+.adm-feed-main {
+  display: grid;
+  min-width: 0;
+  line-height: 1.35;
+}
+.adm-feed-main strong {
+  font-weight: 600;
+}
+.adm-feed .when {
+  flex: none;
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+
+/* ---------- toolbar: views, search, filters, export in one row ---------- */
+.adm-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+  margin-bottom: 14px;
+}
+.adm-toolbar-end {
+  justify-content: flex-end;
+}
+.adm-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+}
+.adm-tab {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 0;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--t-15);
+  font-weight: 500;
+  cursor: pointer;
+}
+.adm-tab:hover,
+.adm-tab[aria-pressed="true"] {
+  color: var(--ink);
+}
+.adm-tab-label {
+  position: relative;
+  display: inline-block;
+  padding-bottom: 3px;
+}
+.adm-tab-label .pen-underline {
+  bottom: -2px;
+}
+.adm-tab-count {
+  color: var(--ink-3);
+  font-family: var(--font-text);
+  font-size: var(--t-14);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.adm-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.adm-search {
+  position: relative;
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+.adm-search .icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  translate: 0 -50%;
+  color: var(--ink-3);
+  pointer-events: none;
+}
+.adm-search input {
+  width: 100%;
+  padding-left: 34px;
+  font-size: var(--t-15);
+}
+.adm-select {
+  min-height: 40px;
+  max-width: 220px;
+  font-size: var(--t-15);
+}
+/* The table's header sorts on wider screens. */
+.adm-sort-select {
+  display: none;
+}
+.adm-tz {
+  margin: 0;
+}
+
+/* ---------- bulk bar ---------- */
+.adm-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+  padding: 8px 16px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r-sheet);
+  background: var(--sheet);
+  font-size: var(--t-14);
+}
+.adm-bulk > p {
+  flex: 1 1 200px;
+  margin: 0;
+}
+.adm-outcomes {
+  display: grid;
+  flex: 1 1 320px;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.adm-outcomes li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+/* ---------- tables: line items with right-aligned figures ---------- */
+.adm-sheet {
+  overflow: visible;
+}
+.adm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-15);
+  line-height: 1.35;
+}
+.adm-table thead th {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rule-strong);
+  color: var(--ink-2);
+  font-family: var(--font-text);
+  font-size: var(--t-14);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-align: left;
+  white-space: nowrap;
+}
+.adm-table td {
+  padding: 12px;
+  vertical-align: middle;
+}
+.adm-table th:first-child,
+.adm-table td:first-child {
+  padding-left: 20px;
+}
+.adm-table th:last-child,
+.adm-table td:last-child {
+  padding-right: 20px;
+}
+.adm-table tbody tr + tr td {
+  border-top: 1px solid var(--rule);
+}
+.adm-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--pen-wash) 45%, transparent);
+}
+.adm-table tbody tr[data-picked] td,
+.adm-table tbody tr[data-open] td {
+  background: var(--pen-wash);
+}
+.adm-table .adm-right {
+  text-align: right;
+}
+.adm-right .adm-sort {
+  flex-direction: row-reverse;
+}
+.adm-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.adm-sort:hover,
+.adm-sort[data-active] {
+  color: var(--ink);
+}
+.adm-sort .icon {
+  opacity: 0;
+  transition: rotate 120ms ease-out;
+}
+.adm-sort:hover .icon {
+  opacity: 0.5;
+}
+.adm-sort[data-active] .icon {
+  opacity: 1;
+}
+.adm-sort-up {
+  rotate: 180deg;
+}
+.adm-pick {
+  width: 44px;
+}
+.adm-menu {
+  width: 56px;
+}
+/* A row's menu is quiet until reached for: a boxed button on every row reads as noise. */
+.adm-menu .deal-menu > .btn {
+  width: 32px;
+  min-height: 32px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-2);
+}
+.adm-menu .deal-menu > .btn:hover,
+.adm-menu .deal-menu > .btn[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+.adm-deal {
+  min-width: 200px;
+}
+.adm-deal > a {
+  display: block;
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+.adm-deal > a:hover {
+  color: var(--pen);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.adm-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 10px;
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+.adm-spread {
+  width: 200px;
+  min-width: 170px;
+}
+.adm-dim td {
+  color: var(--ink-3);
+}
+.adm-warn {
+  display: block;
+  font-size: var(--t-14);
+  line-height: 1.3;
+}
+.adm-warn[data-tone="risk"] {
+  color: var(--risk);
+}
+.adm-warn[data-tone="hold"] {
+  color: var(--hold);
+}
+.adm-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: -4px;
+  padding: 2px 4px 2px 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.adm-expand .icon {
+  flex: none;
+  color: var(--ink-3);
+  transition: rotate 150ms ease-out;
+}
+.adm-expand[aria-expanded="true"] .icon {
+  rotate: 90deg;
+}
+.adm-total {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.adm-was {
+  color: var(--ink-3);
+}
+.adm-detail-row td {
+  padding: 4px 20px 16px 40px;
+  background: var(--pen-wash);
+}
+.adm-detail {
+  display: grid;
+  gap: 10px;
+  max-width: 72ch;
+  font-size: var(--t-14);
+}
+.adm-items,
+.adm-flags {
+  margin: 0;
+  padding-left: 18px;
+}
+.adm-flags [data-tone="risk"] {
+  color: var(--risk);
+}
+.adm-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 24px;
+  margin: 0;
+}
+.adm-facts dt {
+  color: var(--ink-3);
+}
+.adm-facts dd {
+  margin: 0;
+}
+.adm-nomatch {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 24px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sheet);
+  background: var(--sheet);
+}
+.adm-nomatch p {
+  margin: 0;
+  color: var(--ink-2);
+}
+.adm-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0;
+  color: var(--ink-3);
+  font-size: var(--t-14);
+}
+
+/* ---------- quote spread: the one bold element ---------- */
+.spread {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.spread-line {
+  position: relative;
+  display: block;
+  height: 18px;
+  margin-inline: 8px;
+}
+.spread-line::before {
+  content: "";
+  position: absolute;
+  inset: 8.5px 0 auto;
+  height: 1px;
+  background: var(--rule-strong);
+}
+.spread-mark,
+.spread-budget {
+  position: absolute;
+  top: 0;
+  left: var(--at);
+  width: 16px;
+  height: 18px;
+  translate: -50% 0;
+}
+.spread-mark::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 3px;
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--ink-2);
+}
+/* The chosen quote: the pen's loose circle (DESIGN.md: a mark is only ever true). */
+.spread-mark[data-picked]::before {
+  left: 2px;
+  top: 3px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--pen);
+  border-radius: 50% 46% 52% 48%;
+  background: var(--sheet);
+  rotate: -8deg;
+}
+.spread-budget::before {
+  content: "";
+  position: absolute;
+  left: 7.5px;
+  top: 0;
+  height: 18px;
+  border-left: 1px dashed var(--ink-3);
+}
+.spread-mark:hover,
+.spread-budget:hover {
+  z-index: 2;
+}
+.spread-mark:hover::after,
+.spread-budget:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  translate: -50% 0;
+  z-index: 5;
+  padding: 3px 8px;
+  border-radius: var(--r-control);
+  background: var(--ink);
+  color: var(--sheet);
+  font-size: var(--t-12);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.spread-range {
+  color: var(--ink-3);
+  font-size: var(--t-12);
+}
+
+/* ---------- history ---------- */
+.adm-log {
+  display: grid;
+  gap: 16px;
+}
+.adm-day-h {
+  margin: 0;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--rule-strong);
+  font-family: var(--font-display);
+  font-size: var(--t-15);
+  font-weight: 700;
+}
+.adm-events {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.adm-events li {
+  display: grid;
+  grid-template-columns: 44px 8px minmax(0, 1fr) minmax(0, 220px);
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 20px;
+  font-size: var(--t-15);
+}
+.adm-events li + li {
+  border-top: 1px solid var(--rule);
+}
+.adm-events .dot {
+  align-self: center;
+}
+.adm-event-time {
+  color: var(--ink-3);
+  font-size: var(--t-14);
+  font-variant-numeric: tabular-nums;
+}
+.adm-event-deal {
+  justify-self: end;
+  overflow: hidden;
+  max-width: 100%;
+  font-size: var(--t-14);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.adm-more {
+  justify-self: start;
+}
+
+/* ---------- a deal's totals line ---------- */
+.deal-totals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0 0 20px;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+  border-bottom: 3px double var(--rule-strong);
+  border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+}
+.deal-totals > div {
+  min-width: 0;
+  padding: 12px 20px 10px;
+}
+.deal-totals > div + div {
+  border-left: 1px solid var(--rule);
+}
+.deal-totals dt {
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: var(--t-14);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deal-totals dd {
+  margin: 2px 0 0;
+  min-height: 34px;
+}
+.deal-totals-num {
+  font-family: var(--font-display);
+  font-size: var(--t-24);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+.deal-totals-num[data-over] {
+  color: var(--risk);
+}
+.deal-totals-none {
+  color: var(--ink-3);
+  font-size: var(--t-15);
+  line-height: 34px;
+}
+
+/* ---------- compare ---------- */
+.compare {
+  margin-top: 24px;
+}
+.compare-scroll {
+  overflow-x: auto;
+  margin-top: 10px;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sheet);
+  background: var(--sheet);
+}
+.compare-scroll:focus-visible {
+  outline: 2px solid var(--pen);
+  outline-offset: 2px;
+}
+.compare-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  font-size: var(--t-14);
+  line-height: 1.35;
+}
+.compare-table th,
+.compare-table td {
+  padding: 9px 14px;
+  text-align: left;
+  vertical-align: top;
+}
+.compare-table thead th {
+  border-bottom: 1px solid var(--rule-strong);
+  color: var(--ink);
+  font-family: var(--font-text);
+  font-size: var(--t-14);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.compare-pick,
+.compare-low {
+  display: block;
+  color: var(--pen);
+  font-size: var(--t-12);
+  font-weight: 500;
+}
+.compare-table tbody th {
+  position: sticky;
+  left: 0;
+  background: var(--sheet);
+  color: var(--ink-2);
+  font-family: var(--font-text);
+  font-size: var(--t-14);
+  font-weight: 400;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.compare-table tbody tr + tr > * {
+  border-top: 1px solid var(--rule);
+}
+.compare-table [data-tone="miss"] {
+  color: var(--risk);
+}
+.compare-table [data-tone="muted"] {
+  color: var(--ink-3);
+}
+
+/* ---------- narrower ---------- */
+@media (max-width: 1180px) {
+  .adm-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* With the rail beside it, a full table no longer fits: the less decisive columns give way, and the
+   Total stays. Narrower still, tables become cards (below). */
+@media (min-width: 1100px) and (max-width: 1359.98px) {
+  .adm-deals th:nth-child(6),
+  .adm-deals td:nth-child(6),
+  .adm-deals th:nth-child(7),
+  .adm-deals td:nth-child(7),
+  .adm-quotes th:nth-child(3),
+  .adm-quotes td:nth-child(3),
+  .adm-quotes th:nth-child(7),
+  .adm-quotes td:nth-child(7) {
+    display: none;
+  }
+  .adm-deal {
+    min-width: 160px;
+  }
+  .adm-spread {
+    width: 150px;
+    min-width: 140px;
+  }
+}
+@media (max-width: 899.98px) {
+  .adm {
+    padding-top: 20px;
+  }
+  .adm-totals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .adm-figure:nth-child(odd) {
+    border-left: 0;
+  }
+  .adm-figure:nth-child(n + 3) {
+    border-top: 1px solid var(--rule);
+  }
+  .adm-figure:last-child {
+    grid-column: 1 / -1;
+  }
+  .adm-figure-value {
+    font-size: var(--t-30, 30px);
+  }
+  .deal-totals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .deal-totals > div:nth-child(odd) {
+    border-left: 0;
+  }
+  .deal-totals > div:nth-child(n + 3) {
+    border-top: 1px solid var(--rule);
+  }
+  .adm-filters {
+    width: 100%;
+  }
+  .adm-search {
+    flex-basis: 100%;
+  }
+  .adm-mini-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .adm-mini-row .spread {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  /* The top bar already has New request. */
+  .adm-head-actions .btn-primary {
+    display: none;
+  }
+  .adm-events li {
+    grid-template-columns: 44px 8px minmax(0, 1fr);
+  }
+  .adm-event-deal {
+    grid-column: 3;
+    justify-self: start;
+    text-align: left;
+  }
+}
+@media (max-width: 1099.98px) {
+  /* A table becomes a stack of labelled line items. The header is out of the tab order too; the sort
+     select stands in for it. */
+  .adm-table thead {
+    display: none;
+  }
+  .adm-sort-select {
+    display: block;
+  }
+  .adm-table,
+  .adm-table tbody,
+  .adm-table tr {
+    display: block;
+  }
+  .adm-table tbody tr {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 12px;
+    padding: 12px 16px;
+  }
+  .adm-table tbody tr + tr {
+    border-top: 1px solid var(--rule);
+  }
+  .adm-table tbody tr + tr td {
+    border-top: 0;
+  }
+  .adm-table td,
+  .adm-table td:first-child,
+  .adm-table td:last-child {
+    display: block;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+  }
+  .adm-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--ink-3);
+    font-size: var(--t-12);
+  }
+  .adm-table .adm-deal,
+  .adm-table .adm-spread {
+    grid-column: 1 / -1;
+  }
+  /* A deal card: tick, request and menu on one line; figures under them. */
+  .adm-deals tbody tr {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+  .adm-deals .adm-pick {
+    grid-area: 1 / 1;
+    padding-top: 2px;
+  }
+  .adm-deals .adm-deal {
+    grid-area: 1 / 2 / auto / 4;
+  }
+  .adm-deals .adm-menu {
+    grid-area: 1 / 4;
+  }
+  .adm-deals td[data-label="Status"],
+  .adm-deals td[data-label="Quotes"] {
+    grid-column: 1 / -1;
+  }
+  .adm-deals td[data-label="Lead quote"] {
+    grid-column: 1 / 3;
+  }
+  .adm-deals td[data-label="Updated"] {
+    grid-column: 3 / -1;
+    text-align: right;
+  }
+  .adm-table .adm-right {
+    text-align: left;
+  }
+  .adm-table .adm-pick:empty,
+  .adm-table .adm-menu:empty {
+    display: none;
+  }
+  .adm-detail-row td {
+    grid-column: 1 / -1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .adm-sort .icon,
+  .adm-expand .icon {
+    transition: none;
+  }
+}
