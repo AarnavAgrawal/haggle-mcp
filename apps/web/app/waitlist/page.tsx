@@ -48,7 +48,7 @@ export default async function WaitlistPage({ searchParams }: { searchParams: Pro
           ) : (
             <>
               <h1>Join the Haggle waitlist</h1>
-              <p className="auth-sub">We&apos;re letting people in a few at a time. Tell us who you are and we&apos;ll email you a sign-in link when you&apos;re in.</p>
+              <p className="auth-sub">We&apos;re letting people in a few at a time. Tell us who you are and we&apos;ll email you when you&apos;re in.</p>
               {refusedSignIn && !user ? (
                 <p className="note auth-notice" role="status">
                   You don&apos;t have a Haggle account yet. Join below. If you&apos;ve already joined, there&apos;s nothing else to do: we&apos;ll email you when you&apos;re in.

@@ -17,9 +17,7 @@ create table if not exists public.web_waitlist (
   created_at   timestamptz not null default now(),
   admitted_at  timestamptz,
   admitted_by  text check (admitted_by is null or length(admitted_by) between 1 and 200),
-  notified_at  timestamptz,
-  constraint web_waitlist_admitted_by_whom check ((admitted_at is null) = (admitted_by is null)),
-  constraint web_waitlist_notified_after_admitted check (notified_at is null or admitted_at is not null)
+  constraint web_waitlist_admitted_by_whom check ((admitted_at is null) = (admitted_by is null))
 );
 create index if not exists web_waitlist_waiting_idx on public.web_waitlist (created_at) where admitted_at is null;
 

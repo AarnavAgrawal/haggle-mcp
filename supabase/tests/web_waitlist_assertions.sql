@@ -26,7 +26,6 @@ select pg_temp.expect_fail('padded email', $q$insert into public.web_waitlist (e
 select pg_temp.expect_fail('missing organization', $q$insert into public.web_waitlist (email, full_name) values ('a4@example.com', 'Ada')$q$);
 select pg_temp.expect_fail('over-long use case', $q$insert into public.web_waitlist (email, full_name, organization, use_case) values ('a5@example.com', 'Ada', 'Engines', repeat('x', 501))$q$);
 select pg_temp.expect_fail('admitted with nobody recorded', $q$update public.web_waitlist set admitted_at = now() where email = 'assert@example.com'$q$);
-select pg_temp.expect_fail('notified before admitted', $q$update public.web_waitlist set notified_at = now() where email = 'assert@example.com'$q$);
 
 -- Neither public role can read, add or admit.
 set role anon;
@@ -43,7 +42,7 @@ set role service_role;
 do $$
 begin
   if (select count(*) from public.web_waitlist where email = 'assert@example.com') <> 1 then raise exception 'service_role must read the waitlist'; end if;
-  update public.web_waitlist set admitted_at = now(), admitted_by = 'assert', notified_at = now() where email = 'assert@example.com';
+  update public.web_waitlist set admitted_at = now(), admitted_by = 'assert' where email = 'assert@example.com';
   delete from public.web_waitlist where email = 'assert@example.com';
 end $$;
 reset role;

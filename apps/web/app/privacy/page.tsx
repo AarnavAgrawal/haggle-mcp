@@ -62,9 +62,6 @@ export default function PrivacyPage() {
           <strong>Supabase</strong>: our database and sign-in provider.
         </li>
         <li>
-          <strong>Slack</strong>: tells our team when someone joins the waitlist, including what they entered in the form.
-        </li>
-        <li>
           <strong>Cloudflare Turnstile</strong>, when enabled: checks that sign-ins come from a person, not a bot.
         </li>
         <li>

@@ -56,9 +56,6 @@
   display: grid;
   gap: var(--s-3);
 }
-.auth-confirm {
-  margin-top: var(--s-6);
-}
 .auth-sent {
   padding: 14px 16px;
   border-radius: var(--r-control);

@@ -1,6 +1,6 @@
-// The operator CLI (scripts/waitlist-admin.ts) with a fake repository: no Supabase, nothing emailed.
-// Admitting is the one action that gives a stranger access, so the wrong project, a retry and an address
-// that can't receive mail all have to behave.
+// The operator CLI (scripts/waitlist-admin.ts) with a fake repository: no Supabase.
+// Admitting is the one action that gives a stranger access, so the wrong project, a rerun and a password
+// account all have to behave. It never emails anyone: the operator does that.
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ const opts = { projectRef: REF, host: `${REF}.supabase.co`, now: () => NOW };
 
 const entry = (over: Partial<WaitlistEntry> = {}): WaitlistEntry => ({
   email: "ada@example.com", full_name: "Ada Lovelace", organization: "Analytical Engines", use_case: "Cater our offsite",
-  created_at: "2026-11-01T09:00:00.000Z", admitted_at: null, admitted_by: null, notified_at: null, ...over,
+  created_at: "2026-11-01T09:00:00.000Z", admitted_at: null, admitted_by: null, ...over,
 });
 
 function repo(initial: WaitlistEntry[] = [entry()], over: Partial<WaitlistRepo> = {}) {
@@ -29,19 +29,12 @@ function repo(initial: WaitlistEntry[] = [entry()], over: Partial<WaitlistRepo> 
       log.push(`admit ${email}`);
       Object.assign(rows.get(email)!, { admitted_at: at, admitted_by: by });
     },
-    markNotified: async (email, at) => {
-      log.push(`notified ${email}`);
-      rows.get(email)!.notified_at = at;
-    },
     remove: async (email) => {
       log.push(`remove ${email}`);
       rows.delete(email);
     },
     ensureUser: async (email) => {
       log.push(`user ${email}`);
-    },
-    sendLink: async (email) => {
-      log.push(`link ${email}`);
     },
     accountOf: async () => null,
     deleteUser: async (id) => {
@@ -60,12 +53,9 @@ describe("planCommand", () => {
   });
 
   it("reads an admit, lowercasing emails", () => {
-    expect(planCommand(["admit", "Ada@Example.com", "b@example.com", "--by", "Aarnav", "--target", REF])).toEqual({ kind: "admit", emails: ["ada@example.com", "b@example.com"], by: "Aarnav", target: REF, noEmail: false });
+    expect(planCommand(["admit", "Ada@Example.com", "b@example.com", "--by", "Aarnav", "--target", REF])).toEqual({ kind: "admit", emails: ["ada@example.com", "b@example.com"], by: "Aarnav", target: REF });
   });
 
-  it("reads --no-email, --name and --org", () => {
-    expect(planCommand(["admit", "a@example.com", "--by", "A", "--target", REF, "--no-email", "--name", "Ada L", "--org", "AE"])).toMatchObject({ noEmail: true, name: "Ada L", org: "AE" });
-  });
 
   it.each([
     [["admit", "a@example.com", "--target", REF], /--by/],
@@ -78,6 +68,7 @@ describe("planCommand", () => {
     [["admit", "a@example.com", "--by", "A", "--target", REF, "--name", "x".repeat(121), "--org", "AE"], /120/],
     [["remove", "a@example.com", "--by", "A"], /--target/],
     [["admit", "a@example.com", "--by", "A", "--target", REF, "--bogus"], /--bogus/],
+    [["admit", "a@example.com", "--by", "A", "--target", REF, "--no-email"], /--no-email/],
     [["admit", "a@example.com", "b@example.com", "--by", "A", "--target", REF, "--name", "Ada"], /one person/],
     [["launch"], /list, admit, remove/],
     [[], /list, admit, remove/],
@@ -116,7 +107,7 @@ describe("list", () => {
 });
 
 describe("admit", () => {
-  const admit = (over = {}) => ({ kind: "admit" as const, emails: ["ada@example.com"], by: "Aarnav", target: REF, noEmail: false, ...over });
+  const admit = (over = {}) => ({ kind: "admit" as const, emails: ["ada@example.com"], by: "Aarnav", target: REF, ...over });
 
   it("refuses the wrong project before changing anything", async () => {
     const { r, log } = repo();
@@ -126,21 +117,31 @@ describe("admit", () => {
     expect(log).toEqual([]);
   });
 
-  it("makes the sign-in safe first, then admits, sends the link and records it", async () => {
+  it("makes the sign-in safe first, then admits, and tells the operator to email them", async () => {
     const { r, rows, log } = repo();
     const out = await runCommand(admit(), r, opts);
-    expect(log).toEqual(["user ada@example.com", "admit ada@example.com", "link ada@example.com", "notified ada@example.com"]);
-    expect(rows.get("ada@example.com")).toMatchObject({ admitted_at: NOW.toISOString(), admitted_by: "Aarnav", notified_at: NOW.toISOString() });
+    expect(log).toEqual(["user ada@example.com", "admit ada@example.com"]);
+    expect(rows.get("ada@example.com")).toMatchObject({ admitted_at: NOW.toISOString(), admitted_by: "Aarnav" });
     expect(out.failed).toBe(false);
     expect(out.text).toContain("Ada Lovelace");
+    expect(out.text).toContain("Email them yourself");
+    expect(out.text).toContain("/login");
   });
 
-  it("keeps the admission when the email fails, and reports it", async () => {
-    const { r, rows } = repo([entry()], { sendLink: async () => { throw new Error("smtp down"); } });
+  it("a rerun keeps who admitted them, and still makes the sign-in safe", async () => {
+    const { r, rows, log } = repo([entry({ admitted_at: "2026-11-04T00:00:00.000Z", admitted_by: "Yash" })]);
     const out = await runCommand(admit(), r, opts);
+    expect(log).toEqual(["user ada@example.com"]);
+    expect(rows.get("ada@example.com")?.admitted_by).toBe("Yash");
+    expect(out.text).toContain("already admitted");
+  });
+
+  it("one person's failure is reported, and the rest still run", async () => {
+    const { r, log } = repo([entry(), entry({ email: "b@example.com" })], { find: async (e) => { if (e === "ada@example.com") throw new Error("db hiccup"); return entry({ email: e }); }, markAdmitted: async (e) => { log.push(`admit ${e}`); } });
+    const out = await runCommand(admit({ emails: ["ada@example.com", "b@example.com"] }), r, opts);
     expect(out.failed).toBe(true);
-    expect(out.text).toContain("smtp down");
-    expect(rows.get("ada@example.com")).toMatchObject({ admitted_by: "Aarnav", notified_at: null });
+    expect(out.text).toContain("ada@example.com: db hiccup");
+    expect(log).toContain("admit b@example.com");
   });
 
   it("doesn't admit someone whose sign-in can't be made safe, and doesn't send them to /login", async () => {
@@ -154,49 +155,18 @@ describe("admit", () => {
     expect(log).toEqual([]);
   });
 
-  it("says plainly when the email went out but couldn't be recorded", async () => {
-    const { r } = repo([entry()], { markNotified: async () => { throw new Error("db down"); } });
-    const out = await runCommand(admit(), r, opts);
-    expect(out.failed).toBe(true);
-    expect(out.text).toContain("email sent");
-    expect(out.text).not.toContain("email failed");
-  });
-
-  it("a database error on one person is reported, and the rest still run", async () => {
-    const { r, log } = repo([entry(), entry({ email: "b@example.com" })], { find: async (e) => { if (e === "ada@example.com") throw new Error("db hiccup"); return entry({ email: e }); }, markAdmitted: async () => undefined, markNotified: async () => undefined });
-    const out = await runCommand(admit({ emails: ["ada@example.com", "b@example.com"] }), r, opts);
-    expect(out.failed).toBe(true);
-    expect(out.text).toContain("ada@example.com: db hiccup");
-    expect(log).toContain("link b@example.com");
-  });
-
-  it("a rerun retries only the people not yet notified, and keeps who admitted them", async () => {
-    const { r, rows, log } = repo([
-      entry({ admitted_at: "2026-11-04T00:00:00.000Z", admitted_by: "Yash" }),
-      entry({ email: "b@example.com", admitted_at: "2026-11-04T00:00:00.000Z", admitted_by: "Yash", notified_at: "2026-11-04T00:00:00.000Z" }),
-    ]);
-    await runCommand(admit({ emails: ["ada@example.com", "b@example.com"] }), r, opts);
-    expect(log).toEqual(["user ada@example.com", "link ada@example.com", "notified ada@example.com"]);
-    expect(rows.get("ada@example.com")?.admitted_by).toBe("Yash");
-  });
-
-  it("--no-email sends nothing, but still makes the sign-in safe", async () => {
-    const { r, log } = repo();
-    await runCommand(admit({ noEmail: true }), r, opts);
-    expect(log).toEqual(["user ada@example.com", "admit ada@example.com"]);
-  });
-
-  it("never emails a synthetic password-account address", async () => {
+  it("leaves a password account's sign-in alone, and doesn't suggest emailing it", async () => {
     const email = "ycombinator@users.tryhaggle.tech";
     const { r, log } = repo([entry({ email })]);
     const out = await runCommand(admit({ emails: [email] }), r, opts);
     expect(log).toEqual([`admit ${email}`]);
     expect(out.failed).toBe(false);
+    expect(out.text).not.toContain("Email them");
   });
 
   it("refuses someone not on the list without a name and organization", async () => {
     const { r, log } = repo([]);
-    const out = await runCommand(admit({ noEmail: true }), r, opts);
+    const out = await runCommand(admit(), r, opts);
     expect(out.failed).toBe(true);
     expect(out.text).toMatch(/--name/);
     expect(log).toEqual([]);
@@ -204,18 +174,10 @@ describe("admit", () => {
 
   it("adds someone not on the list when given a name and organization", async () => {
     const { r, rows } = repo([]);
-    await runCommand(admit({ noEmail: true, name: "Ada L", org: "AE" }), r, opts);
+    await runCommand(admit({ name: "Ada L", org: "AE" }), r, opts);
     expect(rows.get("ada@example.com")).toMatchObject({ full_name: "Ada L", organization: "AE", admitted_by: "Aarnav" });
   });
 
-  it("one person's failure doesn't stop the rest", async () => {
-    const { r, log } = repo([entry(), entry({ email: "b@example.com" })], { sendLink: async (e) => { if (e === "ada@example.com") throw new Error("smtp down"); log2.push(e); } });
-    const log2: string[] = [];
-    const out = await runCommand(admit({ emails: ["ada@example.com", "b@example.com"] }), r, opts);
-    expect(out.failed).toBe(true);
-    expect(log2).toEqual(["b@example.com"]);
-    expect(log).toContain("notified b@example.com");
-  });
 });
 
 describe("remove", () => {
